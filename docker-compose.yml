@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  boardman:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: deepiri-boardman
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    environment:
+      - PLAKY_API_KEY=${PLAKY_API_KEY}
+      - PLAKY_API_BASE=${PLAKY_API_BASE:-https://api.plaky.com/v2}
+      - PLAKY_PR_MERGE_STATUS=${PLAKY_PR_MERGE_STATUS:-in_review}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+      - GITHUB_PAT=${GITHUB_PAT}
+      - GITHUB_ORG=${GITHUB_ORG:-deepiri-org}
+      - DATABASE_URL=sqlite+aiosqlite:///./boardman.db
+      - SERVICE_HOST=0.0.0.0
+      - SERVICE_PORT=8090
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    env_file:
+      - .env
+    volumes:
+      - ./boardman.db:/app/boardman.db
+    networks:
+      - deepiri-network
+
+networks:
+  deepiri-network:
+    driver: bridge
