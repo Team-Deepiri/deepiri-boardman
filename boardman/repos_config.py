@@ -1,4 +1,4 @@
-"""Load repos.yml for Plaky table routing."""
+"""Load repos.yml for Plaky table routing; optionally merge with GitHub org repo list."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import httpx
 import yaml
 
 from boardman.settings import settings
@@ -42,12 +43,8 @@ def reload_repos_config() -> None:
     _load_raw.cache_clear()
 
 
-def get_routing(full_name: str, short_name: str, org: str) -> Optional[RepoRouting]:
-    """Look up routing by full_name, then org/short_name."""
-    raw = _load_raw()
-    repos: Dict[str, Any] = raw.get("repos") or {}
-    entry = repos.get(full_name) or repos.get(f"{org}/{short_name}")
-    if not entry or not isinstance(entry, dict):
+def _parse_entry(entry: Any) -> Optional[RepoRouting]:
+    if not isinstance(entry, dict):
         return None
     return RepoRouting(
         category=str(entry.get("category", "")),
@@ -56,17 +53,102 @@ def get_routing(full_name: str, short_name: str, org: str) -> Optional[RepoRouti
     )
 
 
+def _is_meaningful(r: RepoRouting) -> bool:
+    return bool(r.plaky_table or r.category or r.description)
+
+
+def _defaults_routing() -> Optional[RepoRouting]:
+    raw = _load_raw()
+    d = raw.get("defaults")
+    if isinstance(d, dict):
+        cat = str(d.get("category", "") or settings.default_repo_category or "")
+        table = str(d.get("plaky_table", "") or settings.default_plaky_table or "")
+        desc = str(d.get("description", "") or "")
+    else:
+        cat = str(settings.default_repo_category or "")
+        table = str(settings.default_plaky_table or "")
+        desc = ""
+    if not cat and not table and not desc:
+        return None
+    return RepoRouting(category=cat, plaky_table=table, description=desc)
+
+
+def _routing_for_full_name(full_name: str, yaml_map: Dict[str, Any], org: str) -> RepoRouting:
+    entry = yaml_map.get(full_name)
+    if entry and isinstance(entry, dict):
+        r = _parse_entry(entry)
+        if r and _is_meaningful(r):
+            return r
+    owner = full_name.split("/")[0] if "/" in full_name else ""
+    if owner == org:
+        d = _defaults_routing()
+        if d and _is_meaningful(d):
+            return d
+    return RepoRouting("", "", "")
+
+
+def get_routing(full_name: str, short_name: str, org: str) -> Optional[RepoRouting]:
+    """Look up routing by full_name, then org/short_name; then org default."""
+    raw = _load_raw()
+    repos: Dict[str, Any] = raw.get("repos") or {}
+    entry = repos.get(full_name) or repos.get(f"{org}/{short_name}")
+    if entry and isinstance(entry, dict):
+        r = _parse_entry(entry)
+        if r and _is_meaningful(r):
+            return r
+    owner = full_name.split("/")[0] if "/" in full_name else ""
+    if owner == org:
+        return _defaults_routing()
+    return None
+
+
 def list_registered_repos() -> Dict[str, RepoRouting]:
+    """Repos declared in repos.yml only (sync)."""
     raw = _load_raw()
     out: Dict[str, RepoRouting] = {}
     for key, entry in (raw.get("repos") or {}).items():
         if isinstance(entry, dict):
-            out[str(key)] = RepoRouting(
-                category=str(entry.get("category", "")),
-                plaky_table=str(entry.get("plaky_table", "")),
-                description=str(entry.get("description", "")),
-            )
+            r = _parse_entry(entry)
+            if r:
+                out[str(key)] = r
     return out
+
+
+async def list_workspace_repos(client: Optional[httpx.AsyncClient] = None) -> Dict[str, RepoRouting]:
+    """Org repos from GitHub API merged with repos.yml; falls back to YAML-only without GITHUB_PAT."""
+    yaml_map: Dict[str, Any] = dict(_load_raw().get("repos") or {})
+    org = settings.github_org
+
+    if not settings.github_pat:
+        return list_registered_repos()
+
+    from boardman.github.org_repos import fetch_org_repository_full_names
+
+    close = False
+    if client is None:
+        client = httpx.AsyncClient(timeout=60.0)
+        close = True
+    try:
+        org_names = await fetch_org_repository_full_names(
+            client,
+            org,
+            skip_archived=settings.github_skip_archived,
+        )
+        out: Dict[str, RepoRouting] = {}
+        for fn in org_names:
+            out[fn] = _routing_for_full_name(fn, yaml_map, org)
+        for key, entry in yaml_map.items():
+            if not isinstance(entry, dict):
+                continue
+            if key in out:
+                continue
+            r = _parse_entry(entry)
+            if r and _is_meaningful(r):
+                out[str(key)] = r
+        return dict(sorted(out.items()))
+    finally:
+        if close and client is not None:
+            await client.aclose()
 
 
 def upsert_repo(key: str, category: str, plaky_table: str, description: str = "") -> None:

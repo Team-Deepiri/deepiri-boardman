@@ -13,7 +13,7 @@ from boardman.agent.service import run_agent_chat
 from boardman.database.models import AgentSession, ProjectContext, ScanRun
 from boardman.database.session import async_session
 from boardman.plaky.client import PlakyClient
-from boardman.repos_config import list_registered_repos, upsert_repo
+from boardman.repos_config import list_registered_repos, list_workspace_repos, upsert_repo
 from boardman.services.direction_init import init_direction_file
 from boardman.services.scan_handler import run_repo_scan
 from boardman.settings import settings
@@ -298,7 +298,12 @@ def status_cmd(
         console.print(f"Scan runs: {n_scan} | Agent sessions: {n_sess} | Project contexts: {n_ctx}")
         reg = list_registered_repos()
         if reg:
-            console.print(f"Registered repos ({len(reg)}): {', '.join(reg.keys())}")
+            console.print(f"repos.yml entries ({len(reg)}): {', '.join(reg.keys())}")
+        if settings.github_pat:
+            ws = await list_workspace_repos()
+            console.print(f"Workspace repos (GitHub org {settings.github_org}): {len(ws)}")
+        else:
+            console.print("[dim]Set GITHUB_PAT to list org repos from the GitHub API.[/dim]")
         plaky = PlakyClient()
         res = await plaky.get_tasks(status="open")
         if res.get("ok"):
@@ -318,12 +323,15 @@ def scan_all_repos(
     provider: Optional[str] = typer.Option(None, "--provider"),
     model: Optional[str] = typer.Option(None, "--model"),
 ):
-    reg = list_registered_repos()
-    if not reg:
-        console.print("[yellow]No repos in repos.yml — use boardman register[/yellow]")
-        raise typer.Exit(0)
-
     async def run():
+        reg = await list_workspace_repos()
+        if not reg:
+            console.print(
+                "[yellow]No repos to scan — set GITHUB_PAT to discover org repos, "
+                "or add entries with boardman register[/yellow]"
+            )
+            raise typer.Exit(0)
+
         for key in reg:
             console.print(f"[bold]Scanning[/bold] {key} …")
             async with async_session() as session:

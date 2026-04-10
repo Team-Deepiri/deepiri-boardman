@@ -13,6 +13,9 @@ class Settings(BaseSettings):
     github_webhook_secret: str = ""
     github_pat: Optional[str] = None
     github_org: str = "deepiri-org"
+    github_skip_archived: bool = True
+    default_repo_category: str = ""
+    default_plaky_table: str = ""
 
     database_url: str = "sqlite+aiosqlite:///./boardman.db"
 
