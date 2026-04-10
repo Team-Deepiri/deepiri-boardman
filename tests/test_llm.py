@@ -7,6 +7,13 @@ from unittest.mock import MagicMock
 import pytest
 
 from boardman.llm.completion import chat_complete, parse_json_tasks
+from boardman.llm.ollama_autodetect import pick_preferred_ollama_model
+
+
+def test_pick_preferred_ollama_model_order():
+    assert pick_preferred_ollama_model(["llama3:8b", "mistral:7b"]) == "llama3:8b"
+    assert pick_preferred_ollama_model(["mistral:7b", "qwen2.5:7b"]) == "qwen2.5:7b"
+    assert pick_preferred_ollama_model(["zebra:latest", "alpha:1"]) == "alpha:1"
 
 
 class TestParseJsonTasks:
@@ -109,15 +116,15 @@ async def test_chat_complete_gemini_requires_api_key(monkeypatch):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_ollama_live_chat_complete():
-    """Set BOARDMAN_AI_LIVE=1 and run Ollama with LLM_MODEL pulled. Skips otherwise."""
+    """Set BOARDMAN_AI_LIVE=1 and run Ollama with at least one model. Skips otherwise."""
     import os
 
     if os.environ.get("BOARDMAN_AI_LIVE") != "1":
         pytest.skip("Live check: export BOARDMAN_AI_LIVE=1 and start Ollama")
 
-    from boardman.settings import settings
+    from boardman.llm.ollama_autodetect import effective_ollama_model
 
-    model = settings.llm_model
+    model = effective_ollama_model(None)
     text = await chat_complete(
         [{"role": "user", "content": 'Reply with exactly: OK'}],
         provider="ollama",

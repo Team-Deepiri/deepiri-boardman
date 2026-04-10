@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from boardman.database.session import init_db
 from boardman.logging_config import setup_logging
 from boardman.routes import agent, health, github_events, plaky, tasks
+from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -24,12 +25,26 @@ async def lifespan(app: FastAPI):
             "Plaky: PLAKY_API_KEY is empty — set it in `.env` (docker: env_file) or the environment. "
             "Boards/match and agent Plaky tools will not call the API."
         )
-    _log.info(
-        "Agent LLM: provider=%s model=%s ollama_base=%s",
-        settings.llm_provider,
-        settings.llm_model,
-        settings.ollama_base_url,
-    )
+    prov = (settings.llm_provider or "ollama").lower()
+    if prov == "ollama":
+        try:
+            em = effective_ollama_model(None)
+            src = "LLM_MODEL" if (settings.llm_model or "").strip() else "auto /api/tags"
+            _log.info(
+                "Agent LLM: provider=ollama model=%s (%s) ollama_base=%s",
+                em,
+                src,
+                settings.ollama_base_url,
+            )
+        except Exception as e:
+            _log.warning("Agent LLM: could not resolve Ollama model at startup: %s", e)
+    else:
+        _log.info(
+            "Agent LLM: provider=%s model=%s ollama_base=%s",
+            settings.llm_provider,
+            (settings.llm_model or "").strip() or "(provider default)",
+            settings.ollama_base_url,
+        )
     yield
 
 

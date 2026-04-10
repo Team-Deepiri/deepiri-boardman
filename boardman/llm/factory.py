@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.settings import settings
 
 
@@ -17,7 +18,7 @@ def get_chat_model() -> Any:
         from langchain_ollama import ChatOllama
 
         return ChatOllama(
-            model=settings.llm_model,
+            model=effective_ollama_model(None),
             base_url=settings.ollama_base_url.rstrip("/"),
             temperature=0.2,
         )
@@ -26,7 +27,7 @@ def get_chat_model() -> Any:
         from langchain_anthropic import ChatAnthropic
 
         return ChatAnthropic(
-            model=settings.llm_model or "claude-sonnet-4-20250514",
+            model=(settings.llm_model or "").strip() or "claude-sonnet-4-20250514",
             api_key=settings.anthropic_api_key or None,
             temperature=0.2,
         )
@@ -35,7 +36,7 @@ def get_chat_model() -> Any:
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(
-            model=settings.llm_model or "gpt-4o-mini",
+            model=(settings.llm_model or "").strip() or "gpt-4o-mini",
             api_key=settings.openai_api_key or None,
             temperature=0.2,
         )
@@ -44,7 +45,7 @@ def get_chat_model() -> Any:
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         return ChatGoogleGenerativeAI(
-            model=settings.llm_model or "gemini-2.0-flash",
+            model=(settings.llm_model or "").strip() or "gemini-2.0-flash",
             google_api_key=settings.gemini_api_key or None,
             temperature=0.2,
         )

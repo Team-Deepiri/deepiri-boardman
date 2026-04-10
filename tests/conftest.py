@@ -77,14 +77,64 @@ def require_ollama(live_ollama_ok: bool):
 
 @pytest.fixture
 def require_ollama_model(require_ollama, monkeypatch) -> str:
+    import boardman.llm.ollama_autodetect as oa
     import boardman.settings as bs
 
-    model = os.environ.get("LLM_MODEL") or bs.settings.llm_model
-    if not ollama_has_model(model):
-        have = sorted(ollama_model_names())[:8]
-        pytest.skip(f"Model {model!r} not in Ollama (have: {have}); pull it or set LLM_MODEL")
     monkeypatch.setattr(bs.settings, "ollama_base_url", OLLAMA_BASE)
     monkeypatch.setattr(bs.settings, "llm_provider", "ollama")
+    override = (os.environ.get("LLM_MODEL") or "").strip()
+    if override:
+        monkeypatch.setattr(bs.settings, "llm_model", override)
+        model = override
+        if not ollama_has_model(model):
+            have = sorted(ollama_model_names())[:8]
+            pytest.skip(f"Model {model!r} not in Ollama (have: {have}); pull it or set LLM_MODEL")
+    else:
+        monkeypatch.setattr(bs.settings, "llm_model", "")
+        oa.clear_ollama_model_cache()
+        try:
+            model = oa.resolve_ollama_model(OLLAMA_BASE, None)
+        except RuntimeError as e:
+            pytest.skip(str(e))
+        if not ollama_has_model(model):
+            have = sorted(ollama_model_names())[:8]
+            pytest.skip(f"Auto model {model!r} not in Ollama (have: {have})")
+    return model
+
+
+@pytest.fixture
+def ollama_model_resolved(require_ollama, monkeypatch) -> str:
+    """
+    Pick an Ollama model that actually exists: honors LLM_MODEL when pulled, otherwise
+    auto-resolve, otherwise first tag from `ollama list` (so .env can list a model you
+    did not pull without skipping the whole agent E2E suite).
+    """
+    import boardman.llm.ollama_autodetect as oa
+    import boardman.settings as bs
+
+    monkeypatch.setattr(bs.settings, "ollama_base_url", OLLAMA_BASE)
+    monkeypatch.setattr(bs.settings, "llm_provider", "ollama")
+
+    override = (os.environ.get("LLM_MODEL") or "").strip()
+    if override and ollama_has_model(override):
+        monkeypatch.setattr(bs.settings, "llm_model", override)
+        return override
+
+    if override and not ollama_has_model(override):
+        have = sorted(ollama_model_names())
+        if not have:
+            pytest.skip(
+                f"LLM_MODEL={override!r} is not pulled and no other models exist in Ollama"
+            )
+        monkeypatch.setattr(bs.settings, "llm_model", have[0])
+        return have[0]
+
+    monkeypatch.setattr(bs.settings, "llm_model", "")
+    oa.clear_ollama_model_cache()
+    try:
+        model = oa.resolve_ollama_model(OLLAMA_BASE, None)
+    except RuntimeError as e:
+        pytest.skip(str(e))
     monkeypatch.setattr(bs.settings, "llm_model", model)
     return model
 
@@ -94,5 +144,5 @@ def pytest_collection_modifyitems(config, items) -> None:
         return
     skip_live = pytest.mark.skip(reason=f"Ollama not reachable at {OLLAMA_BASE}")
     for item in items:
-        if item.get_closest_marker("live_ollama"):
+        if item.get_closest_marker("live_ollama") or item.get_closest_marker("agent_e2e_live"):
             item.add_marker(skip_live)

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.models import ProjectContext, ScanRun
 from boardman.llm.completion import chat_complete, parse_json_tasks
+from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing
@@ -141,7 +142,16 @@ async def run_repo_scan(
     prov = (provider or settings.llm_provider or "ollama").lower()
     if prov in ("claude",):
         prov = "anthropic"
-    mdl = model or settings.llm_model
+    if prov == "ollama":
+        mdl = effective_ollama_model(model)
+    else:
+        mdl = (model or settings.llm_model or "").strip()
+        if prov == "anthropic":
+            mdl = mdl or "claude-sonnet-4-20250514"
+        elif prov in ("openai", "gpt"):
+            mdl = mdl or "gpt-4o-mini"
+        elif prov in ("gemini", "google"):
+            mdl = mdl or "gemini-2.0-flash"
 
     scan_row = ScanRun(
         github_repo=repo_full,

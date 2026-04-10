@@ -29,8 +29,9 @@ class Settings(BaseSettings):
 
     repos_yml_path: str = "repos.yml"
 
+    # Ollama: leave llm_model empty to auto-pick from GET /api/tags (Docker-friendly).
     llm_provider: str = "ollama"
-    llm_model: str = "qwen2.5:7b"
+    llm_model: str = ""
     ollama_base_url: str = "http://localhost:11434"
     openai_api_key: str = ""
     anthropic_api_key: str = ""

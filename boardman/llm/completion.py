@@ -8,6 +8,7 @@ from typing import Any, List, Optional
 
 import httpx
 
+from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.settings import settings
 
 def _extract_system(messages: List[dict[str, str]]) -> tuple[Optional[str], List[dict[str, str]]]:
@@ -30,7 +31,16 @@ async def chat_complete(
     timeout: float = 120.0,
 ) -> str:
     prov = (provider or settings.llm_provider or "ollama").lower()
-    mdl = model or settings.llm_model
+    if prov == "ollama":
+        mdl = effective_ollama_model(model)
+    else:
+        mdl = (model or settings.llm_model or "").strip()
+        if prov == "anthropic":
+            mdl = mdl or "claude-sonnet-4-20250514"
+        elif prov in ("openai", "gpt"):
+            mdl = mdl or "gpt-4o-mini"
+        elif prov in ("gemini", "google"):
+            mdl = mdl or "gemini-2.0-flash"
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         if prov == "ollama":

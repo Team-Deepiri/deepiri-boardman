@@ -4,6 +4,10 @@
 # Secrets (PLAKY_API_KEY, GITHUB_PAT, …): put them in `.env` next to this file.
 # Do NOT use `KEY=${KEY}` here for secrets — an empty shell interpolation overrides `env_file`
 # and wipes the key inside the container. Pass-through is either `env_file` only or `- KEY` list form.
+#
+# Ollama URL: boardman must use the Docker service hostname `ollama`, not localhost from `.env`.
+# `${OLLAMA_BASE_URL:-…}` would still pick up `OLLAMA_BASE_URL=http://localhost:11434` from `.env`
+# during compose interpolation and break LLM calls inside the container.
 
 services:
   boardman:
@@ -21,20 +25,19 @@ services:
       SERVICE_HOST: "0.0.0.0"
       SERVICE_PORT: "8090"
       DATABASE_URL: sqlite+aiosqlite:///./boardman.db
-      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      OLLAMA_BASE_URL: http://ollama:11434
       PLAKY_API_BASE: ${PLAKY_API_BASE:-https://api.plaky.com/v1/public}
       PLAKY_PR_MERGE_STATUS: ${PLAKY_PR_MERGE_STATUS:-in_review}
       GITHUB_ORG: ${GITHUB_ORG:-deepiri-org}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
-      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
-      # Must match a model pulled in the ollama service (e.g. ollama pull qwen2.5:7b)
-      LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b}
       AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8088,http://127.0.0.1:8088}
     volumes:
       - ./boardman:/app/boardman
       - ./boardman.db:/app/boardman.db
       - ./repos.yml:/app/repos.yml:ro
+    depends_on:
+      - ollama
     networks:
       - deepiri-network
 

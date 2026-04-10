@@ -22,6 +22,46 @@ from boardman.settings import settings
 logger = logging.getLogger(__name__)
 
 
+def _is_ollama_model_missing_error(exc: BaseException) -> bool:
+    """True when Ollama has no matching model (LangChain ResponseError or HTTP 404 on /api/chat)."""
+    try:
+        import httpx
+
+        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
+            return True
+    except Exception:
+        pass
+    mod = getattr(type(exc), "__module__", "") or ""
+    if type(exc).__name__ == "ResponseError" and "ollama" in mod:
+        return True
+    low = str(exc).lower()
+    return "not found" in low and "model" in low
+
+
+def _ollama_model_label_for_errors() -> str:
+    explicit = (settings.llm_model or "").strip()
+    if explicit:
+        return explicit
+    try:
+        from boardman.llm.ollama_autodetect import effective_ollama_model
+
+        return effective_ollama_model(None)
+    except Exception:
+        return "auto-selected from Ollama"
+
+
+def _ollama_model_missing_user_reply() -> str:
+    m = _ollama_model_label_for_errors()
+    return (
+        "Ollama rejected the model **`"
+        + m
+        + "`** (missing or wrong tag).\n\n"
+        "**Fix:** `docker compose exec ollama ollama list` then either pull that tag "
+        f"(`docker compose exec ollama ollama pull {m}`) or pull any model you want; "
+        "with **LLM_MODEL** unset, Boardman picks one from `/api/tags` automatically.\n"
+    )
+
+
 def _format_llm_failure(exc: BaseException) -> str:
     """User-visible message when Ollama / LLM HTTP fails (avoids opaque HTTP 500 in the UI)."""
     base = (str(exc) or type(exc).__name__).strip()
@@ -37,8 +77,9 @@ def _format_llm_failure(exc: BaseException) -> str:
                 base += f": {snippet}"
             if st == 404:
                 hint = (
-                    "\n\nThis often means **LLM_MODEL** does not match a pulled Ollama model. "
-                    "Run `ollama list` and set **LLM_MODEL** to the same name (e.g. `qwen2.5:7b`)."
+                    "\n\nThat model is not available in Ollama. "
+                    "Run `docker compose exec ollama ollama list` (or `ollama list` on the host). "
+                    "Pull a model if the list is empty. With **LLM_MODEL** unset, Boardman auto-selects from the list."
                 )
         elif isinstance(exc, (httpx.ConnectError, httpx.TimeoutException, OSError)):
             hint = (
@@ -51,7 +92,7 @@ def _format_llm_failure(exc: BaseException) -> str:
     return (
         "I could not get a reply from the language model.\n\n"
         f"**What went wrong:** {base}{hint}\n\n"
-        "Check **OLLAMA_BASE_URL**, **LLM_MODEL**, and that Ollama is running."
+        "Check **OLLAMA_BASE_URL** and that Ollama is running (optional **LLM_MODEL** overrides auto-pick)."
     )
 
 
@@ -139,15 +180,19 @@ async def run_agent_chat(
                 system_extra=extra,
             )
         except Exception as e:
-            logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
-            reply = await _safe_plain_chat(
-                message=message,
-                repo=repo,
-                history_msgs=history_msgs,
-                plaky_board_id=plaky_board_id,
-                provider=provider,
-                model=model,
-            )
+            if _is_ollama_model_missing_error(e):
+                logger.warning("LangChain tool agent failed (Ollama model missing): %s", e)
+                reply = _ollama_model_missing_user_reply()
+            else:
+                logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
+                reply = await _safe_plain_chat(
+                    message=message,
+                    repo=repo,
+                    history_msgs=history_msgs,
+                    plaky_board_id=plaky_board_id,
+                    provider=provider,
+                    model=model,
+                )
     else:
         logger.info(
             "Agent chat: plain LLM path (AGENT_LANGCHAIN_TOOLS off; session_id=%s)",

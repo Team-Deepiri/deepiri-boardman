@@ -1,7 +1,7 @@
 """
 Live checks: LangChain ChatOllama -> Ollama (optional: tool agent uses create_agent + same stack).
 
-Skipped when Ollama is down or LLM_MODEL is not pulled (see conftest pytest_collection_modifyitems).
+Skipped when Ollama is down or no models in /api/tags (see conftest).
 
 Run:
   poetry run pytest tests/test_langchain_ollama_integration.py -v

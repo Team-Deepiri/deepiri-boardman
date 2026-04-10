@@ -184,6 +184,14 @@ def doctor():
                 if r.status_code == 200:
                     names = [m.get("name", "") for m in r.json().get("models", [])]
                     console.print(f"[green]Ollama[/green] {settings.ollama_base_url} — {len(names)} model(s)")
+                    try:
+                        from boardman.llm.ollama_autodetect import effective_ollama_model
+
+                        picked = effective_ollama_model(None)
+                        src = "LLM_MODEL" if (settings.llm_model or "").strip() else "auto"
+                        console.print(f"[dim]Boardman will use[/dim] [cyan]{picked}[/cyan] [dim]({src})[/dim]")
+                    except Exception as e:
+                        console.print(f"[yellow]Could not auto-pick model:[/yellow] {e}")
                     if settings.llm_model and not any(settings.llm_model in n for n in names):
                         console.print(f"[yellow]LLM_MODEL[/yellow] {settings.llm_model!r} not listed in tags (pull if needed)")
                 else:
