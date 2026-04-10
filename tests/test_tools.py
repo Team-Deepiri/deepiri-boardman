@@ -31,9 +31,17 @@ def test_import_tools():
     assert len(build_all_tools(allow_writes=True)) == 11
 
 
+@pytest.fixture
+def plaky_key_cleared(monkeypatch):
+    """PlakyClient(api_key=None) falls back to settings; clear it for missing-key tests."""
+    import boardman.settings as bs
+
+    monkeypatch.setattr(bs.settings, "plaky_api_key", "")
+
+
 class TestPlakyClient:
     @pytest.mark.asyncio
-    async def test_create_task_missing_api_key(self):
+    async def test_create_task_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
         c = PlakyClient(api_key=None)
         result = await c.create_task(title="Test", description="Desc")
@@ -41,7 +49,7 @@ class TestPlakyClient:
         assert "missing" in result["message"].lower()
 
     @pytest.mark.asyncio
-    async def test_get_tasks_missing_api_key(self):
+    async def test_get_tasks_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
         c = PlakyClient(api_key=None)
         result = await c.get_tasks()
@@ -49,7 +57,7 @@ class TestPlakyClient:
         assert "missing" in result["message"].lower()
 
     @pytest.mark.asyncio
-    async def test_get_task_missing_api_key(self):
+    async def test_get_task_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
         c = PlakyClient(api_key=None)
         result = await c.get_task("123")
@@ -57,7 +65,7 @@ class TestPlakyClient:
         assert "missing" in result["message"].lower()
 
     @pytest.mark.asyncio
-    async def test_add_comment_missing_api_key(self):
+    async def test_add_comment_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
         c = PlakyClient(api_key=None)
         result = await c.add_comment("123", "comment")
@@ -65,7 +73,7 @@ class TestPlakyClient:
         assert "missing" in result["message"].lower()
 
     @pytest.mark.asyncio
-    async def test_update_task_fields_missing_api_key(self):
+    async def test_update_task_fields_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
         c = PlakyClient(api_key=None)
         result = await c.update_task_fields("123", title="New")
@@ -73,7 +81,7 @@ class TestPlakyClient:
         assert "missing" in result["message"].lower()
 
     @pytest.mark.asyncio
-    async def test_create_subtask_missing_api_key(self):
+    async def test_create_subtask_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
         c = PlakyClient(api_key=None)
         result = await c.create_subtask("123", "subtask")
@@ -81,7 +89,7 @@ class TestPlakyClient:
         assert "missing" in result["message"].lower()
 
     @pytest.mark.asyncio
-    async def test_get_board_missing_api_key(self):
+    async def test_get_board_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
         c = PlakyClient(api_key=None)
         result = await c.get_board("b1")
