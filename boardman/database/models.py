@@ -53,6 +53,7 @@ class AgentSession(Base):
     session_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
     repo: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     prompt_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    task_draft_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_active: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 

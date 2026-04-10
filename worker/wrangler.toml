@@ -1,0 +1,10 @@
+# Cloudflare Worker: QA tier routing + optional proxy to Boardman pick-qa.
+# Secrets (dashboard / wrangler secret): ROUTE_SECRET, WORKER_INTERNAL_SECRET, optional QA_TEAM_JSON
+# Vars: BOARDMAN_URL (e.g. https://boardman.example.com)
+
+name = "deepiri-boardman-worker"
+main = "src/index.ts"
+compatibility_date = "2024-12-01"
+
+# [vars]
+# BOARDMAN_URL = "https://your-boardman-host"

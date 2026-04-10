@@ -12,8 +12,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from boardman.agent.memory_store import db_messages_to_langchain
-from boardman.agent.prompts import BOARD_MANAGER_SYSTEM
+from boardman.agent.plaky_prompt_extra import plaky_placement_markdown
+from boardman.agent.prompts import BOARD_MANAGER_SYSTEM, TASK_CREATION_WORKFLOW
 from boardman.agent.runner import run_tool_agent
+from boardman.agent.task_draft import format_task_draft_for_prompt, load_task_draft
+from boardman.agent.tool_context import agent_tool_context
 from boardman.database.models import AgentMessage, AgentSession
 from boardman.llm.completion import chat_complete
 from boardman.plaky.board_schema import fetch_board_schema_bundle
@@ -102,15 +105,36 @@ async def _safe_plain_chat(
     repo: Optional[str],
     history_msgs: List[AgentMessage],
     plaky_board_id: Optional[str],
+    plaky_group_id: Optional[str],
     provider: Optional[str],
     model: Optional[str],
+    extra_system_suffix: str = "",
 ) -> str:
     try:
-        llm_messages = await _plain_messages_async(message, repo, history_msgs, plaky_board_id)
+        llm_messages = await _plain_messages_async(
+            message,
+            repo,
+            history_msgs,
+            plaky_board_id,
+            plaky_group_id,
+            extra_system_suffix=extra_system_suffix,
+        )
         return await chat_complete(llm_messages, provider=provider, model=model)
     except Exception as e:
         logger.exception("Plain chat (Ollama/direct LLM) failed")
         return _format_llm_failure(e)
+
+
+async def _plaky_system_suffix(
+    plaky_board_id: Optional[str],
+    plaky_group_id: Optional[str],
+) -> str:
+    out = plaky_placement_markdown(plaky_board_id, plaky_group_id)
+    bid = (plaky_board_id or "").strip()
+    if bid:
+        bundle = await fetch_board_schema_bundle(bid)
+        out += bundle.get("markdown") or ""
+    return out
 
 
 async def run_agent_chat(
@@ -123,6 +147,7 @@ async def run_agent_chat(
     model: Optional[str] = None,
     allow_writes: bool = False,
     plaky_board_id: Optional[str] = None,
+    plaky_group_id: Optional[str] = None,
 ) -> Tuple[str, str]:
     """Persist user message, call LLM (tool agent or plain chat), persist assistant reply."""
     sid = session_id or str(uuid.uuid4())
@@ -152,6 +177,12 @@ async def run_agent_chat(
             ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
+    draft_md = ""
+    if ag.id:
+        draft = await load_task_draft(session, ag.id)
+        draft_md = format_task_draft_for_prompt(draft)
+    intake_extra = TASK_CREATION_WORKFLOW
+
     reply: str
     if settings.agent_langchain_tools:
         try:
@@ -169,16 +200,15 @@ async def run_agent_chat(
             )
             if repo:
                 extra += f"\n## Repo context\n`{repo}`"
-            bid = (plaky_board_id or "").strip()
-            if bid:
-                bundle = await fetch_board_schema_bundle(bid)
-                extra += bundle.get("markdown") or ""
-            reply = await run_tool_agent(
-                message,
-                chat_history=lc_hist,
-                allow_writes=allow_writes,
-                system_extra=extra,
-            )
+            extra += await _plaky_system_suffix(plaky_board_id, plaky_group_id)
+            extra += draft_md + intake_extra
+            async with agent_tool_context(session, ag.id, plaky_board_id, plaky_group_id):
+                reply = await run_tool_agent(
+                    message,
+                    chat_history=lc_hist,
+                    allow_writes=allow_writes,
+                    system_extra=extra,
+                )
         except Exception as e:
             if _is_ollama_model_missing_error(e):
                 logger.warning("LangChain tool agent failed (Ollama model missing): %s", e)
@@ -190,8 +220,10 @@ async def run_agent_chat(
                     repo=repo,
                     history_msgs=history_msgs,
                     plaky_board_id=plaky_board_id,
+                    plaky_group_id=plaky_group_id,
                     provider=provider,
                     model=model,
+                    extra_system_suffix=draft_md + intake_extra,
                 )
     else:
         logger.info(
@@ -203,8 +235,10 @@ async def run_agent_chat(
             repo=repo,
             history_msgs=history_msgs,
             plaky_board_id=plaky_board_id,
+            plaky_group_id=plaky_group_id,
             provider=provider,
             model=model,
+            extra_system_suffix=draft_md + intake_extra,
         )
 
     session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
@@ -219,14 +253,14 @@ async def _plain_messages_async(
     repo: Optional[str],
     history_msgs: List[AgentMessage],
     plaky_board_id: Optional[str],
+    plaky_group_id: Optional[str],
+    extra_system_suffix: str = "",
 ) -> List[Dict[str, str]]:
     llm_messages: List[Dict[str, str]] = [{"role": "system", "content": BOARD_MANAGER_SYSTEM}]
     if repo:
         llm_messages[0]["content"] += f"\n\n## Current repo context\nThe user is working with: `{repo}`."
-    bid = (plaky_board_id or "").strip()
-    if bid:
-        bundle = await fetch_board_schema_bundle(bid)
-        llm_messages[0]["content"] += bundle.get("markdown") or ""
+    llm_messages[0]["content"] += await _plaky_system_suffix(plaky_board_id, plaky_group_id)
+    llm_messages[0]["content"] += extra_system_suffix
     for m in history_msgs:
         llm_messages.append({"role": m.role, "content": m.content})
     llm_messages.append({"role": "user", "content": message})

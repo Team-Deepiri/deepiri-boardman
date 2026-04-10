@@ -5,6 +5,7 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from boardman.assignment.qa_picker import build_assignment_field_map
 from boardman.database.models import IssueTaskMap, SyncLog
 from boardman.github.webhooks import IssueEventPayload
 from boardman.plaky.client import PlakyClient
@@ -47,8 +48,14 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     description = f"{payload.issue.body or ''}\n\n{payload.issue.html_url}{routing_footer}"
 
     bid, gid = effective_plaky_placement(routing)
+    assign_fields = build_assignment_field_map(full_name)
     result = await plaky.create_task(
-        title=title, description=description, priority="medium", board_id=bid, group_id=gid
+        title=title,
+        description=description,
+        priority="medium",
+        board_id=bid,
+        group_id=gid,
+        field_values=assign_fields if assign_fields else None,
     )
 
     if not result.get("ok"):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import base64
 import json
 from typing import Any, Dict, List, Optional
 
@@ -14,58 +13,18 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.models import ProjectContext, ScanRun
+from boardman.assignment.qa_picker import build_assignment_field_map
+from boardman.github.repo_fetch import (
+    fetch_direction_md,
+    fetch_open_issues,
+    fetch_recent_commits,
+)
 from boardman.llm.completion import chat_complete, parse_json_tasks
 from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing
 from boardman.settings import settings
-
-
-async def _github_get(client: httpx.AsyncClient, path: str) -> Any:
-    headers = {"Authorization": f"Bearer {settings.github_pat}", "Accept": "application/vnd.github+json"}
-    r = await client.get(f"https://api.github.com{path}", headers=headers)
-    return r
-
-
-async def fetch_direction_md(client: httpx.AsyncClient, owner: str, repo: str) -> str:
-    r = await _github_get(client, f"/repos/{owner}/{repo}/contents/DIRECTION.md?ref=main")
-    if r.status_code == 404:
-        r = await _github_get(client, f"/repos/{owner}/{repo}/contents/DIRECTION.md?ref=master")
-    if r.status_code != 200:
-        return f"(No DIRECTION.md found or inaccessible: HTTP {r.status_code})"
-    data = r.json()
-    if isinstance(data, dict) and data.get("encoding") == "base64" and data.get("content"):
-        return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
-    if isinstance(data, dict) and data.get("message"):
-        return f"(GitHub: {data.get('message')})"
-    return "(Could not decode DIRECTION.md)"
-
-
-async def fetch_recent_commits(client: httpx.AsyncClient, owner: str, repo: str, limit: int = 20) -> str:
-    r = await _github_get(client, f"/repos/{owner}/{repo}/commits?per_page={limit}")
-    if r.status_code != 200:
-        return f"(commits unavailable: {r.status_code})"
-    commits = r.json()
-    lines: List[str] = []
-    for c in commits[:limit]:
-        sha = (c.get("sha") or "")[:7]
-        msg = (c.get("commit") or {}).get("message", "").split("\n")[0]
-        lines.append(f"- {sha} {msg}")
-    return "\n".join(lines) if lines else "(no commits)"
-
-
-async def fetch_open_issues(client: httpx.AsyncClient, owner: str, repo: str) -> str:
-    r = await _github_get(client, f"/repos/{owner}/{repo}/issues?state=open&per_page=50")
-    if r.status_code != 200:
-        return f"(issues unavailable: {r.status_code})"
-    issues = r.json()
-    lines: List[str] = []
-    for i in issues:
-        if "pull_request" in i:
-            continue
-        lines.append(f"- #{i['number']}: {i.get('title', '')}")
-    return "\n".join(lines) if lines else "(no open issues)"
 
 
 async def fetch_plaky_titles_for_repo(repo_full: str, short: str) -> str:
@@ -108,14 +67,16 @@ OPEN GITHUB ISSUES:
 EXISTING PLAKY TASKS (likely this repo):
 {plaky}
 
-Return ONLY a JSON array of 3-8 objects, no markdown fences:
+Return ONLY a JSON array of 3-18 objects, no markdown fences:
 [
-  {{"title": "short title", "description": "markdown body", "priority": "low|medium|high"}},
+  {{"title": "short title", "description": "markdown body", "priority": "low|medium|high", "fields": {{}}}},
   ...
 ]
 
+Each object may include optional **fields**: a JSON object mapping Plaky **item field keys** (from your board schema / API, e.g. status or custom column keys) to values Plaky accepts (exact option label, option id, assignee id, etc.). Omit **fields** entirely if you are unsure — items will still be created in the target group.
+
 Rules:
-- Tasks must be actionable and specific.
+- Tasks must be actionable and specific; scale count to initiative size (small fix = few tasks, large goal = more).
 - Do not duplicate items already listed as open issues or existing Plaky lines.
 - Align with DIRECTION.md when present.
 """
@@ -195,6 +156,7 @@ async def run_repo_scan(
         cat = routing.plaky_table if routing else ""
         routing_note = f"\n\n**Plaky group (label):** `{cat}`\n**Repo:** {repo_full}\n" if cat else f"\n\n**Repo:** {repo_full}\n"
         bid, gid = effective_plaky_placement(routing)
+        default_assign = build_assignment_field_map(repo_full)
 
         for item in tasks:
             if not isinstance(item, dict):
@@ -206,10 +168,19 @@ async def run_repo_scan(
                 pri = "medium"
             full_title = f"[{short}] {title}"
             body = desc + routing_note
+            field_map: Dict[str, Any] = dict(default_assign)
+            raw_fields = item.get("fields")
+            if isinstance(raw_fields, dict):
+                field_map.update({str(k): v for k, v in raw_fields.items() if str(k).strip()})
             if dry_run:
                 continue
             res = await plaky.create_task(
-                title=full_title, description=body, priority=pri, board_id=bid, group_id=gid
+                title=full_title,
+                description=body,
+                priority=pri,
+                board_id=bid,
+                group_id=gid,
+                field_values=field_map if field_map else None,
             )
             if res.get("ok"):
                 created += 1

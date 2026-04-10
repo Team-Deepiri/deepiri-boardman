@@ -19,6 +19,20 @@ async def get_db() -> AsyncIterator[AsyncSession]:
 
 
 async def init_db() -> None:
+    from sqlalchemy import text
+
     from boardman.database.models import Base
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+
+        if settings.database_url.startswith("sqlite"):
+            def _add_task_draft_column(sync_conn):
+                r = sync_conn.execute(text("PRAGMA table_info(agent_sessions)"))
+                cols = [row[1] for row in r.fetchall()]
+                if "task_draft_json" not in cols:
+                    sync_conn.execute(
+                        text("ALTER TABLE agent_sessions ADD COLUMN task_draft_json TEXT")
+                    )
+
+            await conn.run_sync(_add_task_draft_column)

@@ -21,6 +21,8 @@ type ChatMessage = {
 
 type PlakyBoardRow = { id: string; name: string };
 type PlakyGroupRow = { id: string; name: string };
+type PlakyUserRow = { id: string; name: string };
+type SupportTeamRow = { login: string; name?: string; html_url?: string };
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE || "",
@@ -78,6 +80,19 @@ export default function App() {
   const [plakyGroupId, setPlakyGroupId] = useState("");
   const [plakyBoardsHint, setPlakyBoardsHint] = useState<string | null>(null);
   const [plakyGroupsHint, setPlakyGroupsHint] = useState<string | null>(null);
+
+  const [workspaceUsers, setWorkspaceUsers] = useState<PlakyUserRow[]>([]);
+  const [usersHint, setUsersHint] = useState<string | null>(null);
+  const [createTitle, setCreateTitle] = useState("");
+  const [createBody, setCreateBody] = useState("");
+  const [createBusy, setCreateBusy] = useState(false);
+  const [createMsg, setCreateMsg] = useState<string | null>(null);
+  const [engPick, setEngPick] = useState("");
+  const [qaPick, setQaPick] = useState("");
+  const [autoTeam, setAutoTeam] = useState(true);
+  const [supportTeam, setSupportTeam] = useState<SupportTeamRow[]>([]);
+  const [supportTeamHint, setSupportTeamHint] = useState<string | null>(null);
+  const [supportTeamSpec, setSupportTeamSpec] = useState("Team-Deepiri/support-team");
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const drawerScrollRef = useRef<HTMLDivElement>(null);
@@ -156,6 +171,113 @@ export default function App() {
       cancelled = true;
     };
   }, [plakyBoardId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get<{
+          ok?: boolean;
+          users?: PlakyUserRow[];
+          message?: string;
+        }>("/api/v1/plaky/users");
+        if (cancelled) return;
+        if (data.ok && Array.isArray(data.users)) {
+          setWorkspaceUsers(data.users);
+          setUsersHint(null);
+        } else {
+          setWorkspaceUsers([]);
+          setUsersHint(data.message || "Could not load Plaky workspace users.");
+        }
+      } catch {
+        if (!cancelled) {
+          setUsersHint("Could not reach Plaky users endpoint.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get<{
+          ok?: boolean;
+          members?: SupportTeamRow[];
+          team?: string;
+          message?: string;
+        }>("/api/v1/github/support-team/members");
+        if (cancelled) return;
+        if (data.team) {
+          setSupportTeamSpec(data.team);
+        }
+        if (data.ok && Array.isArray(data.members)) {
+          setSupportTeam(data.members);
+          setSupportTeamHint(null);
+        } else {
+          setSupportTeam([]);
+          setSupportTeamHint(data.message || "Could not load GitHub support team.");
+        }
+      } catch {
+        if (!cancelled) {
+          setSupportTeam([]);
+          setSupportTeamHint("Could not reach GitHub support-team endpoint.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const onCreateTask = useCallback(async () => {
+    const t = createTitle.trim();
+    if (!t || createBusy) return;
+    setCreateBusy(true);
+    setCreateMsg(null);
+    try {
+      const { data } = await api.post<{
+        ok?: boolean;
+        message?: string;
+        task_url?: string;
+        task?: { url?: string };
+      }>("/api/v1/tasks", {
+        title: t,
+        description: createBody,
+        priority: "medium",
+        repo: repo.trim() || undefined,
+        plaky_board_id: plakyBoardId || undefined,
+        plaky_group_id: plakyGroupId || undefined,
+        engineer_plaky_id: engPick || undefined,
+        qa_plaky_id: qaPick || undefined,
+        auto_assign_team: autoTeam,
+      });
+      if (data.ok) {
+        setCreateMsg(data.task_url || data.task?.url || "Task created.");
+        setCreateTitle("");
+        setCreateBody("");
+      } else {
+        setCreateMsg(data.message || "Create failed.");
+      }
+    } catch (e: unknown) {
+      setCreateMsg(axios.isAxiosError(e) ? e.message : String(e));
+    } finally {
+      setCreateBusy(false);
+    }
+  }, [
+    createTitle,
+    createBody,
+    createBusy,
+    repo,
+    plakyBoardId,
+    plakyGroupId,
+    engPick,
+    qaPick,
+    autoTeam,
+  ]);
 
   const onSend = useCallback(async () => {
     const text = input.trim();
@@ -310,6 +432,109 @@ export default function App() {
             value={sessionId || "New session"}
             title="Conversation session id"
           />
+        </div>
+
+        <div className="field field--create-task">
+          <label className="field__label" htmlFor="create-title">
+            <IconBoard className="field__label-icon" />
+            Create Plaky task
+          </label>
+          <input
+            id="create-title"
+            className="field__input"
+            value={createTitle}
+            onChange={(e) => setCreateTitle(e.target.value)}
+            placeholder="Title"
+            autoComplete="off"
+          />
+          <textarea
+            className="field__input field__textarea"
+            rows={2}
+            value={createBody}
+            onChange={(e) => setCreateBody(e.target.value)}
+            placeholder="Description (optional)"
+          />
+          <div className="toggle-field toggle-field--compact">
+            <div className="toggle-field__text">
+              <span className="toggle-field__title">Auto-assign engineer + QA</span>
+              <span className="toggle-field__desc">Uses team_assignments.yml for this repo</span>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoTeam}
+              className={`switch ${autoTeam ? "switch--on" : ""}`}
+              onClick={() => setAutoTeam((v) => !v)}
+            >
+              <span className="switch__thumb" />
+            </button>
+          </div>
+          <p className="field__label field__label--sub" id="support-roster-label">
+            GitHub support team <span className="support-roster__spec">({supportTeamSpec})</span>
+          </p>
+          {supportTeamHint ? (
+            <p className="field__hint field__hint--warn" role="status">
+              {supportTeamHint}
+            </p>
+          ) : supportTeam.length > 0 ? (
+            <ul
+              className="support-roster"
+              aria-labelledby="support-roster-label"
+            >
+              {supportTeam.map((m) => (
+                <li key={m.login} className="support-roster__item">
+                  <span className="support-roster__name">{m.name?.trim() || m.login}</span>
+                  {m.name?.trim() ? (
+                    <span className="support-roster__login"> @{m.login}</span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="field__hint">No members yet (configure GITHUB_PAT with read:org).</p>
+          )}
+          <label className="field__label field__label--sub" htmlFor="eng-assign">
+            Engineer (Plaky member)
+          </label>
+          <select
+            id="eng-assign"
+            className="field__input field__select"
+            value={engPick}
+            onChange={(e) => setEngPick(e.target.value)}
+          >
+            <option value="">None / use auto only</option>
+            {workspaceUsers.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.id}
+              </option>
+            ))}
+          </select>
+          <label className="field__label field__label--sub" htmlFor="qa-assign">
+            QA (Plaky member)
+          </label>
+          <select
+            id="qa-assign"
+            className="field__input field__select"
+            value={qaPick}
+            onChange={(e) => setQaPick(e.target.value)}
+          >
+            <option value="">None / use auto only</option>
+            {workspaceUsers.map((u) => (
+              <option key={`qa-${u.id}`} value={u.id}>
+                {u.name || u.id}
+              </option>
+            ))}
+          </select>
+          {usersHint ? <p className="field__hint field__hint--warn">{usersHint}</p> : null}
+          <button
+            type="button"
+            className="field__button"
+            disabled={createBusy || !createTitle.trim()}
+            onClick={onCreateTask}
+          >
+            {createBusy ? "Creating…" : "Create task"}
+          </button>
+          {createMsg ? <p className="field__hint">{createMsg}</p> : null}
         </div>
 
         <footer className="sidebar__foot">

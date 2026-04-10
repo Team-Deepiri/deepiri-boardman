@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     github_webhook_secret: str = ""
     github_pat: Optional[str] = None
     github_org: str = "deepiri-org"
+    # Org team for support roster: GET /api/v1/github/support-team/members (names/logins from GitHub)
+    github_support_team: str = "Team-Deepiri/support-team"
     github_skip_archived: bool = True
     default_repo_category: str = ""
     default_plaky_table: str = ""
@@ -28,6 +30,8 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     repos_yml_path: str = "repos.yml"
+    # QA/engineer Plaky field assignment (optional); see team_assignments.yml.example
+    team_assignments_yml_path: str = "team_assignments.yml"
 
     # Ollama: leave llm_model empty to auto-pick from GET /api/tags (Docker-friendly).
     llm_provider: str = "ollama"
@@ -48,6 +52,16 @@ class Settings(BaseSettings):
         "http://localhost:5176,http://127.0.0.1:5176,"
         "http://localhost:8088,http://127.0.0.1:8088,http://localhost:3000"
     )
+
+    # Shared with Cloudflare worker (Bearer) for POST /api/v1/assignment/pick-qa
+    worker_internal_secret: str = ""
+
+    # Gray-zone GitHub↔Plaky identity: optional LLM (Ollama recommended, temperature 0 in code)
+    assignment_identity_llm_enabled: bool = False
+    assignment_identity_llm_min_confidence: float = 0.82
+    assignment_identity_llm_reject_below: float = 0.30
+    assignment_identity_llm_gray_low: int = 380
+    assignment_identity_llm_gray_high: int = 8200
 
 
 settings = Settings()

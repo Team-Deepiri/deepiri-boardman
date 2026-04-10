@@ -139,8 +139,8 @@ def format_board_schema_markdown(
         if raw_top_keys:
             lines.append(f"*Raw board JSON top-level keys:* `{', '.join(raw_top_keys[:40])}`")
     lines.append(
-        "When calling **plaky_update_task** or describing work, use **status** / **priority** / type strings "
-        "that match this board (exact spelling or slug as Plaky expects)."
+        "When calling **plaky_create_task** (field_values_json), **plaky_patch_item_fields**, or **plaky_update_task**, "
+        "use field keys from above and values that match this board (exact literals, option ids, or assignee ids as Plaky expects)."
     )
     return "\n".join(lines)
 

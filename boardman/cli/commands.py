@@ -10,6 +10,7 @@ from rich.table import Table
 from sqlalchemy import func, select
 
 from boardman.agent.service import run_agent_chat
+from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
 from boardman.database.models import AgentSession, ProjectContext, ScanRun
 from boardman.database.session import async_session
 from boardman.plaky.client import PlakyClient
@@ -222,15 +223,18 @@ def _agent_chat_async(
 ) -> None:
     async def run():
         async with async_session() as session:
-            reply, sid = await run_agent_chat(
-                session,
-                message=message,
-                session_id=session_id,
-                repo=repo,
-                provider=provider,
-                model=model,
-                allow_writes=allow_writes,
-            )
+            async with plaky_placement_context(None, None):
+                reply, sid = await run_agent_chat(
+                    session,
+                    message=message,
+                    session_id=session_id,
+                    repo=repo,
+                    provider=provider,
+                    model=model,
+                    allow_writes=allow_writes,
+                    plaky_board_id=context_board_id(),
+                    plaky_group_id=context_group_id(),
+                )
             await session.commit()
         console.print(reply)
         console.print(f"[dim]session_id={sid}[/dim]")

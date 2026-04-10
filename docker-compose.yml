@@ -29,6 +29,7 @@ services:
       PLAKY_API_BASE: ${PLAKY_API_BASE:-https://api.plaky.com/v1/public}
       PLAKY_PR_MERGE_STATUS: ${PLAKY_PR_MERGE_STATUS:-in_review}
       GITHUB_ORG: ${GITHUB_ORG:-deepiri-org}
+      GITHUB_SUPPORT_TEAM: ${GITHUB_SUPPORT_TEAM:-Team-Deepiri/support-team}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8088,http://127.0.0.1:8088}

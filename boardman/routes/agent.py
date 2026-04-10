@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.agent.service import delete_agent_session, get_session_history, run_agent_chat
 from boardman.database.session import get_db
-from boardman.plaky.placement import plaky_placement_context
+from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
 from boardman.services.direction_init import init_direction_file
 from boardman.services.scan_handler import run_repo_scan
 
@@ -57,7 +57,8 @@ async def agent_chat(body: AgentChatRequest, session: AsyncSession = Depends(get
             provider=body.provider,
             model=body.model,
             allow_writes=body.allow_writes,
-            plaky_board_id=body.plaky_board_id,
+            plaky_board_id=context_board_id(),
+            plaky_group_id=context_group_id(),
         )
     return {"ok": True, "reply": reply, "session_id": sid}
 

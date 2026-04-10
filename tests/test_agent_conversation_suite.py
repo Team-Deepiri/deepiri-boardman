@@ -106,9 +106,12 @@ async def test_http_agent_chat_two_turns_session_and_history(
 
     async def fake_chat_complete(messages: List[dict[str, str]], **kwargs: Any) -> str:
         turn["n"] += 1
+        sys = next((m["content"] for m in messages if m.get("role") == "system"), "")
         if turn["n"] == 1:
             return "alpha"
         assert any("alpha" in m.get("content", "") for m in messages if m.get("role") == "assistant")
+        assert "board-99" in sys and "group-88" in sys
+        assert "Current Plaky placement" in sys
         return "beta"
 
     monkeypatch.setattr(agent_svc, "chat_complete", fake_chat_complete)
@@ -189,6 +192,8 @@ async def test_plaky_board_id_triggers_schema_bundle_in_prompt(
 
     async def fake_chat_complete(messages: List[dict[str, str]], **kwargs: Any) -> str:
         sys = next((m["content"] for m in messages if m.get("role") == "system"), "")
+        assert "Current Plaky placement" in sys
+        assert "218760" in sys
         assert "Fixture board schema" in sys
         return "ok-with-schema"
 

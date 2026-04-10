@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from boardman.database.session import init_db
 from boardman.logging_config import setup_logging
-from boardman.routes import agent, health, github_events, plaky, tasks
+from boardman.routes import agent, assignment, health, github_events, github_team, plaky, tasks
 from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.settings import settings
 
@@ -68,8 +68,10 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(github_events.router, prefix="/api/v1")
+    app.include_router(github_team.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1")
     app.include_router(plaky.router, prefix="/api/v1")
+    app.include_router(assignment.router, prefix="/api/v1")
     app.include_router(agent.router, prefix="/api/v1")
 
     return app

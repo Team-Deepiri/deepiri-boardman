@@ -11,6 +11,26 @@ from boardman.plaky.name_match import rank_plaky_rows
 router = APIRouter()
 
 
+@router.get("/plaky/users")
+async def plaky_workspace_users(query: str = "") -> dict:
+    """Workspace users for assignee pickers (Plaky GET /v1/public/users)."""
+    c = PlakyClient()
+    r = await c.list_workspace_users()
+    users = r.get("users") or []
+    if not isinstance(users, list):
+        users = []
+    if not query.strip():
+        return {"ok": r.get("ok"), "message": r.get("message"), "users": users, "matches": [], "best": None}
+    matches, best = rank_plaky_rows(users, query)
+    return {
+        "ok": r.get("ok"),
+        "message": r.get("message"),
+        "users": users,
+        "matches": matches,
+        "best": best,
+    }
+
+
 @router.get("/plaky/boards")
 async def plaky_boards() -> dict:
     c = PlakyClient()

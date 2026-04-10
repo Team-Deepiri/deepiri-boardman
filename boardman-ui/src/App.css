@@ -140,6 +140,83 @@ body {
   cursor: not-allowed;
 }
 
+.field__textarea {
+  resize: vertical;
+  min-height: 3.25rem;
+  font-family: var(--font-sans);
+  line-height: 1.45;
+}
+
+.field__label--sub {
+  margin-top: 0.5rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
+.field--create-task {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 1rem;
+}
+
+.field__button {
+  margin-top: 0.6rem;
+  width: 100%;
+  padding: 0.55rem 0.75rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--accent);
+  background: var(--accent-muted);
+  color: var(--text-primary);
+  font-weight: 600;
+  font-size: 0.82rem;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.field__button:hover:not(:disabled) {
+  background: rgba(249, 115, 22, 0.18);
+}
+
+.field__button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.toggle-field--compact {
+  padding: 0.55rem 0.65rem;
+  margin: 0.35rem 0 0.35rem;
+}
+
+.support-roster__spec {
+  font-weight: 400;
+  color: var(--text-muted);
+}
+
+.support-roster {
+  list-style: none;
+  margin: 0 0 0.75rem;
+  padding: 0.5rem 0.65rem;
+  max-height: 9rem;
+  overflow-y: auto;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  font-size: 0.75rem;
+  line-height: 1.45;
+}
+
+.support-roster__item {
+  padding: 0.2rem 0;
+}
+
+.support-roster__name {
+  font-weight: 500;
+}
+
+.support-roster__login {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+}
+
 .toggle-field {
   display: flex;
   align-items: flex-start;

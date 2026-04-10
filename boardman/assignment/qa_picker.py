@@ -1,0 +1,199 @@
+"""
+Semi-random QA (and engineer) selection for Plaky assignment.
+
+- Tier + hardware: heavy repos filter out low-tier QAs when configured.
+- Overlap pools: QAs who share org or explicit repo overlap form a pool; we pick within pool.
+- Weights: member.weight * tier bias * uniform jitter → weighted random choice.
+"""
+
+from __future__ import annotations
+
+import random
+import re
+from fnmatch import fnmatchcase
+from typing import Dict, List, Optional, Set, Tuple
+
+from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, load_team_assignments
+from boardman.assignment.repo_rules import qa_tier_allows_repo
+
+
+def _norm_repo(full: str) -> str:
+    return (full or "").strip().lower()
+
+
+def repo_matches_member(full_name: str, m: TeamMember) -> bool:
+    """True if this GitHub full name (owner/repo) is in this member's scope."""
+    key = _norm_repo(full_name)
+    if not key:
+        return False
+    for ex in m.explicit_repos:
+        if ex == key:
+            return True
+    for g in m.repo_globs:
+        g = g.strip()
+        if not g:
+            continue
+        if fnmatchcase(key, g.lower()):
+            return True
+    return False
+
+
+def repo_is_heavy(full_name: str, patterns: List[str]) -> bool:
+    key = (full_name or "").strip().lower()
+    for p in patterns:
+        if fnmatchcase(key, p.lower()):
+            return True
+    return False
+
+
+def _tier_bias(cfg: TeamAssignmentsConfig, tier_name: str) -> float:
+    t = cfg.tiers.get(tier_name.lower())
+    if t:
+        return max(0.1, t.weight_bias)
+    return 1.0
+
+
+def _owners_from_member(m: TeamMember) -> Set[str]:
+    owners: Set[str] = set()
+    for ex in m.explicit_repos:
+        if "/" in ex:
+            owners.add(ex.split("/")[0])
+    for g in m.repo_globs:
+        if "/" in g:
+            owners.add(g.split("/")[0].lower().replace("*", ""))
+            m2 = re.match(r"^([^/*]+)", g)
+            if m2:
+                owners.add(m2.group(1).lower())
+    return owners
+
+
+def _explicit_overlap(a: TeamMember, b: TeamMember) -> bool:
+    sa = set(a.explicit_repos)
+    sb = set(b.explicit_repos)
+    return bool(sa & sb)
+
+
+def _same_owner_glob_overlap(a: TeamMember, b: TeamMember) -> bool:
+    oa = _owners_from_member(a)
+    ob = _owners_from_member(b)
+    return bool(oa & ob)
+
+
+def _overlap_component(
+    eligible: List[TeamMember],
+) -> List[TeamMember]:
+    """
+    Partition `eligible` into connected components by edges:
+    explicit repo set intersection OR shared GitHub owner in patterns.
+    Return the component that has maximum size (largest overlap pool).
+    If single member, return them.
+    """
+    if len(eligible) <= 1:
+        return eligible
+    n = len(eligible)
+    parent = list(range(n))
+
+    def find(i: int) -> int:
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    def union(i: int, j: int) -> None:
+        ri, rj = find(i), find(j)
+        if ri != rj:
+            parent[ri] = rj
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            a, b = eligible[i], eligible[j]
+            if _explicit_overlap(a, b) or _same_owner_glob_overlap(a, b):
+                union(i, j)
+
+    buckets: Dict[int, List[int]] = {}
+    for i in range(n):
+        r = find(i)
+        buckets.setdefault(r, []).append(i)
+
+    best = max(buckets.values(), key=len)
+    return [eligible[i] for i in best]
+
+
+def _weighted_choice(members: List[TeamMember], cfg: TeamAssignmentsConfig) -> Optional[TeamMember]:
+    if not members:
+        return None
+    if len(members) == 1:
+        return members[0]
+    jitter = cfg.random_jitter
+    weights: List[float] = []
+    for m in members:
+        w = max(0.05, m.weight)
+        w *= _tier_bias(cfg, m.tier)
+        if jitter > 0:
+            w *= 1.0 + random.uniform(-jitter, jitter)
+        weights.append(max(0.01, w))
+    s = sum(weights)
+    weights = [w / s for w in weights]
+    return random.choices(members, weights=weights, k=1)[0]
+
+
+def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] = None) -> Tuple[Optional[str], str]:
+    """
+    Returns (plaky_person_id_or_value, reason_summary).
+    """
+    cfg = cfg or load_team_assignments()
+    fn = (full_name or "").strip()
+    if not fn:
+        return None, "empty repo"
+
+    qas = [m for m in cfg.members if "qa" in m.roles and repo_matches_member(fn, m)]
+    if not qas:
+        return None, "no QA member matched repo globs"
+
+    qas = [m for m in qas if qa_tier_allows_repo(m.qa_tier, fn, cfg.qa_repo_rules)]
+    if not qas:
+        return None, "no QA after QA tier vs repo rules (tiers 1/2/3)"
+
+    if repo_is_heavy(fn, cfg.heavy_repo_patterns):
+        qas = [m for m in qas if m.tier.lower() not in ("light", "minimal", "low")]
+        if not qas:
+            return None, "heavy repo: no QA after legacy hardware tier filter (light/minimal/low dropped)"
+
+    pool = _overlap_component(qas)
+    chosen = _weighted_choice(pool, cfg)
+    if not chosen:
+        return None, "weighted pick failed"
+    return chosen.id, f"qa={chosen.display} pool_size={len(pool)}"
+
+
+def pick_engineer_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] = None) -> Tuple[Optional[str], str]:
+    """Deterministic: highest weight among matching engineers (no random)."""
+    cfg = cfg or load_team_assignments()
+    fn = (full_name or "").strip()
+    eng = [m for m in cfg.members if "engineer" in m.roles and repo_matches_member(fn, m)]
+    if not eng:
+        return None, "no engineer matched"
+    eng.sort(key=lambda m: (-m.weight, m.display))
+    top = eng[0]
+    return top.id, f"engineer={top.display}"
+
+
+def build_assignment_field_map(
+    full_name: str,
+    cfg: Optional[TeamAssignmentsConfig] = None,
+    field_overrides: Optional[Dict[str, str]] = None,
+) -> Dict[str, str]:
+    """Map Plaky field key -> person id for create/patch. Overrides win for same keys."""
+    cfg = cfg or load_team_assignments()
+    out: Dict[str, str] = {}
+    eid, _ = pick_engineer_for_repo(full_name, cfg)
+    if eid and cfg.plaky_field_engineer:
+        out[cfg.plaky_field_engineer] = eid
+    qid, _ = pick_qa_for_repo(full_name, cfg)
+    if qid and cfg.plaky_field_qa:
+        out[cfg.plaky_field_qa] = qid
+    for k, v in (field_overrides or {}).items():
+        ks, vs = str(k).strip(), str(v).strip()
+        if ks and vs:
+            out[ks] = vs
+    return out

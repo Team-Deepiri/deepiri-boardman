@@ -61,5 +61,5 @@ async def test_plaky_board_schema_route_without_key():
 def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
-    assert len(build_all_tools(allow_writes=False)) == 7
-    assert len(build_all_tools(allow_writes=True)) == 11
+    assert len(build_all_tools(allow_writes=False)) == 15
+    assert len(build_all_tools(allow_writes=True)) == 20

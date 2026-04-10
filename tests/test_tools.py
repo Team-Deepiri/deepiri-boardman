@@ -27,8 +27,8 @@ async def test_openapi_has_agent_routes():
 def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
-    assert len(build_all_tools(allow_writes=False)) == 7
-    assert len(build_all_tools(allow_writes=True)) == 11
+    assert len(build_all_tools(allow_writes=False)) == 15
+    assert len(build_all_tools(allow_writes=True)) == 20
 
 
 @pytest.fixture
@@ -102,27 +102,37 @@ class TestPlakyTools:
         from boardman.agent.tools.plaky_tools import build_plaky_tools
 
         tools = build_plaky_tools(allow_writes=False)
-        assert len(tools) == 5
+        assert len(tools) == 9
         tool_names = [t.name for t in tools]
+        assert "plaky_list_boards" in tool_names
         assert "plaky_match_board" in tool_names
         assert "plaky_match_group" in tool_names
         assert "plaky_board_schema" in tool_names
         assert "plaky_list_tasks" in tool_names
         assert "plaky_get_task" in tool_names
+        assert "plaky_get_board_item" in tool_names
+        assert "plaky_list_workspace_users" in tool_names
+        assert "plaky_save_task_preferences" in tool_names
 
     def test_plaky_tools_build_with_writes(self):
         from boardman.agent.tools.plaky_tools import build_plaky_tools
 
         tools = build_plaky_tools(allow_writes=True)
-        assert len(tools) == 9
+        assert len(tools) == 14
         tool_names = [t.name for t in tools]
         assert "plaky_create_task" in tool_names
         assert "plaky_update_task" in tool_names
         assert "plaky_add_comment" in tool_names
         assert "plaky_create_subtask" in tool_names
+        assert "plaky_patch_item_fields" in tool_names
 
 
 class TestGitHubTools:
+    def test_build_github_tools_count(self):
+        from boardman.agent.tools.github_tools import build_github_tools
+
+        assert len(build_github_tools()) == 4
+
     def test_github_tools_build(self):
         from boardman.agent.tools.github_tools import github_list_open_issues_tool
 
@@ -193,10 +203,10 @@ class TestToolBuilding:
         from boardman.agent.tools import build_all_tools
 
         tools = build_all_tools(allow_writes=False)
-        assert len(tools) == 7
+        assert len(tools) == 15
 
     def test_build_all_tools_writes(self):
         from boardman.agent.tools import build_all_tools
 
         tools = build_all_tools(allow_writes=True)
-        assert len(tools) == 11
+        assert len(tools) == 20
