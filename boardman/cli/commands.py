@@ -191,16 +191,13 @@ def doctor():
         except Exception as e:
             console.print(f"[yellow]Ollama[/yellow] unreachable: {e}")
         if settings.plaky_api_key:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                pr = await client.get(
-                    f"{settings.plaky_api_base.rstrip('/')}/tasks",
-                    headers={"Authorization": f"Bearer {settings.plaky_api_key}", "Accept": "application/json"},
-                    params={"status": "open"},
-                )
-                if pr.status_code == 200:
-                    console.print("[green]Plaky API[/green] list tasks OK")
-                else:
-                    console.print(f"[yellow]Plaky API[/yellow] HTTP {pr.status_code}")
+            plaky = PlakyClient()
+            pr = await plaky.list_boards()
+            if pr.get("ok"):
+                n = len(pr.get("boards") or [])
+                console.print(f"[green]Plaky API[/green] list_boards OK ({n} board(s))")
+            else:
+                console.print(f"[yellow]Plaky API[/yellow] {pr.get('message', pr)} (HTTP {pr.get('status')})")
         if not ok:
             console.print("[dim]Fix missing keys in .env for full functionality.[/dim]")
 

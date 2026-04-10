@@ -7,7 +7,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     plaky_api_key: str = ""
-    plaky_api_base: str = "https://api.plaky.com/v2"
+    plaky_api_base: str = "https://api.plaky.com/v1/public"
     plaky_pr_merge_status: str = "in_review"
     # Plaky hierarchy: Item lives under Board + Group (no separate "table" in API)
     plaky_default_board_id: str = ""

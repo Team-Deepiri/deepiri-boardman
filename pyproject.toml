@@ -73,4 +73,5 @@ asyncio_mode = "auto"
 markers = [
     "integration: real Ollama/network; run with BOARDMAN_AI_LIVE=1",
     "live_ollama: requires Ollama at OLLAMA_BASE_URL with LLM_MODEL available",
+    "plaky_live: calls real Plaky API; requires PLAKY_API_KEY in .env or environment",
 ]

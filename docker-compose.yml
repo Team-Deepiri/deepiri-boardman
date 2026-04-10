@@ -22,7 +22,7 @@ services:
       SERVICE_PORT: "8090"
       DATABASE_URL: sqlite+aiosqlite:///./boardman.db
       OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
-      PLAKY_API_BASE: ${PLAKY_API_BASE:-https://api.plaky.com/v2}
+      PLAKY_API_BASE: ${PLAKY_API_BASE:-https://api.plaky.com/v1/public}
       PLAKY_PR_MERGE_STATUS: ${PLAKY_PR_MERGE_STATUS:-in_review}
       GITHUB_ORG: ${GITHUB_ORG:-deepiri-org}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
