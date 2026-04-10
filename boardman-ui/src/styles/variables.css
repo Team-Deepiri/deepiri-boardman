@@ -1,0 +1,11 @@
+:root {
+  --color-primary-500: #ffb84d;
+  --color-success: #00aa00;
+  --color-text-primary: #e0e0e0;
+  --color-text-muted: #666;
+  --color-border: #333;
+  --color-bg-dark: #0a0a0a;
+  --color-bg-card: #1a1a1a;
+  --color-bg-input: #222;
+  --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+}

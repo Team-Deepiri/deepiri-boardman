@@ -156,3 +156,61 @@ class PlakyClient:
             return {"ok": False, "status": 429, "message": "Plaky API rate limited the request."}
 
         return {"ok": False, "status": response.status_code, "message": f"Failed to get task ({response.status_code}): {response.text[:200]}"}
+
+    async def update_task_fields(
+        self,
+        task_id: str,
+        *,
+        title: Optional[str] = None,
+        description: Optional[str] = None,
+        priority: Optional[str] = None,
+        status: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if not self.api_key:
+            return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
+
+        body: Dict[str, Any] = {}
+        if title is not None:
+            body["title"] = title
+        if description is not None:
+            body["description"] = description
+        if priority is not None:
+            body["priority"] = priority
+        if status is not None:
+            body["status"] = status
+        if not body:
+            return {"ok": False, "status": 400, "message": "No fields to update."}
+
+        url = f"{self.base_url}/tasks/{task_id}"
+
+        async with httpx.AsyncClient() as client:
+            response = await _request_with_rate_limit_retry(
+                client, "PATCH", url, headers=_headers(self.api_key), json=body
+            )
+
+        if response.status_code in (200, 201):
+            return {"ok": True, "status": response.status_code, "task": response.json()}
+
+        if response.status_code == 429:
+            return {"ok": False, "status": 429, "message": "Plaky API rate limited the request."}
+
+        return {"ok": False, "status": response.status_code, "message": f"Failed to patch task ({response.status_code}): {response.text[:200]}"}
+
+    async def create_subtask(self, parent_task_id: str, title: str, description: str = "") -> Dict[str, Any]:
+        """Try Plaky subtask endpoint; on 404, add a structured comment as fallback."""
+        if not self.api_key:
+            return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
+
+        url = f"{self.base_url}/tasks/{parent_task_id}/subtasks"
+        payload = {"title": title, "description": description or ""}
+
+        async with httpx.AsyncClient() as client:
+            response = await _request_with_rate_limit_retry(
+                client, "POST", url, headers=_headers(self.api_key), json=payload
+            )
+
+        if response.status_code in (200, 201):
+            return {"ok": True, "status": response.status_code, "subtask": response.json()}
+
+        body = f"**Subtask:** {title}\n{description}".strip()
+        return await self.add_comment(parent_task_id, body)

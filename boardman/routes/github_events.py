@@ -4,7 +4,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from boardman.database.session import async_session
+from boardman.database.session import get_db
 from boardman.github.webhooks import IssueEventPayload, PullRequestEventPayload, PingEventPayload, parse_webhook_payload, verify_signature
 from boardman.services.issue_handler import handle_issue_opened
 from boardman.services.pr_handler import handle_pr_opened, handle_pr_merged
@@ -17,7 +17,7 @@ router = APIRouter()
 @router.post("/webhooks/github")
 async def github_webhook(
     request: Request,
-    session: AsyncSession = Depends(async_session),
+    session: AsyncSession = Depends(get_db),
 ) -> Response:
     raw_body = await request.body()
 

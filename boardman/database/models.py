@@ -1,8 +1,8 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Integer, String, Text
-from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 class Base(DeclarativeBase):
@@ -30,3 +30,55 @@ class SyncLog(Base):
     plaky_task_id: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     detail: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class ScanRun(Base):
+    __tablename__ = "scan_runs"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    github_repo: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    provider: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    model: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    tasks_proposed: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tasks_created: Mapped[int] = mapped_column(Integer, default=0)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class AgentSession(Base):
+    __tablename__ = "agent_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False, index=True)
+    repo: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    prompt_version: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    last_active: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    messages: Mapped[list["AgentMessage"]] = relationship(
+        "AgentMessage", back_populates="session", cascade="all, delete-orphan"
+    )
+
+
+class AgentMessage(Base):
+    __tablename__ = "agent_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    session_pk: Mapped[int] = mapped_column(Integer, ForeignKey("agent_sessions.id"), nullable=False, index=True)
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    tool_calls_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+    session: Mapped["AgentSession"] = relationship("AgentSession", back_populates="messages")
+
+
+class ProjectContext(Base):
+    __tablename__ = "project_contexts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repo: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    goals_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    last_scanned: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

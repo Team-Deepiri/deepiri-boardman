@@ -21,5 +21,24 @@ class Settings(BaseSettings):
 
     log_level: str = "INFO"
 
+    repos_yml_path: str = "repos.yml"
+
+    llm_provider: str = "ollama"
+    llm_model: str = "llama3:8b"
+    ollama_base_url: str = "http://localhost:11434"
+    openai_api_key: str = ""
+    anthropic_api_key: str = ""
+    gemini_api_key: str = ""
+
+    agent_max_history: int = 50
+    agent_require_confirm_bulk: bool = True
+    agent_langchain_tools: bool = True
+    prompt_version: str = "2026-04-09"
+
+    cors_origins: str = (
+        "http://localhost:5176,http://127.0.0.1:5176,"
+        "http://localhost:8088,http://127.0.0.1:8088,http://localhost:3000"
+    )
+
 
 settings = Settings()

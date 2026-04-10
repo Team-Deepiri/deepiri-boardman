@@ -1,4 +1,4 @@
-version: '3.8'
+version: "3.8"
 
 services:
   boardman:
@@ -20,13 +20,49 @@ services:
       - SERVICE_HOST=0.0.0.0
       - SERVICE_PORT=8090
       - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - LLM_MODEL=${LLM_MODEL:-llama3:8b}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - AGENT_LANGCHAIN_TOOLS=${AGENT_LANGCHAIN_TOOLS:-true}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8088,http://127.0.0.1:8088}
     env_file:
       - .env
     volumes:
       - ./boardman.db:/app/boardman.db
+      - ./repos.yml:/app/repos.yml:ro
+    networks:
+      - deepiri-network
+
+  boardman-nginx:
+    build:
+      context: .
+      dockerfile: deploy/nginx/Dockerfile
+    container_name: deepiri-boardman-ui
+    restart: unless-stopped
+    ports:
+      - "8088:80"
+    depends_on:
+      - boardman
+    networks:
+      - deepiri-network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: deepiri-ollama-boardman
+    restart: unless-stopped
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_models:/root/.ollama
     networks:
       - deepiri-network
 
 networks:
   deepiri-network:
     driver: bridge
+
+volumes:
+  ollama_models:

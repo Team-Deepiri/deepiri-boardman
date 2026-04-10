@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from boardman.database.session import async_session
+from boardman.database.session import get_db
 from boardman.database.models import IssueTaskMap, SyncLog
 
 
@@ -15,7 +15,7 @@ async def health():
 
 
 @router.get("/mappings")
-async def list_mappings(session: AsyncSession = Depends(async_session)):
+async def list_mappings(session: AsyncSession = Depends(get_db)):
     result = await session.execute(select(IssueTaskMap))
     mappings = result.scalars().all()
     return {
@@ -34,7 +34,7 @@ async def list_mappings(session: AsyncSession = Depends(async_session)):
 
 
 @router.get("/sync-logs")
-async def list_logs(limit: int = 50, session: AsyncSession = Depends(async_session)):
+async def list_logs(limit: int = 50, session: AsyncSession = Depends(get_db)):
     result = await session.execute(select(SyncLog).order_by(SyncLog.created_at.desc()).limit(limit))
     logs = result.scalars().all()
     return {

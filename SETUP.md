@@ -55,27 +55,32 @@ cd /home/joeblack/Documents/Deepiri/deepiri-boardman
 cp .env.example .env
 nano .env
 
-# 3. Install dependencies
-pip install -r requirements.txt
+# 3. Install dependencies (Poetry — see pyproject.toml / poetry.lock)
+poetry install
 
-# 4. Run locally
-python -m boardman.main
+# 4. Run migrations
+poetry run alembic upgrade head
 
-# 5. Verify health
+# 5. Run locally
+poetry run python -m boardman.main
+
+# 6. Verify health
 curl http://localhost:8090/api/v1/health
 ```
 
 ## Docker Deployment
 
+The API image installs dependencies with **Poetry** (`Dockerfile`: `poetry install --without dev`). Lockfile: `poetry.lock`.
+
 ```bash
-docker-compose up -d --build
+docker compose up -d --build
 ```
 
 ## CLI Usage
 
 ```bash
-boardman create-task --title "Fix bug" --description "..." --priority high --repo deepiri-platform
-boardman link-pr --pr-url https://github.com/.../pull/123 --task-id XYZ123
-boardman list --status open
-boardman sync --repo owner/repo --dry-run
+poetry run boardman create-task --title "Fix bug" --description "..." --priority high --repo deepiri-platform
+poetry run boardman link-pr --pr-url https://github.com/.../pull/123 --task-id XYZ123
+poetry run boardman list --status open
+poetry run boardman sync --repo owner/repo --dry-run
 ```

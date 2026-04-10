@@ -1,4 +1,5 @@
 import asyncio
+import json
 from typing import Optional
 
 import httpx
@@ -6,10 +7,19 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from sqlalchemy import func, select
+
+from boardman.agent.service import run_agent_chat
+from boardman.database.models import AgentSession, ProjectContext, ScanRun
+from boardman.database.session import async_session
 from boardman.plaky.client import PlakyClient
+from boardman.repos_config import list_registered_repos, upsert_repo
+from boardman.services.direction_init import init_direction_file
+from boardman.services.scan_handler import run_repo_scan
 from boardman.settings import settings
 
 app = typer.Typer(help="deepiri-boardman CLI")
+agent_app = typer.Typer(help="AI agent and repo scan")
 console = Console()
 
 
@@ -118,6 +128,211 @@ def sync(
                         console.print(f"    [green]Created:[/green] {result.get('task_url')}")
                     else:
                         console.print(f"    [red]Failed:[/red] {result.get('message')}")
+
+    asyncio.run(run())
+
+
+@app.command("register")
+def register_repo(
+    repo: str = typer.Argument(..., help="GitHub repo owner/name"),
+    category: str = typer.Option(..., "--category", "-c", help="ai|ml|backend|frontend|infrastructure"),
+    plaky_table: str = typer.Option(..., "--table", "-t", help="Plaky table name"),
+    description: str = typer.Option("", "--description", "-d"),
+):
+    upsert_repo(repo, category, plaky_table, description)
+    console.print(f"[green]Registered[/green] {repo} → {plaky_table}")
+
+
+@app.command("scan")
+def scan_repo(
+    repo: str = typer.Argument(..., help="owner/repo"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    model: Optional[str] = typer.Option(None, "--model"),
+):
+    async def run():
+        async with async_session() as session:
+            result = await run_repo_scan(session, repo, dry_run=dry_run, provider=provider, model=model)
+            await session.commit()
+        if result.get("ok"):
+            console.print(f"[green]OK[/green] parsed={result.get('tasks_parsed')} created={result.get('tasks_created')}")
+            if result.get("preview"):
+                console.print(json.dumps(result["preview"], indent=2))
+        else:
+            console.print(f"[red]{result.get('message', result)}[/red]")
+            raise typer.Exit(1)
+
+    asyncio.run(run())
+
+
+@app.command("doctor")
+def doctor():
+    async def run():
+        ok = True
+        if settings.plaky_api_key:
+            console.print("[green]PLAKY_API_KEY[/green] set")
+        else:
+            console.print("[red]PLAKY_API_KEY[/red] missing")
+            ok = False
+        if settings.github_pat:
+            console.print("[green]GITHUB_PAT[/green] set")
+        else:
+            console.print("[yellow]GITHUB_PAT[/yellow] missing (needed for scan)")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"{settings.ollama_base_url.rstrip('/')}/api/tags")
+                if r.status_code == 200:
+                    names = [m.get("name", "") for m in r.json().get("models", [])]
+                    console.print(f"[green]Ollama[/green] {settings.ollama_base_url} — {len(names)} model(s)")
+                    if settings.llm_model and not any(settings.llm_model in n for n in names):
+                        console.print(f"[yellow]LLM_MODEL[/yellow] {settings.llm_model!r} not listed in tags (pull if needed)")
+                else:
+                    console.print(f"[yellow]Ollama[/yellow] HTTP {r.status_code} at {settings.ollama_base_url}")
+        except Exception as e:
+            console.print(f"[yellow]Ollama[/yellow] unreachable: {e}")
+        if settings.plaky_api_key:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                pr = await client.get(
+                    f"{settings.plaky_api_base.rstrip('/')}/tasks",
+                    headers={"Authorization": f"Bearer {settings.plaky_api_key}", "Accept": "application/json"},
+                    params={"status": "open"},
+                )
+                if pr.status_code == 200:
+                    console.print("[green]Plaky API[/green] list tasks OK")
+                else:
+                    console.print(f"[yellow]Plaky API[/yellow] HTTP {pr.status_code}")
+        if not ok:
+            console.print("[dim]Fix missing keys in .env for full functionality.[/dim]")
+
+    asyncio.run(run())
+
+
+def _agent_chat_async(
+    message: str,
+    session_id: Optional[str],
+    repo: Optional[str],
+    provider: Optional[str],
+    model: Optional[str],
+    allow_writes: bool,
+) -> None:
+    async def run():
+        async with async_session() as session:
+            reply, sid = await run_agent_chat(
+                session,
+                message=message,
+                session_id=session_id,
+                repo=repo,
+                provider=provider,
+                model=model,
+                allow_writes=allow_writes,
+            )
+            await session.commit()
+        console.print(reply)
+        console.print(f"[dim]session_id={sid}[/dim]")
+
+    asyncio.run(run())
+
+
+@agent_app.command("chat")
+def agent_chat_cmd(
+    message: str = typer.Option(..., "--message", "-m"),
+    session_id: Optional[str] = typer.Option(None, "--session"),
+    repo: Optional[str] = typer.Option(None, "--repo", "-r"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    model: Optional[str] = typer.Option(None, "--model"),
+    allow_writes: bool = typer.Option(False, "--allow-writes", help="Enable Plaky create/update tools"),
+):
+    _agent_chat_async(message, session_id, repo, provider, model, allow_writes)
+
+
+@agent_app.command("ask")
+def agent_ask_cmd(
+    message: str = typer.Option(..., "--message", "-m"),
+    session_id: Optional[str] = typer.Option(None, "--session"),
+    repo: Optional[str] = typer.Option(None, "--repo", "-r"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    model: Optional[str] = typer.Option(None, "--model"),
+    allow_writes: bool = typer.Option(False, "--allow-writes"),
+):
+    """Alias for `boardman agent chat`."""
+    _agent_chat_async(message, session_id, repo, provider, model, allow_writes)
+
+
+app.add_typer(agent_app, name="agent")
+
+
+@app.command("init")
+def init_direction(
+    repo: str = typer.Argument(..., help="owner/repo"),
+    branch: Optional[str] = typer.Option(None, "--branch"),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing DIRECTION.md"),
+):
+    parts = repo.split("/")
+    if len(parts) != 2:
+        console.print("[red]repo must be owner/name[/red]")
+        raise typer.Exit(1)
+
+    async def run():
+        r = await init_direction_file(parts[0], parts[1], branch=branch, force=force)
+        if r.get("ok"):
+            if r.get("skipped"):
+                console.print(f"[yellow]Skipped:[/yellow] {r.get('message')} {r.get('url', '')}")
+            else:
+                console.print(f"[green]DIRECTION.md created[/green] branch={r.get('branch')} url={r.get('url')}")
+        else:
+            console.print(f"[red]{r.get('message')}[/red]")
+            raise typer.Exit(1)
+
+    asyncio.run(run())
+
+
+@app.command("status")
+def status_cmd(
+    repo: Optional[str] = typer.Option(None, "--repo", help="Filter Plaky titles containing this slug"),
+):
+    async def run():
+        async with async_session() as session:
+            n_scan = await session.scalar(select(func.count()).select_from(ScanRun))
+            n_sess = await session.scalar(select(func.count()).select_from(AgentSession))
+            n_ctx = await session.scalar(select(func.count()).select_from(ProjectContext))
+        console.print(f"Scan runs: {n_scan} | Agent sessions: {n_sess} | Project contexts: {n_ctx}")
+        reg = list_registered_repos()
+        if reg:
+            console.print(f"Registered repos ({len(reg)}): {', '.join(reg.keys())}")
+        plaky = PlakyClient()
+        res = await plaky.get_tasks(status="open")
+        if res.get("ok"):
+            tasks = res.get("tasks") or []
+            if repo:
+                tasks = [t for t in tasks if repo in (t.get("title") or "")]
+            console.print(f"Plaky open tasks (filtered): {len(tasks)}")
+        else:
+            console.print(f"[yellow]Plaky:[/yellow] {res.get('message')}")
+
+    asyncio.run(run())
+
+
+@app.command("scan-all")
+def scan_all_repos(
+    dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="Default dry-run for safety"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    model: Optional[str] = typer.Option(None, "--model"),
+):
+    reg = list_registered_repos()
+    if not reg:
+        console.print("[yellow]No repos in repos.yml — use boardman register[/yellow]")
+        raise typer.Exit(0)
+
+    async def run():
+        for key in reg:
+            console.print(f"[bold]Scanning[/bold] {key} …")
+            async with async_session() as session:
+                result = await run_repo_scan(session, key, dry_run=dry_run, provider=provider, model=model)
+                await session.commit()
+            if result.get("ok"):
+                console.print(f"  [green]ok[/green] created={result.get('tasks_created')} parsed={result.get('tasks_parsed')}")
+            else:
+                console.print(f"  [red]{result.get('message')}[/red]")
 
     asyncio.run(run())
 

@@ -1,0 +1,13 @@
+.venv
+venv
+__pycache__
+*.pyc
+.git
+boardman-ui/node_modules
+boardman-ui/dist
+*.db
+.env
+.env.*
+.pytest_cache
+.mypy_cache
+*.egg-info
