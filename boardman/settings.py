@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     repos_yml_path: str = "repos.yml"
 
     llm_provider: str = "ollama"
-    llm_model: str = "llama3:8b"
+    llm_model: str = "qwen2.5:7b"
     ollama_base_url: str = "http://localhost:11434"
     openai_api_key: str = ""
     anthropic_api_key: str = ""

@@ -22,6 +22,56 @@ from boardman.settings import settings
 logger = logging.getLogger(__name__)
 
 
+def _format_llm_failure(exc: BaseException) -> str:
+    """User-visible message when Ollama / LLM HTTP fails (avoids opaque HTTP 500 in the UI)."""
+    base = (str(exc) or type(exc).__name__).strip()
+    hint = ""
+    try:
+        import httpx
+
+        if isinstance(exc, httpx.HTTPStatusError):
+            st = exc.response.status_code
+            snippet = (exc.response.text or "").strip().replace("\n", " ")[:400]
+            base = f"HTTP {st} from the model API"
+            if snippet:
+                base += f": {snippet}"
+            if st == 404:
+                hint = (
+                    "\n\nThis often means **LLM_MODEL** does not match a pulled Ollama model. "
+                    "Run `ollama list` and set **LLM_MODEL** to the same name (e.g. `qwen2.5:7b`)."
+                )
+        elif isinstance(exc, (httpx.ConnectError, httpx.TimeoutException, OSError)):
+            hint = (
+                f"\n\nCannot reach Ollama at **{settings.ollama_base_url}**. "
+                "If Boardman runs in Docker, set **OLLAMA_BASE_URL=http://ollama:11434** (service name) "
+                "and ensure the **ollama** container is running."
+            )
+    except Exception:
+        pass
+    return (
+        "I could not get a reply from the language model.\n\n"
+        f"**What went wrong:** {base}{hint}\n\n"
+        "Check **OLLAMA_BASE_URL**, **LLM_MODEL**, and that Ollama is running."
+    )
+
+
+async def _safe_plain_chat(
+    *,
+    message: str,
+    repo: Optional[str],
+    history_msgs: List[AgentMessage],
+    plaky_board_id: Optional[str],
+    provider: Optional[str],
+    model: Optional[str],
+) -> str:
+    try:
+        llm_messages = await _plain_messages_async(message, repo, history_msgs, plaky_board_id)
+        return await chat_complete(llm_messages, provider=provider, model=model)
+    except Exception as e:
+        logger.exception("Plain chat (Ollama/direct LLM) failed")
+        return _format_llm_failure(e)
+
+
 async def run_agent_chat(
     session: AsyncSession,
     *,
@@ -90,15 +140,27 @@ async def run_agent_chat(
             )
         except Exception as e:
             logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
-            llm_messages = await _plain_messages_async(message, repo, history_msgs, plaky_board_id)
-            reply = await chat_complete(llm_messages, provider=provider, model=model)
+            reply = await _safe_plain_chat(
+                message=message,
+                repo=repo,
+                history_msgs=history_msgs,
+                plaky_board_id=plaky_board_id,
+                provider=provider,
+                model=model,
+            )
     else:
         logger.info(
             "Agent chat: plain LLM path (AGENT_LANGCHAIN_TOOLS off; session_id=%s)",
             sid,
         )
-        llm_messages = await _plain_messages_async(message, repo, history_msgs, plaky_board_id)
-        reply = await chat_complete(llm_messages, provider=provider, model=model)
+        reply = await _safe_plain_chat(
+            message=message,
+            repo=repo,
+            history_msgs=history_msgs,
+            plaky_board_id=plaky_board_id,
+            provider=provider,
+            model=model,
+        )
 
     session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
     session.add(AgentMessage(session_pk=ag.id, role="assistant", content=reply))

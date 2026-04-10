@@ -27,7 +27,8 @@ services:
       GITHUB_ORG: ${GITHUB_ORG:-deepiri-org}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
-      LLM_MODEL: ${LLM_MODEL:-llama3:8b}
+      # Must match a model pulled in the ollama service (e.g. ollama pull qwen2.5:7b)
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b}
       AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8088,http://127.0.0.1:8088}
     volumes:

@@ -174,7 +174,20 @@ export default function App() {
       setSessionId(session_id);
       setMessages((m) => [...m, { role: "assistant", content: reply }]);
     } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e);
+      let msg: string;
+      if (axios.isAxiosError(e)) {
+        const data = e.response?.data as { detail?: unknown; message?: string } | undefined;
+        const detail = data?.detail;
+        if (typeof detail === "string") {
+          msg = detail;
+        } else if (Array.isArray(detail)) {
+          msg = detail.map((x) => (typeof x === "object" && x && "msg" in x ? String((x as { msg: string }).msg) : String(x))).join("; ");
+        } else {
+          msg = data?.message || e.message;
+        }
+      } else {
+        msg = e instanceof Error ? e.message : String(e);
+      }
       setMessages((m) => [...m, { role: "assistant", content: `Request failed: ${msg}` }]);
     } finally {
       setLoading(false);
