@@ -138,6 +138,42 @@ class PlakyClient:
             "groups": [],
         }
 
+    async def get_board(self, board_id: str) -> Dict[str, Any]:
+        """GET board/project by id (shape varies). Used to discover statuses and custom fields."""
+        if not self.api_key:
+            return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing.", "board": None}
+
+        base = self.base_url.rstrip("/")
+        bid = board_id.strip()
+        last_status = 404
+        last_snip = ""
+        async with httpx.AsyncClient() as client:
+            for path in (
+                f"/boards/{bid}",
+                f"/projects/{bid}",
+                f"/boards/{bid}/details",
+            ):
+                url = f"{base}{path}"
+                response = await _request_with_rate_limit_retry(
+                    client, "GET", url, headers=_headers(self.api_key)
+                )
+                last_status = response.status_code
+                last_snip = response.text[:200]
+                if response.status_code != 200:
+                    continue
+                try:
+                    payload = response.json()
+                except ValueError:
+                    continue
+                if isinstance(payload, dict):
+                    return {"ok": True, "status": response.status_code, "board": payload}
+        return {
+            "ok": False,
+            "status": last_status,
+            "message": f"Could not load board {bid!r} ({last_status}): {last_snip}",
+            "board": None,
+        }
+
     async def _create_item_hierarchy(
         self,
         board_id: str,

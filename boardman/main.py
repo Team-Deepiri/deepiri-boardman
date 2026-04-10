@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -8,11 +9,27 @@ from boardman.logging_config import setup_logging
 from boardman.routes import agent, health, github_events, plaky, tasks
 from boardman.settings import settings
 
+_log = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
     await init_db()
+    pk = (settings.plaky_api_key or "").strip()
+    if pk:
+        _log.info("Plaky: API key present (length=%d), base=%s", len(pk), settings.plaky_api_base)
+    else:
+        _log.warning(
+            "Plaky: PLAKY_API_KEY is empty — set it in `.env` (docker: env_file) or the environment. "
+            "Boards/match and agent Plaky tools will not call the API."
+        )
+    _log.info(
+        "Agent LLM: provider=%s model=%s ollama_base=%s",
+        settings.llm_provider,
+        settings.llm_model,
+        settings.ollama_base_url,
+    )
     yield
 
 

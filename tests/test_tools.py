@@ -27,8 +27,8 @@ async def test_openapi_has_agent_routes():
 def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
-    assert len(build_all_tools(allow_writes=False)) == 4
-    assert len(build_all_tools(allow_writes=True)) == 8
+    assert len(build_all_tools(allow_writes=False)) == 7
+    assert len(build_all_tools(allow_writes=True)) == 11
 
 
 class TestPlakyClient:
@@ -80,14 +80,25 @@ class TestPlakyClient:
         assert result["ok"] is False
         assert "missing" in result["message"].lower()
 
+    @pytest.mark.asyncio
+    async def test_get_board_missing_api_key(self):
+        from boardman.plaky.client import PlakyClient
+        c = PlakyClient(api_key=None)
+        result = await c.get_board("b1")
+        assert result["ok"] is False
+        assert "missing" in result["message"].lower()
+
 
 class TestPlakyTools:
     def test_plaky_tools_build_readonly(self):
         from boardman.agent.tools.plaky_tools import build_plaky_tools
 
         tools = build_plaky_tools(allow_writes=False)
-        assert len(tools) == 2
+        assert len(tools) == 5
         tool_names = [t.name for t in tools]
+        assert "plaky_match_board" in tool_names
+        assert "plaky_match_group" in tool_names
+        assert "plaky_board_schema" in tool_names
         assert "plaky_list_tasks" in tool_names
         assert "plaky_get_task" in tool_names
 
@@ -95,7 +106,7 @@ class TestPlakyTools:
         from boardman.agent.tools.plaky_tools import build_plaky_tools
 
         tools = build_plaky_tools(allow_writes=True)
-        assert len(tools) == 6
+        assert len(tools) == 9
         tool_names = [t.name for t in tools]
         assert "plaky_create_task" in tool_names
         assert "plaky_update_task" in tool_names
@@ -174,10 +185,10 @@ class TestToolBuilding:
         from boardman.agent.tools import build_all_tools
 
         tools = build_all_tools(allow_writes=False)
-        assert len(tools) == 4
+        assert len(tools) == 7
 
     def test_build_all_tools_writes(self):
         from boardman.agent.tools import build_all_tools
 
         tools = build_all_tools(allow_writes=True)
-        assert len(tools) == 8
+        assert len(tools) == 11

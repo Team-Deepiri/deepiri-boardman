@@ -1,5 +1,9 @@
 # Ollama GPU: requires NVIDIA Container Toolkit (Linux/WSL2 with GPU) or Docker Desktop GPU.
 # For CPU-only, remove the `gpus` block from the ollama service.
+#
+# Secrets (PLAKY_API_KEY, GITHUB_PAT, …): put them in `.env` next to this file.
+# Do NOT use `KEY=${KEY}` here for secrets — an empty shell interpolation overrides `env_file`
+# and wipes the key inside the container. Pass-through is either `env_file` only or `- KEY` list form.
 
 services:
   boardman:
@@ -10,27 +14,22 @@ services:
     restart: unless-stopped
     ports:
       - "8090:8090"
-    environment:
-      - PLAKY_API_KEY=${PLAKY_API_KEY}
-      - PLAKY_API_BASE=${PLAKY_API_BASE:-https://api.plaky.com/v2}
-      - PLAKY_PR_MERGE_STATUS=${PLAKY_PR_MERGE_STATUS:-in_review}
-      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
-      - GITHUB_PAT=${GITHUB_PAT}
-      - GITHUB_ORG=${GITHUB_ORG:-deepiri-org}
-      - DATABASE_URL=sqlite+aiosqlite:///./boardman.db
-      - SERVICE_HOST=0.0.0.0
-      - SERVICE_PORT=8090
-      - LOG_LEVEL=${LOG_LEVEL:-INFO}
-      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
-      - LLM_MODEL=${LLM_MODEL:-llama3:8b}
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://ollama:11434}
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
-      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
-      - AGENT_LANGCHAIN_TOOLS=${AGENT_LANGCHAIN_TOOLS:-true}
-      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:8088,http://127.0.0.1:8088}
     env_file:
       - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      SERVICE_HOST: "0.0.0.0"
+      SERVICE_PORT: "8090"
+      DATABASE_URL: sqlite+aiosqlite:///./boardman.db
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL:-http://ollama:11434}
+      PLAKY_API_BASE: ${PLAKY_API_BASE:-https://api.plaky.com/v2}
+      PLAKY_PR_MERGE_STATUS: ${PLAKY_PR_MERGE_STATUS:-in_review}
+      GITHUB_ORG: ${GITHUB_ORG:-deepiri-org}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LLM_PROVIDER: ${LLM_PROVIDER:-ollama}
+      LLM_MODEL: ${LLM_MODEL:-llama3:8b}
+      AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8088,http://127.0.0.1:8088}
     volumes:
       - ./boardman:/app/boardman
       - ./boardman.db:/app/boardman.db

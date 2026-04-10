@@ -57,6 +57,7 @@ async def agent_chat(body: AgentChatRequest, session: AsyncSession = Depends(get
             provider=body.provider,
             model=body.model,
             allow_writes=body.allow_writes,
+            plaky_board_id=body.plaky_board_id,
         )
     return {"ok": True, "reply": reply, "session_id": sid}
 

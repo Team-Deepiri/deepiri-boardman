@@ -22,8 +22,44 @@ async def test_openapi_has_agent_routes():
         assert any("agent" in p for p in paths)
 
 
+@pytest.mark.asyncio
+async def test_openapi_has_plaky_board_match():
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/openapi.json")
+        assert r.status_code == 200
+        paths = r.json().get("paths") or {}
+        assert "/api/v1/plaky/boards/match" in paths
+        assert "/api/v1/plaky/boards/{board_id}/schema" in paths
+
+
+@pytest.mark.asyncio
+async def test_plaky_boards_match_request_ok_without_key():
+    """HTTP shape: endpoint responds; Plaky list may fail but route is wired."""
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/v1/plaky/boards/match", params={"query": "test"})
+        assert r.status_code == 200
+        body = r.json()
+        assert "ok" in body
+        assert "matches" in body
+        assert "boards" in body
+
+
+@pytest.mark.asyncio
+async def test_plaky_board_schema_route_without_key():
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.get("/api/v1/plaky/boards/test-board-id/schema")
+        assert r.status_code == 200
+        body = r.json()
+        assert "ok" in body
+        assert "normalized" in body
+        assert "markdown" in body
+
+
 def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
-    assert len(build_all_tools(allow_writes=False)) == 4
-    assert len(build_all_tools(allow_writes=True)) == 8
+    assert len(build_all_tools(allow_writes=False)) == 7
+    assert len(build_all_tools(allow_writes=True)) == 11

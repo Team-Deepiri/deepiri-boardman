@@ -16,6 +16,7 @@ from boardman.agent.prompts import BOARD_MANAGER_SYSTEM
 from boardman.agent.runner import run_tool_agent
 from boardman.database.models import AgentMessage, AgentSession
 from boardman.llm.completion import chat_complete
+from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,7 @@ async def run_agent_chat(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     allow_writes: bool = False,
+    plaky_board_id: Optional[str] = None,
 ) -> Tuple[str, str]:
     """Persist user message, call LLM (tool agent or plain chat), persist assistant reply."""
     sid = session_id or str(uuid.uuid4())
@@ -76,6 +78,10 @@ async def run_agent_chat(
             )
             if repo:
                 extra += f"\n## Repo context\n`{repo}`"
+            bid = (plaky_board_id or "").strip()
+            if bid:
+                bundle = await fetch_board_schema_bundle(bid)
+                extra += bundle.get("markdown") or ""
             reply = await run_tool_agent(
                 message,
                 chat_history=lc_hist,
@@ -84,14 +90,14 @@ async def run_agent_chat(
             )
         except Exception as e:
             logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
-            llm_messages = _plain_messages(message, repo, history_msgs)
+            llm_messages = await _plain_messages_async(message, repo, history_msgs, plaky_board_id)
             reply = await chat_complete(llm_messages, provider=provider, model=model)
     else:
         logger.info(
             "Agent chat: plain LLM path (AGENT_LANGCHAIN_TOOLS off; session_id=%s)",
             sid,
         )
-        llm_messages = _plain_messages(message, repo, history_msgs)
+        llm_messages = await _plain_messages_async(message, repo, history_msgs, plaky_board_id)
         reply = await chat_complete(llm_messages, provider=provider, model=model)
 
     session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
@@ -101,12 +107,19 @@ async def run_agent_chat(
     return reply, sid
 
 
-def _plain_messages(
-    message: str, repo: Optional[str], history_msgs: List[AgentMessage]
+async def _plain_messages_async(
+    message: str,
+    repo: Optional[str],
+    history_msgs: List[AgentMessage],
+    plaky_board_id: Optional[str],
 ) -> List[Dict[str, str]]:
     llm_messages: List[Dict[str, str]] = [{"role": "system", "content": BOARD_MANAGER_SYSTEM}]
     if repo:
         llm_messages[0]["content"] += f"\n\n## Current repo context\nThe user is working with: `{repo}`."
+    bid = (plaky_board_id or "").strip()
+    if bid:
+        bundle = await fetch_board_schema_bundle(bid)
+        llm_messages[0]["content"] += bundle.get("markdown") or ""
     for m in history_msgs:
         llm_messages.append({"role": m.role, "content": m.content})
     llm_messages.append({"role": "user", "content": message})
