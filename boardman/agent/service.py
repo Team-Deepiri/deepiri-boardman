@@ -52,16 +52,22 @@ async def run_agent_chat(
         )
         session.add(ag)
         await session.flush()
+        history_msgs: List[AgentMessage] = []
     else:
         ag.last_active = datetime.utcnow()
         if repo and not ag.repo:
             ag.repo = repo
-
-    history_msgs: List[AgentMessage] = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
+        history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
     reply: str
     if settings.agent_langchain_tools:
         try:
+            logger.info(
+                "Agent chat: LangChain tool path (session_id=%s, allow_writes=%s, repo=%s)",
+                sid,
+                allow_writes,
+                repo or "",
+            )
             lc_hist = db_messages_to_langchain(history_msgs)
             extra = (
                 f"\n\n## Tool policy\nPlaky **write** tools (create/update/comment/subtask) are "
@@ -77,10 +83,14 @@ async def run_agent_chat(
                 system_extra=extra,
             )
         except Exception as e:
-            logger.warning("LangChain tool agent failed, using plain chat: %s", e)
+            logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
             llm_messages = _plain_messages(message, repo, history_msgs)
             reply = await chat_complete(llm_messages, provider=provider, model=model)
     else:
+        logger.info(
+            "Agent chat: plain LLM path (AGENT_LANGCHAIN_TOOLS off; session_id=%s)",
+            sid,
+        )
         llm_messages = _plain_messages(message, repo, history_msgs)
         reply = await chat_complete(llm_messages, provider=provider, model=model)
 

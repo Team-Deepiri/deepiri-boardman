@@ -1,11 +1,33 @@
 :root {
-  --color-primary-500: #ffb84d;
-  --color-success: #00aa00;
-  --color-text-primary: #e0e0e0;
-  --color-text-muted: #666;
-  --color-border: #333;
-  --color-bg-dark: #0a0a0a;
-  --color-bg-card: #1a1a1a;
-  --color-bg-input: #222;
-  --font-mono: ui-monospace, "Cascadia Code", "Source Code Pro", Menlo, monospace;
+  --font-sans: "Sora", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  --bg-base: #0c0e12;
+  --bg-elevated: #13161d;
+  --bg-surface: #1a1e28;
+  --bg-input: #222731;
+  --bg-message-user: rgba(214, 162, 79, 0.12);
+  --bg-message-assistant: rgba(120, 168, 219, 0.1);
+
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.1);
+  --border-focus: rgba(214, 162, 79, 0.55);
+
+  --text-primary: #e8eaef;
+  --text-secondary: #9aa3b2;
+  --text-muted: #6b7280;
+
+  --accent: #d6a24f;
+  --accent-hover: #e4b45d;
+  --accent-muted: rgba(214, 162, 79, 0.25);
+
+  --assistant-accent: #78a8db;
+  --danger: #c45c5c;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+
+  --shadow-floating: 0 12px 40px rgba(0, 0, 0, 0.45);
+  --sidebar-width: 280px;
 }

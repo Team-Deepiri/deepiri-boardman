@@ -20,4 +20,6 @@ COPY . .
 RUN poetry install --without dev \
     && rm -rf "$POETRY_CACHE_DIR"
 
-CMD ["python", "-m", "boardman.main"]
+ENV PYTHONPATH=/app
+
+CMD ["python", "watcher.py"]

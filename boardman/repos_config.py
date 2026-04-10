@@ -15,8 +15,11 @@ from boardman.settings import settings
 
 @dataclass(frozen=True)
 class RepoRouting:
-    category: str
-    plaky_table: str
+    category: str = ""
+    # Legacy label: Plaky "group" name in UI (for descriptions); API placement uses IDs below.
+    plaky_table: str = ""
+    plaky_board_id: str = ""
+    plaky_group_id: str = ""
     description: str = ""
 
 
@@ -49,12 +52,16 @@ def _parse_entry(entry: Any) -> Optional[RepoRouting]:
     return RepoRouting(
         category=str(entry.get("category", "")),
         plaky_table=str(entry.get("plaky_table", "")),
+        plaky_board_id=str(entry.get("plaky_board_id", "")),
+        plaky_group_id=str(entry.get("plaky_group_id", "")),
         description=str(entry.get("description", "")),
     )
 
 
 def _is_meaningful(r: RepoRouting) -> bool:
-    return bool(r.plaky_table or r.category or r.description)
+    return bool(
+        r.plaky_table or r.category or r.description or r.plaky_board_id or r.plaky_group_id
+    )
 
 
 def _defaults_routing() -> Optional[RepoRouting]:
@@ -63,14 +70,20 @@ def _defaults_routing() -> Optional[RepoRouting]:
     if isinstance(d, dict):
         cat = str(d.get("category", "") or settings.default_repo_category or "")
         table = str(d.get("plaky_table", "") or settings.default_plaky_table or "")
+        bid = str(d.get("plaky_board_id", "") or settings.plaky_default_board_id or "")
+        gid = str(d.get("plaky_group_id", "") or settings.plaky_default_group_id or "")
         desc = str(d.get("description", "") or "")
     else:
         cat = str(settings.default_repo_category or "")
         table = str(settings.default_plaky_table or "")
+        bid = str(settings.plaky_default_board_id or "")
+        gid = str(settings.plaky_default_group_id or "")
         desc = ""
-    if not cat and not table and not desc:
+    if not cat and not table and not desc and not bid and not gid:
         return None
-    return RepoRouting(category=cat, plaky_table=table, description=desc)
+    return RepoRouting(
+        category=cat, plaky_table=table, plaky_board_id=bid, plaky_group_id=gid, description=desc
+    )
 
 
 def _routing_for_full_name(full_name: str, yaml_map: Dict[str, Any], org: str) -> RepoRouting:
@@ -84,7 +97,7 @@ def _routing_for_full_name(full_name: str, yaml_map: Dict[str, Any], org: str) -
         d = _defaults_routing()
         if d and _is_meaningful(d):
             return d
-    return RepoRouting("", "", "")
+    return RepoRouting()
 
 
 def get_routing(full_name: str, short_name: str, org: str) -> Optional[RepoRouting]:

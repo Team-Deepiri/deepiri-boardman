@@ -1,4 +1,15 @@
-# Repo → Plaky board routing (see docs/PLAN.md)
+# Repo → Plaky placement (API: Board -> Group -> Item). There is no separate "table" in the API.
 # Keys: GitHub full name owner/repo
+#
+# defaults:
+#   plaky_board_id: "..."   # optional; else PLAKY_DEFAULT_BOARD_ID
+#   plaky_group_id: "..."   # optional; else PLAKY_DEFAULT_GROUP_ID
+#   plaky_table: "Backlog"  # optional human label for issue/scan footers only
+#
+# repos:
+#   org/repo:
+#     category: backend
+#     plaky_board_id: "..."
+#     plaky_group_id: "..."
 
 repos: {}

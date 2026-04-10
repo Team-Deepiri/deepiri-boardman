@@ -10,6 +10,7 @@ from langchain_core.messages import BaseMessage
 from boardman.agent.prompts import BOARD_MANAGER_SYSTEM
 from boardman.agent.tools import build_all_tools
 from boardman.llm.factory import get_chat_model
+from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,12 @@ async def run_tool_agent(
 
     llm = get_chat_model()
     tools = build_all_tools(allow_writes=allow_writes)
+    verbose = settings.agent_langchain_verbose or logger.isEnabledFor(logging.DEBUG)
+    logger.info(
+        "LangChain AgentExecutor: %d tools, verbose=%s, provider/model from settings",
+        len(tools),
+        verbose,
+    )
 
     prompt = ChatPromptTemplate.from_messages(
         [
@@ -39,12 +46,13 @@ async def run_tool_agent(
     executor = AgentExecutor(
         agent=agent,
         tools=tools,
-        verbose=False,
+        verbose=verbose,
         max_iterations=14,
         handle_parsing_errors=True,
         return_intermediate_steps=False,
     )
     result = await executor.ainvoke({"input": user_input, "chat_history": chat_history})
+    logger.info("LangChain AgentExecutor finished (output length=%d)", len(str(result)))
     if isinstance(result, dict) and "output" in result:
         return str(result["output"])
     return str(result)

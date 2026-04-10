@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from boardman.database.models import ProjectContext, ScanRun
 from boardman.llm.completion import chat_complete, parse_json_tasks
 from boardman.plaky.client import PlakyClient
+from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing
 from boardman.settings import settings
 
@@ -182,7 +183,8 @@ async def run_repo_scan(
         created = 0
         plaky = PlakyClient()
         cat = routing.plaky_table if routing else ""
-        routing_note = f"\n\n**Plaky routing:** `{cat}`\n**Repo:** {repo_full}\n" if cat else f"\n\n**Repo:** {repo_full}\n"
+        routing_note = f"\n\n**Plaky group (label):** `{cat}`\n**Repo:** {repo_full}\n" if cat else f"\n\n**Repo:** {repo_full}\n"
+        bid, gid = effective_plaky_placement(routing)
 
         for item in tasks:
             if not isinstance(item, dict):
@@ -196,7 +198,9 @@ async def run_repo_scan(
             body = desc + routing_note
             if dry_run:
                 continue
-            res = await plaky.create_task(title=full_title, description=body, priority=pri)
+            res = await plaky.create_task(
+                title=full_title, description=body, priority=pri, board_id=bid, group_id=gid
+            )
             if res.get("ok"):
                 created += 1
 

@@ -1,4 +1,5 @@
-version: "3.8"
+# Ollama GPU: requires NVIDIA Container Toolkit (Linux/WSL2 with GPU) or Docker Desktop GPU.
+# For CPU-only, remove the `gpus` block from the ollama service.
 
 services:
   boardman:
@@ -31,6 +32,7 @@ services:
     env_file:
       - .env
     volumes:
+      - ./boardman:/app/boardman
       - ./boardman.db:/app/boardman.db
       - ./repos.yml:/app/repos.yml:ro
     networks:
@@ -51,8 +53,9 @@ services:
 
   ollama:
     image: ollama/ollama:latest
-    container_name: deepiri-ollama-boardman
+    container_name: deepiri-ollama-boardman # TODO: rename to deepiri-ollama later when extracted in to deepiri-ollama submodule
     restart: unless-stopped
+    gpus: all
     ports:
       - "11434:11434"
     volumes:

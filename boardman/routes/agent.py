@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.agent.service import delete_agent_session, get_session_history, run_agent_chat
 from boardman.database.session import get_db
+from boardman.plaky.placement import plaky_placement_context
 from boardman.services.direction_init import init_direction_file
 from boardman.services.scan_handler import run_repo_scan
 
@@ -21,6 +22,14 @@ class AgentChatRequest(BaseModel):
     allow_writes: bool = Field(
         False,
         description="When true, agent may call Plaky create/update/comment tools (guardrail).",
+    )
+    plaky_board_id: Optional[str] = Field(
+        None,
+        description="Plaky board (project) id for new items; with plaky_group_id selects placement.",
+    )
+    plaky_group_id: Optional[str] = Field(
+        None,
+        description="Plaky group (section) id — API has no separate 'table'; this is the column/section.",
     )
 
 
@@ -39,15 +48,16 @@ class InitDirectionRequest(BaseModel):
 
 @router.post("/agent/chat")
 async def agent_chat(body: AgentChatRequest, session: AsyncSession = Depends(get_db)) -> dict:
-    reply, sid = await run_agent_chat(
-        session,
-        message=body.message,
-        session_id=body.session_id,
-        repo=body.repo,
-        provider=body.provider,
-        model=body.model,
-        allow_writes=body.allow_writes,
-    )
+    async with plaky_placement_context(body.plaky_board_id, body.plaky_group_id):
+        reply, sid = await run_agent_chat(
+            session,
+            message=body.message,
+            session_id=body.session_id,
+            repo=body.repo,
+            provider=body.provider,
+            model=body.model,
+            allow_writes=body.allow_writes,
+        )
     return {"ok": True, "reply": reply, "session_id": sid}
 
 

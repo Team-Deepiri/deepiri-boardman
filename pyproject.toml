@@ -70,3 +70,7 @@ minversion = "8.0"
 addopts = "-ra -q --strict-markers"
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "integration: real Ollama/network; run with BOARDMAN_AI_LIVE=1",
+    "live_ollama: requires Ollama at OLLAMA_BASE_URL with LLM_MODEL available",
+]

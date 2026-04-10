@@ -77,8 +77,9 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                     coroutine=_plaky_create_task,
                     name="plaky_create_task",
                     description=(
-                        "Create a Plaky task. Args: title, description, priority (low|medium|high), "
-                        "optional repo_tag for [tag] prefix."
+                        "Create a Plaky item (task). Uses board/group from the user's UI selection when set; "
+                        "otherwise env defaults or legacy /tasks API. Args: title, description, "
+                        "priority (low|medium|high), optional repo_tag for [tag] prefix."
                     ),
                 ),
                 StructuredTool.from_function(

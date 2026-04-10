@@ -8,6 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from boardman.database.models import IssueTaskMap, SyncLog
 from boardman.github.webhooks import IssueEventPayload
 from boardman.plaky.client import PlakyClient
+from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing
 from boardman.settings import settings
 
@@ -36,12 +37,19 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     routing_footer = ""
     if routing:
         routing_footer = (
-            f"\n\n---\n**Plaky routing:** `{routing.plaky_table}`\n"
+            f"\n\n---\n**Plaky group (label):** `{routing.plaky_table}`\n"
             f"**Category:** {routing.category}\n**GitHub:** {full_name}\n"
         )
+        if routing.plaky_board_id or routing.plaky_group_id:
+            routing_footer += (
+                f"**board_id:** `{routing.plaky_board_id}` **group_id:** `{routing.plaky_group_id}`\n"
+            )
     description = f"{payload.issue.body or ''}\n\n{payload.issue.html_url}{routing_footer}"
 
-    result = await plaky.create_task(title=title, description=description, priority="medium")
+    bid, gid = effective_plaky_placement(routing)
+    result = await plaky.create_task(
+        title=title, description=description, priority="medium", board_id=bid, group_id=gid
+    )
 
     if not result.get("ok"):
         return result

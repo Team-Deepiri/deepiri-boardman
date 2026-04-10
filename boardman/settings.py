@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     plaky_api_key: str = ""
     plaky_api_base: str = "https://api.plaky.com/v2"
     plaky_pr_merge_status: str = "in_review"
+    # Plaky hierarchy: Item lives under Board + Group (no separate "table" in API)
+    plaky_default_board_id: str = ""
+    plaky_default_group_id: str = ""
 
     github_webhook_secret: str = ""
     github_pat: Optional[str] = None
@@ -36,6 +39,8 @@ class Settings(BaseSettings):
     agent_max_history: int = 50
     agent_require_confirm_bulk: bool = True
     agent_langchain_tools: bool = True
+    # When True, LangChain AgentExecutor prints step traces (noisy; dev only)
+    agent_langchain_verbose: bool = False
     prompt_version: str = "2026-04-09"
 
     cors_origins: str = (

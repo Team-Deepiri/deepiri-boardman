@@ -4,12 +4,14 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from boardman.database.session import init_db
-from boardman.routes import agent, health, github_events, tasks
+from boardman.logging_config import setup_logging
+from boardman.routes import agent, health, github_events, plaky, tasks
 from boardman.settings import settings
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    setup_logging()
     await init_db()
     yield
 
@@ -35,6 +37,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(github_events.router, prefix="/api/v1")
     app.include_router(tasks.router, prefix="/api/v1")
+    app.include_router(plaky.router, prefix="/api/v1")
     app.include_router(agent.router, prefix="/api/v1")
 
     return app
@@ -44,7 +47,25 @@ app = create_app()
 
 
 if __name__ == "__main__":
-    import uvicorn
-    from boardman.settings import settings
+    import os
 
-    uvicorn.run(app, host=settings.service_host, port=settings.service_port)
+    import uvicorn
+
+    reload = os.environ.get("UVICORN_RELOAD", "").strip().lower() in ("1", "true", "yes")
+    if reload:
+        boardman_pkg = os.path.dirname(os.path.abspath(__file__))
+        uvicorn.run(
+            "boardman.main:app",
+            host=settings.service_host,
+            port=settings.service_port,
+            reload=True,
+            reload_dirs=[boardman_pkg],
+            log_level=settings.log_level.lower(),
+        )
+    else:
+        uvicorn.run(
+            app,
+            host=settings.service_host,
+            port=settings.service_port,
+            log_level=settings.log_level.lower(),
+        )
