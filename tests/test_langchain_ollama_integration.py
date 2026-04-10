@@ -1,5 +1,5 @@
 """
-Live checks: LangChain ChatOllama -> Ollama, and AgentExecutor -> LangChain -> Ollama.
+Live checks: LangChain ChatOllama -> Ollama (optional: tool agent uses create_agent + same stack).
 
 Skipped when Ollama is down or LLM_MODEL is not pulled (see conftest pytest_collection_modifyitems).
 

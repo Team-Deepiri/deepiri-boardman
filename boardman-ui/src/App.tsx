@@ -56,8 +56,8 @@ function EmptyState() {
       </div>
       <h3 className="empty-state__title">Start a conversation</h3>
       <p className="empty-state__text">
-        Ask about priorities, Plaky tasks, or repo context. Optional: set a GitHub repo in the panel
-        so replies stay scoped to that project.
+        Ask about priorities, Plaky tasks, or repo context. Optional: set a GitHub repo in the panel so
+        replies stay scoped to that project — built for <strong>Deepiri</strong> delivery workflows.
       </p>
     </div>
   );
@@ -208,8 +208,8 @@ export default function App() {
         <div className="sidebar__brand">
           <IconBoard className="sidebar__brand-icon" title="" />
           <div>
-            <div className="sidebar__brand-name">Board Manager</div>
-            <div className="sidebar__brand-sub">Agent console</div>
+            <div className="sidebar__brand-name sidebar__brand-name--gradient">Deepiri Board Manager</div>
+            <div className="sidebar__brand-sub">Plaky · GitHub · delivery</div>
           </div>
         </div>
 
@@ -324,7 +324,9 @@ export default function App() {
         <header className="main__header">
           <div>
             <h1 className="main__title">Chat</h1>
-            <p className="main__subtitle">Board Manager agent</p>
+            <p className="main__subtitle">
+              <strong>Deepiri</strong> Board Manager agent
+            </p>
           </div>
         </header>
 

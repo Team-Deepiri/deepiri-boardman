@@ -1,33 +1,42 @@
+/* Deepiri Board Manager — aligned with deepiri-web-frontend tokens (orange + indigo on slate). */
 :root {
   --font-sans: "Sora", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, monospace;
 
-  --bg-base: #0c0e12;
-  --bg-elevated: #13161d;
-  --bg-surface: #1a1e28;
-  --bg-input: #222731;
-  --bg-message-user: rgba(214, 162, 79, 0.12);
-  --bg-message-assistant: rgba(120, 168, 219, 0.1);
+  /* Slate bases (deepiri-web --dark / --darker family) */
+  --bg-base: #070b17;
+  --bg-elevated: #0b1020;
+  --bg-surface: #111827;
+  --bg-input: #1a2332;
+  --bg-message-user: rgba(249, 115, 22, 0.1);
+  --bg-message-assistant: rgba(99, 102, 241, 0.1);
 
   --border-subtle: rgba(255, 255, 255, 0.06);
   --border-default: rgba(255, 255, 255, 0.1);
-  --border-focus: rgba(214, 162, 79, 0.55);
+  --border-focus: rgba(249, 115, 22, 0.55);
+  --border-message-user: rgba(249, 115, 22, 0.22);
+  --border-message-assistant: rgba(129, 140, 248, 0.22);
 
-  --text-primary: #e8eaef;
-  --text-secondary: #9aa3b2;
-  --text-muted: #6b7280;
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
 
-  --accent: #d6a24f;
-  --accent-hover: #e4b45d;
-  --accent-muted: rgba(214, 162, 79, 0.25);
+  /* deepiri-orange + amber (web brand) */
+  --accent: #f97316;
+  --accent-hover: #fb923c;
+  --accent-muted: rgba(249, 115, 22, 0.22);
+  --accent-glow: rgba(249, 115, 22, 0.35);
 
-  --assistant-accent: #78a8db;
-  --danger: #c45c5c;
+  /* Indigo for assistant / AI (web primary family) */
+  --assistant-accent: #818cf8;
+  --assistant-deep: #6366f1;
+
+  --danger: #f87171;
 
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
 
-  --shadow-floating: 0 12px 40px rgba(0, 0, 0, 0.45);
+  --shadow-floating: 0 12px 40px rgba(0, 0, 0, 0.5);
   --sidebar-width: 280px;
 }

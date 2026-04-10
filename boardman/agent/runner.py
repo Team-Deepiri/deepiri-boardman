@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import logging
-from typing import List
+from typing import Any, List
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage
 
 from boardman.agent.prompts import BOARD_MANAGER_SYSTEM
 from boardman.agent.tools import build_all_tools
@@ -13,6 +13,32 @@ from boardman.llm.factory import get_chat_model
 from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# LangGraph steps (model ↔ tools); ~14 tool rounds was the old AgentExecutor cap.
+_AGENT_RECURSION_LIMIT = 45
+
+
+def _message_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "text":
+                parts.append(str(block.get("text", "")))
+            elif isinstance(block, str):
+                parts.append(block)
+        return "".join(parts).strip()
+    return str(content or "").strip()
+
+
+def _final_ai_text(messages: list[AnyMessage]) -> str:
+    for m in reversed(messages):
+        if isinstance(m, AIMessage):
+            text = _message_content_to_text(m.content)
+            if text:
+                return text
+    return ""
 
 
 async def run_tool_agent(
@@ -22,37 +48,28 @@ async def run_tool_agent(
     allow_writes: bool,
     system_extra: str = "",
 ) -> str:
-    from langchain.agents import AgentExecutor, create_tool_calling_agent
-    from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+    from langchain.agents import create_agent
 
     llm = get_chat_model()
     tools = build_all_tools(allow_writes=allow_writes)
     verbose = settings.agent_langchain_verbose or logger.isEnabledFor(logging.DEBUG)
     logger.info(
-        "LangChain AgentExecutor: %d tools, verbose=%s, provider/model from settings",
+        "LangChain create_agent: %d tools, verbose=%s, provider/model from settings",
         len(tools),
         verbose,
     )
 
-    prompt = ChatPromptTemplate.from_messages(
-        [
-            ("system", BOARD_MANAGER_SYSTEM + system_extra),
-            MessagesPlaceholder("chat_history"),
-            ("human", "{input}"),
-            MessagesPlaceholder("agent_scratchpad"),
-        ]
-    )
-    agent = create_tool_calling_agent(llm, tools, prompt)
-    executor = AgentExecutor(
-        agent=agent,
+    graph = create_agent(
+        llm,
         tools=tools,
-        verbose=verbose,
-        max_iterations=14,
-        handle_parsing_errors=True,
-        return_intermediate_steps=False,
+        system_prompt=BOARD_MANAGER_SYSTEM + system_extra,
+        debug=verbose,
     )
-    result = await executor.ainvoke({"input": user_input, "chat_history": chat_history})
-    logger.info("LangChain AgentExecutor finished (output length=%d)", len(str(result)))
-    if isinstance(result, dict) and "output" in result:
-        return str(result["output"])
-    return str(result)
+    messages: list[BaseMessage] = list(chat_history) + [HumanMessage(content=user_input)]
+    result = await graph.ainvoke(
+        {"messages": messages},
+        config={"recursion_limit": _AGENT_RECURSION_LIMIT},
+    )
+    out = _final_ai_text(result.get("messages", []))
+    logger.info("LangChain agent finished (output length=%d)", len(out))
+    return out or "(No assistant text returned.)"

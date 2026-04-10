@@ -6,7 +6,13 @@
 
 body {
   margin: 0;
-  background: var(--bg-base);
+  background-color: var(--bg-base);
+  background-image: radial-gradient(
+      ellipse 130% 90% at 100% -25%,
+      rgba(249, 115, 22, 0.09),
+      transparent 52%
+    ),
+    radial-gradient(ellipse 90% 70% at 0% 100%, rgba(99, 102, 241, 0.07), transparent 48%);
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 15px;
@@ -23,7 +29,8 @@ body {
 .sidebar {
   width: var(--sidebar-width);
   flex-shrink: 0;
-  background: var(--bg-elevated);
+  background: linear-gradient(180deg, rgba(249, 115, 22, 0.04) 0%, transparent 42%),
+    var(--bg-elevated);
   border-right: 1px solid var(--border-subtle);
   padding: 1.5rem 1.25rem;
   display: flex;
@@ -44,18 +51,31 @@ body {
   height: 36px;
   color: var(--accent);
   flex-shrink: 0;
+  filter: drop-shadow(0 0 10px var(--accent-glow));
 }
 
 .sidebar__brand-name {
-  font-weight: 600;
-  font-size: 1.05rem;
+  font-weight: 700;
+  font-size: 0.95rem;
   letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+/* Deepiri wordmark gradient (matches deepiri-web-frontend brand title) */
+.sidebar__brand-name--gradient {
+  background: linear-gradient(135deg, #f97316 0%, #fb923c 55%, #f59e0b 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+  color: transparent;
 }
 
 .sidebar__brand-sub {
-  font-size: 0.75rem;
-  color: var(--text-muted);
-  margin-top: 0.15rem;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+  margin-top: 0.2rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
 }
 
 .field__label {
@@ -234,6 +254,11 @@ body {
   color: var(--text-muted);
 }
 
+.main__subtitle strong {
+  color: var(--assistant-accent);
+  font-weight: 600;
+}
+
 .chat-shell {
   flex: 1;
   display: flex;
@@ -296,6 +321,11 @@ body {
   line-height: 1.55;
 }
 
+.empty-state__text strong {
+  color: var(--accent-hover);
+  font-weight: 600;
+}
+
 .message-list {
   list-style: none;
   margin: 0;
@@ -356,13 +386,13 @@ body {
 
 .message--user .message__body {
   background: var(--bg-message-user);
-  border-color: rgba(214, 162, 79, 0.2);
+  border-color: var(--border-message-user);
 }
 
 .message--assistant .message__body,
 .message--pending .message__body {
   background: var(--bg-message-assistant);
-  border-color: rgba(120, 168, 219, 0.15);
+  border-color: var(--border-message-assistant);
 }
 
 .message__meta {
@@ -468,7 +498,7 @@ body {
   border: none;
   border-radius: var(--radius-md);
   background: var(--accent);
-  color: #1a1408;
+  color: #0f172a;
   cursor: pointer;
   transition: background 0.15s, transform 0.1s;
 }
@@ -501,7 +531,7 @@ body {
   border-radius: 50%;
   border: 1px solid var(--border-default);
   background: var(--accent);
-  color: #1a1408;
+  color: #0f172a;
   cursor: pointer;
   z-index: 60;
   box-shadow: var(--shadow-floating);
@@ -683,7 +713,7 @@ body {
   border: none;
   border-radius: var(--radius-sm);
   background: var(--accent);
-  color: #1a1408;
+  color: #0f172a;
   cursor: pointer;
 }
 
