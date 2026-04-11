@@ -14,7 +14,8 @@ from fnmatch import fnmatchcase
 from typing import Dict, List, Optional, Set, Tuple
 
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, load_team_assignments
-from boardman.assignment.repo_rules import qa_tier_allows_repo
+from boardman.repos_config import get_routing
+from boardman.settings import settings
 
 
 def _norm_repo(full: str) -> str:
@@ -140,19 +141,27 @@ def _weighted_choice(members: List[TeamMember], cfg: TeamAssignmentsConfig) -> O
 def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] = None) -> Tuple[Optional[str], str]:
     """
     Returns (plaky_person_id_or_value, reason_summary).
+    Uses tier from repos.yml (or default tier 2 if not classified).
     """
     cfg = cfg or load_team_assignments()
     fn = (full_name or "").strip()
     if not fn:
         return None, "empty repo"
 
+    # Get tier from repos.yml or default to tier 2
+    repo_tier = 2
+    routing = get_routing(fn, "", settings.github_org)
+    if routing and routing.tier > 0:
+        repo_tier = routing.tier
+
     qas = [m for m in cfg.members if "qa" in m.roles and repo_matches_member(fn, m)]
     if not qas:
         return None, "no QA member matched repo globs"
 
-    qas = [m for m in qas if qa_tier_allows_repo(m.qa_tier, fn, cfg.qa_repo_rules)]
+    # Filter by QA tier (repo_tier is the tier required - QAs must have qa_tier >= repo_tier)
+    qas = [m for m in qas if m.qa_tier >= repo_tier]
     if not qas:
-        return None, "no QA after QA tier vs repo rules (tiers 1/2/3)"
+        return None, f"no QA after tier filter (repo tier={repo_tier}, QA tiers: {[m.qa_tier for m in qas]})"
 
     if repo_is_heavy(fn, cfg.heavy_repo_patterns):
         qas = [m for m in qas if m.tier.lower() not in ("light", "minimal", "low")]
@@ -163,7 +172,7 @@ def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] = None
     chosen = _weighted_choice(pool, cfg)
     if not chosen:
         return None, "weighted pick failed"
-    return chosen.id, f"qa={chosen.display} pool_size={len(pool)}"
+    return chosen.id, f"qa={chosen.display} pool_size={len(pool)} repo_tier={repo_tier}"
 
 
 def pick_engineer_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] = None) -> Tuple[Optional[str], str]:

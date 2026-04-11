@@ -124,8 +124,8 @@ function EmptyState() {
 
 export default function App() {
   const [repo, setRepo] = useState("");
-  const [allowWrites, setAllowWrites] = useState(false);
-  const [useTools, setUseTools] = useState(false);
+  const [allowWrites, setAllowWrites] = useState(true);
+  const [useTools, setUseTools] = useState(true);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -155,6 +155,9 @@ export default function App() {
   const [supportTeam, setSupportTeam] = useState<SupportTeamRow[]>([]);
   const [supportTeamHint, setSupportTeamHint] = useState<string | null>(null);
   const [supportTeamSpec, setSupportTeamSpec] = useState("Team-Deepiri/support-team");
+
+  const [classifyBusy, setClassifyBusy] = useState(false);
+  const [classifyMsg, setClassifyMsg] = useState<string | null>(null);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const drawerScrollRef = useRef<HTMLDivElement>(null);
@@ -459,6 +462,35 @@ export default function App() {
             <div className="sidebar__brand-name sidebar__brand-name--gradient">Deepiri Board Manager</div>
             <div className="sidebar__brand-sub">Plaky · GitHub · delivery</div>
           </div>
+        </div>
+
+        <div className="field">
+          <button
+            type="button"
+            className="field__button field__button--secondary"
+            disabled={classifyBusy}
+            onClick={async () => {
+              setClassifyBusy(true);
+              setClassifyMsg(null);
+              try {
+                const { data } = await api.post<{ ok?: boolean; classified?: number; error?: string }>(
+                  "/api/v1/repos/classify"
+                );
+                if (data.ok) {
+                  setClassifyMsg(`Classified ${data.classified || 0} repos.`);
+                } else {
+                  setClassifyMsg(data.error || "Classification failed.");
+                }
+              } catch (e: unknown) {
+                setClassifyMsg(axios.isAxiosError(e) ? e.message : String(e));
+              } finally {
+                setClassifyBusy(false);
+              }
+            }}
+          >
+            {classifyBusy ? "Classifying..." : "Re-classify repos"}
+          </button>
+          {classifyMsg ? <p className="field__hint">{classifyMsg}</p> : null}
         </div>
 
         <div className="field">

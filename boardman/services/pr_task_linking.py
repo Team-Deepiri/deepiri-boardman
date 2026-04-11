@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.models import IssueTaskMap, SyncLog
 from boardman.plaky.client import PlakyClient
+from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.assignment.identity_match import score_github_vs_plaky, best_plaky_match_for_github
 from boardman.assignment.identity_common import plaky_email_addresses, plaky_display_name
 from boardman.repos_config import get_routing
@@ -114,6 +115,7 @@ class TaskCandidate:
     task_id: str
     title: str
     description: str
+    status: Optional[str] = None
     issue_numbers: set[int] = field(default_factory=set)
     sources: list[str] = field(default_factory=list)
     assignee_login: Optional[str] = None
@@ -128,6 +130,7 @@ class ScoredCandidate:
     description: str
     score: float
     breakdown: dict[str, float]
+    status: Optional[str] = None
 
 
 Decision = Literal["none", "auto_link", "llm_link", "triage"]
@@ -181,6 +184,7 @@ def _merge_candidate(
     assignee_login: Optional[str] = None,
     assignee_email: Optional[str] = None,
     assignee_name: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> None:
     if not task_id:
         return
@@ -189,6 +193,7 @@ def _merge_candidate(
             task_id=task_id,
             title=title,
             description=description,
+            status=status,
             issue_numbers=set(issue_nums),
             sources=[source],
             assignee_login=assignee_login,
@@ -203,6 +208,11 @@ def _merge_candidate(
         c.title = title
     if len(description) > len(c.description):
         c.description = description
+    
+    # Update status if current is empty or if we found a more "active" looking status
+    if status and (not c.status or c.status.lower() in ("done", "closed", "completed")):
+        c.status = status
+
     # Update assignee info if provided and not already set
     if assignee_login and not c.assignee_login:
         c.assignee_login = assignee_login
@@ -231,9 +241,6 @@ async def gather_candidates(
             "",
             nums,
             "issue_task_map",
-            assignee_login=None,
-            assignee_email=None,
-            assignee_name=None,
         )
 
     if not board_id or not settings.pr_linking_fetch_board_items:
@@ -259,7 +266,8 @@ async def gather_candidates(
             }
 
     # Hardcoded assignee field keys
-    assignee_field_keys = ["engineer", "qa", "assignee_dev", "assignee_qa"]
+    assignee_field_keys = ["engineer", "qa", "assignee_dev", "assignee_qa", "person"]
+    status_field_keys = ["status", "state", "stage", "progress"]
 
     max_items = max(1, settings.pr_linking_max_board_items_scan)
     tag = f"[{repo_name}]"
@@ -278,8 +286,20 @@ async def gather_candidates(
         assignee_login = None
         assignee_email = None
         assignee_name = None
+        status = str(item.get("status") or "").strip() or None
+        
         raw_fields = item.get("fields")
         if isinstance(raw_fields, dict):
+            # Status check in fields
+            if not status:
+                for sk in status_field_keys:
+                    for fk, fv in raw_fields.items():
+                        if sk in fk.lower() and isinstance(fv, str):
+                            status = fv
+                            break
+                    if status: break
+
+            # Assignee check in fields
             for field_key in assignee_field_keys:
                 assignee_id = raw_fields.get(field_key)
                 if assignee_id and str(assignee_id) in user_lookup:
@@ -299,10 +319,27 @@ async def gather_candidates(
             or (owner and f"{owner}/{repo_name}".lower() in cl)
         )
         if mention_repo or nums:
-            _merge_candidate(by_id, tid, title, desc, nums, "board_item", 
-                           assignee_login=assignee_login, assignee_email=assignee_email, assignee_name=assignee_name)
+            _merge_candidate(
+                by_id, tid, title, desc, nums, "board_item", 
+                assignee_login=assignee_login, 
+                assignee_email=assignee_email, 
+                assignee_name=assignee_name,
+                status=status
+            )
 
     return by_id
+
+
+def _tokenize_ref(text: str) -> set[str]:
+    """Split branch/ref names into keywords, filtering common prefixes."""
+    if not text:
+        return set()
+    # Replace separators with spaces, lowercase, and split
+    clean = re.sub(r"[/_-]", " ", text.lower())
+    tokens = {t.strip() for t in clean.split() if len(t.strip()) >= 3}
+    # Filter out very common git flow or type prefixes
+    ignore = {"feat", "feature", "fix", "bug", "hotfix", "patch", "refactor", "chore", "docs", "test", "issue", "task"}
+    return tokens - ignore
 
 
 def score_candidate(
@@ -314,9 +351,12 @@ def score_candidate(
     repo_full: str,
     pr_number: int,
     session_penalty: bool,
+    head_ref: str = "",
     pr_author_login: Optional[str] = None,
     pr_author_email: Optional[str] = None,
     pr_author_name: Optional[str] = None,
+    done_statuses: Optional[set[str]] = None,
+    active_statuses: Optional[set[str]] = None,
 ) -> ScoredCandidate:
     """Composite score (roughly 0–100+ before clamp)."""
     b: dict[str, float] = {}
@@ -339,9 +379,34 @@ def score_candidate(
                 score += 25.0
                 break
 
+    # --- Title similarity ---
     ts = _similar(pr_title, cand.title)
-    b["title_sim"] = round(ts, 4)
-    score += 20.0 * ts
+    if ts >= 0.98:
+        # Near exact match gets a huge boost to clear auto_link threshold
+        b["title_exact_match"] = 80.0
+        score += 80.0
+    else:
+        b["title_sim"] = round(ts, 4)
+        score += 25.0 * ts
+
+    # --- Branch Name Keyword/Token Matching ---
+    if head_ref:
+        branch_tokens = _tokenize_ref(head_ref)
+        title_tokens = _tokenize_ref(cand.title)
+        
+        token_overlap = branch_tokens & title_tokens
+        if token_overlap:
+            # Score based on how many keywords matched (logarithmic-ish)
+            count = len(token_overlap)
+            boost = min(30.0, 10.0 + (count * 5.0))
+            b["branch_token_match"] = boost
+            score += boost
+        
+        # Also check fuzzy similarity of full branch name vs title (lower weight)
+        bs = _similar(head_ref.split("/")[-1], cand.title)
+        if bs >= 0.6:
+            b["branch_fuzzy_sim"] = round(bs * 15.0, 2)
+            score += bs * 15.0
 
     body_snip = (pr_body or "")[:8000]
     ds = _similar(body_snip, cand.description[:8000])
@@ -352,27 +417,33 @@ def score_candidate(
         b["other_pr_linked"] = -40.0
         score -= 40.0
 
+    # --- Status weighting ---
+    if cand.status:
+        st = cand.status
+        # Use schema-derived sets if provided
+        if done_statuses and st in done_statuses:
+            b["status_closed_penalty"] = -30.0
+            score -= 30.0
+        elif active_statuses and st in active_statuses:
+            b["status_active_boost"] = 15.0
+            score += 15.0
+        else:
+            # Fallback to keyword matching if schema is empty or doesn't match
+            st_low = st.lower()
+            if any(x in st_low for x in ("done", "closed", "completed", "resolved", "finished", "archive", "shipped", "live", "merged")):
+                b["status_closed_penalty"] = -30.0
+                score -= 30.0
+            elif any(x in st_low for x in ("progress", "doing", "active", "todo", "to do", "backlog", "dev", "qa", "review")):
+                b["status_active_boost"] = 15.0
+                score += 15.0
+
     # --- Person matching: PR author vs task assignee (via identity_match) ---
     if pr_author_login or pr_author_email or pr_author_name:
-        pr_author: dict[str, Any] = {}
-        if pr_author_login:
-            pr_author["login"] = pr_author_login.strip().lower()
-        if pr_author_email:
-            pr_author["email"] = pr_author_email.strip().lower()
-        if pr_author_name:
-            pr_author["name"] = pr_author_name.strip()
+        pr_author: dict[str, Any] = {"login": pr_author_login, "email": pr_author_email, "name": pr_author_name}
+        plaky_user: dict[str, Any] = {"login": cand.assignee_login, "email": cand.assignee_email, "name": cand.assignee_name}
         
-        # Build Plaky-style user dict for identity_match scoring
-        plaky_user: dict[str, Any] = {}
-        if cand.assignee_login:
-            plaky_user["login"] = cand.assignee_login.strip().lower()
-        if cand.assignee_email:
-            plaky_user["email"] = cand.assignee_email.strip().lower()
-        if cand.assignee_name:
-            plaky_user["name"] = cand.assignee_name.strip()
-        
-        if pr_author and plaky_user:
-            # Use identity_match scoring for GitHub -> Plaky user matching
+        if (pr_author.get("login") or pr_author.get("email") or pr_author.get("name")) and \
+           (plaky_user.get("login") or plaky_user.get("email") or plaky_user.get("name")):
             identity_score = score_github_vs_plaky(pr_author, plaky_user)
             if identity_score >= 6500:
                 b["assignee_identity_match"] = 50.0
@@ -388,7 +459,6 @@ def score_candidate(
     if pr_author_name and cand.assignee_name:
         title_lower = pr_title.lower()
         assignee_lower = cand.assignee_name.lower()
-        # Check if assignee name appears in PR title
         assignee_parts = assignee_lower.split()
         name_boost = 0
         for part in assignee_parts:
@@ -406,6 +476,7 @@ def score_candidate(
         description=cand.description,
         score=score,
         breakdown=b,
+        status=cand.status
     )
 
 
@@ -446,12 +517,32 @@ async def run_pr_task_pipeline(
 
     routing = get_routing(repo_full, repo_name, org)
     board_id = (routing.plaky_board_id if routing else "") or settings.plaky_default_board_id
+    board_id = board_id.strip()
+
+    # Dynamic status detection from schema
+    done_set: set[str] = set()
+    active_set: set[str] = set()
+    if board_id:
+        schema = await fetch_board_schema_bundle(board_id)
+        if schema.get("ok") and schema.get("normalized"):
+            fields = schema["normalized"].get("fields") or []
+            for f in fields:
+                if f.get("type") == "status" or "status" in f.get("name", "").lower():
+                    opts = f.get("options") or []
+                    for opt in opts:
+                        name = opt.get("name") if isinstance(opt, dict) else str(opt)
+                        if not name: continue
+                        nl = name.lower()
+                        if any(x in nl for x in ("done", "closed", "completed", "resolved", "finished", "archive", "shipped", "live", "merged")):
+                            done_set.add(name)
+                        elif any(x in nl for x in ("progress", "doing", "active", "todo", "to do", "backlog", "dev", "qa", "review")):
+                            active_set.add(name)
 
     candidates = await gather_candidates(
         session=session,
         repo_name=repo_name,
         repo_full=repo_full,
-        board_id=board_id.strip(),
+        board_id=board_id,
         plaky=plaky,
     )
 
@@ -484,6 +575,8 @@ async def run_pr_task_pipeline(
                 pr_author_login=pr_author_login,
                 pr_author_email=pr_author_email,
                 pr_author_name=pr_author_name,
+                done_statuses=done_set,
+                active_statuses=active_set,
             )
         )
 
