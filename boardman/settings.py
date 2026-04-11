@@ -1,4 +1,3 @@
-from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -14,7 +13,7 @@ class Settings(BaseSettings):
     plaky_default_group_id: str = ""
 
     github_webhook_secret: str = ""
-    github_pat: Optional[str] = None
+    github_pat: str | None = None
     github_org: str = "deepiri-org"
     # Org team for support roster: GET /api/v1/github/support-team/members (names/logins from GitHub)
     github_support_team: str = "Team-Deepiri/support-team"
@@ -62,6 +61,17 @@ class Settings(BaseSettings):
     assignment_identity_llm_reject_below: float = 0.30
     assignment_identity_llm_gray_low: int = 380
     assignment_identity_llm_gray_high: int = 8200
+
+    # PR ↔ Plaky fuzzy linking (pull_request.opened when no Fixes/Closes issue)
+    pr_linking_pipeline_enabled: bool = True
+    pr_linking_fetch_board_items: bool = True
+    pr_linking_max_board_items_scan: int = 200
+    pr_linking_board_max_pages: int = 10
+    pr_linking_high_threshold: float = 90.0
+    pr_linking_medium_threshold: float = 50.0
+    pr_linking_top_n_for_llm: int = 5
+    pr_linking_llm_enabled: bool = False
+    pr_linking_llm_min_confidence: float = 0.75
 
 
 settings = Settings()

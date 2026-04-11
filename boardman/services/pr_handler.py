@@ -1,5 +1,5 @@
 import json
-from typing import Any, Dict, Optional
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -8,14 +8,19 @@ from boardman.assignment.qa_picker import pick_qa_for_repo
 from boardman.database.models import SyncLog
 from boardman.github.webhooks import PullRequestEventPayload
 from boardman.plaky.client import PlakyClient
-from boardman.services.issue_handler import get_linked_issue_numbers, find_plaky_task_by_issue
+from boardman.services.issue_handler import find_plaky_task_by_issue, get_linked_issue_numbers
+from boardman.services.pr_task_linking import (
+    format_triage_comment,
+    run_pr_task_pipeline,
+    should_run_pipeline,
+)
 from boardman.settings import settings
 
 
 async def _maybe_triage_ambiguous_pr(
     payload: PullRequestEventPayload,
     session: AsyncSession,
-) -> Optional[Dict[str, Any]]:
+) -> dict[str, Any] | None:
     """
     PRs with no Fixes/Closes issue link: optional Plaky triage task + QA assignee.
     Configure under `ambiguous_pr` in team_assignments.yml.
@@ -108,6 +113,67 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
             results.append({"issue": issue_num, "task_id": mapping.plaky_task_id})
 
     if not linked_issues:
+        run_pipe = settings.pr_linking_pipeline_enabled and await should_run_pipeline(
+            payload.pull_request.body
+        )
+        if run_pipe:
+            pipe = await run_pr_task_pipeline(
+                session=session,
+                plaky=plaky,
+                repo_full=payload.repository.full_name,
+                repo_name=repo_name,
+                org=settings.github_org,
+                pr_number=pr_number,
+                pr_title=payload.pull_request.title,
+                pr_body=payload.pull_request.body,
+                head=payload.pull_request.head,
+            )
+            plog = SyncLog(
+                action="pr_link_pipeline",
+                github_repo=repo_name,
+                github_ref=str(pr_number),
+                plaky_task_id=pipe.task_id,
+                detail=json.dumps(
+                    {
+                        "decision": pipe.decision,
+                        "score": pipe.score,
+                        "reason": pipe.reason,
+                        "detail": pipe.log_detail,
+                        "triage_comment": format_triage_comment(pipe.top_scored)
+                        if pipe.decision == "triage"
+                        else None,
+                    },
+                    default=str,
+                ),
+            )
+            session.add(plog)
+
+            if pipe.decision in ("auto_link", "llm_link") and pipe.task_id:
+                comment = (
+                    f"**PR Opened** (automation link — {pipe.decision}): "
+                    f"[{pr_number}]({pr_url})"
+                )
+                await plaky.add_comment(pipe.task_id, comment)
+                log = SyncLog(
+                    action="pr_linked_fuzzy",
+                    github_repo=repo_name,
+                    github_ref=str(pr_number),
+                    plaky_task_id=pipe.task_id,
+                    detail=json.dumps(
+                        {"pr_url": pr_url, "pipeline": pipe.decision, "score": pipe.score},
+                        default=str,
+                    ),
+                )
+                session.add(log)
+                await session.commit()
+                return {
+                    "ok": True,
+                    "linked": [{"task_id": pipe.task_id, "via": pipe.decision}],
+                    "pipeline": pipe.decision,
+                }
+
+            await session.commit()
+
         triage = await _maybe_triage_ambiguous_pr(payload, session)
         if triage is not None:
             return triage
@@ -132,15 +198,26 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
         if mapping:
             await plaky.update_task_status(mapping.plaky_task_id, settings.plaky_pr_merge_status)
 
+            merge_detail = {
+                "issue_number": issue_num,
+                "pr_url": pr_url,
+                "status": settings.plaky_pr_merge_status,
+            }
             log = SyncLog(
                 action="pr_merged",
                 github_repo=repo_name,
                 github_ref=str(pr_number),
                 plaky_task_id=mapping.plaky_task_id,
-                detail=json.dumps({"issue_number": issue_num, "pr_url": pr_url, "status": settings.plaky_pr_merge_status}),
+                detail=json.dumps(merge_detail),
             )
             session.add(log)
-            results.append({"issue": issue_num, "task_id": mapping.plaky_task_id, "status": settings.plaky_pr_merge_status})
+            results.append(
+                {
+                    "issue": issue_num,
+                    "task_id": mapping.plaky_task_id,
+                    "status": settings.plaky_pr_merge_status,
+                }
+            )
 
     if not linked_issues:
         return {"ok": True, "skipped": True, "message": "No linked issues found"}

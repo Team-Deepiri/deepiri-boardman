@@ -468,6 +468,56 @@ class PlakyClient:
             "board": None,
         }
 
+    async def list_board_items(
+        self,
+        board_id: str,
+        *,
+        max_pages: int = 15,
+    ) -> Dict[str, Any]:
+        """
+        Paginated item list for a board (Plaky v1/public GET .../boards/{id}/items).
+        Used for PR↔task fuzzy candidate generation.
+        """
+        if not self.api_key:
+            return {"ok": False, "items": [], "message": "PLAKY_API_KEY is missing."}
+        root = self._public_root()
+        if not root:
+            return {
+                "ok": False,
+                "items": [],
+                "message": "Plaky v1/public base URL required for board item listing.",
+            }
+        bid = board_id.strip()
+        sid = await self.resolve_space_for_board(bid)
+        if not sid:
+            return {"ok": False, "items": [], "message": "Could not resolve space for board"}
+        path = f"/spaces/{sid}/boards/{bid}/items"
+        async with httpx.AsyncClient() as client:
+            page = 1
+            accum: List[Dict[str, Any]] = []
+            base = root.rstrip("/")
+            p = path if path.startswith("/") else f"/{path}"
+            while page <= max_pages:
+                url = f"{base}{p}"
+                params: Dict[str, Any] = {"page": page, "pageSize": 100}
+                response = await _request_with_rate_limit_retry(
+                    client, "GET", url, headers=_headers(self.api_key), params=params
+                )
+                if response.status_code != 200:
+                    break
+                try:
+                    payload = response.json()
+                except ValueError:
+                    break
+                rows = [x for x in _extract_row_list(payload) if isinstance(x, dict)]
+                accum.extend(rows)
+                if not _payload_has_more(payload):
+                    break
+                if not rows:
+                    break
+                page += 1
+        return {"ok": True, "items": accum, "status": 200}
+
     async def _create_item_hierarchy(
         self,
         board_id: str,
