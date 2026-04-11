@@ -94,6 +94,93 @@ def test_format_triage_comment():
     assert "55.0" in txt
 
 
+def test_score_assignee_identity_match():
+    """Test that PR author matching task assignee adds score boost."""
+    # Case 1: PR author matches assignee via email
+    c = TaskCandidate(
+        task_id="t1",
+        title="Fix auth bug",
+        description="",
+        issue_numbers=set(),
+        sources=["board_item"],
+        assignee_login="alice",
+        assignee_email="alice@company.com",
+        assignee_name="Alice Smith",
+    )
+    result = score_candidate(
+        c,
+        ref_issues=set(),
+        pr_title="Fix auth bug",
+        pr_body="",
+        repo_full="x/boardman",
+        pr_number=1,
+        session_penalty=False,
+        pr_author_login="alice",
+        pr_author_email="alice@company.com",
+        pr_author_name="Alice",
+    )
+    # identity_match should detect the email match and add score
+    assert result.breakdown.get("assignee_identity_match") == 50.0 or \
+           result.breakdown.get("assignee_identity_partial") == 30.0 or \
+           result.breakdown.get("assignee_identity_weak") == 15.0
+
+
+def test_score_pr_title_name_boost():
+    """Test that PR title containing assignee name adds small boost."""
+    c = TaskCandidate(
+        task_id="t1",
+        title="Fix for Alice",
+        description="",
+        issue_numbers=set(),
+        sources=["board_item"],
+        assignee_login="",
+        assignee_email="",
+        assignee_name="Alice Smith",
+    )
+    result = score_candidate(
+        c,
+        ref_issues=set(),
+        pr_title="Fix for Alice Smith - auth bug",
+        pr_body="",
+        repo_full="x/boardman",
+        pr_number=1,
+        session_penalty=False,
+        pr_author_login="bob",
+        pr_author_name="Bob",
+    )
+    # Should have pr_title_name_mention boost
+    assert result.breakdown.get("pr_title_name_mention") == 20.0
+
+
+def test_score_no_assignee_no_boost():
+    """Test that tasks without assignee don't get identity boost."""
+    c = TaskCandidate(
+        task_id="t1",
+        title="Generic task",
+        description="",
+        issue_numbers=set(),
+        sources=["board_item"],
+        assignee_login=None,
+        assignee_email=None,
+        assignee_name=None,
+    )
+    result = score_candidate(
+        c,
+        ref_issues=set(),
+        pr_title="My PR",
+        pr_body="",
+        repo_full="x/boardman",
+        pr_number=1,
+        session_penalty=False,
+        pr_author_login="bob",
+        pr_author_name="Bob",
+    )
+    # No identity boosts when no assignee
+    assert "assignee_identity_match" not in result.breakdown
+    assert "assignee_identity_partial" not in result.breakdown
+    assert "assignee_identity_weak" not in result.breakdown
+
+
 @pytest.mark.asyncio
 async def test_pipeline_disabled(monkeypatch):
     monkeypatch.setattr(settings, "pr_linking_pipeline_enabled", False)

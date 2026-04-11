@@ -15,13 +15,15 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Any, Literal
+from typing import Any, Literal, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.models import IssueTaskMap, SyncLog
 from boardman.plaky.client import PlakyClient
+from boardman.assignment.identity_match import score_github_vs_plaky, best_plaky_match_for_github
+from boardman.assignment.identity_common import plaky_email_addresses, plaky_display_name
 from boardman.repos_config import get_routing
 from boardman.services.issue_handler import get_linked_issue_numbers
 from boardman.services.llm_pr_task_rerank import llm_rerank_pr_candidates
@@ -114,6 +116,9 @@ class TaskCandidate:
     description: str
     issue_numbers: set[int] = field(default_factory=set)
     sources: list[str] = field(default_factory=list)
+    assignee_login: Optional[str] = None
+    assignee_email: Optional[str] = None
+    assignee_name: Optional[str] = None
 
 
 @dataclass
@@ -173,6 +178,9 @@ def _merge_candidate(
     description: str,
     issue_nums: set[int],
     source: str,
+    assignee_login: Optional[str] = None,
+    assignee_email: Optional[str] = None,
+    assignee_name: Optional[str] = None,
 ) -> None:
     if not task_id:
         return
@@ -183,6 +191,9 @@ def _merge_candidate(
             description=description,
             issue_numbers=set(issue_nums),
             sources=[source],
+            assignee_login=assignee_login,
+            assignee_email=assignee_email,
+            assignee_name=assignee_name,
         )
         return
     c = by_id[task_id]
@@ -192,6 +203,13 @@ def _merge_candidate(
         c.title = title
     if len(description) > len(c.description):
         c.description = description
+    # Update assignee info if provided and not already set
+    if assignee_login and not c.assignee_login:
+        c.assignee_login = assignee_login
+    if assignee_email and not c.assignee_email:
+        c.assignee_email = assignee_email
+    if assignee_name and not c.assignee_name:
+        c.assignee_name = assignee_name
 
 
 async def gather_candidates(
@@ -213,6 +231,9 @@ async def gather_candidates(
             "",
             nums,
             "issue_task_map",
+            assignee_login=None,
+            assignee_email=None,
+            assignee_name=None,
         )
 
     if not board_id or not settings.pr_linking_fetch_board_items:
@@ -221,6 +242,24 @@ async def gather_candidates(
     listed = await plaky.list_board_items(board_id, max_pages=settings.pr_linking_board_max_pages)
     if not listed.get("ok"):
         return by_id
+
+    # Fetch workspace users for assignee mapping
+    users_result = await plaky.list_workspace_users()
+    workspace_users = users_result.get("users", []) if users_result.get("ok") else []
+    
+    # Build assignee lookup: user_id -> {login, email, name}
+    user_lookup: dict[str, dict] = {}
+    for u in workspace_users:
+        uid = str(u.get("id") or "")
+        if uid:
+            user_lookup[uid] = {
+                "login": "",  # Plaky doesn't have GitHub login, use name as fallback
+                "email": str(u.get("primaryEmail") or u.get("email") or "").lower(),
+                "name": str(u.get("name") or u.get("displayName") or ""),
+            }
+
+    # Hardcoded assignee field keys
+    assignee_field_keys = ["engineer", "qa", "assignee_dev", "assignee_qa"]
 
     max_items = max(1, settings.pr_linking_max_board_items_scan)
     tag = f"[{repo_name}]"
@@ -234,6 +273,22 @@ async def gather_candidates(
         title, desc = _item_title_desc(item)
         if not tid:
             continue
+        
+        # Extract assignee info from item fields
+        assignee_login = None
+        assignee_email = None
+        assignee_name = None
+        raw_fields = item.get("fields")
+        if isinstance(raw_fields, dict):
+            for field_key in assignee_field_keys:
+                assignee_id = raw_fields.get(field_key)
+                if assignee_id and str(assignee_id) in user_lookup:
+                    assignee_info = user_lookup[str(assignee_id)]
+                    assignee_login = assignee_info.get("login") or ""
+                    assignee_email = assignee_info.get("email") or ""
+                    assignee_name = assignee_info.get("name") or ""
+                    break  # Use first matching assignee field
+
         combined = f"{title}\n{desc}"
         cl = combined.lower()
         nums = issue_numbers_in_text(combined, repo_full)
@@ -244,7 +299,8 @@ async def gather_candidates(
             or (owner and f"{owner}/{repo_name}".lower() in cl)
         )
         if mention_repo or nums:
-            _merge_candidate(by_id, tid, title, desc, nums, "board_item")
+            _merge_candidate(by_id, tid, title, desc, nums, "board_item", 
+                           assignee_login=assignee_login, assignee_email=assignee_email, assignee_name=assignee_name)
 
     return by_id
 
@@ -258,6 +314,9 @@ def score_candidate(
     repo_full: str,
     pr_number: int,
     session_penalty: bool,
+    pr_author_login: Optional[str] = None,
+    pr_author_email: Optional[str] = None,
+    pr_author_name: Optional[str] = None,
 ) -> ScoredCandidate:
     """Composite score (roughly 0–100+ before clamp)."""
     b: dict[str, float] = {}
@@ -293,6 +352,53 @@ def score_candidate(
         b["other_pr_linked"] = -40.0
         score -= 40.0
 
+    # --- Person matching: PR author vs task assignee (via identity_match) ---
+    if pr_author_login or pr_author_email or pr_author_name:
+        pr_author: dict[str, Any] = {}
+        if pr_author_login:
+            pr_author["login"] = pr_author_login.strip().lower()
+        if pr_author_email:
+            pr_author["email"] = pr_author_email.strip().lower()
+        if pr_author_name:
+            pr_author["name"] = pr_author_name.strip()
+        
+        # Build Plaky-style user dict for identity_match scoring
+        plaky_user: dict[str, Any] = {}
+        if cand.assignee_login:
+            plaky_user["login"] = cand.assignee_login.strip().lower()
+        if cand.assignee_email:
+            plaky_user["email"] = cand.assignee_email.strip().lower()
+        if cand.assignee_name:
+            plaky_user["name"] = cand.assignee_name.strip()
+        
+        if pr_author and plaky_user:
+            # Use identity_match scoring for GitHub -> Plaky user matching
+            identity_score = score_github_vs_plaky(pr_author, plaky_user)
+            if identity_score >= 6500:
+                b["assignee_identity_match"] = 50.0
+                score += 50.0
+            elif identity_score >= 5000:
+                b["assignee_identity_partial"] = 30.0
+                score += 30.0
+            elif identity_score >= 3500:
+                b["assignee_identity_weak"] = 15.0
+                score += 15.0
+    
+    # --- PR title name boost: if title contains assignee name ---
+    if pr_author_name and cand.assignee_name:
+        title_lower = pr_title.lower()
+        assignee_lower = cand.assignee_name.lower()
+        # Check if assignee name appears in PR title
+        assignee_parts = assignee_lower.split()
+        name_boost = 0
+        for part in assignee_parts:
+            if len(part) >= 3 and part in title_lower:
+                name_boost = 20.0
+                break
+        if name_boost > 0:
+            b["pr_title_name_mention"] = name_boost
+            score += name_boost
+
     b["total"] = round(score, 2)
     return ScoredCandidate(
         task_id=cand.task_id,
@@ -314,6 +420,9 @@ async def run_pr_task_pipeline(
     pr_title: str,
     pr_body: str | None,
     head: Any,
+    pr_author_login: Optional[str] = None,
+    pr_author_email: Optional[str] = None,
+    pr_author_name: Optional[str] = None,
 ) -> PipelineResult:
     """
     Run full pipeline. Call when standard Fixes/Closes links are absent.
@@ -372,6 +481,9 @@ async def run_pr_task_pipeline(
                 repo_full=repo_full,
                 pr_number=pr_number,
                 session_penalty=conflict,
+                pr_author_login=pr_author_login,
+                pr_author_email=pr_author_email,
+                pr_author_name=pr_author_name,
             )
         )
 

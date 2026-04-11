@@ -117,6 +117,11 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
             payload.pull_request.body
         )
         if run_pipe:
+            pr_user = payload.pull_request.user or {}
+            pr_author_login = pr_user.get("login") if isinstance(pr_user, dict) else None
+            pr_author_email = pr_user.get("email") if isinstance(pr_user, dict) else None
+            pr_author_name = pr_user.get("name") if isinstance(pr_user, dict) else None
+            
             pipe = await run_pr_task_pipeline(
                 session=session,
                 plaky=plaky,
@@ -127,6 +132,9 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                 pr_title=payload.pull_request.title,
                 pr_body=payload.pull_request.body,
                 head=payload.pull_request.head,
+                pr_author_login=pr_author_login,
+                pr_author_email=pr_author_email,
+                pr_author_name=pr_author_name,
             )
             plog = SyncLog(
                 action="pr_link_pipeline",
