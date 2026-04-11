@@ -30,7 +30,14 @@ const api = axios.create({
   headers: { "Content-Type": "application/json" },
 });
 
-async function sendChat(
+type StreamSsePayload =
+  | { type: "session"; session_id: string }
+  | { type: "token"; text: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+/** Plain chat only: SSE from Ollama → snappier perceived latency (tokens as they generate). */
+async function sendChatStream(
   message: string,
   opts: {
     sessionId: string | null;
@@ -40,19 +47,64 @@ async function sendChat(
     plakyBoardId: string;
     plakyGroupId: string;
     model?: string;
-  }
-): Promise<{ reply: string; session_id: string }> {
-  const { data } = await api.post("/api/v1/agent/chat", {
-    message,
-    session_id: opts.sessionId || undefined,
-    repo: opts.repo || undefined,
-    allow_writes: opts.allowWrites,
-    use_tools: opts.useTools,
-    plaky_board_id: opts.plakyBoardId || undefined,
-    plaky_group_id: opts.plakyGroupId || undefined,
-    model: opts.model || undefined,
+  },
+  onSession: (sessionId: string) => void,
+  onToken: (delta: string) => void
+): Promise<void> {
+  const base = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
+  const url = `${base}/api/v1/agent/chat/stream`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify({
+      message,
+      session_id: opts.sessionId || undefined,
+      repo: opts.repo || undefined,
+      allow_writes: opts.allowWrites,
+      use_tools: opts.useTools,
+      plaky_board_id: opts.plakyBoardId || undefined,
+      plaky_group_id: opts.plakyGroupId || undefined,
+      model: opts.model || undefined,
+    }),
   });
-  return { reply: data.reply, session_id: data.session_id };
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const j = (await res.json()) as { detail?: unknown };
+      const d = j?.detail;
+      if (typeof d === "string") detail = d;
+      else if (Array.isArray(d))
+        detail = d.map((x) => (typeof x === "object" && x && "msg" in x ? String((x as { msg: string }).msg) : String(x))).join("; ");
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No response body");
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    for (;;) {
+      const nl = buf.indexOf("\n");
+      if (nl < 0) break;
+      const line = buf.slice(0, nl).replace(/\r$/, "");
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith("data: ")) continue;
+      let j: StreamSsePayload;
+      try {
+        j = JSON.parse(line.slice(6)) as StreamSsePayload;
+      } catch {
+        continue;
+      }
+      if (j.type === "session") onSession(j.session_id);
+      else if (j.type === "token") onToken(j.text);
+      else if (j.type === "error") throw new Error(j.message || "stream error");
+    }
+  }
 }
 
 function EmptyState() {
@@ -329,17 +381,37 @@ export default function App() {
     setMessages((m) => [...m, { role: "user", content: text }]);
     setLoading(true);
     try {
-      const { reply, session_id } = await sendChat(text, {
-        sessionId,
-        repo,
-        allowWrites,
-        useTools,
-        plakyBoardId,
-        plakyGroupId,
-        model: selectedModel || undefined,
-      });
-      setSessionId(session_id);
-      setMessages((m) => [...m, { role: "assistant", content: reply }]);
+      let acc = "";
+      await sendChatStream(
+        text,
+        {
+          sessionId,
+          repo,
+          allowWrites,
+          useTools,
+          plakyBoardId,
+          plakyGroupId,
+          model: selectedModel || undefined,
+        },
+        (sid) => setSessionId(sid),
+        (delta) => {
+          if (!acc) {
+            // First token: add the assistant message to the list
+            setMessages((m) => [...m, { role: "assistant", content: delta }]);
+          } else {
+            // Subsequent tokens: update the last assistant message
+            setMessages((m) => {
+              const next = [...m];
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = { ...last, content: acc + delta };
+              }
+              return next;
+            });
+          }
+          acc += delta;
+        }
+      );
     } catch (e: unknown) {
       let msg: string;
       if (axios.isAxiosError(e)) {
@@ -355,12 +427,21 @@ export default function App() {
       } else {
         msg = e instanceof Error ? e.message : String(e);
       }
-      setMessages((m) => [...m, { role: "assistant", content: `Request failed: ${msg}` }]);
+      setMessages((m) => {
+        if (m.length === 0) return [{ role: "assistant", content: `Request failed: ${msg}` }];
+        const last = m[m.length - 1];
+        if (last?.role === "assistant") {
+          const copy = [...m];
+          copy[copy.length - 1] = { role: "assistant", content: `Request failed: ${msg}` };
+          return copy;
+        }
+        return [...m, { role: "assistant", content: `Request failed: ${msg}` }];
+      });
     } finally {
       setLoading(false);
       textareaRef.current?.focus();
     }
-  }, [input, loading, sessionId, repo, allowWrites, useTools, plakyBoardId, plakyGroupId]);
+  }, [input, loading, sessionId, repo, allowWrites, useTools, plakyBoardId, plakyGroupId, selectedModel]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -416,7 +497,7 @@ export default function App() {
           <div className="toggle-field__text">
             <span className="toggle-field__title">Multi-step agent (tools)</span>
             <span className="toggle-field__desc">
-              LangChain tool loop — slower; turn on when you need Plaky/GitHub tool calls
+              Off: single LLM completion (fast). On: multi-step tool-calling agent (slower, but both stream).
             </span>
           </div>
           <button
@@ -670,7 +751,7 @@ export default function App() {
                     </div>
                   </li>
                 ))}
-                {loading ? (
+                {loading && messages[messages.length - 1]?.role !== "assistant" ? (
                   <li className="message message--assistant message--pending" aria-live="polite">
                     <div className="message__avatar" aria-hidden>
                       <IconAgent className="message__avatar-icon" />
@@ -753,7 +834,7 @@ export default function App() {
                     <div className="drawer__msg-text">{msg.content}</div>
                   </li>
                 ))}
-                {loading ? (
+                {loading && messages[messages.length - 1]?.role !== "assistant" ? (
                   <li className="drawer__msg drawer__msg--assistant" aria-live="polite">
                     <span className="drawer__msg-role">Assistant</span>
                     <div className="typing typing--sm">

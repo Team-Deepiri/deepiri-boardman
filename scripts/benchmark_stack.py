@@ -5,8 +5,11 @@ Measure where time goes: Ollama, Boardman chat_complete, HTTP health, Plaky, opt
 Run from repo root (uses .env like the app):
   poetry run python scripts/benchmark_stack.py
 
-Pytest twin (opt-in live Ollama):
+Pytest twin (fast default: warm-up + num_predict=12):
   BOARDMAN_STACK_BENCHMARK=1 poetry run pytest tests/test_stack_latency.py -m stack_latency -s
+
+Cold GPU load (slow):
+  BOARDMAN_STACK_COLD_START=1 poetry run python scripts/benchmark_stack.py
 
 Env:
   OLLAMA_BASE_URL        (default http://127.0.0.1:11434)
@@ -14,6 +17,8 @@ Env:
   BOARDMAN_NGINX_URL     (e.g. http://127.0.0.1:8088) — also times /api/v1/health through nginx
   SKIP_AGENT_HTTP        (1 = do not POST /agent/chat)
   PLAKY_BENCHMARK_BOARD_ID  — if set, times fetch_board_schema_bundle after list_boards
+  BENCHMARK_NUM_PREDICT    — Ollama options.num_predict for timed chats (default 24)
+  BOARDMAN_STACK_COLD_START — if 1, no warm-up; first timed chat includes model load
 """
 
 from __future__ import annotations
@@ -69,8 +74,9 @@ async def ollama_chat(
     base: str,
     model: str,
     *,
-    num_predict: int = 32,
-) -> Tuple[Optional[dict], float]:
+    num_predict: int = 24,
+    keep_alive: str = "",
+) -> Tuple[Any, float]:
     url = f"{base.rstrip('/')}/api/chat"
     body: Dict[str, Any] = {
         "model": model,
@@ -78,6 +84,8 @@ async def ollama_chat(
         "stream": False,
         "options": {"num_predict": num_predict},
     }
+    if (keep_alive or "").strip():
+        body["keep_alive"] = keep_alive.strip()
     async with httpx.AsyncClient(timeout=180.0) as client:
         return await _time(client.post(url, json=body))
 
@@ -128,6 +136,9 @@ async def amain() -> int:
     nginx_url = (os.environ.get("BOARDMAN_NGINX_URL") or "").strip().rstrip("/")
     skip_agent = (os.environ.get("SKIP_AGENT_HTTP") or "").strip() in ("1", "true", "yes")
     bench_board = (os.environ.get("PLAKY_BENCHMARK_BOARD_ID") or "").strip()
+    np_b = max(4, min(128, int(os.environ.get("BENCHMARK_NUM_PREDICT", "24"))))
+    cold = os.environ.get("BOARDMAN_STACK_COLD_START", "").strip().lower() in ("1", "true", "yes")
+    ka = (settings.ollama_keep_alive or "").strip()
 
     lines: List[str] = []
     lines.append("=== Boardman stack latency probe ===")
@@ -156,21 +167,34 @@ async def amain() -> int:
         print("\n".join(lines), flush=True)
         return 1
 
-    _, t1 = await ollama_chat(ollama_base, model)
-    lines.append(f"[Ollama] POST /api/chat #1 (num_predict=32)  {_fmt_ms(t1)}")
-    _, t2 = await ollama_chat(ollama_base, model)
-    lines.append(f"[Ollama] POST /api/chat #2 (warm)              {_fmt_ms(t2)}")
-    if t1 > 0 and t2 > 0 and t1 > t2 * 2.5:
-        lines.append(
-            f"  → First call much slower ({t1:.2f}s vs {t2:.2f}s): likely model load / cold GPU; check OLLAMA_KEEP_ALIVE."
-        )
+    if cold:
+        _, t1 = await ollama_chat(ollama_base, model, num_predict=np_b, keep_alive=ka)
+        lines.append(f"[Ollama] POST /api/chat #1 COLD (num_predict={np_b})  {_fmt_ms(t1)}")
+        _, t2 = await ollama_chat(ollama_base, model, num_predict=np_b, keep_alive=ka)
+        lines.append(f"[Ollama] POST /api/chat #2 warm                        {_fmt_ms(t2)}")
+        if t1 > 0 and t2 > 0 and t1 > t2 * 2.5:
+            lines.append(
+                f"  → #1 >> #2: model/GPU load. Use OLLAMA_KEEP_ALIVE; compose OLLAMA_KEEP_ALIVE=30m."
+            )
+    else:
+        await ollama_chat(ollama_base, model, num_predict=np_b, keep_alive=ka)
+        lines.append(f"[Ollama] warm-up POST /api/chat (uncounted, num_predict={np_b})")
+        _, t1 = await ollama_chat(ollama_base, model, num_predict=np_b, keep_alive=ka)
+        lines.append(f"[Ollama] POST /api/chat timed #1                      {_fmt_ms(t1)}")
+        _, t2 = await ollama_chat(ollama_base, model, num_predict=np_b, keep_alive=ka)
+        lines.append(f"[Ollama] POST /api/chat timed #2                      {_fmt_ms(t2)}")
 
-    # --- Same path as API plain chat (shared httpx client inside completion) ---
+    # --- Same path as API plain chat (cap num_predict for apples-to-apples timing) ---
     msgs = [{"role": "user", "content": "Reply with exactly one word: OK"}]
-    _, tc1 = await _time(chat_complete(msgs, model=model))
-    lines.append(f"[Boardman] chat_complete #1 (Ollama via app settings)  {_fmt_ms(tc1)}")
-    _, tc2 = await _time(chat_complete(msgs, model=model))
-    lines.append(f"[Boardman] chat_complete #2 (warm)                     {_fmt_ms(tc2)}")
+    _prev_np = settings.ollama_num_predict
+    settings.ollama_num_predict = np_b
+    try:
+        _, tc1 = await _time(chat_complete(msgs, model=model))
+        lines.append(f"[Boardman] chat_complete #1 (num_predict={np_b})  {_fmt_ms(tc1)}")
+        _, tc2 = await _time(chat_complete(msgs, model=model))
+        lines.append(f"[Boardman] chat_complete #2 (warm)               {_fmt_ms(tc2)}")
+    finally:
+        settings.ollama_num_predict = _prev_np
 
     # --- HTTP Boardman ---
     rh, th = await boardman_health(boardman_url)

@@ -25,6 +25,9 @@ def get_chat_model() -> Any:
         }
         if ka:
             kw["keep_alive"] = ka
+        np = settings.ollama_num_predict
+        if np is not None and int(np) > 0:
+            kw["num_predict"] = int(np)
         return ChatOllama(**kw)
 
     if p == "anthropic":

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+from collections.abc import AsyncIterator
 from typing import Any, List, Optional
 
 import httpx
@@ -99,12 +100,69 @@ async def chat_complete(
 
 async def _ollama_chat(client: httpx.AsyncClient, model: str, messages: List[dict[str, str]]) -> str:
     url = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
-    body = {"model": model, "messages": messages, "stream": False}
+    body: dict[str, Any] = {"model": model, "messages": messages, "stream": False}
+    ka = (settings.ollama_keep_alive or "").strip()
+    if ka:
+        body["keep_alive"] = ka
+    n = settings.ollama_num_predict
+    if n is not None and int(n) > 0:
+        body["options"] = {"num_predict": int(n)}
     r = await client.post(url, json=body)
     r.raise_for_status()
     data = r.json()
     msg = data.get("message") or {}
     return (msg.get("content") or data.get("response") or "").strip()
+
+
+async def _ollama_chat_stream(
+    client: httpx.AsyncClient, model: str, messages: List[dict[str, str]]
+) -> AsyncIterator[str]:
+    """Yield assistant content deltas from Ollama NDJSON stream (stream=true)."""
+    url = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
+    body: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
+    ka = (settings.ollama_keep_alive or "").strip()
+    if ka:
+        body["keep_alive"] = ka
+    n = settings.ollama_num_predict
+    if n is not None and int(n) > 0:
+        body["options"] = {"num_predict": int(n)}
+    async with client.stream("POST", url, json=body) as resp:
+        resp.raise_for_status()
+        async for line in resp.aiter_lines():
+            raw = (line or "").strip()
+            if not raw:
+                continue
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            msg = data.get("message") or {}
+            piece = msg.get("content") or ""
+            if piece:
+                yield piece
+            if data.get("done") is True:
+                break
+
+
+async def chat_complete_stream(
+    messages: List[dict[str, str]],
+    *,
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+) -> AsyncIterator[str]:
+    """
+    Stream completion chunks. Ollama uses native streaming; other providers emit one chunk (full text).
+    """
+    prov = (provider or settings.llm_provider or "ollama").lower()
+    if prov == "ollama":
+        mdl = effective_ollama_model(model)
+        async for part in _ollama_chat_stream(_ollama_http_client(), mdl, messages):
+            yield part
+        return
+
+    text = await chat_complete(messages, provider=provider, model=model)
+    if text:
+        yield text
 
 
 async def _anthropic_messages(

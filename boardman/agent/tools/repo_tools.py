@@ -55,6 +55,18 @@ def _scan_local_repo(path: str, max_files: int = 40) -> str:
     return json.dumps({"ok": True, "root": str(root), "files": found}, indent=2)[:14000]
 
 
+def thoughts_tool() -> StructuredTool:
+    return StructuredTool.from_function(
+        lambda thought: f"Thought recorded: {thought[:50]}...",
+        name="thoughts",
+        description=(
+            "Record your internal plan, reasoning, or multi-step logic here. "
+            "Use this for private scratchpad thinking before you act or reply. "
+            "Output to this tool is NOT visible to the user as chat text."
+        ),
+    )
+
+
 def scan_local_repo_tool() -> StructuredTool:
     return StructuredTool.from_function(
         _scan_local_repo,

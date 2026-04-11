@@ -1,12 +1,19 @@
-from typing import Any, Optional
+from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from boardman.agent.service import delete_agent_session, get_session_history, run_agent_chat
+from boardman.agent.service import (
+    delete_agent_session,
+    get_session_history,
+    iter_agent_chat_sse,
+    run_agent_chat,
+)
 from boardman.broker.arq_pool import get_arq_pool
-from boardman.database.session import get_db
+from boardman.database.session import async_session, get_db
 from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
 from boardman.ratelimit.dependencies import require_agent_rate_limit
 from boardman.services.direction_init import init_direction_file
@@ -18,10 +25,10 @@ router = APIRouter()
 
 class AgentChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
-    session_id: Optional[str] = None
-    repo: Optional[str] = None
-    provider: Optional[str] = None
-    model: Optional[str] = None
+    session_id: str | None = None
+    repo: str | None = None
+    provider: str | None = None
+    model: str | None = None
     allow_writes: bool = Field(
         False,
         description="When true, agent may call Plaky create/update/comment tools (guardrail).",
@@ -33,11 +40,11 @@ class AgentChatRequest(BaseModel):
             "When false (default), one LLM call only — much faster for normal chat."
         ),
     )
-    plaky_board_id: Optional[str] = Field(
+    plaky_board_id: str | None = Field(
         None,
         description="Plaky board (project) id for new items; with plaky_group_id selects placement.",
     )
-    plaky_group_id: Optional[str] = Field(
+    plaky_group_id: str | None = Field(
         None,
         description="Plaky group (section) id — API has no separate 'table'; this is the column/section.",
     )
@@ -50,13 +57,13 @@ class AgentChatRequest(BaseModel):
 class ScanRequest(BaseModel):
     repo: str = Field(..., description="owner/repo")
     dry_run: bool = False
-    provider: Optional[str] = None
-    model: Optional[str] = None
+    provider: str | None = None
+    model: str | None = None
 
 
 class InitDirectionRequest(BaseModel):
     repo: str = Field(..., description="owner/repo")
-    branch: Optional[str] = None
+    branch: str | None = None
     force: bool = False
 
 
@@ -96,6 +103,50 @@ async def agent_chat(
             plaky_group_id=context_group_id(),
         )
     return {"ok": True, "reply": reply, "session_id": sid}
+
+
+@router.post("/agent/chat/stream")
+async def agent_chat_stream(body: AgentChatRequest, request: Request) -> StreamingResponse:
+    """
+    SSE frames (text/event-stream) for lower perceived latency.
+    Supports both plain chat and multi-step tool agent.
+    """
+    await require_agent_rate_limit(request)
+    if body.queue:
+        raise HTTPException(status_code=400, detail="queue is not supported for streaming")
+
+    async def event_bytes() -> AsyncIterator[bytes]:
+        async with plaky_placement_context(body.plaky_board_id, body.plaky_group_id):
+            async with async_session() as db:
+                try:
+                    async for chunk in iter_agent_chat_sse(
+                        db,
+                        message=body.message,
+                        session_id=body.session_id,
+                        repo=body.repo,
+                        provider=body.provider,
+                        model=body.model,
+                        allow_writes=body.allow_writes,
+                        use_tools=body.use_tools,
+                        plaky_board_id=context_board_id(),
+                        plaky_group_id=context_group_id(),
+                    ):
+                        yield chunk
+                    await db.commit()
+                except Exception:
+                    await db.rollback()
+                    raise
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(
+        event_bytes(),
+        media_type="text/event-stream; charset=utf-8",
+        headers=headers,
+    )
 
 
 @router.get("/agent/jobs/{job_id}")
