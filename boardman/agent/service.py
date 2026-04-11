@@ -204,7 +204,10 @@ async def run_agent_chat(
             extra = (
                 f"\n\n## Tool policy\nPlaky **write** tools (create/update/comment/subtask) are "
                 f"**{'ENABLED' if allow_writes else 'OFF'}**. "
-                "If OFF, use only list/get and GitHub/repo read tools; tell the user to pass allow_writes to enable mutations."
+                "If OFF, use only list/get and GitHub/repo read tools; tell the user to pass allow_writes to enable mutations.\n"
+                "If ON: you **must** run **plaky_board_schema** (and **plaky_list_workspace_users** for assignees) before "
+                "**plaky_create_task** / **plaky_patch_item_fields** when field keys are not already explicit in context; "
+                "the API rejects invented field keys."
             )
             if repo:
                 extra += f"\n## Repo context\n`{repo}`"

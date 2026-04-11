@@ -2,13 +2,65 @@
 
 from __future__ import annotations
 
+import os
+from typing import Optional
+
+import httpx
 from fastapi import APIRouter
 
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.name_match import rank_plaky_rows
+from boardman.settings import settings
 
 router = APIRouter()
+
+
+@router.get("/llm/models")
+async def list_llm_models() -> dict:
+    """
+    List available LLM models based on provider setting.
+    For Ollama: fetches from /api/tags.
+    For other providers: returns configured model or empty.
+    """
+    provider = (settings.llm_provider or "ollama").lower()
+    
+    if provider == "ollama":
+        base_url = (settings.ollama_base_url or "http://localhost:11434").rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                r = await client.get(f"{base_url}/api/tags")
+                if r.status_code == 200:
+                    data = r.json()
+                    models = data.get("models", []) or []
+                    model_list = []
+                    for m in models:
+                        name = m.get("name") or m.get("model") or ""
+                        if name:
+                            model_list.append({
+                                "name": name,
+                                "size": m.get("size"),
+                                "details": m.get("details", {}),
+                            })
+                    # Get current model
+                    from boardman.llm.ollama_autodetect import effective_ollama_model
+                    current = effective_ollama_model(None)
+                    return {
+                        "ok": True,
+                        "provider": "ollama",
+                        "models": model_list,
+                        "current": current,
+                    }
+        except Exception as e:
+            return {"ok": False, "provider": "ollama", "models": [], "error": str(e)}
+    
+    # Non-Ollama providers
+    return {
+        "ok": True,
+        "provider": provider,
+        "models": [],
+        "current": (settings.llm_model or "").strip() or None,
+    }
 
 
 @router.get("/plaky/users")

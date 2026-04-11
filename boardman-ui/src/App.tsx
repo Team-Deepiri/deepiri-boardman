@@ -23,6 +23,7 @@ type PlakyBoardRow = { id: string; name: string };
 type PlakyGroupRow = { id: string; name: string };
 type PlakyUserRow = { id: string; name: string };
 type SupportTeamRow = { login: string; name?: string; html_url?: string };
+type LlmModel = { name: string; size?: number; details?: Record<string, unknown> };
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE || "",
@@ -38,6 +39,7 @@ async function sendChat(
     useTools: boolean;
     plakyBoardId: string;
     plakyGroupId: string;
+    model?: string;
   }
 ): Promise<{ reply: string; session_id: string }> {
   const { data } = await api.post("/api/v1/agent/chat", {
@@ -48,6 +50,7 @@ async function sendChat(
     use_tools: opts.useTools,
     plaky_board_id: opts.plakyBoardId || undefined,
     plaky_group_id: opts.plakyGroupId || undefined,
+    model: opts.model || undefined,
   });
   return { reply: data.reply, session_id: data.session_id };
 }
@@ -83,6 +86,10 @@ export default function App() {
   const [plakyGroupId, setPlakyGroupId] = useState("");
   const [plakyBoardsHint, setPlakyBoardsHint] = useState<string | null>(null);
   const [plakyGroupsHint, setPlakyGroupsHint] = useState<string | null>(null);
+
+  const [llmModels, setLlmModels] = useState<LlmModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [llmModelsHint, setLlmModelsHint] = useState<string | null>(null);
 
   const [workspaceUsers, setWorkspaceUsers] = useState<PlakyUserRow[]>([]);
   const [usersHint, setUsersHint] = useState<string | null>(null);
@@ -236,6 +243,39 @@ export default function App() {
     };
   }, []);
 
+  // Fetch available LLM models
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get<{
+          ok?: boolean;
+          provider?: string;
+          models?: LlmModel[];
+          current?: string;
+          error?: string;
+        }>("/api/v1/llm/models");
+        if (cancelled) return;
+        if (data.ok && Array.isArray(data.models)) {
+          setLlmModels(data.models);
+          setSelectedModel(data.current || "");
+          setLlmModelsHint(null);
+        } else {
+          setLlmModels([]);
+          setLlmModelsHint(data.error || "Could not load models.");
+        }
+      } catch {
+        if (!cancelled) {
+          setLlmModels([]);
+          setLlmModelsHint("Could not reach LLM models endpoint.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const onCreateTask = useCallback(async () => {
     const t = createTitle.trim();
     if (!t || createBusy) return;
@@ -296,6 +336,7 @@ export default function App() {
         useTools,
         plakyBoardId,
         plakyGroupId,
+        model: selectedModel || undefined,
       });
       setSessionId(session_id);
       setMessages((m) => [...m, { role: "assistant", content: reply }]);
@@ -332,7 +373,7 @@ export default function App() {
     <div className="app">
       <aside className="sidebar" aria-label="Settings">
         <div className="sidebar__brand">
-          <IconBoard className="sidebar__brand-icon" title="" />
+          <img src="/logo_squared_2_10.png" className="sidebar__brand-icon" alt="" />
           <div>
             <div className="sidebar__brand-name sidebar__brand-name--gradient">Deepiri Board Manager</div>
             <div className="sidebar__brand-sub">Plaky · GitHub · delivery</div>
@@ -388,6 +429,32 @@ export default function App() {
             <span className="switch__thumb" />
           </button>
         </div>
+
+        {llmModels.length > 0 && (
+          <div className="field">
+            <label className="field__label" htmlFor="llm-model-select">
+              <IconAgent className="field__label-icon" />
+              LLM Model
+            </label>
+            <select
+              id="llm-model-select"
+              className="field__input field__select"
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+            >
+              <option value="">Default (server config)</option>
+              {llmModels.map((m) => (
+                <option key={m.name} value={m.name}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+            {llmModelsHint ? <p className="field__hint field__hint--warn">{llmModelsHint}</p> : null}
+            <p className="field__hint">
+              Override the model for this session. Default uses server LLM_MODEL or auto-selects.
+            </p>
+          </div>
+        )}
 
         <div className="field">
           <label className="field__label" htmlFor="plaky-board-select">
