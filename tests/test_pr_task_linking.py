@@ -152,33 +152,41 @@ def test_score_pr_title_name_boost():
     assert result.breakdown.get("pr_title_name_mention") == 20.0
 
 
-def test_score_no_assignee_no_boost():
-    """Test that tasks without assignee don't get identity boost."""
-    c = TaskCandidate(
+def test_score_status_weighting():
+    """Test that active status boosts and closed status penalizes score."""
+    c_active = TaskCandidate(
         task_id="t1",
-        title="Generic task",
+        title="Fix bug",
         description="",
-        issue_numbers=set(),
-        sources=["board_item"],
-        assignee_login=None,
-        assignee_email=None,
-        assignee_name=None,
+        status="In Progress",
     )
-    result = score_candidate(
-        c,
+    res_active = score_candidate(
+        c_active,
         ref_issues=set(),
-        pr_title="My PR",
+        pr_title="Fix bug",
         pr_body="",
         repo_full="x/boardman",
         pr_number=1,
         session_penalty=False,
-        pr_author_login="bob",
-        pr_author_name="Bob",
     )
-    # No identity boosts when no assignee
-    assert "assignee_identity_match" not in result.breakdown
-    assert "assignee_identity_partial" not in result.breakdown
-    assert "assignee_identity_weak" not in result.breakdown
+    assert res_active.breakdown.get("status_active_boost") == 15.0
+
+    c_done = TaskCandidate(
+        task_id="t2",
+        title="Fix bug",
+        description="",
+        status="Done",
+    )
+    res_done = score_candidate(
+        c_done,
+        ref_issues=set(),
+        pr_title="Fix bug",
+        pr_body="",
+        repo_full="x/boardman",
+        pr_number=1,
+        session_penalty=False,
+    )
+    assert res_done.breakdown.get("status_closed_penalty") == -30.0
 
 
 @pytest.mark.asyncio

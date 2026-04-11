@@ -35,19 +35,26 @@ def _opt_label(o: Any) -> str:
     return ""
 
 
-def _collect_options(field: Dict[str, Any]) -> List[str]:
-    seen: List[str] = []
+def _collect_options(field: Dict[str, Any]) -> List[Dict[str, Any]]:
+    seen_labels: set[str] = set()
+    options: List[Dict[str, Any]] = []
     for key in ("options", "choices", "values", "statuses", "items", "allowedValues", "enum"):
         block = field.get(key)
         if not isinstance(block, list):
             continue
         for o in block:
             lab = _opt_label(o)
-            if lab and lab not in seen:
-                seen.append(lab)
-        if seen:
+            if not lab or lab in seen_labels:
+                continue
+            seen_labels.add(lab)
+            if isinstance(o, dict):
+                # Keep the whole dict so we can see colors/types if present
+                options.append(dict(o, name=lab))
+            else:
+                options.append({"name": lab})
+        if options:
             break
-    return seen
+    return options
 
 
 def _normalize_field_dict(f: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -196,8 +203,12 @@ def format_board_schema_markdown(
             key_part = f" key=`{key}`" if key else ""
             lines.append(f"- **{f.get('name', 'field')}**{suffix}{key_part}")
             if opts:
-                lines.append(f"  - Allowed values: {', '.join(opts[:50])}")
-                if len(opts) > 50:
+                opt_labels = []
+                for o in opts:
+                    lab = o.get("name") if isinstance(o, dict) else str(o)
+                    if lab: opt_labels.append(lab)
+                lines.append(f"  - Allowed values: {', '.join(opt_labels[:50])}")
+                if len(opt_labels) > 50:
                     lines.append("  - …")
     else:
         lines.append(

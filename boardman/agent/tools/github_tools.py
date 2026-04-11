@@ -16,7 +16,28 @@ from boardman.github.repo_fetch import (
     fetch_repo_file_text,
     parse_owner_repo,
 )
+from boardman.repos_config import list_workspace_repos
 from boardman.settings import settings
+
+
+async def _github_list_workspace_repos() -> str:
+    """List all GitHub repositories in the configured org merged with repos.yml config."""
+    if not settings.github_pat:
+        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        repos = await list_workspace_repos(client)
+    # Convert RepoRouting objects to dicts for JSON
+    out = {
+        name: {
+            "category": r.category,
+            "plaky_table": r.plaky_table,
+            "plaky_board_id": r.plaky_board_id,
+            "plaky_group_id": r.plaky_group_id,
+            "description": r.description,
+        }
+        for name, r in repos.items()
+    }
+    return json.dumps({"ok": True, "repos": out})
 
 
 async def _github_list_open_issues(owner_repo: str) -> str:
@@ -98,6 +119,17 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
     return json.dumps(out, default=str)[:24000]
 
 
+def github_list_workspace_repos_tool() -> StructuredTool:
+    return StructuredTool.from_function(
+        coroutine=_github_list_workspace_repos,
+        name="github_list_workspace_repos",
+        description=(
+            "List all GitHub repositories in the configured org merged with repos.yml. "
+            "Use this when you need to know which repos are available to the agent."
+        ),
+    )
+
+
 def github_list_open_issues_tool() -> StructuredTool:
     return StructuredTool.from_function(
         coroutine=_github_list_open_issues,
@@ -142,6 +174,7 @@ def github_repo_planning_context_tool() -> StructuredTool:
 
 def build_github_tools() -> List[StructuredTool]:
     return [
+        github_list_workspace_repos_tool(),
         github_repo_planning_context_tool(),
         github_fetch_direction_tool(),
         github_fetch_file_tool(),

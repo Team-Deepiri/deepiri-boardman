@@ -21,6 +21,7 @@ class RepoRouting:
     plaky_board_id: str = ""
     plaky_group_id: str = ""
     description: str = ""
+    tier: int = 0  # 0 = unclassified, 1/2/3 = QA tier
 
 
 def _resolve_path() -> Path:
@@ -49,18 +50,26 @@ def reload_repos_config() -> None:
 def _parse_entry(entry: Any) -> Optional[RepoRouting]:
     if not isinstance(entry, dict):
         return None
+    tier_val = entry.get("tier")
+    tier = 0
+    if tier_val is not None:
+        try:
+            tier = int(tier_val)
+        except (ValueError, TypeError):
+            tier = 0
     return RepoRouting(
         category=str(entry.get("category", "")),
         plaky_table=str(entry.get("plaky_table", "")),
         plaky_board_id=str(entry.get("plaky_board_id", "")),
         plaky_group_id=str(entry.get("plaky_group_id", "")),
         description=str(entry.get("description", "")),
+        tier=tier,
     )
 
 
 def _is_meaningful(r: RepoRouting) -> bool:
     return bool(
-        r.plaky_table or r.category or r.description or r.plaky_board_id or r.plaky_group_id
+        r.plaky_table or r.category or r.description or r.plaky_board_id or r.plaky_group_id or r.tier > 0
     )
 
 
@@ -164,7 +173,7 @@ async def list_workspace_repos(client: Optional[httpx.AsyncClient] = None) -> Di
             await client.aclose()
 
 
-def upsert_repo(key: str, category: str, plaky_table: str, description: str = "") -> None:
+def upsert_repo(key: str, category: str, plaky_table: str, description: str = "", tier: int = 0) -> None:
     path = _resolve_path()
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {"repos": {}}
     if "repos" not in raw:
@@ -174,6 +183,27 @@ def upsert_repo(key: str, category: str, plaky_table: str, description: str = ""
         "plaky_table": plaky_table,
         "description": description,
     }
+    if tier > 0:
+        raw["repos"][key]["tier"] = tier
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        yaml.dump(raw, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
+    reload_repos_config()
+
+
+def update_repo_tiers(tier_map: dict[str, int]) -> None:
+    """Batch update tier classifications for repos."""
+    path = _resolve_path()
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {"repos": {}}
+    if "repos" not in raw:
+        raw["repos"] = {}
+    for key, tier in tier_map.items():
+        if key not in raw["repos"]:
+            raw["repos"][key] = {}
+        if tier > 0:
+            raw["repos"][key]["tier"] = tier
+        elif "tier" in raw["repos"][key]:
+            del raw["repos"][key]["tier"]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         yaml.dump(raw, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
