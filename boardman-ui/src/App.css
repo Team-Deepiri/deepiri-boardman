@@ -49,9 +49,8 @@ body {
 .sidebar__brand-icon {
   width: 36px;
   height: 36px;
-  color: var(--accent);
   flex-shrink: 0;
-  filter: drop-shadow(0 0 10px var(--accent-glow));
+  object-fit: contain;
 }
 
 .sidebar__brand-name {

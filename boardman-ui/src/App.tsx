@@ -23,13 +23,21 @@ type PlakyBoardRow = { id: string; name: string };
 type PlakyGroupRow = { id: string; name: string };
 type PlakyUserRow = { id: string; name: string };
 type SupportTeamRow = { login: string; name?: string; html_url?: string };
+type LlmModel = { name: string; size?: number; details?: Record<string, unknown> };
 
 const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE || "",
   headers: { "Content-Type": "application/json" },
 });
 
-async function sendChat(
+type StreamSsePayload =
+  | { type: "session"; session_id: string }
+  | { type: "token"; text: string }
+  | { type: "done" }
+  | { type: "error"; message: string };
+
+/** Plain chat only: SSE from Ollama → snappier perceived latency (tokens as they generate). */
+async function sendChatStream(
   message: string,
   opts: {
     sessionId: string | null;
@@ -38,18 +46,65 @@ async function sendChat(
     useTools: boolean;
     plakyBoardId: string;
     plakyGroupId: string;
-  }
-): Promise<{ reply: string; session_id: string }> {
-  const { data } = await api.post("/api/v1/agent/chat", {
-    message,
-    session_id: opts.sessionId || undefined,
-    repo: opts.repo || undefined,
-    allow_writes: opts.allowWrites,
-    use_tools: opts.useTools,
-    plaky_board_id: opts.plakyBoardId || undefined,
-    plaky_group_id: opts.plakyGroupId || undefined,
+    model?: string;
+  },
+  onSession: (sessionId: string) => void,
+  onToken: (delta: string) => void
+): Promise<void> {
+  const base = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
+  const url = `${base}/api/v1/agent/chat/stream`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    body: JSON.stringify({
+      message,
+      session_id: opts.sessionId || undefined,
+      repo: opts.repo || undefined,
+      allow_writes: opts.allowWrites,
+      use_tools: opts.useTools,
+      plaky_board_id: opts.plakyBoardId || undefined,
+      plaky_group_id: opts.plakyGroupId || undefined,
+      model: opts.model || undefined,
+    }),
   });
-  return { reply: data.reply, session_id: data.session_id };
+  if (!res.ok) {
+    let detail = `${res.status} ${res.statusText}`;
+    try {
+      const j = (await res.json()) as { detail?: unknown };
+      const d = j?.detail;
+      if (typeof d === "string") detail = d;
+      else if (Array.isArray(d))
+        detail = d.map((x) => (typeof x === "object" && x && "msg" in x ? String((x as { msg: string }).msg) : String(x))).join("; ");
+    } catch {
+      /* ignore */
+    }
+    throw new Error(detail);
+  }
+  const reader = res.body?.getReader();
+  if (!reader) throw new Error("No response body");
+  const dec = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += dec.decode(value, { stream: true });
+    for (;;) {
+      const nl = buf.indexOf("\n");
+      if (nl < 0) break;
+      const line = buf.slice(0, nl).replace(/\r$/, "");
+      buf = buf.slice(nl + 1);
+      if (!line.startsWith("data: ")) continue;
+      let j: StreamSsePayload;
+      try {
+        j = JSON.parse(line.slice(6)) as StreamSsePayload;
+      } catch {
+        continue;
+      }
+      if (j.type === "session") onSession(j.session_id);
+      else if (j.type === "token") onToken(j.text);
+      else if (j.type === "error") throw new Error(j.message || "stream error");
+    }
+  }
 }
 
 function EmptyState() {
@@ -83,6 +138,10 @@ export default function App() {
   const [plakyGroupId, setPlakyGroupId] = useState("");
   const [plakyBoardsHint, setPlakyBoardsHint] = useState<string | null>(null);
   const [plakyGroupsHint, setPlakyGroupsHint] = useState<string | null>(null);
+
+  const [llmModels, setLlmModels] = useState<LlmModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [llmModelsHint, setLlmModelsHint] = useState<string | null>(null);
 
   const [workspaceUsers, setWorkspaceUsers] = useState<PlakyUserRow[]>([]);
   const [usersHint, setUsersHint] = useState<string | null>(null);
@@ -236,6 +295,39 @@ export default function App() {
     };
   }, []);
 
+  // Fetch available LLM models
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get<{
+          ok?: boolean;
+          provider?: string;
+          models?: LlmModel[];
+          current?: string;
+          error?: string;
+        }>("/api/v1/llm/models");
+        if (cancelled) return;
+        if (data.ok && Array.isArray(data.models)) {
+          setLlmModels(data.models);
+          setSelectedModel(data.current || "");
+          setLlmModelsHint(null);
+        } else {
+          setLlmModels([]);
+          setLlmModelsHint(data.error || "Could not load models.");
+        }
+      } catch {
+        if (!cancelled) {
+          setLlmModels([]);
+          setLlmModelsHint("Could not reach LLM models endpoint.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const onCreateTask = useCallback(async () => {
     const t = createTitle.trim();
     if (!t || createBusy) return;
@@ -289,16 +381,37 @@ export default function App() {
     setMessages((m) => [...m, { role: "user", content: text }]);
     setLoading(true);
     try {
-      const { reply, session_id } = await sendChat(text, {
-        sessionId,
-        repo,
-        allowWrites,
-        useTools,
-        plakyBoardId,
-        plakyGroupId,
-      });
-      setSessionId(session_id);
-      setMessages((m) => [...m, { role: "assistant", content: reply }]);
+      let acc = "";
+      await sendChatStream(
+        text,
+        {
+          sessionId,
+          repo,
+          allowWrites,
+          useTools,
+          plakyBoardId,
+          plakyGroupId,
+          model: selectedModel || undefined,
+        },
+        (sid) => setSessionId(sid),
+        (delta) => {
+          if (!acc) {
+            // First token: add the assistant message to the list
+            setMessages((m) => [...m, { role: "assistant", content: delta }]);
+          } else {
+            // Subsequent tokens: update the last assistant message
+            setMessages((m) => {
+              const next = [...m];
+              const last = next[next.length - 1];
+              if (last && last.role === "assistant") {
+                next[next.length - 1] = { ...last, content: acc + delta };
+              }
+              return next;
+            });
+          }
+          acc += delta;
+        }
+      );
     } catch (e: unknown) {
       let msg: string;
       if (axios.isAxiosError(e)) {
@@ -314,12 +427,21 @@ export default function App() {
       } else {
         msg = e instanceof Error ? e.message : String(e);
       }
-      setMessages((m) => [...m, { role: "assistant", content: `Request failed: ${msg}` }]);
+      setMessages((m) => {
+        if (m.length === 0) return [{ role: "assistant", content: `Request failed: ${msg}` }];
+        const last = m[m.length - 1];
+        if (last?.role === "assistant") {
+          const copy = [...m];
+          copy[copy.length - 1] = { role: "assistant", content: `Request failed: ${msg}` };
+          return copy;
+        }
+        return [...m, { role: "assistant", content: `Request failed: ${msg}` }];
+      });
     } finally {
       setLoading(false);
       textareaRef.current?.focus();
     }
-  }, [input, loading, sessionId, repo, allowWrites, useTools, plakyBoardId, plakyGroupId]);
+  }, [input, loading, sessionId, repo, allowWrites, useTools, plakyBoardId, plakyGroupId, selectedModel]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -332,7 +454,7 @@ export default function App() {
     <div className="app">
       <aside className="sidebar" aria-label="Settings">
         <div className="sidebar__brand">
-          <IconBoard className="sidebar__brand-icon" title="" />
+          <img src="/logo_squared_2_10.png" className="sidebar__brand-icon" alt="" />
           <div>
             <div className="sidebar__brand-name sidebar__brand-name--gradient">Deepiri Board Manager</div>
             <div className="sidebar__brand-sub">Plaky · GitHub · delivery</div>
@@ -375,7 +497,7 @@ export default function App() {
           <div className="toggle-field__text">
             <span className="toggle-field__title">Multi-step agent (tools)</span>
             <span className="toggle-field__desc">
-              LangChain tool loop — slower; turn on when you need Plaky/GitHub tool calls
+              Off: single LLM completion (fast). On: multi-step tool-calling agent (slower, but both stream).
             </span>
           </div>
           <button
@@ -388,6 +510,32 @@ export default function App() {
             <span className="switch__thumb" />
           </button>
         </div>
+
+        {llmModels.length > 0 && (
+          <div className="field">
+            <label className="field__label" htmlFor="llm-model-select">
+              <IconAgent className="field__label-icon" />
+              LLM Model
+            </label>
+            <select
+              id="llm-model-select"
+              className="field__input field__select"
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+            >
+              <option value="">Default (server config)</option>
+              {llmModels.map((m) => (
+                <option key={m.name} value={m.name}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+            {llmModelsHint ? <p className="field__hint field__hint--warn">{llmModelsHint}</p> : null}
+            <p className="field__hint">
+              Override the model for this session. Default uses server LLM_MODEL or auto-selects.
+            </p>
+          </div>
+        )}
 
         <div className="field">
           <label className="field__label" htmlFor="plaky-board-select">
@@ -603,7 +751,7 @@ export default function App() {
                     </div>
                   </li>
                 ))}
-                {loading ? (
+                {loading && messages[messages.length - 1]?.role !== "assistant" ? (
                   <li className="message message--assistant message--pending" aria-live="polite">
                     <div className="message__avatar" aria-hidden>
                       <IconAgent className="message__avatar-icon" />
@@ -686,7 +834,7 @@ export default function App() {
                     <div className="drawer__msg-text">{msg.content}</div>
                   </li>
                 ))}
-                {loading ? (
+                {loading && messages[messages.length - 1]?.role !== "assistant" ? (
                   <li className="drawer__msg drawer__msg--assistant" aria-live="polite">
                     <span className="drawer__msg-role">Assistant</span>
                     <div className="typing typing--sm">

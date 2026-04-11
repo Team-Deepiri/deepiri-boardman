@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     ollama_base_url: str = "http://localhost:11434"
     # Keep Ollama model loaded between requests (reduces cold-start latency). Examples: "30m", "-1" (forever)
     ollama_keep_alive: str = "30m"
+    # Optional cap on generated tokens (Ollama options.num_predict). Unset = server default (often slow for long replies).
+    ollama_num_predict: int | None = None
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     gemini_api_key: str = ""

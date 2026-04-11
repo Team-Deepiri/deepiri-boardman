@@ -77,4 +77,5 @@ markers = [
     "live_ollama: requires Ollama at OLLAMA_BASE_URL with LLM_MODEL available",
     "plaky_live: calls real Plaky API; requires PLAKY_API_KEY in .env or environment",
     "agent_e2e_live: multi-turn agent + real Ollama (optional Plaky); skipped when Ollama down",
+    "stack_latency: fast warm Ollama timings (BOARDMAN_STACK_BENCHMARK=1 pytest -m stack_latency -s; COLD_START=1 for load test)",
 ]

@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import time
 from typing import Any, Dict, List, Optional
+
+# LLMs often invent Jira-like keys; reject before hitting Plaky.
+_PLACEHOLDER_FIELD_KEY = re.compile(
+    r"^(person|status|select|field|column|type|priority|user|assignee|dropdown)-\d+$",
+    re.IGNORECASE,
+)
 
 from boardman.settings import settings
 
@@ -59,6 +66,56 @@ def _normalize_field_dict(f: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     options = _collect_options(f)
     key = str(f.get("key") or f.get("id") or f.get("fieldKey") or "").strip()
     return {"name": name, "type": ftype, "key": key, "options": options}
+
+
+def looks_like_placeholder_plaky_field_key(key: str) -> bool:
+    """True for invented keys such as person-1, status-2 (not from plaky_board_schema)."""
+    k = (key or "").strip()
+    return bool(k) and bool(_PLACEHOLDER_FIELD_KEY.match(k))
+
+
+def validate_field_values_against_board_schema(
+    field_values: Dict[str, Any],
+    normalized: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    """
+    Return an agent-visible error string if field keys are invalid; None if OK or not checkable.
+
+    When the board schema lists non-empty field keys, every key in field_values must match.
+    Placeholder-style keys are always rejected.
+    """
+    if not field_values:
+        return None
+    fields: List[Any] = []
+    if isinstance(normalized, dict):
+        raw = normalized.get("fields")
+        if isinstance(raw, list):
+            fields = raw
+    allowed: set[str] = set()
+    for f in fields:
+        if not isinstance(f, dict):
+            continue
+        k = str(f.get("key") or "").strip()
+        if k:
+            allowed.add(k)
+
+    bad_ph = [k for k in field_values if looks_like_placeholder_plaky_field_key(str(k))]
+    if bad_ph:
+        return (
+            "Refused: placeholder-like field keys "
+            f"{bad_ph!r}. Call plaky_board_schema(board_id) and use real keys from the schema (key=`...`). "
+            "Do not invent person-1 / status-2 style ids."
+        )
+
+    if allowed:
+        unknown = [str(k) for k in field_values if str(k).strip() not in allowed]
+        if unknown:
+            return (
+                "Refused: field keys not on this board schema: "
+                f"{unknown!r}. Allowed keys: {sorted(allowed)!r}. "
+                "Call plaky_board_schema(board_id), then retry with only those keys."
+            )
+    return None
 
 
 def normalize_board_payload(board_raw: Optional[Dict[str, Any]], groups: List[Dict[str, Any]]) -> Dict[str, Any]:

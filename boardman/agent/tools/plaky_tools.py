@@ -7,7 +7,10 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import StructuredTool
 
-from boardman.plaky.board_schema import fetch_board_schema_bundle
+from boardman.plaky.board_schema import (
+    fetch_board_schema_bundle,
+    validate_field_values_against_board_schema,
+)
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.name_match import rank_plaky_rows
 
@@ -155,7 +158,11 @@ async def _plaky_create_task(
     field_values_json: str = "",
 ) -> str:
     from boardman.agent.task_draft import load_task_draft, merge_draft_into_field_values
-    from boardman.agent.tool_context import get_agent_session_pk, get_tool_db_session
+    from boardman.agent.tool_context import (
+        get_agent_session_pk,
+        get_context_plaky_board_id,
+        get_tool_db_session,
+    )
 
     c = PlakyClient()
     full = f"[{repo_tag}] {title}" if repo_tag else title
@@ -181,6 +188,16 @@ async def _plaky_create_task(
     else:
         merged = dict(parsed)
 
+    effective_board = (bid or get_context_plaky_board_id() or "").strip() or None
+    if merged:
+        normalized = None
+        if effective_board:
+            bundle = await fetch_board_schema_bundle(effective_board)
+            normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+        err = validate_field_values_against_board_schema(merged, normalized)
+        if err:
+            return json.dumps({"ok": False, "message": err}, default=str)
+
     fv = merged if merged else None
     r = await c.create_task(
         title=full,
@@ -204,8 +221,15 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
         return json.dumps({"ok": False, "message": "fields_json must be valid JSON object"})
     if not isinstance(parsed, dict):
         return json.dumps({"ok": False, "message": "fields_json must be a JSON object"})
+    bid = board_id.strip()
+    if parsed:
+        bundle = await fetch_board_schema_bundle(bid)
+        normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+        err = validate_field_values_against_board_schema(parsed, normalized)
+        if err:
+            return json.dumps({"ok": False, "message": err}, default=str)
     c = PlakyClient()
-    r = await c.patch_item_field_values(board_id.strip(), item_id.strip(), parsed)
+    r = await c.patch_item_field_values(bid, item_id.strip(), parsed)
     return json.dumps(r, default=str)
 
 
@@ -269,9 +293,8 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
             coroutine=_plaky_board_schema,
             name="plaky_board_schema",
             description=(
-                "Load this board's groups and field definitions from Plaky (status/type/priority "
-                "allowed values when the API returns them). Args: board_id. "
-                "Use after plaky_match_board when the user changes boards or schema is missing from context."
+                "MUST call before plaky_create_task or plaky_patch_item_fields when you need field keys or allowed values. "
+                "Returns groups + fields with key= and options. Args: board_id."
             ),
         ),
         StructuredTool.from_function(
@@ -319,20 +342,18 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                     coroutine=_plaky_create_task,
                     name="plaky_create_task",
                     description=(
-                        "Create a Plaky item (task). When **Current Plaky placement** lists board_id and group_id, "
-                        "pass those ids. **Session defaults:** values from **plaky_save_task_preferences** merge first; "
-                        "**field_values_json** overrides per key. Optional field_values_json: JSON object of fieldKey → value "
-                        "(from plaky_board_schema `key=` or plaky_get_board_item). Response may include merged_field_values. "
-                        "Args: title, description, priority, optional repo_tag, board_id, group_id, field_values_json."
+                        "Create a Plaky item. Call plaky_board_schema first if field_values_json is non-empty. "
+                        "field_values_json keys MUST match schema key= strings; assignee ids from plaky_list_workspace_users. "
+                        "Placement: pass board_id/group_id or rely on Current Plaky placement. "
+                        "Args: title, description, priority, repo_tag?, board_id?, group_id?, field_values_json?."
                     ),
                 ),
                 StructuredTool.from_function(
                     coroutine=_plaky_patch_item_fields,
                     name="plaky_patch_item_fields",
                     description=(
-                        "Update board/custom fields on an existing item (v1/public PATCH .../fields). "
-                        "Args: board_id, item_id, fields_json — JSON object {fieldKey: value, ...}. "
-                        "Use plaky_board_schema keys or copy shapes from plaky_get_board_item."
+                        "PATCH item fields. Call plaky_board_schema(board_id) first; keys must match schema. "
+                        "Args: board_id, item_id, fields_json object."
                     ),
                 ),
                 StructuredTool.from_function(
