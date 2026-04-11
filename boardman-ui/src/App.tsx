@@ -35,6 +35,7 @@ async function sendChat(
     sessionId: string | null;
     repo: string;
     allowWrites: boolean;
+    useTools: boolean;
     plakyBoardId: string;
     plakyGroupId: string;
   }
@@ -44,6 +45,7 @@ async function sendChat(
     session_id: opts.sessionId || undefined,
     repo: opts.repo || undefined,
     allow_writes: opts.allowWrites,
+    use_tools: opts.useTools,
     plaky_board_id: opts.plakyBoardId || undefined,
     plaky_group_id: opts.plakyGroupId || undefined,
   });
@@ -68,6 +70,7 @@ function EmptyState() {
 export default function App() {
   const [repo, setRepo] = useState("");
   const [allowWrites, setAllowWrites] = useState(false);
+  const [useTools, setUseTools] = useState(false);
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
@@ -290,6 +293,7 @@ export default function App() {
         sessionId,
         repo,
         allowWrites,
+        useTools,
         plakyBoardId,
         plakyGroupId,
       });
@@ -315,7 +319,7 @@ export default function App() {
       setLoading(false);
       textareaRef.current?.focus();
     }
-  }, [input, loading, sessionId, repo, allowWrites, plakyBoardId, plakyGroupId]);
+  }, [input, loading, sessionId, repo, allowWrites, useTools, plakyBoardId, plakyGroupId]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -362,6 +366,24 @@ export default function App() {
             aria-checked={allowWrites}
             className={`switch ${allowWrites ? "switch--on" : ""}`}
             onClick={() => setAllowWrites((v) => !v)}
+          >
+            <span className="switch__thumb" />
+          </button>
+        </div>
+
+        <div className="toggle-field">
+          <div className="toggle-field__text">
+            <span className="toggle-field__title">Multi-step agent (tools)</span>
+            <span className="toggle-field__desc">
+              LangChain tool loop — slower; turn on when you need Plaky/GitHub tool calls
+            </span>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={useTools}
+            className={`switch ${useTools ? "switch--on" : ""}`}
+            onClick={() => setUseTools((v) => !v)}
           >
             <span className="switch__thumb" />
           </button>

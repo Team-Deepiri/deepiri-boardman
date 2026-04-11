@@ -4,10 +4,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from boardman.broker.arq_pool import close_arq_pool
 from boardman.database.session import init_db
 from boardman.logging_config import setup_logging
-from boardman.routes import agent, assignment, health, github_events, github_team, plaky, tasks
+from boardman.llm.completion import aclose_ollama_http_client
 from boardman.llm.ollama_autodetect import effective_ollama_model
+from boardman.ratelimit.leaky_bucket import get_agent_leaky_limiter
+from boardman.routes import agent, assignment, health, github_events, github_team, plaky, tasks
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -17,6 +20,11 @@ _log = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     setup_logging()
     await init_db()
+    if settings.agent_rate_limit_enabled:
+        try:
+            await get_agent_leaky_limiter()
+        except Exception as e:
+            _log.warning("Agent rate limiter init skipped: %s", e)
     pk = (settings.plaky_api_key or "").strip()
     if pk:
         _log.info("Plaky: API key present (length=%d), base=%s", len(pk), settings.plaky_api_base)
@@ -46,6 +54,9 @@ async def lifespan(app: FastAPI):
             settings.ollama_base_url,
         )
     yield
+
+    await close_arq_pool()
+    await aclose_ollama_http_client()
 
 
 def create_app() -> FastAPI:

@@ -33,12 +33,49 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8088,http://127.0.0.1:8088}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
     volumes:
       - ./boardman:/app/boardman
       - ./boardman.db:/app/boardman.db
       - ./repos.yml:/app/repos.yml:ro
     depends_on:
       - ollama
+      - redis
+    networks:
+      - deepiri-network
+
+  boardman-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: deepiri-boardman-worker
+    restart: unless-stopped
+    entrypoint: []
+    command: ["arq", "boardman.worker.WorkerSettings"]
+    env_file:
+      - .env
+    environment:
+      PYTHONUNBUFFERED: "1"
+      DATABASE_URL: sqlite+aiosqlite:///./boardman.db
+      OLLAMA_BASE_URL: http://ollama:11434
+      PLAKY_API_BASE: ${PLAKY_API_BASE:-https://api.plaky.com/v1/public}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
+    volumes:
+      - ./boardman:/app/boardman
+      - ./boardman.db:/app/boardman.db
+      - ./repos.yml:/app/repos.yml:ro
+      - ./team_assignments.yml:/app/team_assignments.yml:ro
+    depends_on:
+      - redis
+      - ollama
+    networks:
+      - deepiri-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: deepiri-boardman-redis
+    restart: unless-stopped
     networks:
       - deepiri-network
 
@@ -64,6 +101,12 @@ services:
       - "11434:11434"
     volumes:
       - ollama_models:/root/.ollama
+    environment:
+      - OLLAMA_NUM_PARALLEL=4
+      - OLLAMA_MAX_LOADED_MODELS=2
+      - OLLAMA_FLASH_ATTENTION=1
+      - OLLAMA_CONTEXT_LENGTH=4096
+      - OLLAMA_KEEP_ALIVE=5m
     networks:
       - deepiri-network
 

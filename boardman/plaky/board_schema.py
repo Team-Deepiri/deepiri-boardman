@@ -2,7 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any, Dict, List, Optional
+
+from boardman.settings import settings
+
+_schema_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+_schema_lock = asyncio.Lock()
+
+
+def clear_board_schema_cache() -> None:
+    """Tests / hot reload."""
+    _schema_cache.clear()
 
 
 def _opt_label(o: Any) -> str:
@@ -158,13 +170,19 @@ async def fetch_board_schema_bundle(board_id: str) -> Dict[str, Any]:
             "normalized": None,
         }
 
+    ttl = float(settings.plaky_board_schema_cache_ttl_seconds or 0.0)
+    if ttl > 0:
+        now = time.monotonic()
+        async with _schema_lock:
+            hit = _schema_cache.get(bid)
+            if hit is not None and (now - hit[0]) < ttl:
+                return hit[1]
+
     c = PlakyClient()
-    groups_r = await c.list_groups(bid)
+    groups_r, board_r = await asyncio.gather(c.list_groups(bid), c.get_board(bid))
     groups = groups_r.get("groups") or []
     if not isinstance(groups, list):
         groups = []
-
-    board_r = await c.get_board(bid)
     board_raw = board_r.get("board") if board_r.get("ok") else None
     raw_keys: List[str] = []
     if isinstance(board_raw, dict):
@@ -189,7 +207,7 @@ async def fetch_board_schema_bundle(board_id: str) -> Dict[str, Any]:
         normalized=normalized,
         raw_top_keys=raw_keys if not normalized.get("fields") else None,
     )
-    return {
+    result: dict[str, Any] = {
         "ok": ok,
         "message": message,
         "markdown": md,
@@ -197,3 +215,7 @@ async def fetch_board_schema_bundle(board_id: str) -> Dict[str, Any]:
         "board_fetch_ok": ok_board,
         "groups_fetch_ok": ok_groups,
     }
+    if ttl > 0:
+        async with _schema_lock:
+            _schema_cache[bid] = (time.monotonic(), result)
+    return result

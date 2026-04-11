@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from typing import Any, List, Optional
@@ -10,6 +11,47 @@ import httpx
 
 from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.settings import settings
+
+# One AsyncClient per running event loop (uvicorn: single loop; pytest-asyncio: many loops).
+_ollama_by_loop: dict[int, httpx.AsyncClient] = {}
+
+
+def _ollama_http_client() -> httpx.AsyncClient:
+    """Shared keep-alive client for Ollama (reduces TCP setup per agent turn)."""
+    global _ollama_by_loop
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.get_event_loop()
+    lid = id(loop)
+    c = _ollama_by_loop.get(lid)
+    if c is None or getattr(c, "is_closed", False):
+        c = httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0),
+            limits=httpx.Limits(max_keepalive_connections=24, max_connections=48),
+        )
+        _ollama_by_loop[lid] = c
+    return c
+
+
+async def aclose_ollama_http_client() -> None:
+    global _ollama_by_loop
+    try:
+        loop = asyncio.get_running_loop()
+        lid = id(loop)
+        c = _ollama_by_loop.pop(lid, None)
+        if c is not None and not getattr(c, "is_closed", False):
+            fn = getattr(c, "aclose", None)
+            if callable(fn):
+                await fn()
+    except RuntimeError:
+        for c in list(_ollama_by_loop.values()):
+            if not getattr(c, "is_closed", False):
+                fn = getattr(c, "aclose", None)
+                if callable(fn):
+                    await fn()
+        _ollama_by_loop.clear()
+
 
 def _extract_system(messages: List[dict[str, str]]) -> tuple[Optional[str], List[dict[str, str]]]:
     system_parts: List[str] = []
@@ -42,9 +84,10 @@ async def chat_complete(
         elif prov in ("gemini", "google"):
             mdl = mdl or "gemini-2.0-flash"
 
+    if prov == "ollama":
+        return await _ollama_chat(_ollama_http_client(), mdl, messages)
+
     async with httpx.AsyncClient(timeout=timeout) as client:
-        if prov == "ollama":
-            return await _ollama_chat(client, mdl, messages)
         if prov == "anthropic":
             return await _anthropic_messages(client, mdl, messages)
         if prov in ("openai", "gpt"):

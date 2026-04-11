@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import uuid
 from datetime import datetime
@@ -99,24 +100,29 @@ def _format_llm_failure(exc: BaseException) -> str:
     )
 
 
+async def _load_draft_markdown(session: AsyncSession, agent_session_pk: Optional[int]) -> str:
+    if not agent_session_pk:
+        return ""
+    draft = await load_task_draft(session, agent_session_pk)
+    return format_task_draft_for_prompt(draft)
+
+
 async def _safe_plain_chat(
     *,
     message: str,
     repo: Optional[str],
     history_msgs: List[AgentMessage],
-    plaky_board_id: Optional[str],
-    plaky_group_id: Optional[str],
+    plaky_suffix: str,
     provider: Optional[str],
     model: Optional[str],
     extra_system_suffix: str = "",
 ) -> str:
     try:
-        llm_messages = await _plain_messages_async(
+        llm_messages = _build_plain_llm_messages(
             message,
             repo,
             history_msgs,
-            plaky_board_id,
-            plaky_group_id,
+            plaky_suffix,
             extra_system_suffix=extra_system_suffix,
         )
         return await chat_complete(llm_messages, provider=provider, model=model)
@@ -146,6 +152,7 @@ async def run_agent_chat(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     allow_writes: bool = False,
+    use_tools: bool = False,
     plaky_board_id: Optional[str] = None,
     plaky_group_id: Optional[str] = None,
 ) -> Tuple[str, str]:
@@ -177,14 +184,15 @@ async def run_agent_chat(
             ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
-    draft_md = ""
-    if ag.id:
-        draft = await load_task_draft(session, ag.id)
-        draft_md = format_task_draft_for_prompt(draft)
     intake_extra = TASK_CREATION_WORKFLOW
+    draft_md, plaky_suffix = await asyncio.gather(
+        _load_draft_markdown(session, ag.id),
+        _plaky_system_suffix(plaky_board_id, plaky_group_id),
+    )
 
     reply: str
-    if settings.agent_langchain_tools:
+    use_lc = bool(settings.agent_langchain_tools and use_tools)
+    if use_lc:
         try:
             logger.info(
                 "Agent chat: LangChain tool path (session_id=%s, allow_writes=%s, repo=%s)",
@@ -200,7 +208,7 @@ async def run_agent_chat(
             )
             if repo:
                 extra += f"\n## Repo context\n`{repo}`"
-            extra += await _plaky_system_suffix(plaky_board_id, plaky_group_id)
+            extra += plaky_suffix
             extra += draft_md + intake_extra
             async with agent_tool_context(session, ag.id, plaky_board_id, plaky_group_id):
                 reply = await run_tool_agent(
@@ -219,23 +227,22 @@ async def run_agent_chat(
                     message=message,
                     repo=repo,
                     history_msgs=history_msgs,
-                    plaky_board_id=plaky_board_id,
-                    plaky_group_id=plaky_group_id,
+                    plaky_suffix=plaky_suffix,
                     provider=provider,
                     model=model,
                     extra_system_suffix=draft_md + intake_extra,
                 )
     else:
         logger.info(
-            "Agent chat: plain LLM path (AGENT_LANGCHAIN_TOOLS off; session_id=%s)",
+            "Agent chat: plain LLM path (single completion; session_id=%s use_tools=%s)",
             sid,
+            use_tools,
         )
         reply = await _safe_plain_chat(
             message=message,
             repo=repo,
             history_msgs=history_msgs,
-            plaky_board_id=plaky_board_id,
-            plaky_group_id=plaky_group_id,
+            plaky_suffix=plaky_suffix,
             provider=provider,
             model=model,
             extra_system_suffix=draft_md + intake_extra,
@@ -248,18 +255,17 @@ async def run_agent_chat(
     return reply, sid
 
 
-async def _plain_messages_async(
+def _build_plain_llm_messages(
     message: str,
     repo: Optional[str],
     history_msgs: List[AgentMessage],
-    plaky_board_id: Optional[str],
-    plaky_group_id: Optional[str],
+    plaky_suffix: str,
     extra_system_suffix: str = "",
 ) -> List[Dict[str, str]]:
     llm_messages: List[Dict[str, str]] = [{"role": "system", "content": BOARD_MANAGER_SYSTEM}]
     if repo:
         llm_messages[0]["content"] += f"\n\n## Current repo context\nThe user is working with: `{repo}`."
-    llm_messages[0]["content"] += await _plaky_system_suffix(plaky_board_id, plaky_group_id)
+    llm_messages[0]["content"] += plaky_suffix
     llm_messages[0]["content"] += extra_system_suffix
     for m in history_msgs:
         llm_messages.append({"role": m.role, "content": m.content})

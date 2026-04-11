@@ -37,6 +37,8 @@ langchain-ollama = ">=0.2.0"
 langchain-anthropic = ">=0.2.0"
 langchain-openai = ">=0.2.0"
 langchain-google-genai = ">=2.0.0"
+redis = "^5.0"
+arq = "^0.26"
 
 [tool.poetry.group.dev.dependencies]
 pytest = "^8.0.0"

@@ -238,6 +238,7 @@ async def test_langchain_path_mocked_single_turn(monkeypatch, noop_app_lifespan_
                 session_id=None,
                 repo="o/r",
                 allow_writes=False,
+                use_tools=True,
             )
             await session.commit()
         assert reply == "tool-agent-done"
@@ -392,6 +393,7 @@ async def test_live_langchain_tool_loop_one_turn(ollama_model_resolved, monkeypa
                 session_id=str(uuid.uuid4()),
                 repo=None,
                 allow_writes=False,
+                use_tools=True,
             )
             await session.commit()
         assert sid

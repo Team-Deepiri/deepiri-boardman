@@ -220,6 +220,7 @@ def _agent_chat_async(
     provider: Optional[str],
     model: Optional[str],
     allow_writes: bool,
+    use_tools: bool,
 ) -> None:
     async def run():
         async with async_session() as session:
@@ -232,6 +233,7 @@ def _agent_chat_async(
                     provider=provider,
                     model=model,
                     allow_writes=allow_writes,
+                    use_tools=use_tools,
                     plaky_board_id=context_board_id(),
                     plaky_group_id=context_group_id(),
                 )
@@ -250,8 +252,13 @@ def agent_chat_cmd(
     provider: Optional[str] = typer.Option(None, "--provider"),
     model: Optional[str] = typer.Option(None, "--model"),
     allow_writes: bool = typer.Option(False, "--allow-writes", help="Enable Plaky create/update tools"),
+    use_tools: bool = typer.Option(
+        False,
+        "--use-tools",
+        help="LangChain multi-step tool agent (slower; requires AGENT_LANGCHAIN_TOOLS)",
+    ),
 ):
-    _agent_chat_async(message, session_id, repo, provider, model, allow_writes)
+    _agent_chat_async(message, session_id, repo, provider, model, allow_writes, use_tools)
 
 
 @agent_app.command("ask")
@@ -262,9 +269,10 @@ def agent_ask_cmd(
     provider: Optional[str] = typer.Option(None, "--provider"),
     model: Optional[str] = typer.Option(None, "--model"),
     allow_writes: bool = typer.Option(False, "--allow-writes"),
+    use_tools: bool = typer.Option(False, "--use-tools"),
 ):
     """Alias for `boardman agent chat`."""
-    _agent_chat_async(message, session_id, repo, provider, model, allow_writes)
+    _agent_chat_async(message, session_id, repo, provider, model, allow_writes, use_tools)
 
 
 app.add_typer(agent_app, name="agent")

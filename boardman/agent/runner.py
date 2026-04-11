@@ -14,8 +14,9 @@ from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
 
-# LangGraph steps (model ↔ tools); ~14 tool rounds was the old AgentExecutor cap.
-_AGENT_RECURSION_LIMIT = 45
+def _recursion_limit() -> int:
+    n = int(getattr(settings, "agent_recursion_limit", 22) or 22)
+    return max(5, min(80, n))
 
 
 def _message_content_to_text(content: Any) -> str:
@@ -68,7 +69,7 @@ async def run_tool_agent(
     messages: list[BaseMessage] = list(chat_history) + [HumanMessage(content=user_input)]
     result = await graph.ainvoke(
         {"messages": messages},
-        config={"recursion_limit": _AGENT_RECURSION_LIMIT},
+        config={"recursion_limit": _recursion_limit()},
     )
     out = _final_ai_text(result.get("messages", []))
     logger.info("LangChain agent finished (output length=%d)", len(out))

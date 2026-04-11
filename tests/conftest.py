@@ -34,6 +34,23 @@ _load_dotenv_file_into_environ()
 import httpx
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _disable_agent_rate_limit_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Avoid flaky 429s on fast multi-request agent tests."""
+    import boardman.settings as bs
+
+    monkeypatch.setattr(bs.settings, "agent_rate_limit_enabled", False)
+
+
+@pytest.fixture(autouse=True)
+async def _aclose_ollama_http_client_after_async_test() -> None:
+    """Per-loop httpx client must close before pytest tears down the event loop."""
+    yield
+    from boardman.llm.completion import aclose_ollama_http_client
+
+    await aclose_ollama_http_client()
+
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 
 

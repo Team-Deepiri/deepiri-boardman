@@ -1,0 +1,65 @@
+"""arq worker: run `arq boardman.worker.WorkerSettings` (needs REDIS_URL + worker container)."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from arq.connections import RedisSettings
+
+from boardman.settings import settings
+
+logger = logging.getLogger(__name__)
+
+
+def _redis_settings() -> RedisSettings:
+    u = (settings.redis_url or "").strip() or "redis://localhost:6379/0"
+    return RedisSettings.from_dsn(u)
+
+
+async def boardman_agent_chat_job(ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Background agent turn: same logic as POST /agent/chat (commits session)."""
+    from boardman.agent.service import run_agent_chat
+    from boardman.database.session import async_session
+    from boardman.plaky.placement import plaky_placement_context
+
+    message = str(payload.get("message") or "").strip()
+    if not message:
+        return {"ok": False, "error": "empty message"}
+
+    bid = payload.get("plaky_board_id")
+    gid = payload.get("plaky_group_id")
+    bs = str(bid).strip() if bid else None
+    gs = str(gid).strip() if gid else None
+    if bs == "":
+        bs = None
+    if gs == "":
+        gs = None
+
+    async with plaky_placement_context(bs, gs), async_session() as session:
+        try:
+            reply, sid = await run_agent_chat(
+                session,
+                message=message,
+                session_id=payload.get("session_id"),
+                repo=payload.get("repo"),
+                provider=payload.get("provider"),
+                model=payload.get("model"),
+                allow_writes=bool(payload.get("allow_writes")),
+                use_tools=bool(payload.get("use_tools")),
+                plaky_board_id=bs,
+                plaky_group_id=gs,
+            )
+            await session.commit()
+            return {"ok": True, "reply": reply, "session_id": sid}
+        except Exception as e:
+            logger.exception("boardman_agent_chat_job failed")
+            await session.rollback()
+            return {"ok": False, "error": str(e)}
+
+
+class WorkerSettings:
+    functions = [boardman_agent_chat_job]
+    redis_settings = _redis_settings()
+    keep_result = 3600
+    max_jobs = 20

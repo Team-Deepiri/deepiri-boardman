@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     # Plaky hierarchy: Item lives under Board + Group (no separate "table" in API)
     plaky_default_board_id: str = ""
     plaky_default_group_id: str = ""
+    # Seconds; 0 disables TTL cache for fetch_board_schema_bundle
+    plaky_board_schema_cache_ttl_seconds: float = 90.0
 
     github_webhook_secret: str = ""
     github_pat: str | None = None
@@ -36,6 +38,8 @@ class Settings(BaseSettings):
     llm_provider: str = "ollama"
     llm_model: str = ""
     ollama_base_url: str = "http://localhost:11434"
+    # Keep Ollama model loaded between requests (reduces cold-start latency). Examples: "30m", "-1" (forever)
+    ollama_keep_alive: str = "30m"
     openai_api_key: str = ""
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
@@ -43,6 +47,8 @@ class Settings(BaseSettings):
     agent_max_history: int = 50
     agent_require_confirm_bulk: bool = True
     agent_langchain_tools: bool = True
+    # LangGraph model↔tool steps cap (each step is often a full LLM call — keep low for latency)
+    agent_recursion_limit: int = 22
     # When True, LangChain AgentExecutor prints step traces (noisy; dev only)
     agent_langchain_verbose: bool = False
     prompt_version: str = "2026-04-09"
@@ -72,6 +78,18 @@ class Settings(BaseSettings):
     pr_linking_top_n_for_llm: int = 5
     pr_linking_llm_enabled: bool = False
     pr_linking_llm_min_confidence: float = 0.75
+
+    # Redis: agent job queue (arq) + optional distributed leaky-bucket limits
+    redis_url: str = ""
+    # When REDIS_URL is set, POST /agent/chat may use async_enqueue=true (requires arq worker)
+    agent_async_enqueue_enabled: bool = True
+
+    # Leaky-bucket rate limit for POST /agent/chat and /agent/scan (per client IP)
+    agent_rate_limit_enabled: bool = True
+    agent_rate_limit_capacity: float = 16.0
+    agent_rate_limit_leak_per_second: float = 0.5
+    # Use Redis for the bucket when true and redis_url is set (multi-instance safe)
+    agent_rate_limit_use_redis: bool = False
 
 
 settings = Settings()

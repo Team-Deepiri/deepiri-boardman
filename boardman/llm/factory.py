@@ -17,11 +17,15 @@ def get_chat_model() -> Any:
     if p == "ollama":
         from langchain_ollama import ChatOllama
 
-        return ChatOllama(
-            model=effective_ollama_model(None),
-            base_url=settings.ollama_base_url.rstrip("/"),
-            temperature=0.2,
-        )
+        ka = (settings.ollama_keep_alive or "").strip()
+        kw: dict[str, Any] = {
+            "model": effective_ollama_model(None),
+            "base_url": settings.ollama_base_url.rstrip("/"),
+            "temperature": 0.2,
+        }
+        if ka:
+            kw["keep_alive"] = ka
+        return ChatOllama(**kw)
 
     if p == "anthropic":
         from langchain_anthropic import ChatAnthropic
