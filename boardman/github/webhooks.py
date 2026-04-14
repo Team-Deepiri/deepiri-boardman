@@ -30,6 +30,7 @@ class GitHubPullRequest(BaseModel):
     html_url: str
     state: str
     merged: bool = False
+    draft: bool = False
     user: Optional[Any] = None
     base: Optional[Any] = None
     head: Optional[Any] = None
@@ -52,6 +53,26 @@ class PullRequestEventPayload(BaseModel):
     repository: GitHubRepository
 
 
+class GitHubReview(BaseModel):
+    user: Optional[Any] = None
+    state: str = ""
+    body: Optional[str] = None
+
+
+class PullRequestReviewEventPayload(BaseModel):
+    action: str
+    review: GitHubReview
+    pull_request: GitHubPullRequest
+    repository: GitHubRepository
+
+
+class PullRequestReviewCommentEventPayload(BaseModel):
+    action: str
+    comment: Optional[Any] = None
+    pull_request: Optional[GitHubPullRequest] = None
+    repository: GitHubRepository
+
+
 class PingEventPayload(BaseModel):
     hook: Optional[Any] = None
     repository: Optional[GitHubRepository] = None
@@ -62,6 +83,12 @@ def parse_webhook_payload(event_type: str, payload_dict: dict) -> Any:
         return IssueEventPayload(**payload_dict)
     elif event_type == "pull_request":
         return PullRequestEventPayload(**payload_dict)
+    elif event_type == "pull_request_review":
+        return PullRequestReviewEventPayload(**payload_dict)
+    elif event_type == "pull_request_review_comment":
+        return PullRequestReviewCommentEventPayload(**payload_dict)
+    elif event_type == "issue_comment":
+        return PullRequestReviewCommentEventPayload(**payload_dict)
     elif event_type == "ping":
         return PingEventPayload(**payload_dict)
     return None

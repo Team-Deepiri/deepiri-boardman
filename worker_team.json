@@ -1,0 +1,98 @@
+[
+  {
+    "id": "432288",
+    "display": "Asheencodes",
+    "github_login": "asheenhameeda8-cpu",
+    "roles": [
+      "engineer",
+      "qa"
+    ],
+    "qaTier": 2,
+    "repoGlobs": [
+      "Team-Deepiri/*",
+      "Team-Deepiri/*"
+    ],
+    "weight": 1.0,
+    "tier": "standard"
+  },
+  {
+    "id": "291192",
+    "display": "Austin Heitzman",
+    "github_login": "austinm2h35-sketch",
+    "roles": [
+      "engineer",
+      "qa"
+    ],
+    "qaTier": 2,
+    "repoGlobs": [
+      "Team-Deepiri/*",
+      "Team-Deepiri/*"
+    ],
+    "weight": 1.0,
+    "tier": "standard"
+  },
+  {
+    "id": "291493",
+    "display": "David Poindexter",
+    "github_login": "dpoin23",
+    "roles": [
+      "engineer",
+      "qa"
+    ],
+    "qaTier": 2,
+    "repoGlobs": [
+      "Team-Deepiri/*",
+      "Team-Deepiri/*"
+    ],
+    "weight": 1.0,
+    "tier": "standard"
+  },
+  {
+    "id": "427676",
+    "display": "Eric Chen",
+    "github_login": "ericchen682",
+    "roles": [
+      "engineer",
+      "qa"
+    ],
+    "qaTier": 2,
+    "repoGlobs": [
+      "Team-Deepiri/*",
+      "Team-Deepiri/*"
+    ],
+    "weight": 1.0,
+    "tier": "standard"
+  },
+  {
+    "id": "460105",
+    "display": "Runbin",
+    "github_login": "runbinz",
+    "roles": [
+      "engineer",
+      "qa"
+    ],
+    "qaTier": 2,
+    "repoGlobs": [
+      "Team-Deepiri/*",
+      "Team-Deepiri/*"
+    ],
+    "weight": 1.0,
+    "tier": "standard"
+  },
+  {
+    "id": "427333",
+    "display": "Sean San",
+    "github_login": "seansan06",
+    "roles": [
+      "engineer",
+      "qa"
+    ],
+    "qaTier": 2,
+    "repoGlobs": [
+      "Team-Deepiri/*",
+      "Team-Deepiri/*"
+    ],
+    "weight": 1.0,
+    "tier": "standard"
+  }
+]

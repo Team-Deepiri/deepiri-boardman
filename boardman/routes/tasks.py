@@ -43,7 +43,7 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
 
     field_values: dict[str, str] = {}
     if req.auto_assign_team:
-        field_values = dict(build_assignment_field_map(repo_full, cfg))
+        field_values = dict(await build_assignment_field_map(repo_full, cfg))
     if req.engineer_plaky_id and cfg.plaky_field_engineer:
         field_values[cfg.plaky_field_engineer] = req.engineer_plaky_id.strip()
     if req.qa_plaky_id and cfg.plaky_field_qa:

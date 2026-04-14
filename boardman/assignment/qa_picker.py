@@ -4,18 +4,47 @@ Semi-random QA (and engineer) selection for Plaky assignment.
 - Tier + hardware: heavy repos filter out low-tier QAs when configured.
 - Overlap pools: QAs who share org or explicit repo overlap form a pool; we pick within pool.
 - Weights: member.weight * tier bias * uniform jitter → weighted random choice.
+- Auto-classify: If repo not in repos.yml, fetch metadata and classify tier dynamically.
 """
 
 from __future__ import annotations
 
+import logging
 import random
 import re
 from fnmatch import fnmatchcase
 from typing import Dict, List, Optional, Set, Tuple
 
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, load_team_assignments
+from boardman.github.repo_metadata import fetch_repo_metadata
+from boardman.assignment.tier_classifier import classify_repo_tier
 from boardman.repos_config import get_routing
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
+
+
+async def _auto_classify_repo_tier(full_name: str) -> int:
+    """
+    Auto-classify repo tier if not in repos.yml.
+    Returns tier (1, 2, 3) or defaults to 2 if classification fails.
+    """
+    if "/" not in full_name:
+        return 2
+    
+    owner, repo = full_name.split("/", 1)
+    
+    import httpx
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        meta = await fetch_repo_metadata(client, owner, repo)
+    
+    if meta:
+        tier, _ = classify_repo_tier(meta)
+        _log.info("Auto-classified repo %s as tier %d", full_name, tier)
+        return tier
+    
+    _log.warning("Could not fetch metadata for %s, defaulting to tier 2", full_name)
+    return 2
 
 
 def _norm_repo(full: str) -> str:
@@ -138,21 +167,22 @@ def _weighted_choice(members: List[TeamMember], cfg: TeamAssignmentsConfig) -> O
     return random.choices(members, weights=weights, k=1)[0]
 
 
-def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] = None) -> Tuple[Optional[str], str]:
+async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] = None) -> Tuple[Optional[str], str]:
     """
     Returns (plaky_person_id_or_value, reason_summary).
-    Uses tier from repos.yml (or default tier 2 if not classified).
+    Uses tier from repos.yml, or auto-classifies if not found.
     """
     cfg = cfg or load_team_assignments()
     fn = (full_name or "").strip()
     if not fn:
         return None, "empty repo"
 
-    # Get tier from repos.yml or default to tier 2
     repo_tier = 2
     routing = get_routing(fn, "", settings.github_org)
     if routing and routing.tier > 0:
         repo_tier = routing.tier
+    else:
+        repo_tier = await _auto_classify_repo_tier(fn)
 
     qas = [m for m in cfg.members if "qa" in m.roles and repo_matches_member(fn, m)]
     if not qas:
@@ -187,7 +217,7 @@ def pick_engineer_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
     return top.id, f"engineer={top.display}"
 
 
-def build_assignment_field_map(
+async def build_assignment_field_map(
     full_name: str,
     cfg: Optional[TeamAssignmentsConfig] = None,
     field_overrides: Optional[Dict[str, str]] = None,
@@ -198,7 +228,7 @@ def build_assignment_field_map(
     eid, _ = pick_engineer_for_repo(full_name, cfg)
     if eid and cfg.plaky_field_engineer:
         out[cfg.plaky_field_engineer] = eid
-    qid, _ = pick_qa_for_repo(full_name, cfg)
+    qid, _ = await pick_qa_for_repo(full_name, cfg)
     if qid and cfg.plaky_field_qa:
         out[cfg.plaky_field_qa] = qid
     for k, v in (field_overrides or {}).items():

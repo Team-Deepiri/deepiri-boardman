@@ -8,6 +8,13 @@ class Settings(BaseSettings):
     plaky_api_key: str = ""
     plaky_api_base: str = "https://api.plaky.com/v1/public"
     plaky_pr_merge_status: str = "in_review"
+    plaky_status_needs_qa: str = "needs_qa"
+    plaky_status_in_qa: str = "in_qa"
+    plaky_status_qa_approved: str = "qa_approved"
+    plaky_status_qa_rejected: str = "qa_rejected"
+    plaky_status_completed: str = "completed"
+    plaky_pr_tracking_board_id: str = ""
+    plaky_pr_tracking_group_id: str = ""
     # Plaky hierarchy: Item lives under Board + Group (no separate "table" in API)
     plaky_default_board_id: str = ""
     plaky_default_group_id: str = ""
@@ -33,6 +40,8 @@ class Settings(BaseSettings):
     repos_yml_path: str = "repos.yml"
     # QA/engineer Plaky field assignment (optional); see team_assignments.yml.example
     team_assignments_yml_path: str = "team_assignments.yml"
+    # Written by sync_qa_capabilities.py; read by tier_classifier at runtime
+    repo_signals_json_path: str = "repo_signals.json"
 
     # Ollama: leave llm_model empty to auto-pick from GET /api/tags (Docker-friendly).
     llm_provider: str = "ollama"
