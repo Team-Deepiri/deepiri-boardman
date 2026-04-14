@@ -171,16 +171,18 @@ def _load() -> tuple[dict[str, float], dict[str, float]]:
 
 
 def classify_repo_tier(meta) -> tuple[Tier, TierScore]:
-    """IDF-based ranking - tier3 handles all repos."""
+    """Pure IDF ranking - fully dynamic."""
     if not meta:
         return 3, TierScore()
 
     idf_data, percentiles = _load()
+    if not idf_data:
+        return 3, TierScore()
 
     idf_score = sum(idf_data.get(sig, 0.0) for sig in getattr(meta, "raw_signals", []))
     structural_score = compute_structural_complexity_score(meta)
 
-    final_score = idf_score + structural_score * 0.1
+    final_score = idf_score
 
     ts = TierScore(idf_score=idf_score, structural_score=structural_score, total=final_score)
 

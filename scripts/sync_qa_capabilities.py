@@ -135,19 +135,16 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
         for fn, signals in repo_signals.items()
     }
 
-# Fully dynamic: percentiles from score distribution
+# Use percentiles: T1=bottom ~25%, T2=middle, T3=top rest
     sorted_scores = sorted(repo_scores.values())
     n = len(sorted_scores)
     
-    if n < 4:
+    if n < 6:
         p50 = sorted_scores[n // 2]
         p80 = sorted_scores[-1]
     else:
-        q1 = sorted_scores[n // 4]
-        q3 = sorted_scores[3 * n // 4]
-        
-        p50 = q1
-        p80 = q3
+        p50 = sorted_scores[int(n * 0.25)]
+        p80 = sorted_scores[int(n * 0.7)]
 
     output: dict[str, Any] = {
         "computed_at": datetime.now(timezone.utc).isoformat(),
@@ -166,9 +163,9 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
     )
 
     # Log tier distribution
-    t1 = sum(1 for s in scores_sorted if s < p50)
-    t2 = sum(1 for s in scores_sorted if p50 <= s < p80)
-    t3 = sum(1 for s in scores_sorted if s >= p80)
+    t1 = sum(1 for s in sorted_scores if s < p50)
+    t2 = sum(1 for s in sorted_scores if p50 <= s < p80)
+    t3 = sum(1 for s in sorted_scores if s >= p80)
     _log.info("Tier distribution: T1=%d  T2=%d  T3=%d", t1, t2, t3)
 
 
@@ -191,18 +188,13 @@ async def infer_member_qa_tier(
     repo_cache: dict[str, int],
 ) -> int:
     """
-    Infer qa_tier from a member's recent PR/review history across the org.
-    Checks repos they authored or reviewed, classifies those repos, promotes tier
-    based on thresholds. Zero hardcoded tier assignments.
+    Only support team members get QA tiers.
+    Tier inferred from PR/review history only.
     """
     tier_counts = {1: 0, 2: 0, 3: 0}
-    # Use discovered org name for search (may differ from settings.github_org)
+    
     search_org = _RESOLVED_ORG or ORG
-    queries = [
-        f"is:pr org:{search_org} author:{login}",
-        f"is:pr org:{search_org} reviewed-by:{login}",
-    ]
-    for q in queries:
+    for q in [f"is:pr org:{search_org} author:{login}", f"is:pr org:{search_org} reviewed-by:{login}"]:
         url = f"https://api.github.com/search/issues?q={q}&per_page=20"
         try:
             r = await client.get(url, headers=headers)
@@ -210,7 +202,6 @@ async def infer_member_qa_tier(
                 continue
             for item in r.json().get("items", []):
                 repo_url = item.get("repository_url", "")
-                # repo_url = https://api.github.com/repos/Owner/Repo
                 repo_fn = "/".join(repo_url.split("/")[-2:])
                 if repo_fn not in repo_cache:
                     if "/" in repo_fn:
@@ -223,8 +214,8 @@ async def infer_member_qa_tier(
                 tier_counts[repo_cache[repo_fn]] += 1
         except Exception:
             continue
-
-    # Infer highest tier with sufficient history
+    
+    # Activity-based tier only (no team boost)
     if tier_counts[3] >= PROMOTION_THRESHOLDS[3]:
         return 3
     if tier_counts[2] >= PROMOTION_THRESHOLDS[2]:
