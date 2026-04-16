@@ -171,6 +171,32 @@ class PlakyClient:
             page += 1
         return accum
 
+    @staticmethod
+    def _payload_item_id(payload: Dict[str, Any]) -> str:
+        """Best-effort item id extraction across Plaky response shapes."""
+        direct = str(
+            payload.get("id")
+            or payload.get("itemId")
+            or payload.get("taskId")
+            or payload.get("_id")
+            or ""
+        ).strip()
+        if direct:
+            return direct
+        for key in ("item", "task", "data", "result"):
+            nested = payload.get(key)
+            if isinstance(nested, dict):
+                nid = str(
+                    nested.get("id")
+                    or nested.get("itemId")
+                    or nested.get("taskId")
+                    or nested.get("_id")
+                    or ""
+                ).strip()
+                if nid:
+                    return nid
+        return ""
+
     def _get_paginated_sync(self, client: httpx.Client, root: str, path: str) -> List[Dict[str, Any]]:
         page = 1
         accum: List[Dict[str, Any]] = []
@@ -533,6 +559,83 @@ class PlakyClient:
                 page += 1
         return {"ok": True, "items": accum, "status": 200}
 
+    async def _enforce_item_text(
+        self,
+        *,
+        board_id: str,
+        item_id: str,
+        title: str,
+        description: str,
+    ) -> Dict[str, Any]:
+        """
+        Best-effort follow-up update for boards that create rows as "New item" even when
+        create payload includes title/description.
+        """
+        root = self._public_root()
+        if not root:
+            return {"ok": False, "message": "v1/public base URL required"}
+        sid = await self.resolve_space_for_board(board_id.strip())
+        if not sid:
+            return {"ok": False, "message": "Could not resolve space for board"}
+
+        base = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
+        hdr = _headers(self.api_key)
+        bodies: List[Dict[str, Any]] = [
+            {"name": title, "description": description},
+            {"title": title, "description": description},
+            {"item": {"name": title, "description": description}},
+            {"item": {"title": title, "description": description}},
+            {"fields": {"name": title, "description": description}},
+        ]
+
+        async with httpx.AsyncClient() as client:
+            for method in ("PATCH", "PUT"):
+                for body in bodies:
+                    r = await _request_with_rate_limit_retry(
+                        client, method, base, headers=hdr, json=body
+                    )
+                    if r.status_code in (200, 201, 204):
+                        return {"ok": True, "status": r.status_code, "mode": f"{method} {list(body.keys())[0]}"}
+
+        # Some boards expose title/description as item fields with board-specific keys.
+        title_fields: List[str] = []
+        description_fields: List[str] = []
+        try:
+            from boardman.plaky.board_schema import fetch_board_schema_bundle
+
+            sch = await fetch_board_schema_bundle(board_id.strip())
+            normalized = sch.get("normalized") if isinstance(sch, dict) else None
+            fields = normalized.get("fields") if isinstance(normalized, dict) else []
+            if isinstance(fields, list):
+                for f in fields:
+                    if not isinstance(f, dict):
+                        continue
+                    key = str(f.get("key") or "").strip()
+                    name = str(f.get("name") or "").strip().lower()
+                    if not key:
+                        continue
+                    if any(tok in name for tok in ("title", "name", "task")):
+                        title_fields.append(key)
+                    if any(tok in name for tok in ("description", "details", "desc", "summary")):
+                        description_fields.append(key)
+        except Exception:
+            pass
+
+        patch_values: Dict[str, Any] = {"name": title, "title": title, "description": description}
+        for k in title_fields:
+            patch_values[k] = title
+        for k in description_fields:
+            patch_values[k] = description
+
+        field_patch = await self.patch_item_field_values(
+            board_id.strip(),
+            item_id.strip(),
+            patch_values,
+        )
+        if field_patch.get("ok"):
+            return {"ok": True, "mode": "field_patch", "field_patch": field_patch}
+        return {"ok": False, "field_patch": field_patch}
+
     async def _create_item_hierarchy(
         self,
         board_id: str,
@@ -553,7 +656,44 @@ class PlakyClient:
                     "message": f"Could not resolve space for board_id={board_id!r}.",
                 }
             url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id}/items"
+            title_fields: List[str] = []
+            description_fields: List[str] = []
+            try:
+                from boardman.plaky.board_schema import fetch_board_schema_bundle
+
+                sch = await fetch_board_schema_bundle(board_id.strip())
+                normalized = sch.get("normalized") if isinstance(sch, dict) else None
+                fields = normalized.get("fields") if isinstance(normalized, dict) else []
+                if isinstance(fields, list):
+                    for f in fields:
+                        if not isinstance(f, dict):
+                            continue
+                        key = str(f.get("key") or "").strip()
+                        name = str(f.get("name") or "").strip().lower()
+                        if not key:
+                            continue
+                        if any(tok in name for tok in ("title", "name", "task")):
+                            title_fields.append(key)
+                        if any(tok in name for tok in ("description", "details", "desc", "summary")):
+                            description_fields.append(key)
+            except Exception:
+                pass
+            text_fields: List[Dict[str, Any]] = []
+            for k in title_fields:
+                text_fields.append({"itemFieldKey": k, "value": title})
+            for k in description_fields:
+                text_fields.append({"itemFieldKey": k, "value": description})
             bodies: List[Dict[str, Any]] = [
+                {
+                    "title": title,
+                    "description": description,
+                    "groupId": group_id,
+                },
+                {
+                    "title": title,
+                    "description": description,
+                    "group_id": group_id,
+                },
                 {
                     "name": title,
                     "description": description,
@@ -565,9 +705,16 @@ class PlakyClient:
                     "group_id": group_id,
                 },
                 {
-                    "title": title,
-                    "description": description,
                     "groupId": group_id,
+                    "itemFields": text_fields,
+                },
+                {
+                    "group_id": group_id,
+                    "item_fields": text_fields,
+                },
+                {
+                    "groupId": group_id,
+                    "fields": text_fields,
                 },
             ]
             async with httpx.AsyncClient() as client:
@@ -579,9 +726,48 @@ class PlakyClient:
                     last_snip = response.text[:200]
                     if response.status_code in (200, 201):
                         payload = response.json()
-                        task_id = payload.get("id") or payload.get("taskId") or payload.get("itemId")
+                        task_id = self._payload_item_id(payload)
                         task_url = payload.get("url") or payload.get("taskUrl")
-                        return {"ok": True, "status": response.status_code, "task": payload, "task_url": task_url}
+                        out = {"ok": True, "status": response.status_code, "task": payload, "task_url": task_url}
+                        item_id = str(task_id or "").strip()
+                        if not item_id:
+                            listed = await self.list_board_items_public(board_id, max_pages=1)
+                            if listed.get("ok"):
+                                rows = listed.get("items") or []
+                                if isinstance(rows, list):
+                                    for row in reversed(rows):
+                                        if not isinstance(row, dict):
+                                            continue
+                                        rid = str(
+                                            row.get("id")
+                                            or row.get("itemId")
+                                            or row.get("taskId")
+                                            or row.get("_id")
+                                            or ""
+                                        ).strip()
+                                        rgid = str(
+                                            row.get("groupId")
+                                            or row.get("group_id")
+                                            or (row.get("group") or {}).get("id")
+                                            or ""
+                                        ).strip()
+                                        if rid and (not rgid or rgid == group_id):
+                                            item_id = rid
+                                            break
+                        created_name = str(payload.get("name") or payload.get("title") or "").strip().lower()
+                        needs_repair = bool(item_id) and (
+                            not created_name
+                            or created_name in ("new item", "untitled", "new task")
+                            or title.strip().lower() not in created_name
+                        )
+                        if item_id and (needs_repair or description.strip()):
+                            out["text_repair"] = await self._enforce_item_text(
+                                board_id=board_id,
+                                item_id=item_id,
+                                title=title,
+                                description=description,
+                            )
+                        return out
                     if response.status_code not in (404, 422):
                         break
             return {
@@ -589,6 +775,30 @@ class PlakyClient:
                 "status": last_status,
                 "message": f"Plaky item create failed ({last_status}): {last_snip}",
             }
+
+    async def add_item_comment_public(self, board_id: str, item_id: str, text: str) -> Dict[str, Any]:
+        if not self.api_key:
+            return {"ok": False, "message": "PLAKY_API_KEY is missing."}
+        root = self._public_root()
+        if not root:
+            return {"ok": False, "message": "v1/public base URL required"}
+        sid = await self.resolve_space_for_board(board_id.strip())
+        if not sid:
+            return {"ok": False, "message": "Could not resolve space for board"}
+        body = (text or "").strip()
+        if not body:
+            return {"ok": True, "skipped": True, "message": "empty comment"}
+        url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}/comments"
+        payload = {"text": body}
+        async with httpx.AsyncClient() as client:
+            r = await _request_with_rate_limit_retry(client, "POST", url, headers=_headers(self.api_key), json=payload)
+        if r.status_code in (200, 201):
+            try:
+                cmt = r.json()
+            except ValueError:
+                cmt = {}
+            return {"ok": True, "status": r.status_code, "comment": cmt}
+        return {"ok": False, "status": r.status_code, "message": r.text[:300]}
 
         base = self.base_url.rstrip("/")
         bodies = [
@@ -762,6 +972,20 @@ class PlakyClient:
 
         if bid and gid:
             res = await self._create_item_hierarchy(bid, gid, title, description, priority)
+            if res.get("ok") and description.strip():
+                task = res.get("task") if isinstance(res.get("task"), dict) else {}
+                iid = str(
+                    task.get("id")
+                    or task.get("itemId")
+                    or task.get("_id")
+                    or ""
+                ).strip()
+                if iid:
+                    res["description_comment"] = await self.add_item_comment_public(
+                        bid,
+                        iid,
+                        f"Description:\n{description.strip()}",
+                    )
             if res.get("ok") and field_values:
                 task = res.get("task") if isinstance(res.get("task"), dict) else {}
                 iid = str(task.get("id") or task.get("itemId") or task.get("_id") or "").strip()
