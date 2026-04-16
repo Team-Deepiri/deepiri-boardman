@@ -247,6 +247,53 @@ async def test_langchain_path_mocked_single_turn(monkeypatch, noop_app_lifespan_
         await engine.dispose()
 
 
+@pytest.mark.asyncio
+async def test_langchain_organize_request_forces_preview_until_confirm(monkeypatch, noop_app_lifespan_init):
+    import boardman.agent.service as agent_svc
+    import boardman.settings as bs
+
+    monkeypatch.setattr(bs.settings, "agent_langchain_tools", True)
+    monkeypatch.setattr(bs.settings, "agent_require_confirm_bulk", True)
+
+    captured: list[bool] = []
+
+    async def fake_run_tool_agent(*args: Any, **kwargs: Any) -> str:
+        captured.append(bool(kwargs.get("allow_writes")))
+        return "preview-plan"
+
+    monkeypatch.setattr(agent_svc, "run_tool_agent", fake_run_tool_agent)
+
+    engine, factory = await _memory_engine_and_factory()
+    try:
+        async with factory() as session:
+            reply, _ = await agent_svc.run_agent_chat(
+                session,
+                message="Organize the board and move duplicate tasks",
+                session_id=None,
+                repo="o/r",
+                allow_writes=True,
+                use_tools=True,
+            )
+            await session.commit()
+        assert captured[-1] is False
+        assert "preview mode" in reply.lower()
+
+        async with factory() as session:
+            reply2, _ = await agent_svc.run_agent_chat(
+                session,
+                message="Yes, apply now and confirm",
+                session_id=None,
+                repo="o/r",
+                allow_writes=True,
+                use_tools=True,
+            )
+            await session.commit()
+        assert captured[-1] is True
+        assert "preview mode" not in reply2.lower()
+    finally:
+        await engine.dispose()
+
+
 # ----- Live stack (Ollama + optional Plaky) -----
 
 

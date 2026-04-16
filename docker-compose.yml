@@ -96,7 +96,7 @@ services:
     image: ollama/ollama:latest
     container_name: deepiri-ollama-boardman # TODO: rename to deepiri-ollama later when extracted in to deepiri-ollama submodule
     restart: unless-stopped
-    gpus: all
+    # gpus: all  # Uncomment if you have NVIDIA Container Toolkit installed
     ports:
       - "11434:11434"
     volumes:

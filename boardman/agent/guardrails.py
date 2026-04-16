@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import FrozenSet
 
 # Tool names registered on the LangChain agent
@@ -15,6 +16,7 @@ READ_ONLY_TOOLS: FrozenSet[str] = frozenset(
         "plaky_get_task",
         "plaky_get_board_item",
         "plaky_list_workspace_users",
+        "plaky_review_board",
         "plaky_save_task_preferences",
         "scan_local_repo",
         "github_list_open_issues",
@@ -38,3 +40,26 @@ WRITE_TOOLS: FrozenSet[str] = frozenset(
 
 def is_write_tool(name: str) -> bool:
     return name in WRITE_TOOLS
+
+
+_ORGANIZE_PATTERNS = (
+    r"\borganize\b",
+    r"\breorder\b",
+    r"\bcleanup\b",
+    r"\bclean up\b",
+    r"\bbulk\b",
+    r"\bmove\b.+\btask",
+    r"\barchive\b",
+)
+_CONFIRM_PATTERN = re.compile(r"\b(confirm|yes,\s*apply|apply now|approved)\b", re.IGNORECASE)
+
+
+def looks_like_board_organize_request(message: str) -> bool:
+    m = (message or "").strip().lower()
+    if not m:
+        return False
+    return any(re.search(p, m, re.IGNORECASE) is not None for p in _ORGANIZE_PATTERNS)
+
+
+def has_confirm_token(message: str) -> bool:
+    return _CONFIRM_PATTERN.search((message or "").strip()) is not None
