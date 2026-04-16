@@ -552,10 +552,6 @@ class PlakyClient:
         title: str,
         description: str,
     ) -> Dict[str, Any]:
-        """
-        Best-effort follow-up update for boards that create rows as "New item" even when
-        create payload includes title/description.
-        """
         root = self._public_root()
         if not root:
             return {"ok": False, "message": "v1/public base URL required"}

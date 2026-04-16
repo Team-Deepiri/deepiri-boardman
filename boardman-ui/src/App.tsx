@@ -125,6 +125,8 @@ function EmptyState() {
 
 export default function App() {
   const [repo, setRepo] = useState("");
+  const [orgRepos, setOrgRepos] = useState<string[]>([]);
+  const [orgReposHint, setOrgReposHint] = useState<string | null>(null);
   const [allowWrites, setAllowWrites] = useState(true);
   const [useTools, setUseTools] = useState(true);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -195,6 +197,35 @@ export default function App() {
         if (!cancelled) {
           setBoards([]);
           setPlakyBoardsHint("Could not reach Plaky boards endpoint.");
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get<{
+          ok?: boolean;
+          repos?: string[];
+          message?: string;
+        }>("/api/v1/repos/org");
+        if (cancelled) return;
+        if (data.ok && Array.isArray(data.repos)) {
+          setOrgRepos(data.repos);
+          setOrgReposHint(null);
+        } else {
+          setOrgRepos([]);
+          setOrgReposHint(data.message || "Could not load org repositories.");
+        }
+      } catch {
+        if (!cancelled) {
+          setOrgRepos([]);
+          setOrgReposHint("Could not reach org repositories endpoint.");
         }
       }
     })();
@@ -495,18 +526,22 @@ export default function App() {
         </div>
 
         <div className="field">
-          <label className="field__label" htmlFor="repo-input">
+          <label className="field__label" htmlFor="repo-select">
             <IconRepo className="field__label-icon" />
             Repository
           </label>
-          <input
-            id="repo-input"
-            className="field__input"
+          <AppSelect
+            id="repo-select"
             value={repo}
-            onChange={(e) => setRepo(e.target.value)}
-            placeholder="owner/repo"
-            autoComplete="off"
+            onChange={setRepo}
+            emptyLabel="None"
+            options={orgRepos.map((full) => {
+              const i = full.indexOf("/");
+              const short = i >= 0 ? full.slice(i + 1) : full;
+              return { value: full, label: short };
+            })}
           />
+          {orgReposHint ? <p className="field__hint field__hint--warn">{orgReposHint}</p> : null}
           <p className="field__hint">Optional. Passed to the agent for scoped answers.</p>
         </div>
 
@@ -732,7 +767,7 @@ export default function App() {
           <div>
             <h1 className="main__title">Chat</h1>
             <p className="main__subtitle">
-              <strong>Deepiri</strong> Board Manager agent
+              <strong>Deepiri</strong> Board Manager Agent
             </p>
           </div>
         </header>
