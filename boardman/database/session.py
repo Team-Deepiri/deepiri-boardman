@@ -1,11 +1,30 @@
 from typing import AsyncIterator
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from boardman.settings import settings
 
-engine = create_async_engine(settings.database_url, echo=False)
+_engine_kwargs = {"echo": False}
+if settings.database_url.startswith("sqlite"):
+    # Wait longer on write contention instead of failing fast with "database is locked".
+    _engine_kwargs["connect_args"] = {"timeout": 30}
+
+engine = create_async_engine(settings.database_url, **_engine_kwargs)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+if settings.database_url.startswith("sqlite"):
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
+        cur = dbapi_connection.cursor()
+        try:
+            # WAL improves read/write concurrency for API + worker access.
+            cur.execute("PRAGMA journal_mode=WAL")
+            # Keep writer waiting a bit before returning "database is locked".
+            cur.execute("PRAGMA busy_timeout=30000")
+        finally:
+            cur.close()
 
 
 async def get_db() -> AsyncIterator[AsyncSession]:
