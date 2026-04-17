@@ -156,7 +156,7 @@ async def run_repo_scan(
         cat = routing.plaky_table if routing else ""
         routing_note = f"\n\n**Plaky group (label):** `{cat}`\n**Repo:** {repo_full}\n" if cat else f"\n\n**Repo:** {repo_full}\n"
         bid, gid = effective_plaky_placement(routing)
-        default_assign = build_assignment_field_map(repo_full)
+        default_assign = await build_assignment_field_map(repo_full)
 
         for item in tasks:
             if not isinstance(item, dict):

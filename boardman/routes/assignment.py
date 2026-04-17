@@ -37,7 +37,7 @@ def _require_internal(authorization: Optional[str]) -> None:
 @router.post("/assignment/pick-qa", response_model=PickQaResponse)
 async def pick_qa_internal(body: PickQaBody, authorization: Optional[str] = Header(None)) -> PickQaResponse:
     _require_internal(authorization)
-    qid, rq = pick_qa_for_repo(body.repo)
+    qid, rq = await pick_qa_for_repo(body.repo)
     eid, re = pick_engineer_for_repo(body.repo)
     return PickQaResponse(
         ok=True,

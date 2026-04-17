@@ -639,6 +639,23 @@ class PlakyClient:
             return {"ok": False, "message": "Invalid JSON from Plaky", "item": None}
         return {"ok": True, "status": r.status_code, "item": payload if isinstance(payload, dict) else {}}
 
+    async def delete_board_item(self, board_id: str, item_id: str) -> Dict[str, Any]:
+        """DELETE an item from a Plaky board via v1/public."""
+        if not self.api_key:
+            return {"ok": False, "message": "PLAKY_API_KEY is missing."}
+        root = self._public_root()
+        if not root:
+            return {"ok": False, "message": "v1/public base URL required"}
+        sid = await self.resolve_space_for_board(board_id.strip())
+        if not sid:
+            return {"ok": False, "message": "Could not resolve space for board"}
+        url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
+        async with httpx.AsyncClient() as client:
+            r = await _request_with_rate_limit_retry(client, "DELETE", url, headers=_headers(self.api_key))
+        if r.status_code in (200, 204):
+            return {"ok": True, "status": r.status_code}
+        return {"ok": False, "status": r.status_code, "message": r.text[:300]}
+
     async def patch_item_field_values(
         self,
         board_id: str,

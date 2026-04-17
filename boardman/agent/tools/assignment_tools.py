@@ -11,9 +11,9 @@ from boardman.assignment.qa_picker import build_assignment_field_map, pick_engin
 
 async def _assignment_preview(owner_repo: str) -> str:
     """JSON: chosen QA + engineer ids, Plaky field map, and reasons."""
-    qid, qwhy = pick_qa_for_repo(owner_repo)
+    qid, qwhy = await pick_qa_for_repo(owner_repo)
     eid, ewhy = pick_engineer_for_repo(owner_repo)
-    fm = build_assignment_field_map(owner_repo)
+    fm = await build_assignment_field_map(owner_repo)
     return json.dumps(
         {
             "ok": True,

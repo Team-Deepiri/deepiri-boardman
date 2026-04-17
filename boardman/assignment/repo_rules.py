@@ -19,45 +19,20 @@ class QaRepoRules:
 
 
 def default_qa_repo_rules() -> QaRepoRules:
-    """Product defaults; override via team_assignments.yml `qa_repo_rules`."""
+    """
+    Empty defaults — all patterns must be configured via `qa_repo_rules` in team_assignments.yml.
+
+    Example team_assignments.yml:
+        qa_repo_rules:
+          tier2_excluded_patterns:
+            - "*some-heavy-repo*"
+          tier1_only_patterns:
+            - "*frontend*"
+            - "*-landing"
+    """
     return QaRepoRules(
-        tier2_excluded_patterns=[
-            "*diva*",
-            "*diri-cyrex*",
-            "*diri_cyrex*",
-            "*persola*",
-            "*cyrex*",
-            "*uqe*",
-            "*mudspeed*",
-            "*agent-testing-utils*",
-            "*modelkit*",
-            "*agent-toolbox*",
-            "*training-orchestrator*",
-            "*helox*",
-            "*agent-guardrails*",
-            "*emotion*desktop*",
-            "*emotion-desktop*",
-            "*sorge*",
-            "*norozo*",
-            "*prismpipe*",
-            "*boardman*",
-        ],
-        tier1_only_patterns=[
-            "*deepiriweb-frontend*",
-            "*deepiriweb_frontend*",
-            "*/landing",
-            "*-landing",
-            "*api-gateway*",
-            "*api_gateway*",
-            "*apigateway*",
-            "*/auth",
-            "*-auth",
-            "*shared-utils*",
-            "*shared_utils*",
-            "*deepiri-platform*",
-            "*deepiri_platform*",
-            "*axiom*",
-        ],
+        tier2_excluded_patterns=[],
+        tier1_only_patterns=[],
     )
 
 

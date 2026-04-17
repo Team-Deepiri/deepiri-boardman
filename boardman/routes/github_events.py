@@ -22,6 +22,7 @@ from boardman.services.pr_handler import (
     handle_pr_review_requested,
 )
 from boardman.services.pr_review_handler import handle_issue_comment_on_pr, handle_pull_request_review
+from boardman.services.pr_handler import handle_pr_opened, handle_pr_merged, handle_pr_review, handle_pr_review_comment
 from boardman.settings import settings
 
 
@@ -76,6 +77,20 @@ async def github_webhook(
             result = await handle_pr_merged(payload, session)
         elif payload.action == "closed" and not payload.pull_request.merged:
             result = await handle_pr_closed_without_merge(payload, session)
+            return Response(content=json.dumps(result))
+        elif payload.action == "reopened":
+            result = await handle_pr_opened(payload, session)
+            return Response(content=json.dumps(result))
+
+    from boardman.github.webhooks import PullRequestReviewEventPayload, PullRequestReviewCommentEventPayload
+    if isinstance(payload, PullRequestReviewEventPayload) and payload.action == "submitted":
+        result = await handle_pr_review(payload, session)
+        return Response(content=json.dumps(result))
+
+    if isinstance(payload, PullRequestReviewCommentEventPayload):
+        if payload.action == "created":
+            result = await handle_pr_review_comment(payload, session)
+            return Response(content=json.dumps(result))
 
     if result is not None:
         return Response(content=json.dumps(result))

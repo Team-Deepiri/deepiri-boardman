@@ -110,3 +110,24 @@ class ProjectContext(Base):
     summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     goals_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     last_scanned: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class OpenPRTrack(Base):
+    __tablename__ = "open_pr_tracks"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repo_full_name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    pr_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    plaky_item_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    pr_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    pr_title: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class RepoTierCache(Base):
+    __tablename__ = "repo_tier_cache"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    repo_full_name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    tier: Mapped[int] = mapped_column(Integer, nullable=False)
+    classified_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

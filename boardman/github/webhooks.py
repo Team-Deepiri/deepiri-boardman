@@ -58,11 +58,10 @@ class PullRequestEventPayload(BaseModel):
     repository: GitHubRepository
 
 
-class GitHubReviewPayload(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-
+class GitHubReview(BaseModel):
+    user: Optional[Any] = None
     state: str = ""
-    user: Optional[dict] = None
+    body: Optional[str] = None
 
 
 class PullRequestReviewEventPayload(BaseModel):
@@ -87,6 +86,10 @@ class IssueCommentEventPayload(BaseModel):
     action: str
     issue: IssueCommentIssuePayload
     comment: dict
+class PullRequestReviewCommentEventPayload(BaseModel):
+    action: str
+    comment: Optional[Any] = None
+    pull_request: Optional[GitHubPullRequest] = None
     repository: GitHubRepository
 
 
@@ -104,6 +107,10 @@ def parse_webhook_payload(event_type: str, payload_dict: dict) -> Any:
         return PullRequestReviewEventPayload(**payload_dict)
     elif event_type == "issue_comment":
         return IssueCommentEventPayload(**payload_dict)
+    elif event_type == "pull_request_review_comment":
+        return PullRequestReviewCommentEventPayload(**payload_dict)
+    elif event_type == "issue_comment":
+        return PullRequestReviewCommentEventPayload(**payload_dict)
     elif event_type == "ping":
         return PingEventPayload(**payload_dict)
     return None

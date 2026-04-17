@@ -48,7 +48,7 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     description = f"{payload.issue.body or ''}\n\n{payload.issue.html_url}{routing_footer}"
 
     bid, gid = effective_plaky_placement(routing)
-    assign_fields = build_assignment_field_map(full_name)
+    assign_fields = await build_assignment_field_map(full_name)
     result = await plaky.create_task(
         title=title,
         description=description,
