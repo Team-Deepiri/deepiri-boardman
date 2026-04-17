@@ -877,6 +877,28 @@ class PlakyClient:
             return {"ok": True, "status": r.status_code}
         return {"ok": False, "status": r.status_code, "message": r.text[:300]}
 
+    @staticmethod
+    def _patch_value_candidates(v: Any) -> List[Any]:
+        """
+        Plaky PERSON fields expect a structured value (see public API docs), not a bare user-id string.
+        Try the caller's value first, then common person-field shapes so status/select fields still work.
+        """
+        out: List[Any] = [v]
+        if isinstance(v, bool):
+            return out
+        if isinstance(v, int):
+            out.append({"users": [{"id": v}], "teams": []})
+            return out
+        if isinstance(v, str):
+            s = v.strip()
+            if not s:
+                return [v]
+            if s.isdigit():
+                n = int(s)
+                out.append({"users": [{"id": n}], "teams": []})
+            out.append({"users": [{"id": s}], "teams": []})
+        return out
+
     async def patch_item_field_values(
         self,
         board_id: str,
@@ -899,16 +921,34 @@ class PlakyClient:
             return {"ok": False, "message": "Could not resolve space for board"}
         base = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
         hdr = _headers(self.api_key)
-        entries_kv = [{"key": str(k), "value": v} for k, v in values.items()]
-        entries_ifk = [{"itemFieldKey": str(k), "value": v} for k, v in values.items()]
-        bulk_bodies: List[Dict[str, Any]] = [
-            {"fields": entries_ifk},
-            {"fieldValues": entries_ifk},
-            {"fieldUpdates": entries_ifk},
-            {"fields": entries_kv},
-            {"updates": entries_ifk},
-            dict(values),
-        ]
+
+        def _bulk_bodies_for(mapping: Dict[str, Any]) -> List[Dict[str, Any]]:
+            entries_kv = [{"key": str(k), "value": val} for k, val in mapping.items()]
+            entries_ifk = [{"itemFieldKey": str(k), "value": val} for k, val in mapping.items()]
+            return [
+                {"fields": entries_ifk},
+                {"fieldValues": entries_ifk},
+                {"fieldUpdates": entries_ifk},
+                {"fields": entries_kv},
+                {"updates": entries_ifk},
+                dict(mapping),
+            ]
+
+        # Bulk: try raw mapping, then a person-shaped mapping (string ids -> users[]).
+        person_mapping: Dict[str, Any] = {}
+        for k, v in values.items():
+            if isinstance(v, str) and v.strip():
+                s = v.strip()
+                uid: Any = int(s) if s.isdigit() else s
+                person_mapping[k] = {"users": [{"id": uid}], "teams": []}
+            else:
+                person_mapping[k] = v
+
+        bulk_bodies: List[Dict[str, Any]] = []
+        bulk_bodies.extend(_bulk_bodies_for(values))
+        if person_mapping != values:
+            bulk_bodies.extend(_bulk_bodies_for(person_mapping))
+
         async with httpx.AsyncClient() as client:
             for body in bulk_bodies:
                 url = f"{base}/fields"
@@ -927,19 +967,24 @@ class PlakyClient:
                 last_status = 0
                 last_snip = ""
                 hit = False
-                for body in (
-                    {"value": v},
-                    {"fieldValue": v},
-                    {"text": str(v)},
-                    {"selectedValue": v},
-                    {"selectedOptionId": v},
-                ):
-                    r = await _request_with_rate_limit_retry(client, "PATCH", url_single, headers=hdr, json=body)
-                    last_status = r.status_code
-                    last_snip = r.text[:200]
-                    if r.status_code in (200, 201, 204):
-                        per_ok.append(str(k))
-                        hit = True
+                for val in self._patch_value_candidates(v):
+                    bodies: List[Dict[str, Any]] = [
+                        {"value": val},
+                        {"fieldValue": val},
+                        {"selectedValue": val},
+                        {"selectedOptionId": val},
+                    ]
+                    if not isinstance(val, dict):
+                        bodies.insert(2, {"text": str(val)})
+                    for body in bodies:
+                        r = await _request_with_rate_limit_retry(client, "PATCH", url_single, headers=hdr, json=body)
+                        last_status = r.status_code
+                        last_snip = r.text[:500]
+                        if r.status_code in (200, 201, 204):
+                            per_ok.append(str(k))
+                            hit = True
+                            break
+                    if hit:
                         break
                 if not hit:
                     per_fail.append({"key": k, "status": last_status, "message": last_snip})
