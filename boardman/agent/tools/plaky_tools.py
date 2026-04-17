@@ -165,7 +165,6 @@ async def _plaky_create_task(
     )
 
     c = PlakyClient()
-    full = f"[{repo_tag}] {title}" if repo_tag else title
     bid = board_id.strip() or None
     gid = group_id.strip() or None
 
@@ -200,7 +199,7 @@ async def _plaky_create_task(
 
     fv = merged if merged else None
     r = await c.create_task(
-        title=full,
+        title=title,
         description=description,
         priority=priority,
         board_id=bid,

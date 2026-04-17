@@ -17,6 +17,104 @@ from boardman.plaky.board_schema import fetch_board_schema_bundle
 router = APIRouter()
 
 
+def _extract_created_task_id(result: dict) -> str:
+    task = result.get("task") if isinstance(result, dict) and isinstance(result.get("task"), dict) else {}
+    candidates = [
+        result.get("task_id") if isinstance(result, dict) else None,
+        task.get("id"),
+        task.get("itemId"),
+        task.get("taskId"),
+        task.get("_id"),
+    ]
+    for raw in candidates:
+        val = str(raw or "").strip()
+        if val:
+            return val
+    for key in ("item", "data", "result", "task"):
+        nested = task.get(key)
+        if isinstance(nested, dict):
+            for nk in ("id", "itemId", "taskId", "_id"):
+                val = str(nested.get(nk) or "").strip()
+                if val:
+                    return val
+    return ""
+
+
+async def _run_post_create_assignments(
+    plaky: PlakyClient,
+    *,
+    result: dict,
+    board_id: str,
+    group_id: str,
+    title: str,
+    field_values: dict[str, str],
+) -> dict:
+    """
+    Inspect the JSON body of POST /tasks: this object is returned as `post_create_assignment`.
+    It includes `field_values_attempted` (what we sent to Plaky PATCH …/items/{id}/fields) and
+    the `patch_item_field_values` result (`ok`, `mode`, `failed` with HTTP snippets on error).
+    """
+    if not field_values:
+        return {"ok": True, "skipped": True, "message": "No assignment fields provided"}
+    if not board_id:
+        return {"ok": False, "skipped": True, "message": "Cannot patch assignments without board_id"}
+
+    item_id = _extract_created_task_id(result)
+    id_source = "create_response" if item_id else ""
+    if not item_id:
+        listed = await plaky.list_board_items(board_id, max_pages=2)
+        rows = listed.get("items") if isinstance(listed, dict) else []
+        if isinstance(rows, list):
+            title_norm = title.strip().lower()
+            group_norm = group_id.strip()
+            for row in reversed(rows):
+                if not isinstance(row, dict):
+                    continue
+                rid = str(row.get("id") or row.get("itemId") or row.get("taskId") or row.get("_id") or "").strip()
+                if not rid:
+                    continue
+                row_group = str(
+                    row.get("groupId")
+                    or row.get("group_id")
+                    or ((row.get("group") or {}).get("id") if isinstance(row.get("group"), dict) else "")
+                    or ""
+                ).strip()
+                row_title = str(row.get("name") or row.get("title") or "").strip().lower()
+                if group_norm and row_group and row_group != group_norm:
+                    continue
+                if title_norm and row_title and title_norm not in row_title:
+                    continue
+                item_id = rid
+                id_source = "list_match_title_group"
+                break
+            if not item_id:
+                for row in reversed(rows):
+                    if not isinstance(row, dict):
+                        continue
+                    rid = str(
+                        row.get("id") or row.get("itemId") or row.get("taskId") or row.get("_id") or ""
+                    ).strip()
+                    if rid:
+                        item_id = rid
+                        id_source = "list_latest_fallback"
+                        break
+
+    if not item_id:
+        return {
+            "ok": False,
+            "message": "Task created but post-create assignment could not resolve item id",
+            "attempted_fields": sorted(field_values.keys()),
+            "field_values_attempted": dict(field_values),
+        }
+
+    patched = await plaky.patch_item_field_values(board_id, item_id, field_values)
+    if isinstance(patched, dict):
+        patched["item_id"] = item_id
+        patched["item_id_source"] = id_source
+        patched["field_values_attempted"] = dict(field_values)
+    return patched if isinstance(patched, dict) else {"ok": False, "message": "Unexpected patch response"}
+
+
 class CreateTaskRequest(BaseModel):
     title: str
     description: str = ""
@@ -49,7 +147,7 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
     if not raw_title:
         return {"ok": False, "status": 400, "message": "title is required"}
 
-    title = f"[{req.repo}] {raw_title}" if req.repo else raw_title
+    title = raw_title
     cfg = load_team_assignments()
     repo_full = (req.repo or "").strip() or "deepiri-org/unknown"
 
@@ -108,11 +206,21 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
             title=title,
             description=raw_description,
             priority=req.priority,
-            field_values=field_values or None,
+            field_values=None,
         )
 
     if not result.get("ok"):
         return result
+
+    post_assign = await _run_post_create_assignments(
+        plaky,
+        result=result,
+        board_id=(req.plaky_board_id or "").strip(),
+        group_id=(req.plaky_group_id or "").strip(),
+        title=title,
+        field_values=field_values,
+    )
+    result["post_create_assignment"] = post_assign
 
     return result
 

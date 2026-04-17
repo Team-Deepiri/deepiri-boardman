@@ -32,10 +32,9 @@ def create_task(
     repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Repository name for tag"),
 ):
     plaky = PlakyClient()
-    full_title = f"[{repo}] {title}" if repo else title
 
     async def run():
-        result = await plaky.create_task(title=full_title, description=description, priority=priority)
+        result = await plaky.create_task(title=title, description=description, priority=priority)
         if result.get("ok"):
             console.print(f"[green]Task created:[/green] {result.get('task_url')}")
         else:
