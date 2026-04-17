@@ -15,16 +15,21 @@ class Settings(BaseSettings):
     plaky_pr_in_qa_status: str = ""
     plaky_pr_qa_approved_status: str = ""
     plaky_pr_qa_rejected_status: str = ""
+    # Optional Plaky item field key for QA assignee (env PLAKY_QA_ITEM_FIELD_KEY). When set,
+    # used before team_assignments.yml; when both empty, Boardman discovers a QA-ish person field from the board schema.
+    plaky_qa_item_field_key: str = ""
     # Do not move draft PRs to Needs QA until ready_for_review (if needs_qa status is configured).
     plaky_skip_needs_qa_for_draft: bool = True
     # After any automated Plaky status change, enqueue arq job to reorder items in default board/group.
     plaky_reorder_after_status_change: bool = False
     # Comma-separated substrings (case-insensitive) marking Plaky item status as “done” for reorder heuristics.
     plaky_reorder_done_status_markers: str = "done,complete,closed,resolved,archive,shipped,merged"
-    plaky_status_needs_qa: str = "needs_qa"
-    plaky_status_in_qa: str = "in_qa"
-    plaky_status_qa_approved: str = "qa_approved"
-    plaky_status_qa_rejected: str = "qa_rejected"
+    # Empty = resolve from board schema (dynamic_qa_status) when the matching plaky_pr_* value is also empty.
+    plaky_status_needs_qa: str = ""
+    plaky_status_in_qa: str = ""
+    # Empty = resolve from Plaky board schema at runtime (see boardman.plaky.dynamic_qa_status).
+    plaky_status_qa_approved: str = ""
+    plaky_status_qa_rejected: str = ""
     plaky_status_completed: str = "completed"
     plaky_pr_tracking_board_id: str = ""
     plaky_pr_tracking_group_id: str = ""

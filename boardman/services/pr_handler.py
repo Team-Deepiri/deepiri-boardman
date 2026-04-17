@@ -39,30 +39,33 @@ async def _update_plaky_task_status(
     task_id: str,
     status_value: str,
     board_id: str,
+    *,
+    status_field_key: Optional[str] = None,
 ) -> dict:
     """Update task status using board schema to find the status field key."""
     if not board_id:
         return await plaky.update_task_status(task_id, status_value)
-    
+
     schema_bundle = await fetch_board_schema_bundle(board_id)
     if not schema_bundle.get("ok") or not schema_bundle.get("normalized"):
         return await plaky.update_task_status(task_id, status_value)
-    
+
     normalized = schema_bundle["normalized"]
     fields = normalized.get("fields") or []
-    
-    status_field_key = None
-    for f in fields:
-        ftype = (f.get("type") or "").lower()
-        fname = (f.get("name") or "").lower()
-        if "status" in ftype or "status" in fname:
-            status_field_key = f.get("key")
-            break
-    
-    if not status_field_key:
+
+    key_use = (status_field_key or "").strip() or None
+    if not key_use:
+        for f in fields:
+            ftype = (f.get("type") or "").lower()
+            fname = (f.get("name") or "").lower()
+            if "status" in ftype or "status" in fname:
+                key_use = str(f.get("key") or "").strip() or None
+                break
+
+    if not key_use:
         return await plaky.update_task_status(task_id, status_value)
-    
-    return await plaky.patch_item_field_values(board_id, task_id, {status_field_key: status_value})
+
+    return await plaky.patch_item_field_values(board_id, task_id, {key_use: status_value})
 
 
 def _needs_qa_status_value() -> str:
@@ -76,12 +79,21 @@ async def _maybe_set_needs_qa(
     board_id: str = "",
 ) -> None:
     st = _needs_qa_status_value()
+    status_field_key: str | None = None
+    bid = (board_id or "").strip()
+    if not st and bid:
+        from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+        resolved = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
+        if resolved:
+            status_field_key, st = resolved[0], resolved[1]
     if not st:
         return
     if is_draft and settings.plaky_skip_needs_qa_for_draft:
         return
-    bid = (board_id or "").strip()
-    await _update_plaky_task_status(plaky, task_id, st, bid)
+    await _update_plaky_task_status(
+        plaky, task_id, st, bid, status_field_key=status_field_key
+    )
     await maybe_enqueue_plaky_reorder_job()
 
 
@@ -341,10 +353,6 @@ async def handle_pr_review_requested(
     payload: PullRequestEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
-    in_qa = (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
-    if not in_qa:
-        return {"ok": True, "skipped": True, "message": "in_qa status not configured"}
-
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     task_ids = await distinct_task_ids_for_pr(
@@ -358,9 +366,23 @@ async def handle_pr_review_requested(
     routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
     board_id = routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id
 
+    in_qa = (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
+    in_qa_field_key: str | None = None
+    bid = (board_id or "").strip()
+    if not in_qa and bid:
+        from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+        rp = await resolve_plaky_status_patch(bid, intent="workflow_in_qa")
+        if rp:
+            in_qa_field_key, in_qa = rp[0], rp[1]
+    if not in_qa:
+        return {"ok": True, "skipped": True, "message": "in_qa status not configured or discoverable"}
+
     plaky = PlakyClient()
     for tid in task_ids:
-        await _update_plaky_task_status(plaky, tid, in_qa, board_id or "")
+        await _update_plaky_task_status(
+            plaky, tid, in_qa, board_id or "", status_field_key=in_qa_field_key
+        )
     await session.commit()
     await maybe_enqueue_plaky_reorder_job()
     return {"ok": True, "tasks": task_ids, "status": in_qa, "event": "review_requested"}
@@ -487,25 +509,32 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
     if not task_ids_with_issue:
         return {"ok": True, "skipped": True, "message": "No linked Plaky tasks for this PR"}
 
-    cfg = load_team_assignments()
-    qa_field = cfg.plaky_field_qa
-
-    if not qa_field:
-        return {"ok": True, "skipped": True, "message": "QA field not configured"}
-
+    from boardman.plaky.dynamic_qa_status import (
+        resolve_plaky_status_patch,
+        resolve_qa_assignee_field_key,
+        workspace_plaky_user_id_for_github_login,
+    )
     from boardman.repos_config import get_routing
 
+    cfg = load_team_assignments()
     routing = get_routing(full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id) or ""
+
+    qa_field = await resolve_qa_assignee_field_key(board_id, cfg.plaky_field_qa)
+    if not qa_field:
+        return {"ok": True, "skipped": True, "message": "QA field not configured or discoverable on board"}
 
     plaky = PlakyClient()
     results = []
 
-    reviewer_plaky_id = None
+    reviewer_plaky_id: str | None = None
     for m in cfg.members:
-        if m.github_login.lower() == commenter_login.lower():
+        gl = (m.github_login or "").strip()
+        if gl and gl.casefold() == commenter_login.casefold():
             reviewer_plaky_id = m.id
             break
+    if not reviewer_plaky_id and commenter_login:
+        reviewer_plaky_id = await workspace_plaky_user_id_for_github_login(commenter_login)
 
     for task_id, issue_num in task_ids_with_issue:
         task_info = await plaky.get_board_item_public(board_id, task_id)
@@ -520,10 +549,17 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
             assigned_qa_id = str(current_qa) if current_qa else ""
 
         if assigned_qa_id and reviewer_plaky_id and assigned_qa_id == reviewer_plaky_id:
+            status_field_key: str | None = None
             status_to_set = (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
+            if not status_to_set and board_id:
+                rp = await resolve_plaky_status_patch(board_id, intent="workflow_in_qa")
+                if rp:
+                    status_field_key, status_to_set = rp[0], rp[1]
             if not status_to_set:
                 continue
-            await _update_plaky_task_status(plaky, task_id, status_to_set, board_id)
+            await _update_plaky_task_status(
+                plaky, task_id, status_to_set, board_id, status_field_key=status_field_key
+            )
             comment_text = f"**PR Comment:** by @{commenter_login}"
             await plaky.add_comment(task_id, comment_text)
 
