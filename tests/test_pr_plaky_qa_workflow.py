@@ -137,12 +137,18 @@ async def test_pull_request_review_approved_any_reviewer_to_qa_approved(
 
 
 @pytest.mark.asyncio
-async def test_pull_request_review_changes_requested_to_qa_rejected(
+async def test_pull_request_review_changes_requested_only_by_assigned_qa_moves_rejected(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
-    fake = RecordingPlaky()
+    fake = RecordingPlaky(qa_field="fld_qa", qa_plaky_id="qa-plaky-1")
     monkeypatch.setattr("boardman.services.pr_handler.fetch_board_schema_bundle", _schema_off)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
+
+    cfg = TeamAssignmentsConfig(
+        plaky_field_qa="fld_qa",
+        members=[TeamMember(id="qa-plaky-1", github_login="qa-engineer", display="QE", qa_tier=3)],
+    )
+    monkeypatch.setattr("boardman.services.pr_review_handler.load_team_assignments", lambda: cfg)
 
     engine, factory = await _memory_session_factory()
     async with factory() as session:
@@ -159,7 +165,7 @@ async def test_pull_request_review_changes_requested_to_qa_rejected(
 
     review = PullRequestReviewEventPayload(
         action="submitted",
-        review=GitHubReview(user={"login": "some-dev"}, state="changes_requested"),
+        review=GitHubReview(user={"login": "qa-engineer"}, state="changes_requested"),
         pull_request=GitHubPullRequest(
             number=56,
             title="t",
@@ -175,7 +181,66 @@ async def test_pull_request_review_changes_requested_to_qa_rejected(
         out = await handle_pull_request_review(review, session)
 
     assert out.get("ok") is True
+    assert out.get("skipped") is not True
     assert fake.status_calls == [("task-100", "qa_rejected")]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pull_request_review_changes_requested_by_non_qa_skipped(
+    monkeypatch: pytest.MonkeyPatch, qa_settings: None
+):
+    fake = RecordingPlaky(qa_field="fld_qa", qa_plaky_id="qa-plaky-1")
+    monkeypatch.setattr("boardman.services.pr_handler.fetch_board_schema_bundle", _schema_off)
+    monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
+
+    cfg = TeamAssignmentsConfig(
+        plaky_field_qa="fld_qa",
+        members=[TeamMember(id="qa-plaky-1", github_login="qa-engineer", display="QE", qa_tier=3)],
+    )
+    monkeypatch.setattr("boardman.services.pr_review_handler.load_team_assignments", lambda: cfg)
+
+    async def _wrong_plaky_id(_gh: dict, **_k):
+        return "not-the-assigned-qa"
+
+    monkeypatch.setattr(
+        "boardman.services.pr_review_handler.resolve_github_user_to_plaky_user_id",
+        _wrong_plaky_id,
+    )
+
+    engine, factory = await _memory_session_factory()
+    async with factory() as session:
+        session.add(
+            PullRequestTaskLink(
+                github_repo="svc",
+                github_pr_number=57,
+                plaky_task_id="task-101",
+                github_issue_number=0,
+                link_source="auto_link",
+            )
+        )
+        await session.commit()
+
+    review = PullRequestReviewEventPayload(
+        action="submitted",
+        review=GitHubReview(user={"login": "some-dev"}, state="changes_requested"),
+        pull_request=GitHubPullRequest(
+            number=57,
+            title="t",
+            html_url="http://pr",
+            state="open",
+            merged=False,
+            body="",
+        ),
+        repository=GitHubRepository(full_name="deepiri-org/svc", name="svc"),
+    )
+
+    async with factory() as session:
+        out = await handle_pull_request_review(review, session)
+
+    assert out.get("ok") is True
+    assert out.get("skipped") is True
+    assert fake.status_calls == []
     await engine.dispose()
 
 

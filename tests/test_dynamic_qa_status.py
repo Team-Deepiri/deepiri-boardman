@@ -6,6 +6,7 @@ import pytest
 
 from boardman.plaky.dynamic_qa_status import (
     discover_qa_assignee_field_key_from_normalized,
+    resolve_github_user_to_plaky_user_id,
     resolve_plaky_status_patch,
 )
 
@@ -64,7 +65,7 @@ async def test_resolve_changes_requested_prefers_qa_rejected(monkeypatch: pytest
     monkeypatch.setattr("boardman.plaky.dynamic_qa_status._load_normalized", _preload)
     out = await resolve_plaky_status_patch("b", intent="github_pr_review_changes_requested")
     assert out is not None
-    assert out[1] in ("rej", "x2")
+    assert out[1] == "rej"
 
 
 @pytest.mark.asyncio
@@ -97,3 +98,47 @@ def test_discover_qa_field_prefers_person_qa_column() -> None:
         ]
     }
     assert discover_qa_assignee_field_key_from_normalized(normalized) == "person-qa"
+
+
+@pytest.mark.asyncio
+async def test_resolve_github_user_prefers_plaky_github_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    users = [
+        {"id": "by-github", "name": "Other", "email": "other@x.com", "github_login": "DevLogin"},
+        {"id": "by-email", "name": "Dev Person", "email": "dev@company.com"},
+    ]
+
+    class _FakePlaky:
+        async def list_workspace_users(self):
+            return {"ok": True, "users": users}
+
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.PlakyClient", lambda: _FakePlaky())
+    out = await resolve_github_user_to_plaky_user_id(
+        {"login": "devlogin", "name": "Dev Person", "email": "dev@company.com"}
+    )
+    assert out == "by-github"
+
+
+@pytest.mark.asyncio
+async def test_resolve_github_user_fuzzy_when_no_github_link(monkeypatch: pytest.MonkeyPatch) -> None:
+    users = [
+        {
+            "id": "plaky-jane",
+            "name": "Jane Smith",
+            "email": "jane.smith@acme.com",
+            "primaryEmail": "jane.smith@acme.com",
+        }
+    ]
+
+    class _FakePlaky:
+        async def list_workspace_users(self):
+            return {"ok": True, "users": users}
+
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.PlakyClient", lambda: _FakePlaky())
+    out = await resolve_github_user_to_plaky_user_id(
+        {
+            "login": "jsmith-acme",
+            "name": "Jane Smith",
+            "email": "jane.smith@acme.com",
+        }
+    )
+    assert out == "plaky-jane"

@@ -510,9 +510,10 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
         return {"ok": True, "skipped": True, "message": "No linked Plaky tasks for this PR"}
 
     from boardman.plaky.dynamic_qa_status import (
+        github_actor_payload,
+        resolve_github_user_to_plaky_user_id,
         resolve_plaky_status_patch,
         resolve_qa_assignee_field_key,
-        workspace_plaky_user_id_for_github_login,
     )
     from boardman.repos_config import get_routing
 
@@ -534,7 +535,10 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
             reviewer_plaky_id = m.id
             break
     if not reviewer_plaky_id and commenter_login:
-        reviewer_plaky_id = await workspace_plaky_user_id_for_github_login(commenter_login)
+        commenter_dict = commenter if isinstance(commenter, dict) else {}
+        reviewer_plaky_id = await resolve_github_user_to_plaky_user_id(
+            github_actor_payload(commenter_dict)
+        )
 
     for task_id, issue_num in task_ids_with_issue:
         task_info = await plaky.get_board_item_public(board_id, task_id)

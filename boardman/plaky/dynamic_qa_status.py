@@ -4,15 +4,16 @@ Map GitHub PR review outcomes to Plaky status **option UUIDs** using the live bo
 No hardcoded Plaky labels: we score status option names against intent hints (e.g. approve →
 "QA Verified", request changes → "QA Rejected"). Optional env/settings still override when set.
 
-Also: discover QA assignee field key from schema, and match GitHub login → Plaky user id from
-workspace users (when Plaky returns a GitHub username field).
+Also: discover QA assignee field key from schema, and resolve GitHub actor → Plaky workspace user id
+via exact linked GitHub handle on the Plaky user row when present, then the same fuzzy
+``best_plaky_match_for_github`` pipeline used by assignment / sync (email, name, login heuristics).
 """
 
 from __future__ import annotations
 
-import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.settings import settings
@@ -68,9 +69,6 @@ _WORKFLOW_NEEDS_QA_HINTS: Tuple[str, ...] = (
     "qa todo",
     "queue qa",
 )
-
-_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
-
 
 def _norm(s: str) -> str:
     return " ".join(s.strip().lower().replace("_", " ").replace("-", " ").split())
@@ -221,24 +219,69 @@ async def discover_qa_assignee_field_key(board_id: str) -> Optional[str]:
     return discover_qa_assignee_field_key_from_normalized(n)
 
 
-async def workspace_plaky_user_id_for_github_login(login: str) -> Optional[str]:
-    """Match Plaky workspace user to GitHub login when API exposes a GitHub username."""
-    raw = (login or "").strip()
-    if not raw:
+def _github_actor_dict(login: str, *, name: str = "", email: str = "") -> Dict[str, Any]:
+    return {
+        "login": (login or "").strip(),
+        "name": (name or "").strip(),
+        "email": (email or "").strip(),
+    }
+
+
+def github_actor_payload(user: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Normalize GitHub ``user`` objects from webhooks into the shape expected by identity matching."""
+    if not isinstance(user, dict):
+        return _github_actor_dict("")
+    return _github_actor_dict(
+        str(user.get("login") or ""),
+        name=str(user.get("name") or ""),
+        email=str(user.get("email") or ""),
+    )
+
+
+async def resolve_github_user_to_plaky_user_id(
+    gh: Dict[str, Any],
+    *,
+    min_score: int = 640,
+    ambiguity_margin: int = 45,
+) -> Optional[str]:
+    """
+    Map a GitHub profile (login, optional name/email from webhook) to a Plaky workspace user id.
+
+    1) Prefer an explicit GitHub username stored on the Plaky user (exact case-insensitive match).
+    2) Otherwise run ``best_plaky_match_for_github`` (email / display name / login-token heuristics;
+       conservative ambiguity handling — same as ``sync_qa_capabilities`` roster matching).
+    """
+    login = str(gh.get("login") or "").strip()
+    if not login:
         return None
-    want = raw.casefold()
+    want = login.casefold()
     c = PlakyClient()
     r = await c.list_workspace_users()
     if not r.get("ok"):
         return None
-    for u in r.get("users") or []:
-        if not isinstance(u, dict):
-            continue
+    users: List[Dict[str, Any]] = [u for u in (r.get("users") or []) if isinstance(u, dict)]
+    for u in users:
         uid = str(u.get("id") or "").strip()
-        gh = u.get("github_login") or u.get("githubLogin") or u.get("githubUsername")
-        if isinstance(gh, str) and gh.strip().casefold() == want:
-            return uid or None
+        if not uid:
+            continue
+        linked = u.get("github_login") or u.get("githubLogin") or u.get("githubUsername")
+        if isinstance(linked, str) and linked.strip().casefold() == want:
+            return uid
+
+    plaky_id, reason, _ = best_plaky_match_for_github(
+        gh,
+        users,
+        min_score=min_score,
+        ambiguity_margin=ambiguity_margin,
+    )
+    if reason == "matched" and plaky_id:
+        return str(plaky_id).strip() or None
     return None
+
+
+async def workspace_plaky_user_id_for_github_login(login: str) -> Optional[str]:
+    """Backward-compatible: login-only GitHub handle → Plaky id (exact link row, then fuzzy)."""
+    return await resolve_github_user_to_plaky_user_id(_github_actor_dict(login))
 
 
 def configured_qa_item_field_key() -> str:
@@ -255,7 +298,3 @@ async def resolve_qa_assignee_field_key(board_id: str, yaml_fallback: str) -> st
     if y:
         return y
     return (await discover_qa_assignee_field_key(board_id)) or ""
-
-
-def looks_like_plaky_option_uuid(value: str) -> bool:
-    return bool(_UUID_RE.match((value or "").strip()))
