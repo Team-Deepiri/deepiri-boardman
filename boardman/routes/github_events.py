@@ -5,9 +5,25 @@ from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.session import get_db
-from boardman.github.webhooks import IssueEventPayload, PullRequestEventPayload, PingEventPayload, parse_webhook_payload, verify_signature
+from boardman.github.webhooks import (
+    IssueCommentEventPayload,
+    IssueEventPayload,
+    PullRequestEventPayload,
+    PullRequestReviewCommentEventPayload,
+    PullRequestReviewEventPayload,
+    parse_webhook_payload,
+    verify_signature,
+)
 from boardman.services.issue_handler import handle_issue_opened
-from boardman.services.pr_handler import handle_pr_opened, handle_pr_merged, handle_pr_review, handle_pr_review_comment
+from boardman.services.pr_handler import (
+    handle_pr_closed_without_merge,
+    handle_pr_merged,
+    handle_pr_opened,
+    handle_pr_ready_for_review,
+    handle_pr_review_comment,
+    handle_pr_review_requested,
+)
+from boardman.services.pr_review_handler import handle_issue_comment_on_pr, handle_pull_request_review
 from boardman.settings import settings
 
 
@@ -23,7 +39,8 @@ async def github_webhook(
 
     signature = request.headers.get("X-Hub-Signature-256", "")
     if not verify_signature(raw_body, signature, settings.github_webhook_secret):
-        return Response(content=json.dumps({"ok": False, "message": "Invalid signature"}), status_code=401)
+        body = json.dumps({"ok": False, "message": "Invalid signature"})
+        return Response(content=body, status_code=401)
 
     event_type = request.headers.get("X-GitHub-Event", "")
     try:
@@ -36,31 +53,39 @@ async def github_webhook(
 
     payload = parse_webhook_payload(event_type, payload_dict)
     if not payload:
-        return Response(content=json.dumps({"ok": False, "message": "Unsupported event type"}), status_code=400)
+        body = json.dumps({"ok": False, "message": "Unsupported event type"})
+        return Response(content=body, status_code=400)
+
+    result: Optional[dict[str, Any]] = None
 
     if isinstance(payload, IssueEventPayload) and payload.action == "opened":
         result = await handle_issue_opened(payload, session)
-        return Response(content=json.dumps(result))
 
-    if isinstance(payload, PullRequestEventPayload):
-        if payload.action == "opened":
-            result = await handle_pr_opened(payload, session)
-            return Response(content=json.dumps(result))
-        elif payload.action == "closed" and payload.pull_request.merged:
-            result = await handle_pr_merged(payload, session)
-            return Response(content=json.dumps(result))
-        elif payload.action == "reopened":
-            result = await handle_pr_opened(payload, session)
-            return Response(content=json.dumps(result))
+    elif isinstance(payload, PullRequestReviewEventPayload):
+        result = await handle_pull_request_review(payload, session)
 
-    from boardman.github.webhooks import PullRequestReviewEventPayload, PullRequestReviewCommentEventPayload
-    if isinstance(payload, PullRequestReviewEventPayload) and payload.action == "submitted":
-        result = await handle_pr_review(payload, session)
-        return Response(content=json.dumps(result))
-
-    if isinstance(payload, PullRequestReviewCommentEventPayload):
+    elif isinstance(payload, PullRequestReviewCommentEventPayload):
         if payload.action == "created":
             result = await handle_pr_review_comment(payload, session)
-            return Response(content=json.dumps(result))
+
+    elif isinstance(payload, IssueCommentEventPayload):
+        result = await handle_issue_comment_on_pr(payload, session)
+
+    elif isinstance(payload, PullRequestEventPayload):
+        if payload.action == "opened":
+            result = await handle_pr_opened(payload, session)
+        elif payload.action == "ready_for_review":
+            result = await handle_pr_ready_for_review(payload, session)
+        elif payload.action == "review_requested":
+            result = await handle_pr_review_requested(payload, session)
+        elif payload.action == "closed" and payload.pull_request.merged:
+            result = await handle_pr_merged(payload, session)
+        elif payload.action == "closed" and not payload.pull_request.merged:
+            result = await handle_pr_closed_without_merge(payload, session)
+        elif payload.action == "reopened":
+            result = await handle_pr_opened(payload, session)
+
+    if result is not None:
+        return Response(content=json.dumps(result))
 
     return Response(content=json.dumps({"ok": True, "message": "Event ignored"}))

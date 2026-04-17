@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -17,6 +17,33 @@ class IssueTaskMap(Base):
     github_issue_number: Mapped[int] = mapped_column(Integer, nullable=False)
     plaky_task_id: Mapped[str] = mapped_column(String(255), nullable=False)
     plaky_task_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class PullRequestTaskLink(Base):
+    """
+    Tracks which GitHub PRs belong to which Plaky task (PR group).
+    `github_issue_number=0` for fuzzy-linked PRs without an issue key.
+    """
+
+    __tablename__ = "pr_task_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "github_repo",
+            "github_pr_number",
+            "github_issue_number",
+            name="uq_pr_task_links_repo_pr_issue",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    github_repo: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    github_pr_number: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    github_issue_number: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    plaky_task_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    link_source: Mapped[str] = mapped_column(String(32), nullable=False, default="issue_keyword")
+    merged_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    withdrawn_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

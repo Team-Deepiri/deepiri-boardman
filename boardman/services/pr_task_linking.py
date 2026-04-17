@@ -11,7 +11,9 @@ Designed for pull_request.opened when no Fixes/Closes issue keywords are present
 
 from __future__ import annotations
 
+import math
 import re
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
@@ -82,6 +84,28 @@ def _similar(a: str, b: str) -> float:
     if not a or not b:
         return 0.0
     return SequenceMatcher(None, a.casefold(), b.casefold()).ratio()
+
+
+def _cosine_word_similarity(a: str, b: str) -> float:
+    """Cosine similarity on word-frequency vectors (lightweight semantic-ish signal)."""
+
+    def _tok(s: str) -> list[str]:
+        return re.findall(r"[a-z0-9]+", s.casefold())
+
+    ca, cb = Counter(_tok(a)), Counter(_tok(b))
+    if not ca or not cb:
+        return 0.0
+    dot = sum(ca[t] * cb.get(t, 0) for t in ca)
+    na = math.sqrt(sum(v * v for v in ca.values()))
+    nb = math.sqrt(sum(v * v for v in cb.values()))
+    if not na or not nb:
+        return 0.0
+    return dot / (na * nb)
+
+
+def _blend_seq_cos(seq: float, cos: float, weight: float) -> float:
+    w = max(0.0, min(1.0, weight))
+    return (1.0 - w) * seq + w * cos
 
 
 def _norm_item_id(item: dict[str, Any]) -> str:
@@ -155,12 +179,23 @@ async def _other_pr_linked_to_task(
     session: AsyncSession,
     plaky_task_id: str,
     current_pr_number: int,
-    limit: int = 30,
+    github_repo: str,
+    limit: int = 40,
 ) -> bool:
+    from boardman.services.pr_task_registry import has_other_open_pr_for_task
+
+    if await has_other_open_pr_for_task(
+        session,
+        plaky_task_id=plaky_task_id,
+        github_repo=github_repo,
+        current_pr_number=current_pr_number,
+    ):
+        return True
+
     q = (
         select(SyncLog)
         .where(
-            SyncLog.action == "pr_linked",
+            SyncLog.action.in_(("pr_linked", "pr_linked_fuzzy")),
             SyncLog.plaky_task_id == plaky_task_id,
         )
         .order_by(SyncLog.created_at.desc())
@@ -170,6 +205,9 @@ async def _other_pr_linked_to_task(
     for row in r.scalars():
         ref = (row.github_ref or "").strip()
         if ref.isdigit() and int(ref) != current_pr_number:
+            gr = (row.github_repo or "").strip()
+            if gr and gr != github_repo:
+                continue
             return True
     return False
 
@@ -357,6 +395,7 @@ def score_candidate(
     pr_author_name: Optional[str] = None,
     done_statuses: Optional[set[str]] = None,
     active_statuses: Optional[set[str]] = None,
+    cosine_blend: float = 0.0,
 ) -> ScoredCandidate:
     """Composite score (roughly 0–100+ before clamp)."""
     b: dict[str, float] = {}
@@ -379,9 +418,12 @@ def score_candidate(
                 score += 25.0
                 break
 
-    # --- Title similarity ---
-    ts = _similar(pr_title, cand.title)
-    if ts >= 0.98:
+    # --- Title similarity (SequenceMatcher + optional word-bag cosine) ---
+    ts_seq = _similar(pr_title, cand.title)
+    ts_cos = _cosine_word_similarity(pr_title, cand.title)
+    ts = _blend_seq_cos(ts_seq, ts_cos, cosine_blend)
+    b["title_cos"] = round(ts_cos, 4)
+    if ts_seq >= 0.98:
         # Near exact match gets a huge boost to clear auto_link threshold
         b["title_exact_match"] = 80.0
         score += 80.0
@@ -409,7 +451,11 @@ def score_candidate(
             score += bs * 15.0
 
     body_snip = (pr_body or "")[:8000]
-    ds = _similar(body_snip, cand.description[:8000])
+    desc_snip = cand.description[:8000]
+    ds_seq = _similar(body_snip, desc_snip)
+    ds_cos = _cosine_word_similarity(body_snip, desc_snip)
+    ds = _blend_seq_cos(ds_seq, ds_cos, cosine_blend)
+    b["body_cos"] = round(ds_cos, 4)
     b["body_sim"] = round(ds, 4)
     score += 10.0 * ds
 
@@ -562,7 +608,9 @@ async def run_pr_task_pipeline(
 
     scored: list[ScoredCandidate] = []
     for cand in candidates.values():
-        conflict = await _other_pr_linked_to_task(session, cand.task_id, pr_number)
+        conflict = await _other_pr_linked_to_task(
+            session, cand.task_id, pr_number, github_repo=repo_name
+        )
         scored.append(
             score_candidate(
                 cand,
@@ -572,11 +620,13 @@ async def run_pr_task_pipeline(
                 repo_full=repo_full,
                 pr_number=pr_number,
                 session_penalty=conflict,
+                head_ref=head_ref,
                 pr_author_login=pr_author_login,
                 pr_author_email=pr_author_email,
                 pr_author_name=pr_author_name,
                 done_statuses=done_set,
                 active_statuses=active_set,
+                cosine_blend=float(settings.pr_linking_cosine_weight),
             )
         )
 

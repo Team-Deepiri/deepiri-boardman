@@ -75,6 +75,35 @@ async def fetch_open_issues(client: httpx.AsyncClient, owner: str, repo: str) ->
     return "\n".join(lines) if lines else "(no open issues)"
 
 
+async def fetch_pr_assignees_and_reviewers_logins(full_name: str, pr_number: int) -> set[str]:
+    """
+    GitHub assignees + requested_reviewers for a PR (lowercased logins).
+    Used when `issue_comment` payloads omit full PR metadata.
+    """
+    parsed = _parse_owner_repo(full_name)
+    if not parsed or not (settings.github_pat or "").strip():
+        return set()
+    owner, repo = parsed
+    from urllib.parse import quote
+
+    path = f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/pulls/{int(pr_number)}"
+    async with httpx.AsyncClient(timeout=20) as client:
+        r = await github_request(client, path)
+    if r.status_code != 200:
+        return set()
+    data = r.json()
+    if not isinstance(data, dict):
+        return set()
+    out: set[str] = set()
+    for key in ("assignees", "requested_reviewers"):
+        block = data.get(key)
+        if isinstance(block, list):
+            for u in block:
+                if isinstance(u, dict) and isinstance(u.get("login"), str):
+                    out.add(u["login"].strip().casefold())
+    return out
+
+
 async def fetch_repo_file_text(
     client: httpx.AsyncClient,
     owner: str,

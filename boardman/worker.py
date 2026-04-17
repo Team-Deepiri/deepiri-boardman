@@ -17,6 +17,19 @@ def _redis_settings() -> RedisSettings:
     return RedisSettings.from_dsn(u)
 
 
+async def plaky_reorder_group_job(ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    """Background: sort Plaky group items (completed last). Configure via plaky_reorder_after_status_change."""
+    from boardman.plaky.client import PlakyClient
+    from boardman.services.plaky_group_reorder import reorder_group_completed_last
+
+    bid = str(payload.get("board_id") or "").strip()
+    gid = str(payload.get("group_id") or "").strip()
+    if not bid or not gid:
+        return {"ok": False, "error": "board_id and group_id required"}
+    async with PlakyClient() as plaky:
+        return await reorder_group_completed_last(plaky, bid, gid)
+
+
 async def boardman_agent_chat_job(ctx: Any, payload: dict[str, Any]) -> dict[str, Any]:
     """Background agent turn: same logic as POST /agent/chat (commits session)."""
     from boardman.agent.service import run_agent_chat
@@ -59,7 +72,7 @@ async def boardman_agent_chat_job(ctx: Any, payload: dict[str, Any]) -> dict[str
 
 
 class WorkerSettings:
-    functions = [boardman_agent_chat_job]
+    functions = [boardman_agent_chat_job, plaky_reorder_group_job]
     redis_settings = _redis_settings()
     keep_result = 3600
     max_jobs = 20

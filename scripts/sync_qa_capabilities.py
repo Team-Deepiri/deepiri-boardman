@@ -7,15 +7,15 @@ Phase 0 — Build IDF model (repo_signals.json)
   - Fetch file tree of every org repo
   - Every file basename and directory name becomes a signal
   - IDF(signal) = log(N / repos_containing_signal)
-  - Score(repo) = sum of IDF scores for its signals
-  - Percentile thresholds (p50, p80) become tier boundaries
+  - Score(repo) = IDF sum + 0.2 * structural (matches tier_classifier)
+  - Percentile thresholds (p50/p80 keys; ~25th/~70th index) become tier boundaries
   - Written to repo_signals.json — read at runtime by tier_classifier
 
 Phase 1 — QA capability sync (worker_team.json)
   - Fetch GitHub support team roster
   - For each member, look at their recent PR/review history
   - Classify the repos they touched using Phase 0 tiers
-  - qa_tier = highest tier they have meaningful history on
+  - qa_tier: org teams with tier in slug/name (qa-tier-3, …) override; else decayed PR activity vs repo tiers
   - Match GitHub login → Plaky ID via identity_match
   - Written to worker_team.json — loaded into Cloudflare Worker
 
@@ -39,10 +39,12 @@ import yaml
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
-from boardman.assignment.tier_classifier import classify_repo_tier
+from boardman.assignment.tier_classifier import classify_repo_tier, compute_structural_complexity_score
 from boardman.github.org_repos import fetch_org_repository_full_names
+from boardman.github.qa_activity_inference import infer_qa_tier_from_pr_activity
+from boardman.github.qa_tier_teams import fetch_login_max_qa_tier_from_org_teams
 from boardman.github.repo_metadata import fetch_repo_metadata
-from boardman.github.team_roster import fetch_support_team_members
+from boardman.github.team_roster import fetch_support_team_members, parse_github_team_spec
 from boardman.settings import settings
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -54,10 +56,6 @@ SIGNALS_PATH = settings.repo_signals_json_path
 _RESOLVED_ORG: str = ""   # set in build_idf_model after auto-discovery
 TEAM_PATH = "worker_team.json"
 YAML_PATH = settings.team_assignments_yml_path
-
-# How many PR/review interactions on a tier-N repo to consider the member capable
-PROMOTION_THRESHOLDS = {3: 2, 2: 3}
-
 
 # ═══════════════════════════════════════════════════════════════════
 # Phase 0 — IDF model
@@ -99,8 +97,9 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
 
     _log.info("Fetching file trees for %d repos (batches of 8)...", N)
 
-    # Collect raw_signals per repo
+    # Collect raw_signals + metadata per repo (structural score must match tier_classifier)
     repo_signals: dict[str, list[str]] = {}
+    repo_metas: dict[str, Any] = {}
     BATCH = 8
     for i in range(0, N, BATCH):
         batch = repo_names[i : i + BATCH]
@@ -114,6 +113,7 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
                 repo_signals[fn] = []
             else:
                 repo_signals[fn] = result.raw_signals
+                repo_metas[fn] = result
         _log.info("  %d/%d repos scanned", min(i + BATCH, N), N)
 
     # Document frequency: how many repos contain each signal
@@ -129,25 +129,24 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
         if count > 0
     }
 
-    # Score every repo
-    repo_scores: dict[str, float] = {
-        fn: sum(idf.get(sig, 0.0) for sig in signals)
-        for fn, signals in repo_signals.items()
-    }
+    # Score every repo (same blend as boardman.assignment.tier_classifier.classify_repo_tier)
+    repo_scores: dict[str, float] = {}
+    for fn, signals in repo_signals.items():
+        idf_part = sum(idf.get(sig, 0.0) for sig in signals)
+        meta = repo_metas.get(fn)
+        struct = compute_structural_complexity_score(meta) if meta is not None else 0.0
+        repo_scores[fn] = idf_part + 0.2 * struct
 
-# Fully dynamic: percentiles from score distribution
+# Use percentiles: T1=bottom ~25%, T2=middle, T3=top rest
     sorted_scores = sorted(repo_scores.values())
     n = len(sorted_scores)
     
-    if n < 4:
+    if n < 6:
         p50 = sorted_scores[n // 2]
         p80 = sorted_scores[-1]
     else:
-        q1 = sorted_scores[n // 4]
-        q3 = sorted_scores[3 * n // 4]
-        
-        p50 = q1
-        p80 = q3
+        p50 = sorted_scores[int(n * 0.25)]
+        p80 = sorted_scores[int(n * 0.7)]
 
     output: dict[str, Any] = {
         "computed_at": datetime.now(timezone.utc).isoformat(),
@@ -166,9 +165,9 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
     )
 
     # Log tier distribution
-    t1 = sum(1 for s in scores_sorted if s < p50)
-    t2 = sum(1 for s in scores_sorted if p50 <= s < p80)
-    t3 = sum(1 for s in scores_sorted if s >= p80)
+    t1 = sum(1 for s in sorted_scores if s < p50)
+    t2 = sum(1 for s in sorted_scores if p50 <= s < p80)
+    t3 = sum(1 for s in sorted_scores if s >= p80)
     _log.info("Tier distribution: T1=%d  T2=%d  T3=%d", t1, t2, t3)
 
 
@@ -182,54 +181,6 @@ def load_yaml_overrides() -> tuple[dict, dict]:
     with open(YAML_PATH) as f:
         data = yaml.safe_load(f) or {}
     return data.get("member_overrides", {}), data.get("member_defaults", {})
-
-
-async def infer_member_qa_tier(
-    client: httpx.AsyncClient,
-    login: str,
-    headers: dict,
-    repo_cache: dict[str, int],
-) -> int:
-    """
-    Infer qa_tier from a member's recent PR/review history across the org.
-    Checks repos they authored or reviewed, classifies those repos, promotes tier
-    based on thresholds. Zero hardcoded tier assignments.
-    """
-    tier_counts = {1: 0, 2: 0, 3: 0}
-    # Use discovered org name for search (may differ from settings.github_org)
-    search_org = _RESOLVED_ORG or ORG
-    queries = [
-        f"is:pr org:{search_org} author:{login}",
-        f"is:pr org:{search_org} reviewed-by:{login}",
-    ]
-    for q in queries:
-        url = f"https://api.github.com/search/issues?q={q}&per_page=20"
-        try:
-            r = await client.get(url, headers=headers)
-            if r.status_code != 200:
-                continue
-            for item in r.json().get("items", []):
-                repo_url = item.get("repository_url", "")
-                # repo_url = https://api.github.com/repos/Owner/Repo
-                repo_fn = "/".join(repo_url.split("/")[-2:])
-                if repo_fn not in repo_cache:
-                    if "/" in repo_fn:
-                        owner, repo = repo_fn.split("/", 1)
-                        meta = await fetch_repo_metadata(client, owner, repo)
-                        tier, _ = classify_repo_tier(meta)
-                        repo_cache[repo_fn] = tier
-                    else:
-                        repo_cache[repo_fn] = 2
-                tier_counts[repo_cache[repo_fn]] += 1
-        except Exception:
-            continue
-
-    # Infer highest tier with sufficient history
-    if tier_counts[3] >= PROMOTION_THRESHOLDS[3]:
-        return 3
-    if tier_counts[2] >= PROMOTION_THRESHOLDS[2]:
-        return 2
-    return 1
 
 
 async def sync_qa_team(client: httpx.AsyncClient) -> None:
@@ -263,6 +214,23 @@ async def sync_qa_team(client: httpx.AsyncClient) -> None:
     repo_cache: dict[str, int] = {}
     worker_members = []
 
+    search_org = (_RESOLVED_ORG or ORG or "").strip()
+    parsed_team = parse_github_team_spec(settings.github_support_team)
+    org_for_tier_teams = (parsed_team[0] if parsed_team else search_org or ORG).strip()
+    support_slug_lower = (parsed_team[1] if parsed_team else "").strip().lower()
+
+    team_login_tier: dict[str, int] = {}
+    if settings.github_qa_tier_team_scan_enabled and org_for_tier_teams:
+        try:
+            team_login_tier, _tier_team_slugs = await fetch_login_max_qa_tier_from_org_teams(
+                client,
+                org_for_tier_teams,
+                gh_headers,
+                skip_team_slug=support_slug_lower or None,
+            )
+        except Exception as e:
+            _log.warning("QA tier team scan failed (%s); using activity-only.", e)
+
     for m in members:
         login = (m.get("login") or "").lower()
         ov = overrides.get(login, {})
@@ -278,12 +246,29 @@ async def sync_qa_team(client: httpx.AsyncClient) -> None:
             _log.warning("No Plaky ID for %s — skipping", login)
             continue
 
-        # Infer qa_tier from actual git history
         _log.info("Inferring qa_tier for %s...", login)
         if "qa_tier" in ov:
             qa_tier = int(ov["qa_tier"])
+            activity_debug: dict[str, Any] = {}
         else:
-            qa_tier = await infer_member_qa_tier(client, login, gh_headers, repo_cache)
+            activity_tier, activity_debug = await infer_qa_tier_from_pr_activity(
+                client,
+                login,
+                search_org,
+                gh_headers,
+                repo_cache,
+                half_life_days=settings.github_qa_activity_half_life_days,
+                max_search_pages=settings.github_qa_activity_search_max_pages,
+                tier3_min_distinct_t3_repos=settings.github_qa_activity_tier3_min_distinct_t3_repos,
+                tier3_min_weighted_score=settings.github_qa_activity_tier3_min_weighted_score,
+                tier2_min_distinct_t2plus_repos=settings.github_qa_activity_tier2_min_distinct_t2plus_repos,
+                tier2_min_weighted_score=settings.github_qa_activity_tier2_min_weighted_score,
+            )
+            team_tier = team_login_tier.get(login) if settings.github_qa_tier_team_scan_enabled else None
+            if team_tier is not None:
+                qa_tier = team_tier
+            else:
+                qa_tier = activity_tier
 
         worker_members.append({
             "id": plaky_id,
@@ -295,7 +280,17 @@ async def sync_qa_team(client: httpx.AsyncClient) -> None:
             "weight": float(ov.get("weight") or defaults.get("weight") or 1.0),
             "tier": ov.get("tier") or defaults.get("tier") or "standard",
         })
-        _log.info("  %s → qa_tier=%d  plaky_id=%s", login, qa_tier, plaky_id)
+        if "qa_tier" not in ov:
+            _log.info(
+                "  %s → qa_tier=%d plaky_id=%s (activity_debug=%s team_hit=%s)",
+                login,
+                qa_tier,
+                plaky_id,
+                activity_debug,
+                team_login_tier.get(login) if settings.github_qa_tier_team_scan_enabled else None,
+            )
+        else:
+            _log.info("  %s → qa_tier=%d plaky_id=%s (override)", login, qa_tier, plaky_id)
 
     with open(TEAM_PATH, "w") as f:
         json.dump(worker_members, f, indent=2)
