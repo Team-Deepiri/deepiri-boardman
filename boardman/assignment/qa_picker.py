@@ -221,8 +221,11 @@ async def build_assignment_field_map(
     full_name: str,
     cfg: Optional[TeamAssignmentsConfig] = None,
     field_overrides: Optional[Dict[str, str]] = None,
+    *,
+    repo_value: Optional[str] = None,
+    plaky_field_repo_key: Optional[str] = None,
 ) -> Dict[str, str]:
-    """Map Plaky field key -> person id for create/patch. Overrides win for same keys."""
+    """Map Plaky field key -> person id or repo label for create/patch. Overrides win for same keys."""
     cfg = cfg or load_team_assignments()
     out: Dict[str, str] = {}
     eid, _ = pick_engineer_for_repo(full_name, cfg)
@@ -231,6 +234,10 @@ async def build_assignment_field_map(
     qid, _ = await pick_qa_for_repo(full_name, cfg)
     if qid and cfg.plaky_field_qa:
         out[cfg.plaky_field_qa] = qid
+    repo_key = (plaky_field_repo_key or cfg.plaky_field_repo or "").strip()
+    repo_label = (repo_value if repo_value is not None else full_name).strip()
+    if repo_key and repo_label:
+        out[repo_key] = repo_label
     for k, v in (field_overrides or {}).items():
         ks, vs = str(k).strip(), str(v).strip()
         if ks and vs:

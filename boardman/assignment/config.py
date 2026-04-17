@@ -52,6 +52,7 @@ class AmbiguousPRConfig:
 class TeamAssignmentsConfig:
     plaky_field_engineer: str = ""
     plaky_field_qa: str = ""
+    plaky_field_repo: str = ""
     tiers: Dict[str, TierSpec] = field(default_factory=dict)
     members: List[TeamMember] = field(default_factory=list)
     heavy_repo_patterns: List[str] = field(default_factory=list)
@@ -341,6 +342,7 @@ def load_team_assignments() -> TeamAssignmentsConfig:
     return TeamAssignmentsConfig(
         plaky_field_engineer=str(keys.get("engineer") or keys.get("assignee_dev") or ""),
         plaky_field_qa=str(keys.get("qa") or keys.get("qa_engineer") or ""),
+        plaky_field_repo=str(keys.get("repo") or keys.get("repository") or keys.get("github_repo") or ""),
         tiers=tiers_out,
         members=members,
         heavy_repo_patterns=heavy,

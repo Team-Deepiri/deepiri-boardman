@@ -150,26 +150,36 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
     title = raw_title
     cfg = load_team_assignments()
     repo_full = (req.repo or "").strip() or "deepiri-org/unknown"
+    repo_display = (str(filters.get("repo") or req.repo or "").strip() or repo_full)
 
     engineer_field_key = (cfg.plaky_field_engineer or "").strip()
     qa_field_key = (cfg.plaky_field_qa or "").strip()
-    if (engineer_plaky_id and not engineer_field_key) or (qa_plaky_id and not qa_field_key):
-        board_id = (req.plaky_board_id or "").strip()
-        if board_id:
-            try:
-                bundle = await fetch_board_schema_bundle(board_id)
-                normalized = bundle.get("normalized") if isinstance(bundle, dict) else None
-                fields = normalized.get("fields") if isinstance(normalized, dict) else []
-                person_fields = []
-                if isinstance(fields, list):
-                    for f in fields:
-                        if not isinstance(f, dict):
-                            continue
-                        key = str(f.get("key") or "").strip()
-                        ftype = str(f.get("type") or "").strip().upper()
-                        name = str(f.get("name") or "").strip().lower()
-                        if key and ftype == "PERSON":
-                            person_fields.append((key, name))
+    repo_field_key = (cfg.plaky_field_repo or "").strip()
+
+    board_id = (req.plaky_board_id or "").strip()
+    needs_schema = board_id and (
+        (engineer_plaky_id and not engineer_field_key)
+        or (qa_plaky_id and not qa_field_key)
+        or (not repo_field_key)
+    )
+    if needs_schema:
+        try:
+            bundle = await fetch_board_schema_bundle(board_id)
+            normalized = bundle.get("normalized") if isinstance(bundle, dict) else None
+            fields = normalized.get("fields") if isinstance(normalized, dict) else []
+            person_fields = []
+            if isinstance(fields, list):
+                for f in fields:
+                    if not isinstance(f, dict):
+                        continue
+                    key = str(f.get("key") or "").strip()
+                    ftype = str(f.get("type") or "").strip().upper()
+                    name = str(f.get("name") or "").strip().lower()
+                    if key and ftype == "PERSON":
+                        person_fields.append((key, name))
+                    if not repo_field_key and key and ftype != "PERSON":
+                        if "repo" in name or "repository" in name:
+                            repo_field_key = key
                 if person_fields:
                     if not qa_field_key:
                         for k, n in person_fields:
@@ -190,12 +200,21 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
                             if k != qa_field_key:
                                 engineer_field_key = k
                                 break
-            except Exception:
-                pass
+        except Exception:
+            pass
 
     field_values: dict[str, str] = {}
     if req.auto_assign_team:
-        field_values = dict(await build_assignment_field_map(repo_full, cfg))
+        field_values = dict(
+            await build_assignment_field_map(
+                repo_full,
+                cfg,
+                repo_value=repo_display,
+                plaky_field_repo_key=(repo_field_key or None),
+            )
+        )
+    elif repo_field_key and repo_display:
+        field_values[repo_field_key] = repo_display
     if engineer_plaky_id and engineer_field_key:
         field_values[engineer_field_key] = engineer_plaky_id
     if qa_plaky_id and qa_field_key:

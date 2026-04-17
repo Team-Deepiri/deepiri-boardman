@@ -95,15 +95,39 @@ def test_engineer_is_highest_weight():
 
 @pytest.mark.asyncio
 async def test_build_assignment_field_map():
+@pytest.mark.asyncio
+async def test_build_assignment_field_map():
     cfg = _sample_cfg()
+    m = await build_assignment_field_map("deepiri-org/emotion-desktop", cfg)
     m = await build_assignment_field_map("deepiri-org/emotion-desktop", cfg)
     assert m.get("fld_eng") == "dev-1"
     assert m.get("fld_qa") == "qa-heavy"
 
 
 @pytest.mark.asyncio
+async def test_build_assignment_field_map_includes_repo():
+    cfg = _sample_cfg()
+    cfg.plaky_field_repo = "fld_repo"
+    m = await build_assignment_field_map("deepiri-org/emotion-desktop", cfg)
+    assert m.get("fld_repo") == "deepiri-org/emotion-desktop"
+
+
+@pytest.mark.asyncio
+async def test_build_assignment_field_map_repo_value_override():
+    cfg = _sample_cfg()
+    cfg.plaky_field_repo = "fld_repo"
+    m = await build_assignment_field_map(
+        "deepiri-org/emotion-desktop",
+        cfg,
+        repo_value="other-org/custom",
+    )
+    assert m.get("fld_repo") == "other-org/custom"
+
+
+@pytest.mark.asyncio
 async def test_build_assignment_field_map_override_wins():
     cfg = _sample_cfg()
+    m = await build_assignment_field_map(
     m = await build_assignment_field_map(
         "deepiri-org/emotion-desktop",
         cfg,
