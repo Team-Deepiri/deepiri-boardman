@@ -24,9 +24,13 @@ def test_normalize_board_payload_fields_and_groups():
     assert len(n["groups"]) == 2
     names = {f["name"]: f for f in n["fields"]}
     assert "Status" in names
-    assert "In Progress" in names["Status"]["options"]
-    assert "Needs QA AGAIN" in names["Status"]["options"]
-    assert "Feature" in names["Type"]["options"]
+    status_opts = names["Status"]["options"]
+    opt_labels = [o if isinstance(o, str) else (o.get("name") or "") for o in status_opts]
+    assert "In Progress" in opt_labels
+    assert "Needs QA AGAIN" in opt_labels
+    type_opts = names["Type"]["options"]
+    type_labels = [o if isinstance(o, str) else (o.get("name") or "") for o in type_opts]
+    assert "Feature" in type_labels
 
 
 def test_format_board_schema_markdown_includes_options():

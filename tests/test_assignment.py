@@ -71,17 +71,19 @@ def test_repo_is_heavy():
     assert repo_is_heavy("deepiri-org/boardman", ["*emotion*"]) is False
 
 
-def test_tier2_excludes_emotion_repo_for_tier2_qa():
+@pytest.mark.asyncio
+async def test_tier2_excludes_emotion_repo_for_tier2_qa():
     cfg = _sample_cfg()
-    qid, why = pick_qa_for_repo("deepiri-org/emotion-desktop", cfg)
+    qid, why = await pick_qa_for_repo("deepiri-org/emotion-desktop", cfg)
     assert qid == "qa-heavy", why
     assert "qa-heavy" in why or "QA Heavy" in why or "pool" in why
 
 
-def test_non_heavy_repo_allows_light_qa_in_pool():
+@pytest.mark.asyncio
+async def test_non_heavy_repo_allows_light_qa_in_pool():
     cfg = _sample_cfg()
     random.seed(0)
-    qid, _ = pick_qa_for_repo("deepiri-org/boardman", cfg)
+    qid, _ = await pick_qa_for_repo("deepiri-org/boardman", cfg)
     assert qid in ("qa-heavy", "qa-light")
 
 
@@ -91,16 +93,18 @@ def test_engineer_is_highest_weight():
     assert eid == "dev-1"
 
 
-def test_build_assignment_field_map():
+@pytest.mark.asyncio
+async def test_build_assignment_field_map():
     cfg = _sample_cfg()
-    m = build_assignment_field_map("deepiri-org/emotion-desktop", cfg)
+    m = await build_assignment_field_map("deepiri-org/emotion-desktop", cfg)
     assert m.get("fld_eng") == "dev-1"
     assert m.get("fld_qa") == "qa-heavy"
 
 
-def test_build_assignment_field_map_override_wins():
+@pytest.mark.asyncio
+async def test_build_assignment_field_map_override_wins():
     cfg = _sample_cfg()
-    m = build_assignment_field_map(
+    m = await build_assignment_field_map(
         "deepiri-org/emotion-desktop",
         cfg,
         field_overrides={"fld_qa": "manual-qa-id"},

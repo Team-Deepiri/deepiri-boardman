@@ -7,6 +7,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from boardman.assignment.config import load_team_assignments
 from boardman.database.models import SyncLog
 from boardman.github.repo_fetch import fetch_pr_assignees_and_reviewers_logins
 from boardman.github.support_qa import support_team_logins_casefold
@@ -62,14 +63,15 @@ async def handle_pull_request_review(
     plaky = PlakyClient()
     updated: list[dict[str, Any]] = []
 
+    # Approved / changes_requested: any reviewer moves Plaky (not only support team).
+    # "commented" → In QA only for support-team logins to avoid noise from drive-by comments.
     target_status = ""
-    if on_support_roster:
-        if state == "approved":
-            target_status = _qa_approved_status()
-        elif state == "changes_requested":
-            target_status = _qa_rejected_status()
-        elif state == "commented":
-            target_status = _in_qa_status()
+    if state == "approved":
+        target_status = _qa_approved_status()
+    elif state == "changes_requested":
+        target_status = _qa_rejected_status()
+    elif state == "commented" and on_support_roster:
+        target_status = _in_qa_status()
 
     if not target_status:
         return {
@@ -138,15 +140,45 @@ async def handle_issue_comment_on_pr(
         payload.repository.full_name,
         pr_number,
     )
-    if participants and commenter.casefold() not in participants:
+    participants_cf = {str(p).casefold() for p in participants} if participants else set()
+    is_participant = bool(participants_cf) and commenter.casefold() in participants_cf
+
+    cfg = load_team_assignments()
+    qa_field = (cfg.plaky_field_qa or "").strip()
+    plaky = PlakyClient()
+
+    member_plaky_id: str | None = None
+    if commenter:
+        for m in cfg.members:
+            gl = (m.github_login or "").strip()
+            if gl and gl.casefold() == commenter.casefold():
+                member_plaky_id = m.id
+                break
+
+    is_assigned_qa = False
+    if qa_field and member_plaky_id:
+        for tid in task_ids:
+            task_info = await plaky.get_board_item_public(board_id or "", tid)
+            if not task_info.get("ok") or not task_info.get("item"):
+                continue
+            item = task_info["item"]
+            current_qa = item.get(qa_field)
+            if isinstance(current_qa, dict):
+                assigned_id = str(current_qa.get("id") or "")
+            else:
+                assigned_id = str(current_qa or "")
+            if assigned_id == member_plaky_id:
+                is_assigned_qa = True
+                break
+
+    if not is_participant and not is_assigned_qa:
         return {
             "ok": True,
             "skipped": True,
-            "message": "commenter is not an assignee or requested reviewer",
+            "message": "commenter is not an assignee, requested reviewer, or Plaky-assigned QA",
             "commenter": commenter,
         }
 
-    plaky = PlakyClient()
     updated: list[dict[str, Any]] = []
     for tid in task_ids:
         res = await _update_plaky_task_status(plaky, tid, in_qa, board_id or "")

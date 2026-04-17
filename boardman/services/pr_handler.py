@@ -137,6 +137,13 @@ async def _maybe_triage_ambiguous_pr(
         return {"ok": False, "message": res.get("message"), "ambiguous_triage": True}
 
     task_id = res.get("task", {}).get("id") or res.get("task", {}).get("taskId")
+    if task_id:
+        triage_comment = (
+            f"**PR opened (no issue link):** [{pr_number}]({pr_url}). "
+            "Automation created this triage task because the PR did not reference an issue."
+        )
+        await plaky.add_comment(str(task_id), triage_comment)
+
     log = SyncLog(
         action="pr_ambiguous_triage",
         github_repo=repo_name,
@@ -452,6 +459,7 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number if payload.pull_request else 0
     pr_url = payload.pull_request.html_url if payload.pull_request else ""
+    full_name = payload.repository.full_name if payload.repository else ""
 
     comment = payload.comment
     if not isinstance(comment, dict):
@@ -463,8 +471,21 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
         return {"ok": False, "message": "No commenter login found"}
 
     linked_issues = await get_linked_issue_numbers(payload.pull_request.body if payload.pull_request else None)
-    if not linked_issues:
-        return {"ok": True, "skipped": True, "message": "No linked issues found"}
+
+    task_ids_with_issue: list[tuple[str, Optional[int]]] = []
+    for issue_num in linked_issues:
+        mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
+        if mapping:
+            task_ids_with_issue.append((mapping.plaky_task_id, int(issue_num)))
+
+    if not task_ids_with_issue:
+        from boardman.services.pr_task_registry import distinct_task_ids_for_pr
+
+        for tid in await distinct_task_ids_for_pr(session, github_repo=repo_name, github_pr_number=pr_number):
+            task_ids_with_issue.append((tid, None))
+
+    if not task_ids_with_issue:
+        return {"ok": True, "skipped": True, "message": "No linked Plaky tasks for this PR"}
 
     cfg = load_team_assignments()
     qa_field = cfg.plaky_field_qa
@@ -472,15 +493,22 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
     if not qa_field:
         return {"ok": True, "skipped": True, "message": "QA field not configured"}
 
+    from boardman.repos_config import get_routing
+
+    routing = get_routing(full_name, repo_name, settings.github_org)
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id) or ""
+
     plaky = PlakyClient()
     results = []
 
-    for issue_num in linked_issues:
-        mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
-        if not mapping:
-            continue
+    reviewer_plaky_id = None
+    for m in cfg.members:
+        if m.github_login.lower() == commenter_login.lower():
+            reviewer_plaky_id = m.id
+            break
 
-        task_info = await plaky.get_board_item_public(settings.plaky_default_board_id or "", mapping.plaky_task_id)
+    for task_id, issue_num in task_ids_with_issue:
+        task_info = await plaky.get_board_item_public(board_id, task_id)
         if not task_info.get("ok") or not task_info.get("item"):
             continue
 
@@ -491,40 +519,38 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
         else:
             assigned_qa_id = str(current_qa) if current_qa else ""
 
-        reviewer_plaky_id = None
-        for m in cfg.members:
-            if m.github_login.lower() == commenter_login.lower():
-                reviewer_plaky_id = m.id
-                break
-
         if assigned_qa_id and reviewer_plaky_id and assigned_qa_id == reviewer_plaky_id:
             status_to_set = (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
             if not status_to_set:
                 continue
-            board_id = settings.plaky_default_board_id
-            await _update_plaky_task_status(plaky, mapping.plaky_task_id, status_to_set, board_id)
+            await _update_plaky_task_status(plaky, task_id, status_to_set, board_id)
             comment_text = f"**PR Comment:** by @{commenter_login}"
-            await plaky.add_comment(mapping.plaky_task_id, comment_text)
+            await plaky.add_comment(task_id, comment_text)
 
             log = SyncLog(
                 action="in_qa_comment",
                 github_repo=repo_name,
                 github_ref=str(pr_number),
-                plaky_task_id=mapping.plaky_task_id,
-                detail=json.dumps({
-                    "issue_number": issue_num,
-                    "pr_url": pr_url,
-                    "commenter": commenter_login,
-                    "status": status_to_set,
-                }),
+                plaky_task_id=task_id,
+                detail=json.dumps(
+                    {
+                        "issue_number": issue_num,
+                        "pr_url": pr_url,
+                        "commenter": commenter_login,
+                        "status": status_to_set,
+                    },
+                    default=str,
+                ),
             )
             session.add(log)
-            results.append({
-                "issue": issue_num,
-                "task_id": mapping.plaky_task_id,
-                "action": "in_qa_comment",
-                "status": status_to_set,
-            })
+            results.append(
+                {
+                    "issue": issue_num,
+                    "task_id": task_id,
+                    "action": "in_qa_comment",
+                    "status": status_to_set,
+                }
+            )
 
     await session.commit()
     if results:

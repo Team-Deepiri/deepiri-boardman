@@ -27,8 +27,8 @@ async def test_openapi_has_agent_routes():
 def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
-    assert len(build_all_tools(allow_writes=False)) == 15
-    assert len(build_all_tools(allow_writes=True)) == 20
+    assert len(build_all_tools(allow_writes=False)) == 17
+    assert len(build_all_tools(allow_writes=True)) == 22
 
 
 @pytest.fixture
@@ -131,7 +131,7 @@ class TestGitHubTools:
     def test_build_github_tools_count(self):
         from boardman.agent.tools.github_tools import build_github_tools
 
-        assert len(build_github_tools()) == 4
+        assert len(build_github_tools()) == 5
 
     def test_github_tools_build(self):
         from boardman.agent.tools.github_tools import github_list_open_issues_tool
@@ -203,10 +203,10 @@ class TestToolBuilding:
         from boardman.agent.tools import build_all_tools
 
         tools = build_all_tools(allow_writes=False)
-        assert len(tools) == 15
+        assert len(tools) == 17
 
     def test_build_all_tools_writes(self):
         from boardman.agent.tools import build_all_tools
 
         tools = build_all_tools(allow_writes=True)
-        assert len(tools) == 20
+        assert len(tools) == 22
