@@ -12,9 +12,108 @@ from boardman.database.models import IssueTaskMap
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.placement import plaky_placement_context
 from boardman.plaky.board_schema import fetch_board_schema_bundle
+from boardman.plaky.board_schema import fetch_board_schema_bundle
 
 
 router = APIRouter()
+
+
+def _extract_created_task_id(result: dict) -> str:
+    task = result.get("task") if isinstance(result, dict) and isinstance(result.get("task"), dict) else {}
+    candidates = [
+        result.get("task_id") if isinstance(result, dict) else None,
+        task.get("id"),
+        task.get("itemId"),
+        task.get("taskId"),
+        task.get("_id"),
+    ]
+    for raw in candidates:
+        val = str(raw or "").strip()
+        if val:
+            return val
+    for key in ("item", "data", "result", "task"):
+        nested = task.get(key)
+        if isinstance(nested, dict):
+            for nk in ("id", "itemId", "taskId", "_id"):
+                val = str(nested.get(nk) or "").strip()
+                if val:
+                    return val
+    return ""
+
+
+async def _run_post_create_assignments(
+    plaky: PlakyClient,
+    *,
+    result: dict,
+    board_id: str,
+    group_id: str,
+    title: str,
+    field_values: dict[str, str],
+) -> dict:
+    """
+    Inspect the JSON body of POST /tasks: this object is returned as `post_create_assignment`.
+    It includes `field_values_attempted` (what we sent to Plaky PATCH …/items/{id}/fields) and
+    the `patch_item_field_values` result (`ok`, `mode`, `failed` with HTTP snippets on error).
+    """
+    if not field_values:
+        return {"ok": True, "skipped": True, "message": "No assignment fields provided"}
+    if not board_id:
+        return {"ok": False, "skipped": True, "message": "Cannot patch assignments without board_id"}
+
+    item_id = _extract_created_task_id(result)
+    id_source = "create_response" if item_id else ""
+    if not item_id:
+        listed = await plaky.list_board_items(board_id, max_pages=2)
+        rows = listed.get("items") if isinstance(listed, dict) else []
+        if isinstance(rows, list):
+            title_norm = title.strip().lower()
+            group_norm = group_id.strip()
+            for row in reversed(rows):
+                if not isinstance(row, dict):
+                    continue
+                rid = str(row.get("id") or row.get("itemId") or row.get("taskId") or row.get("_id") or "").strip()
+                if not rid:
+                    continue
+                row_group = str(
+                    row.get("groupId")
+                    or row.get("group_id")
+                    or ((row.get("group") or {}).get("id") if isinstance(row.get("group"), dict) else "")
+                    or ""
+                ).strip()
+                row_title = str(row.get("name") or row.get("title") or "").strip().lower()
+                if group_norm and row_group and row_group != group_norm:
+                    continue
+                if title_norm and row_title and title_norm not in row_title:
+                    continue
+                item_id = rid
+                id_source = "list_match_title_group"
+                break
+            if not item_id:
+                for row in reversed(rows):
+                    if not isinstance(row, dict):
+                        continue
+                    rid = str(
+                        row.get("id") or row.get("itemId") or row.get("taskId") or row.get("_id") or ""
+                    ).strip()
+                    if rid:
+                        item_id = rid
+                        id_source = "list_latest_fallback"
+                        break
+
+    if not item_id:
+        return {
+            "ok": False,
+            "message": "Task created but post-create assignment could not resolve item id",
+            "attempted_fields": sorted(field_values.keys()),
+            "field_values_attempted": dict(field_values),
+        }
+
+    patched = await plaky.patch_item_field_values(board_id, item_id, field_values)
+    if isinstance(patched, dict):
+        patched["item_id"] = item_id
+        patched["item_id_source"] = id_source
+        patched["field_values_attempted"] = dict(field_values)
+    return patched if isinstance(patched, dict) else {"ok": False, "message": "Unexpected patch response"}
 
 
 def _extract_created_task_id(result: dict) -> str:
@@ -126,6 +225,7 @@ class CreateTaskRequest(BaseModel):
     qa_plaky_id: Optional[str] = None
     auto_assign_team: bool = True
     filters: Optional[dict] = None
+    filters: Optional[dict] = None
 
 
 class LinkPRRequest(BaseModel):
@@ -150,36 +250,26 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
     title = raw_title
     cfg = load_team_assignments()
     repo_full = (req.repo or "").strip() or "deepiri-org/unknown"
-    repo_display = (str(filters.get("repo") or req.repo or "").strip() or repo_full)
 
     engineer_field_key = (cfg.plaky_field_engineer or "").strip()
     qa_field_key = (cfg.plaky_field_qa or "").strip()
-    repo_field_key = (cfg.plaky_field_repo or "").strip()
-
-    board_id = (req.plaky_board_id or "").strip()
-    needs_schema = board_id and (
-        (engineer_plaky_id and not engineer_field_key)
-        or (qa_plaky_id and not qa_field_key)
-        or (not repo_field_key)
-    )
-    if needs_schema:
-        try:
-            bundle = await fetch_board_schema_bundle(board_id)
-            normalized = bundle.get("normalized") if isinstance(bundle, dict) else None
-            fields = normalized.get("fields") if isinstance(normalized, dict) else []
-            person_fields = []
-            if isinstance(fields, list):
-                for f in fields:
-                    if not isinstance(f, dict):
-                        continue
-                    key = str(f.get("key") or "").strip()
-                    ftype = str(f.get("type") or "").strip().upper()
-                    name = str(f.get("name") or "").strip().lower()
-                    if key and ftype == "PERSON":
-                        person_fields.append((key, name))
-                    if not repo_field_key and key and ftype != "PERSON":
-                        if "repo" in name or "repository" in name:
-                            repo_field_key = key
+    if (engineer_plaky_id and not engineer_field_key) or (qa_plaky_id and not qa_field_key):
+        board_id = (req.plaky_board_id or "").strip()
+        if board_id:
+            try:
+                bundle = await fetch_board_schema_bundle(board_id)
+                normalized = bundle.get("normalized") if isinstance(bundle, dict) else None
+                fields = normalized.get("fields") if isinstance(normalized, dict) else []
+                person_fields = []
+                if isinstance(fields, list):
+                    for f in fields:
+                        if not isinstance(f, dict):
+                            continue
+                        key = str(f.get("key") or "").strip()
+                        ftype = str(f.get("type") or "").strip().upper()
+                        name = str(f.get("name") or "").strip().lower()
+                        if key and ftype == "PERSON":
+                            person_fields.append((key, name))
                 if person_fields:
                     if not qa_field_key:
                         for k, n in person_fields:
@@ -200,8 +290,8 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
                             if k != qa_field_key:
                                 engineer_field_key = k
                                 break
-        except Exception:
-            pass
+            except Exception:
+                pass
 
     field_values: dict[str, str] = {}
     if req.auto_assign_team:
