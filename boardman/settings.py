@@ -39,7 +39,17 @@ class Settings(BaseSettings):
     github_org: str = "deepiri-org"
     # Org team for support roster: GET /api/v1/github/support-team/members (names/logins from GitHub)
     github_support_team: str = "Team-Deepiri/support-team"
+    # List org teams (GET /orgs/{org}/teams) and parse tier from slug/name (qa-tier-3, t2-qa, …).
+    # When false or no matching teams, Phase 1 uses activity-only inference.
+    github_qa_tier_team_scan_enabled: bool = True
     github_skip_archived: bool = True
+    # PR-search activity inference (sync_qa_capabilities Phase 1 fallback)
+    github_qa_activity_half_life_days: float = 180.0
+    github_qa_activity_search_max_pages: int = 5
+    github_qa_activity_tier3_min_distinct_t3_repos: int = 2
+    github_qa_activity_tier3_min_weighted_score: float = 5.0
+    github_qa_activity_tier2_min_distinct_t2plus_repos: int = 3
+    github_qa_activity_tier2_min_weighted_score: float = 2.5
     default_repo_category: str = ""
     default_plaky_table: str = ""
 

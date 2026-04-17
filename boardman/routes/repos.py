@@ -7,7 +7,7 @@ from typing import Optional
 import httpx
 
 from boardman.assignment.tier_classifier import classify_repos_tier, classify_repo_tier
-from boardman.github.repo_metadata import fetch_repos_metadata, RepoMetadata
+from boardman.github.repo_metadata import fetch_repos_metadata
 from boardman.repos_config import _load_raw, update_repo_tiers
 from boardman.settings import settings
 from fastapi import APIRouter, HTTPException
@@ -90,12 +90,13 @@ async def get_repo_tier(full_name: str) -> SingleRepoResponse:
                     "topics": meta.topics if meta else [],
                     "size_kb": meta.size_kb if meta else None,
                     "scores": {
-                        "language": scores.language_score,
-                        "topic": scores.topic_score,
-                        "size": scores.size_score,
+                        "idf_score": scores.idf_score,
+                        "structural_score": scores.structural_score,
                         "total": scores.total,
-                    }
-                } if meta else None,
+                    },
+                }
+                if meta
+                else None,
             )
         except Exception:
             return SingleRepoResponse(full_name=full_name, tier=2)
@@ -103,6 +104,3 @@ async def get_repo_tier(full_name: str) -> SingleRepoResponse:
             await client.aclose()
     
     return SingleRepoResponse(full_name=full_name, tier=tier)
-
-
-from pydantic import BaseModel

@@ -33,39 +33,6 @@ class TierScore:
 
 def compute_structural_complexity_score(meta) -> float:
     """
-    Compute structural complexity from signal COUNT statistics only.
-    ZERO hardcoded names - only derived structural statistics.
-    """
-    counts = getattr(meta, "signal_counts", {})
-    top_dirs = getattr(meta, "top_level_dirs", [])
-    max_depth = getattr(meta, "max_depth", 0)
-
-    total_files = sum(counts.values())
-    total_dirs = sum(1 for k, v in counts.items() if k.startswith("dir:"))
-
-    meaningful_top = len([d for d in top_dirs if not d.startswith(".")])
-
-    score = 0.0
-    score += meaningful_top * 8.0
-    score += max_depth * 4.0
-    score += min(total_files / 30.0, 15.0)
-    score += min(total_dirs / 8.0, 10.0)
-
-    dir_sizes = {}
-    for k, v in counts.items():
-        if k.startswith("dir:"):
-            dir_sizes[k] = v
-    if len(dir_sizes) > 3:
-        avg = sum(dir_sizes.values()) / len(dir_sizes)
-        variance = sum((v - avg) ** 2 for v in dir_sizes.values()) / len(dir_sizes)
-        if variance > avg:
-            score += 10.0
-
-    return score
-
-
-def compute_structural_complexity_score(meta) -> float:
-    """
     Compute structural complexity purely from signal frequencies.
     ZERO hardcoded roles or keyword lists.
     """
@@ -181,8 +148,8 @@ def classify_repo_tier(meta) -> tuple[Tier, TierScore]:
 
     idf_score = sum(idf_data.get(sig, 0.0) for sig in getattr(meta, "raw_signals", []))
     structural_score = compute_structural_complexity_score(meta)
-
-    final_score = idf_score
+    # Light blend: structural breaks ties for similar IDF mass (global constant, not per-repo).
+    final_score = idf_score + 0.2 * structural_score
 
     ts = TierScore(idf_score=idf_score, structural_score=structural_score, total=final_score)
 
