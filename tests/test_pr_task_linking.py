@@ -24,6 +24,12 @@ async def _memory_session_factory():
     return engine, async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
+def test_cosine_word_similarity_identical():
+    from boardman.services.pr_task_linking import _cosine_word_similarity
+
+    assert _cosine_word_similarity("hello world", "world hello") == pytest.approx(1.0, rel=1e-6)
+
+
 def test_github_head_ref():
     assert github_head_ref({"ref": "feature/foo"}) == "feature/foo"
     assert github_head_ref(None) == ""

@@ -1,7 +1,8 @@
 import hmac
 import hashlib
-from typing import Optional, List, Any
-from pydantic import BaseModel, Field
+from typing import Any, List, Optional
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 def verify_signature(raw_body: bytes, signature_header: str, secret: str) -> bool:
@@ -24,15 +25,20 @@ class GitHubIssue(BaseModel):
 
 
 class GitHubPullRequest(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
     number: int
     title: str
     body: Optional[str] = None
     html_url: str
     state: str
     merged: bool = False
+    draft: bool = False
     user: Optional[Any] = None
     base: Optional[Any] = None
     head: Optional[Any] = None
+    assignees: List[Any] = Field(default_factory=list)
+    requested_reviewers: List[Any] = Field(default_factory=list)
 
 
 class GitHubRepository(BaseModel):
@@ -52,6 +58,38 @@ class PullRequestEventPayload(BaseModel):
     repository: GitHubRepository
 
 
+class GitHubReviewPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    state: str = ""
+    user: Optional[dict] = None
+
+
+class PullRequestReviewEventPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    action: str
+    review: GitHubReviewPayload
+    pull_request: GitHubPullRequest
+    repository: GitHubRepository
+
+
+class IssueCommentIssuePayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    number: int
+    pull_request: Optional[dict] = None
+
+
+class IssueCommentEventPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    action: str
+    issue: IssueCommentIssuePayload
+    comment: dict
+    repository: GitHubRepository
+
+
 class PingEventPayload(BaseModel):
     hook: Optional[Any] = None
     repository: Optional[GitHubRepository] = None
@@ -62,6 +100,10 @@ def parse_webhook_payload(event_type: str, payload_dict: dict) -> Any:
         return IssueEventPayload(**payload_dict)
     elif event_type == "pull_request":
         return PullRequestEventPayload(**payload_dict)
+    elif event_type == "pull_request_review":
+        return PullRequestReviewEventPayload(**payload_dict)
+    elif event_type == "issue_comment":
+        return IssueCommentEventPayload(**payload_dict)
     elif event_type == "ping":
         return PingEventPayload(**payload_dict)
     return None

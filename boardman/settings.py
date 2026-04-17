@@ -8,6 +8,19 @@ class Settings(BaseSettings):
     plaky_api_key: str = ""
     plaky_api_base: str = "https://api.plaky.com/v1/public"
     plaky_pr_merge_status: str = "in_review"
+    # When true, set `plaky_pr_merge_status` only after every linked PR is merged (or withdrawn).
+    plaky_complete_when_all_prs_merged: bool = True
+    # QA workflow (GitHub → Plaky). Empty = skip that transition (set to your board status keys).
+    plaky_pr_needs_qa_status: str = ""
+    plaky_pr_in_qa_status: str = ""
+    plaky_pr_qa_approved_status: str = ""
+    plaky_pr_qa_rejected_status: str = ""
+    # Do not move draft PRs to Needs QA until ready_for_review (if needs_qa status is configured).
+    plaky_skip_needs_qa_for_draft: bool = True
+    # After any automated Plaky status change, enqueue arq job to reorder items in default board/group.
+    plaky_reorder_after_status_change: bool = False
+    # Comma-separated substrings (case-insensitive) marking Plaky item status as “done” for reorder heuristics.
+    plaky_reorder_done_status_markers: str = "done,complete,closed,resolved,archive,shipped,merged"
     # Plaky hierarchy: Item lives under Board + Group (no separate "table" in API)
     plaky_default_board_id: str = ""
     plaky_default_group_id: str = ""
@@ -80,6 +93,8 @@ class Settings(BaseSettings):
     pr_linking_top_n_for_llm: int = 5
     pr_linking_llm_enabled: bool = False
     pr_linking_llm_min_confidence: float = 0.75
+    # Blend SequenceMatcher title/body score with word-bag cosine in [0, 1] (0 = legacy behavior only).
+    pr_linking_cosine_weight: float = 0.35
 
     # Redis: agent job queue (arq) + optional distributed leaky-bucket limits
     redis_url: str = ""
