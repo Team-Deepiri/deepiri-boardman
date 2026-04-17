@@ -95,13 +95,26 @@ def test_engineer_is_highest_weight():
 
 @pytest.mark.asyncio
 async def test_build_assignment_field_map():
-@pytest.mark.asyncio
-async def test_build_assignment_field_map():
     cfg = _sample_cfg()
-    m = await build_assignment_field_map("deepiri-org/emotion-desktop", cfg)
     m = await build_assignment_field_map("deepiri-org/emotion-desktop", cfg)
     assert m.get("fld_eng") == "dev-1"
     assert m.get("fld_qa") == "qa-heavy"
+
+
+@pytest.mark.asyncio
+async def test_build_assignment_field_map_engineer_qa_key_overrides():
+    """Board-inferred keys (when YAML omits plaky_field_engineer/qa) must still receive ids."""
+    cfg = _sample_cfg()
+    cfg.plaky_field_engineer = ""
+    cfg.plaky_field_qa = ""
+    m = await build_assignment_field_map(
+        "deepiri-org/emotion-desktop",
+        cfg,
+        plaky_field_engineer_key="inferred_contributor",
+        plaky_field_qa_key="inferred_qa",
+    )
+    assert m.get("inferred_contributor") == "dev-1"
+    assert m.get("inferred_qa") == "qa-heavy"
 
 
 @pytest.mark.asyncio
@@ -127,7 +140,6 @@ async def test_build_assignment_field_map_repo_value_override():
 @pytest.mark.asyncio
 async def test_build_assignment_field_map_override_wins():
     cfg = _sample_cfg()
-    m = await build_assignment_field_map(
     m = await build_assignment_field_map(
         "deepiri-org/emotion-desktop",
         cfg,

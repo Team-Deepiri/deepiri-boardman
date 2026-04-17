@@ -724,10 +724,16 @@ class PlakyClient:
                         payload = response.json()
                         task_id = self._payload_item_id(payload)
                         task_url = payload.get("url") or payload.get("taskUrl")
-                        out = {"ok": True, "status": response.status_code, "task": payload, "task_url": task_url}
+                        out = {
+                            "ok": True,
+                            "status": response.status_code,
+                            "task": payload,
+                            "task_id": str(task_id or "").strip() or None,
+                            "task_url": task_url,
+                        }
                         item_id = str(task_id or "").strip()
                         if not item_id:
-                            listed = await self.list_board_items_public(board_id, max_pages=1)
+                            listed = await self.list_board_items(board_id, max_pages=1)
                             if listed.get("ok"):
                                 rows = listed.get("items") or []
                                 if isinstance(rows, list):
@@ -763,6 +769,8 @@ class PlakyClient:
                                 title=title,
                                 description=description,
                             )
+                        if item_id:
+                            out["task_id"] = item_id
                         return out
                     if response.status_code not in (404, 422):
                         break
@@ -934,15 +942,20 @@ class PlakyClient:
                 dict(mapping),
             ]
 
-        # Bulk: try raw mapping, then a person-shaped mapping (string ids -> users[]).
-        person_mapping: Dict[str, Any] = {}
-        for k, v in values.items():
+        # Bulk: try raw mapping, then a person-shaped mapping (Plaky user ids -> users[]).
+        # Do not treat free text (e.g. owner/repo) as a user id — that breaks the second bulk pass.
+        def _coerce_person_bulk_value(v: Any) -> Any:
             if isinstance(v, str) and v.strip():
                 s = v.strip()
+                if "/" in s or "\n" in s:
+                    return v
                 uid: Any = int(s) if s.isdigit() else s
-                person_mapping[k] = {"users": [{"id": uid}], "teams": []}
-            else:
-                person_mapping[k] = v
+                return {"users": [{"id": uid}], "teams": []}
+            return v
+
+        person_mapping: Dict[str, Any] = {}
+        for k, v in values.items():
+            person_mapping[k] = _coerce_person_bulk_value(v)
 
         bulk_bodies: List[Dict[str, Any]] = []
         bulk_bodies.extend(_bulk_bodies_for(values))
@@ -1016,8 +1029,10 @@ class PlakyClient:
             if res.get("ok") and description.strip():
                 task = res.get("task") if isinstance(res.get("task"), dict) else {}
                 iid = str(
-                    task.get("id")
+                    res.get("task_id")
+                    or task.get("id")
                     or task.get("itemId")
+                    or task.get("taskId")
                     or task.get("_id")
                     or ""
                 ).strip()
@@ -1029,7 +1044,14 @@ class PlakyClient:
                     )
             if res.get("ok") and field_values:
                 task = res.get("task") if isinstance(res.get("task"), dict) else {}
-                iid = str(task.get("id") or task.get("itemId") or task.get("_id") or "").strip()
+                iid = str(
+                    res.get("task_id")
+                    or task.get("id")
+                    or task.get("itemId")
+                    or task.get("taskId")
+                    or task.get("_id")
+                    or ""
+                ).strip()
                 if iid:
                     res["field_patch"] = await self.patch_item_field_values(bid, iid, field_values)
                 else:
