@@ -9,7 +9,9 @@ import pytest
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, TierSpec
 from boardman.assignment.repo_rules import QaRepoRules
 from boardman.assignment.qa_picker import (
+    build_repo_field_map,
     build_assignment_field_map,
+    normalize_github_repo_inputs,
     pick_engineer_for_repo,
     pick_qa_for_repo,
     repo_is_heavy,
@@ -135,6 +137,32 @@ async def test_build_assignment_field_map_repo_value_override():
         repo_value="other-org/custom",
     )
     assert m.get("fld_repo") == "other-org/custom"
+
+
+@pytest.mark.asyncio
+async def test_build_assignment_field_map_multiple_github_repos_single_field():
+    cfg = _sample_cfg()
+    cfg.plaky_field_repo = "fld_repo"
+    m = await build_assignment_field_map(
+        "deepiri-org/emotion-desktop",
+        cfg,
+        github_repos=["Org/A", "org/b", "Org/A"],
+    )
+    assert m.get("fld_repo") == "Org/A, org/b"
+
+
+@pytest.mark.asyncio
+async def test_build_assignment_field_map_repo_and_github_repos_keys():
+    cfg = _sample_cfg()
+    cfg.plaky_field_repo = "primary"
+    cfg.plaky_field_github_repos = "all_repos"
+    m = await build_assignment_field_map(
+        "deepiri-org/emotion-desktop",
+        cfg,
+        github_repos=["deepiri-org/a", "deepiri-org/b"],
+    )
+    assert m.get("primary") == "deepiri-org/a"
+    assert m.get("all_repos") == "deepiri-org/a, deepiri-org/b"
 
 
 @pytest.mark.asyncio

@@ -55,13 +55,44 @@ def test_looks_like_placeholder_plaky_field_key():
     assert looks_like_placeholder_plaky_field_key("abc123-real-key") is False
 
 
-def test_validate_field_values_rejects_placeholders():
+def test_validate_field_values_rejects_placeholder_keys_not_on_board():
     msg = validate_field_values_against_board_schema(
-        {"person-1": "x", "real_uuid": "y"},
+        {"person-99": "x", "real_uuid": "y"},
         {"fields": [{"name": "A", "key": "real_uuid", "options": []}]},
     )
     assert msg is not None
-    assert "person-1" in msg
+    assert "person-99" in msg
+
+
+def test_validate_field_values_allows_native_plaky_key_pattern_when_on_board():
+    assert (
+        validate_field_values_against_board_schema(
+            {"person-1": "291493", "tag-2": "Team-Deepiri/x"},
+            {
+                "fields": [
+                    {"name": "Contributor", "key": "person-1", "type": "PERSON"},
+                    {"name": "Repos", "key": "tag-2", "type": "TAG"},
+                ]
+            },
+        )
+        is None
+    )
+
+
+def test_select_field_patch_pair_fallback_when_status_has_no_options():
+    from boardman.plaky.board_schema import select_field_patch_pair_from_schema
+
+    norm = {
+        "fields": [
+            {"name": "Status", "key": "status-1", "type": "STATUS", "options": []},
+        ]
+    }
+    pair = select_field_patch_pair_from_schema(
+        norm,
+        column_name_substrings=("status",),
+        value_label_candidates=("in progress", "doing"),
+    )
+    assert pair == ("status-1", "in progress")
 
 
 def test_validate_field_values_unknown_keys_when_schema_has_keys():
