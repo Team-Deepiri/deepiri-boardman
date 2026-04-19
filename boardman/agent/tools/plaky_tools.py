@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import StructuredTool
 
+from boardman.assignment.config import load_team_assignments
+from boardman.assignment.qa_picker import build_repo_field_map, normalize_github_repo_inputs
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
     validate_field_values_against_board_schema,
@@ -167,6 +169,7 @@ async def _plaky_create_task(
     c = PlakyClient()
     bid = board_id.strip() or None
     gid = group_id.strip() or None
+    repo_tokens = normalize_github_repo_inputs(extra_repo_text=repo_tag)
 
     parsed: Dict[str, Any] = {}
     raw_f = (field_values_json or "").strip()
@@ -186,6 +189,17 @@ async def _plaky_create_task(
         merged = merge_draft_into_field_values(draft, parsed)
     else:
         merged = dict(parsed)
+
+    if repo_tokens:
+        cfg = load_team_assignments()
+        repo_fields = build_repo_field_map(
+            cfg,
+            repo_value=repo_tokens[0],
+            github_repos=repo_tokens,
+        )
+        for key, value in repo_fields.items():
+            if key not in parsed:
+                merged[key] = value
 
     effective_board = (bid or get_context_plaky_board_id() or "").strip() or None
     if merged:
@@ -344,7 +358,8 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                         "Create a Plaky item. Call plaky_board_schema first if field_values_json is non-empty. "
                         "field_values_json keys MUST match schema key= strings; assignee ids from plaky_list_workspace_users. "
                         "Placement: pass board_id/group_id or rely on Current Plaky placement. "
-                        "Args: title, description, priority, repo_tag?, board_id?, group_id?, field_values_json?."
+                        "Args: title, description, priority, repo_tag?, board_id?, group_id?, field_values_json?. "
+                        "repo_tag may include one or more owner/repo values separated by commas or new lines."
                     ),
                 ),
                 StructuredTool.from_function(
