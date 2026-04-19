@@ -8,10 +8,28 @@ class Settings(BaseSettings):
     plaky_api_key: str = ""
     plaky_api_base: str = "https://api.plaky.com/v1/public"
     plaky_pr_merge_status: str = "in_review"
-    plaky_status_needs_qa: str = "needs_qa"
-    plaky_status_in_qa: str = "in_qa"
-    plaky_status_qa_approved: str = "qa_approved"
-    plaky_status_qa_rejected: str = "qa_rejected"
+    # When true, set `plaky_pr_merge_status` only after every linked PR is merged (or withdrawn).
+    plaky_complete_when_all_prs_merged: bool = True
+    # QA workflow (GitHub → Plaky). Empty = skip that transition (set to your board status keys).
+    plaky_pr_needs_qa_status: str = ""
+    plaky_pr_in_qa_status: str = ""
+    plaky_pr_qa_approved_status: str = ""
+    plaky_pr_qa_rejected_status: str = ""
+    # Optional Plaky item field key for QA assignee (env PLAKY_QA_ITEM_FIELD_KEY). When set,
+    # used before team_assignments.yml; when both empty, Boardman discovers a QA-ish person field from the board schema.
+    plaky_qa_item_field_key: str = ""
+    # Do not move draft PRs to Needs QA until ready_for_review (if needs_qa status is configured).
+    plaky_skip_needs_qa_for_draft: bool = True
+    # After any automated Plaky status change, enqueue arq job to reorder items in default board/group.
+    plaky_reorder_after_status_change: bool = False
+    # Comma-separated substrings (case-insensitive) marking Plaky item status as “done” for reorder heuristics.
+    plaky_reorder_done_status_markers: str = "done,complete,closed,resolved,archive,shipped,merged"
+    # Empty = resolve from board schema (dynamic_qa_status) when the matching plaky_pr_* value is also empty.
+    plaky_status_needs_qa: str = ""
+    plaky_status_in_qa: str = ""
+    # Empty = resolve from Plaky board schema at runtime (see boardman.plaky.dynamic_qa_status).
+    plaky_status_qa_approved: str = ""
+    plaky_status_qa_rejected: str = ""
     plaky_status_completed: str = "completed"
     plaky_pr_tracking_board_id: str = ""
     plaky_pr_tracking_group_id: str = ""
@@ -26,7 +44,17 @@ class Settings(BaseSettings):
     github_org: str = "deepiri-org"
     # Org team for support roster: GET /api/v1/github/support-team/members (names/logins from GitHub)
     github_support_team: str = "Team-Deepiri/support-team"
+    # List org teams (GET /orgs/{org}/teams) and parse tier from slug/name (qa-tier-3, t2-qa, …).
+    # When false or no matching teams, Phase 1 uses activity-only inference.
+    github_qa_tier_team_scan_enabled: bool = True
     github_skip_archived: bool = True
+    # PR-search activity inference (sync_qa_capabilities Phase 1 fallback)
+    github_qa_activity_half_life_days: float = 180.0
+    github_qa_activity_search_max_pages: int = 5
+    github_qa_activity_tier3_min_distinct_t3_repos: int = 2
+    github_qa_activity_tier3_min_weighted_score: float = 5.0
+    github_qa_activity_tier2_min_distinct_t2plus_repos: int = 3
+    github_qa_activity_tier2_min_weighted_score: float = 2.5
     default_repo_category: str = ""
     default_plaky_table: str = ""
 
@@ -89,6 +117,8 @@ class Settings(BaseSettings):
     pr_linking_top_n_for_llm: int = 5
     pr_linking_llm_enabled: bool = False
     pr_linking_llm_min_confidence: float = 0.75
+    # Blend SequenceMatcher title/body score with word-bag cosine in [0, 1] (0 = legacy behavior only).
+    pr_linking_cosine_weight: float = 0.35
 
     # Redis: agent job queue (arq) + optional distributed leaky-bucket limits
     redis_url: str = ""

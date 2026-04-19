@@ -76,6 +76,7 @@ markers = [
     "integration: real Ollama/network; run with BOARDMAN_AI_LIVE=1",
     "live_ollama: requires Ollama at OLLAMA_BASE_URL with LLM_MODEL available",
     "plaky_live: calls real Plaky API; requires PLAKY_API_KEY in .env or environment",
+    "plaky_pr_workflow_live: synthetic GitHub payloads + real Plaky writes; requires PLAKY_PR_WORKFLOW_LIVE=1",
     "agent_e2e_live: multi-turn agent + real Ollama (optional Plaky); skipped when Ollama down",
     "stack_latency: fast warm Ollama timings (BOARDMAN_STACK_BENCHMARK=1 pytest -m stack_latency -s; COLD_START=1 for load test)",
 ]

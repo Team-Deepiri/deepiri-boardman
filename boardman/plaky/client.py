@@ -298,12 +298,19 @@ class PlakyClient:
             name = str(x.get("name") or x.get("displayName") or x.get("fullName") or x.get("email") or uid)
             email = x.get("email")
             pe = x.get("primaryEmail")
+            gh_login = (
+                x.get("githubUsername")
+                or x.get("githubLogin")
+                or x.get("github_login")
+                or x.get("github")
+            )
             users.append(
                 {
                     "id": uid,
                     "name": name,
                     "email": email if isinstance(email, str) else None,
                     "primaryEmail": pe if isinstance(pe, str) else None,
+                    "github_login": str(gh_login).strip() if gh_login else None,
                 }
             )
         return {"ok": True, "status": 200, "users": users}
@@ -333,12 +340,20 @@ class PlakyClient:
                 continue
             name = str(x.get("name") or x.get("displayName") or x.get("fullName") or x.get("email") or uid)
             email = x.get("email")
+            pe = x.get("primaryEmail")
+            gh_login = (
+                x.get("githubUsername")
+                or x.get("githubLogin")
+                or x.get("github_login")
+                or x.get("github")
+            )
             users.append(
                 {
                     "id": uid,
                     "name": name,
                     "email": email if isinstance(email, str) else None,
-                    "primaryEmail": x.get("primaryEmail") if isinstance(x.get("primaryEmail"), str) else None,
+                    "primaryEmail": pe if isinstance(pe, str) else None,
+                    "github_login": str(gh_login).strip() if gh_login else None,
                 }
             )
         return {"ok": True, "status": 200, "users": users}
