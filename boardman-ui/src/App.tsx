@@ -154,7 +154,6 @@ export default function App() {
   const [createMsg, setCreateMsg] = useState<string | null>(null);
   const [engPick, setEngPick] = useState("");
   const [qaPick, setQaPick] = useState("");
-  const [autoTeam, setAutoTeam] = useState(true);
   const [supportTeam, setSupportTeam] = useState<SupportTeamRow[]>([]);
   const [supportTeamHint, setSupportTeamHint] = useState<string | null>(null);
   const [supportTeamSpec, setSupportTeamSpec] = useState("Team-Deepiri/support-team");
@@ -383,7 +382,7 @@ export default function App() {
         plaky_group_id: plakyGroupId || undefined,
         engineer_plaky_id: engPick || undefined,
         qa_plaky_id: qaPick || undefined,
-        auto_assign_team: autoTeam,
+        auto_assign_team: true,
       });
       if (data.ok) {
         setCreateMsg(data.task_url || data.task?.url || "Task created.");
@@ -406,7 +405,6 @@ export default function App() {
     plakyGroupId,
     engPick,
     qaPick,
-    autoTeam,
   ]);
 
   const onSend = useCallback(async () => {
@@ -674,21 +672,6 @@ export default function App() {
             onChange={(e) => setCreateBody(e.target.value)}
             placeholder="Description (optional)"
           />
-          <div className="toggle-field toggle-field--compact">
-            <div className="toggle-field__text">
-              <span className="toggle-field__title">Auto-assign engineer + QA</span>
-              <span className="toggle-field__desc">Uses team_assignments.yml for this repo</span>
-            </div>
-            <button
-              type="button"
-              role="switch"
-              aria-checked={autoTeam}
-              className={`switch ${autoTeam ? "switch--on" : ""}`}
-              onClick={() => setAutoTeam((v) => !v)}
-            >
-              <span className="switch__thumb" />
-            </button>
-          </div>
           <div className="support-roster__label" id="support-roster-label">
             <span className="field__label field__label--sub support-roster__heading-primary">
               GitHub support team
@@ -717,7 +700,7 @@ export default function App() {
             <p className="field__hint">No members yet (configure GITHUB_PAT with read:org).</p>
           )}
           <label className="field__label field__label--sub" htmlFor="eng-assign">
-            Engineer (Plaky member)
+            Contributor (Plaky member)
           </label>
           <AppSelect
             id="eng-assign"
