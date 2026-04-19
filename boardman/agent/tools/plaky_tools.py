@@ -7,10 +7,12 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import StructuredTool
 
-from boardman.assignment.config import load_team_assignments
+from boardman.assignment.config import infer_plaky_field_keys_from_normalized, load_team_assignments
 from boardman.assignment.qa_picker import build_repo_field_map, normalize_github_repo_inputs
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
+    plaky_repo_field_value_format,
+    resolve_repo_tag_field_values_from_schema,
     validate_field_values_against_board_schema,
 )
 from boardman.plaky.client import PlakyClient
@@ -190,23 +192,51 @@ async def _plaky_create_task(
     else:
         merged = dict(parsed)
 
+    effective_board = (bid or get_context_plaky_board_id() or "").strip() or None
+    normalized: Optional[Dict[str, Any]] = None
+    if effective_board and (repo_tokens or merged):
+        bundle = await fetch_board_schema_bundle(effective_board)
+        normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+
     if repo_tokens:
         cfg = load_team_assignments()
+        inf_tags = infer_plaky_field_keys_from_normalized(normalized) if normalized else {}
+        repo_k = (cfg.plaky_field_repo or inf_tags.get("repo") or "").strip()
+        gh_k = (cfg.plaky_field_github_repos or inf_tags.get("github_repos") or "").strip()
+        repo_fmt = plaky_repo_field_value_format(normalized, repo_k)
+        gh_fmt = plaky_repo_field_value_format(normalized, gh_k)
+        if repo_k == gh_k and repo_k and (repo_fmt == "short" or gh_fmt == "short"):
+            repo_fmt = gh_fmt = "short"
         repo_fields = build_repo_field_map(
             cfg,
             repo_value=repo_tokens[0],
             github_repos=repo_tokens,
+            repo_value_format=repo_fmt,
+            github_repos_value_format=gh_fmt,
         )
         for key, value in repo_fields.items():
             if key not in parsed:
                 merged[key] = value
 
-    effective_board = (bid or get_context_plaky_board_id() or "").strip() or None
     if merged:
-        normalized = None
-        if effective_board:
+        if normalized is None and effective_board:
             bundle = await fetch_board_schema_bundle(effective_board)
             normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+        if normalized:
+            cfg_tags = load_team_assignments()
+            inf_tags = infer_plaky_field_keys_from_normalized(normalized)
+            tag_keys = {
+                x
+                for x in (
+                    (cfg_tags.plaky_field_repo or "").strip(),
+                    (cfg_tags.plaky_field_github_repos or "").strip(),
+                    (inf_tags.get("repo") or "").strip(),
+                    (inf_tags.get("github_repos") or "").strip(),
+                )
+                if x
+            }
+            if tag_keys:
+                resolve_repo_tag_field_values_from_schema(merged, normalized, keys=tag_keys)
         err = validate_field_values_against_board_schema(merged, normalized)
         if err:
             return json.dumps({"ok": False, "message": err}, default=str)
@@ -238,6 +268,21 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
     if parsed:
         bundle = await fetch_board_schema_bundle(bid)
         normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+        if normalized:
+            cfg_tags = load_team_assignments()
+            inf_tags = infer_plaky_field_keys_from_normalized(normalized)
+            tag_keys = {
+                x
+                for x in (
+                    (cfg_tags.plaky_field_repo or "").strip(),
+                    (cfg_tags.plaky_field_github_repos or "").strip(),
+                    (inf_tags.get("repo") or "").strip(),
+                    (inf_tags.get("github_repos") or "").strip(),
+                )
+                if x
+            }
+            if tag_keys:
+                resolve_repo_tag_field_values_from_schema(parsed, normalized, keys=tag_keys)
         err = validate_field_values_against_board_schema(parsed, normalized)
         if err:
             return json.dumps({"ok": False, "message": err}, default=str)

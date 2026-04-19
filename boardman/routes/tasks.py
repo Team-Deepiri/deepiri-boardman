@@ -25,6 +25,8 @@ from boardman.plaky.board_schema import (
     field_row_item_key,
     looks_like_placeholder_plaky_field_key,
     plaky_field_row_label,
+    plaky_repo_field_value_format,
+    resolve_repo_tag_field_values_from_schema,
     select_field_patch_pair_from_schema,
 )
 from boardman.settings import settings
@@ -466,12 +468,20 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
         github_repos_plaky_key, allowed_board_keys=allowed_board_keys
     )
 
+    repo_val_fmt = plaky_repo_field_value_format(schema_normalized, repo_plaky_key)
+    gh_repos_val_fmt = plaky_repo_field_value_format(schema_normalized, github_repos_plaky_key)
+    rk_set, gk_set = (repo_plaky_key or "").strip(), (github_repos_plaky_key or "").strip()
+    if rk_set == gk_set and rk_set and (repo_val_fmt == "short" or gh_repos_val_fmt == "short"):
+        repo_val_fmt = gh_repos_val_fmt = "short"
+
     field_values = build_repo_field_map(
         cfg,
         repo_value=repo_display,
         github_repos=merged_repos if merged_repos else None,
         plaky_field_repo_key=repo_plaky_key or None,
         plaky_field_github_repos_key=github_repos_plaky_key or None,
+        repo_value_format=repo_val_fmt,
+        github_repos_value_format=gh_repos_val_fmt,
     )
     # Per-slot: request contributor/QA ids override roster; empty request uses roster when auto_assign_team.
     eng_apply = engineer_plaky_id or (pick_eng_id if req.auto_assign_team else "")
@@ -515,6 +525,13 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
             if fk and fv is not None and fk not in field_values:
                 field_values[fk] = fv
 
+    tag_resolution_warnings: List[dict] = []
+    tag_keys = {k.strip() for k in (repo_plaky_key, github_repos_plaky_key) if (k or "").strip()}
+    if tag_keys and isinstance(schema_normalized, dict):
+        _, tag_resolution_warnings = resolve_repo_tag_field_values_from_schema(
+            field_values, schema_normalized, keys=tag_keys
+        )
+
     schema_sample_labels: List[str] = []
     if isinstance(schema_normalized, dict):
         raw_fields = schema_normalized.get("fields") or []
@@ -556,6 +573,7 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
         "field_value_keys": sorted(field_values.keys()),
         "field_values": dict(field_values),
         "person_field_keys_for_patch": sorted(person_keys) if person_keys else [],
+        "tag_option_resolution_warnings": tag_resolution_warnings or None,
     }
 
     async with plaky_placement_context(

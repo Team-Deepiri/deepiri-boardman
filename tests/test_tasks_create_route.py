@@ -315,7 +315,7 @@ async def test_post_tasks_keeps_native_plaky_keys_when_they_appear_on_board_sche
     _, _, values = patch
     assert values.get("person-1") == "eng-1"
     assert values.get("person-2") == "qa-1"
-    assert values.get("tag-2") == "acme/widget"
+    assert values.get("tag-2") == "widget"
 
 
 @pytest.mark.asyncio

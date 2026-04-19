@@ -9,8 +9,9 @@ import pytest
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, TierSpec
 from boardman.assignment.repo_rules import QaRepoRules
 from boardman.assignment.qa_picker import (
-    build_repo_field_map,
     build_assignment_field_map,
+    build_repo_field_map,
+    github_repo_suffix_name,
     normalize_github_repo_inputs,
     pick_engineer_for_repo,
     pick_qa_for_repo,
@@ -137,6 +138,24 @@ async def test_build_assignment_field_map_repo_value_override():
         repo_value="other-org/custom",
     )
     assert m.get("fld_repo") == "other-org/custom"
+
+
+def test_github_repo_suffix_name():
+    assert github_repo_suffix_name("Team-Deepiri/deepiri-platform") == "deepiri-platform"
+    assert github_repo_suffix_name("solo-repo") == "solo-repo"
+
+
+def test_build_repo_field_map_short_format_for_tag_columns():
+    cfg = _sample_cfg()
+    cfg.plaky_field_repo = "tag_col"
+    cfg.plaky_field_github_repos = "tag_col"
+    m = build_repo_field_map(
+        cfg,
+        github_repos=["acme/foo", "acme/bar"],
+        repo_value_format="short",
+        github_repos_value_format="short",
+    )
+    assert m.get("tag_col") == "foo, bar"
 
 
 @pytest.mark.asyncio

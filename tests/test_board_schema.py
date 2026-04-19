@@ -1,7 +1,10 @@
 from boardman.plaky.board_schema import (
     format_board_schema_markdown,
     looks_like_placeholder_plaky_field_key,
+    match_repo_tokens_to_plaky_tag_option_values,
     normalize_board_payload,
+    plaky_repo_field_value_format,
+    resolve_repo_tag_field_values_from_schema,
     validate_field_values_against_board_schema,
 )
 
@@ -93,6 +96,68 @@ def test_select_field_patch_pair_fallback_when_status_has_no_options():
         value_label_candidates=("in progress", "doing"),
     )
     assert pair == ("status-1", "in progress")
+
+
+def test_plaky_repo_field_value_format_short_only_for_tag_columns():
+    norm = {
+        "fields": [
+            {"name": "Repo text", "key": "fld-1", "type": "TEXT"},
+            {"name": "Repos tag", "key": "tag-2", "type": "TAG"},
+        ]
+    }
+    assert plaky_repo_field_value_format(norm, "fld-1") == "full"
+    assert plaky_repo_field_value_format(norm, "tag-2") == "short"
+
+
+def test_plaky_repo_field_value_format_native_tag_key_without_schema():
+    assert plaky_repo_field_value_format(None, "tag-2") == "short"
+    assert plaky_repo_field_value_format({"fields": []}, "tag-2") == "short"
+    assert plaky_repo_field_value_format(None, "fld_repo") == "full"
+
+
+def test_match_repo_tokens_to_plaky_tag_option_values_case_insensitive():
+    field = {
+        "name": "GitHub Repos",
+        "key": "tag-2",
+        "type": "TAG",
+        "options": [
+            {"name": "Team-Deepiri/deepiri-platform", "id": 42},
+            {"name": "Other/Thing", "id": 7},
+        ],
+    }
+    matched, unmatched = match_repo_tokens_to_plaky_tag_option_values(
+        field, ["team-deepiri/deepiri-platform"]
+    )
+    assert matched == [42]
+    assert unmatched == []
+
+
+def test_match_repo_tokens_accepts_repo_short_name_without_owner():
+    field = {
+        "name": "GitHub Repos",
+        "key": "tag-2",
+        "type": "TAG",
+        "options": [{"name": "deepiri-platform", "id": 7}],
+    }
+    matched, unmatched = match_repo_tokens_to_plaky_tag_option_values(field, ["deepiri-platform"])
+    assert matched == [7]
+    assert unmatched == []
+
+
+def test_resolve_repo_tag_field_values_from_schema_rewrites_string_to_ids():
+    norm = {
+        "fields": [
+            {
+                "name": "GitHub Repos",
+                "key": "tag-2",
+                "type": "TAG",
+                "options": [{"name": "Team-Deepiri/deepiri-platform", "id": 99}],
+            },
+        ]
+    }
+    fv = {"tag-2": "Team-Deepiri/deepiri-platform"}
+    resolve_repo_tag_field_values_from_schema(fv, norm, keys={"tag-2"})
+    assert fv["tag-2"] == [99]
 
 
 def test_validate_field_values_unknown_keys_when_schema_has_keys():

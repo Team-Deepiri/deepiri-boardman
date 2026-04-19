@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 # LLMs often invent Jira-like keys; reject before hitting Plaky.
 _PLACEHOLDER_FIELD_KEY = re.compile(
@@ -38,7 +38,19 @@ def _opt_label(o: Any) -> str:
 def _collect_options(field: Dict[str, Any]) -> List[Dict[str, Any]]:
     seen_labels: set[str] = set()
     options: List[Dict[str, Any]] = []
-    for key in ("options", "choices", "values", "statuses", "items", "allowedValues", "enum"):
+    for key in (
+        "options",
+        "choices",
+        "values",
+        "statuses",
+        "items",
+        "allowedValues",
+        "enum",
+        "tags",
+        "tagOptions",
+        "tagValues",
+        "possibleValues",
+    ):
         block = field.get(key)
         if not isinstance(block, list):
             continue
@@ -263,6 +275,185 @@ def select_field_patch_pair_from_schema(
                     if val is not None:
                         return (key, val)
     return None
+
+
+def _field_type_upper(f: Dict[str, Any]) -> str:
+    nested = f.get("field") if isinstance(f.get("field"), dict) else {}
+    return str(
+        f.get("type") or f.get("fieldType") or f.get("kind") or nested.get("type") or nested.get("fieldType") or ""
+    ).upper()
+
+
+def field_is_plaky_tag_column(f: Dict[str, Any]) -> bool:
+    return "TAG" in _field_type_upper(f)
+
+
+def plaky_repo_field_value_format(
+    normalized: Optional[Dict[str, Any]],
+    item_field_key: str,
+) -> str:
+    """
+    Plaky TAG options are usually **repository names** (``deepiri-platform``), not ``owner/repo``.
+
+    Return ``short`` when this field is a TAG column so callers can format patch values accordingly;
+    otherwise ``full`` (keep ``owner/repo`` for text/link-style repo columns).
+
+    When the board schema is missing or omits the field row, keys matching Plaky's native pattern
+    ``tag-`` + digits (e.g. ``tag-2``) are treated as TAG columns so repo values still shorten.
+    """
+    k = (item_field_key or "").strip()
+    if not k:
+        return "full"
+    native_tag_key = bool(re.match(r"^tag-\d+$", k, re.IGNORECASE))
+    if isinstance(normalized, dict):
+        for f in normalized.get("fields") or []:
+            if isinstance(f, dict) and field_row_item_key(f) == k:
+                return "short" if field_is_plaky_tag_column(f) else "full"
+        if native_tag_key:
+            return "short"
+    elif native_tag_key:
+        return "short"
+    return "full"
+
+
+def _norm_tag_compare_token(s: str) -> str:
+    t = (s or "").strip().casefold().replace(" ", "")
+    if t.startswith("#"):
+        t = t[1:]
+    return t
+
+
+def _repo_tokens_from_assignment_value(raw: Any) -> List[str]:
+    """Split comma-joined owner/repo strings from assignment field map values."""
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    if isinstance(raw, str):
+        s = raw.strip()
+        if not s:
+            return []
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        if len(parts) > 1:
+            return [p for p in parts if "/" in p] or parts
+        return [s] if s else []
+    return []
+
+
+def match_repo_tokens_to_plaky_tag_option_values(
+    field: Dict[str, Any],
+    tokens: List[str],
+) -> Tuple[Optional[List[Any]], List[str]]:
+    """
+    Map GitHub owner/repo strings to TAG field option ids (or primary patch literals).
+
+    Plaky TAG columns only persist values that match predefined tags on the board; free-text
+    PATCH often returns 200 with an empty tag list.
+
+    Returns ``(matched_values, unmatched_tokens)``. ``matched_values`` is None when nothing matched.
+    """
+    if not tokens:
+        return None, []
+    options = field.get("options") or []
+    if not isinstance(options, list) or not options:
+        return None, list(tokens)
+
+    matched: List[Any] = []
+    seen: set[Any] = set()
+    unmatched: List[str] = []
+
+    for token in tokens:
+        nt = _norm_tag_compare_token(token)
+        short = _norm_tag_compare_token(token.split("/")[-1]) if "/" in token else nt
+        hit: Any = None
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            lab_raw = _opt_label(opt)
+            if not lab_raw:
+                continue
+            nl = _norm_tag_compare_token(lab_raw)
+            if not nl:
+                continue
+            if (
+                nt == nl
+                or nt in nl
+                or nl in nt
+                or short == nl
+                or short in nl
+                or nl in short
+            ):
+                hit = _option_primary_patch_value(opt)
+                if hit is not None:
+                    break
+        if hit is not None:
+            if hit not in seen:
+                seen.add(hit)
+                matched.append(hit)
+        else:
+            unmatched.append(token)
+
+    return (matched if matched else None), unmatched
+
+
+def resolve_repo_tag_field_values_from_schema(
+    field_values: Dict[str, Any],
+    normalized: Optional[Dict[str, Any]],
+    *,
+    keys: Set[str],
+) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    """
+    For Plaky TAG columns in ``keys``, replace GitHub repo strings with option ids from ``normalized``.
+
+    Mutates ``field_values`` in place. Returns ``(field_values, warnings)`` where each warning is a
+    small dict (``field_key``, ``token``, ``message``).
+    """
+    warnings: List[Dict[str, Any]] = []
+    if not field_values or not normalized or not keys:
+        return field_values, warnings
+
+    raw_fields = normalized.get("fields")
+    if not isinstance(raw_fields, list):
+        return field_values, warnings
+
+    by_key: Dict[str, Dict[str, Any]] = {}
+    for f in raw_fields:
+        if isinstance(f, dict):
+            ik = field_row_item_key(f)
+            if ik:
+                by_key[ik] = f
+
+    for fk in keys:
+        fk = (fk or "").strip()
+        if not fk or fk not in field_values:
+            continue
+        fdef = by_key.get(fk)
+        if not fdef or not field_is_plaky_tag_column(fdef):
+            continue
+        raw_val = field_values.get(fk)
+        tokens = _repo_tokens_from_assignment_value(raw_val)
+        if not tokens:
+            continue
+        resolved, unmatched = match_repo_tokens_to_plaky_tag_option_values(fdef, tokens)
+        opts = fdef.get("options") or []
+        if not isinstance(opts, list) or not opts:
+            warnings.append(
+                {
+                    "field_key": fk,
+                    "token": "",
+                    "message": "TAG field has no option list on the board schema; cannot map repo to tag ids.",
+                }
+            )
+            continue
+        if resolved is not None:
+            field_values[fk] = resolved
+        for u in unmatched:
+            warnings.append(
+                {
+                    "field_key": fk,
+                    "token": u,
+                    "message": "No Plaky tag option matched this repo string (add the tag on the board or align spelling).",
+                }
+            )
+    return field_values, warnings
 
 
 def looks_like_placeholder_plaky_field_key(key: str) -> bool:

@@ -217,6 +217,14 @@ def pick_engineer_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
     return top.id, f"engineer={top.display}"
 
 
+def github_repo_suffix_name(full: str) -> str:
+    """Return repository name only (segment after last ``/``); unchanged if no slash."""
+    s = (full or "").strip()
+    if not s:
+        return ""
+    return s.rsplit("/", 1)[-1] if "/" in s else s
+
+
 def _dedupe_repo_list(repos: Optional[List[str]]) -> List[str]:
     out: List[str] = []
     seen_set: set[str] = set()
@@ -252,6 +260,23 @@ def normalize_github_repo_inputs(
     return _dedupe_repo_list(tokens)
 
 
+def _format_repo_tokens_for_plaky(tokens: List[str], fmt: str) -> List[str]:
+    """``fmt`` ``short`` = repo name only (for TAG columns); ``full`` = keep ``owner/repo``."""
+    if fmt != "short" or not tokens:
+        return list(tokens)
+    out: List[str] = []
+    seen: set[str] = set()
+    for t in tokens:
+        sh = github_repo_suffix_name(t)
+        if not sh:
+            continue
+        k = sh.casefold()
+        if k not in seen:
+            seen.add(k)
+            out.append(sh)
+    return out
+
+
 def build_repo_field_map(
     cfg: Optional[TeamAssignmentsConfig] = None,
     *,
@@ -259,8 +284,14 @@ def build_repo_field_map(
     github_repos: Optional[List[str]] = None,
     plaky_field_repo_key: Optional[str] = None,
     plaky_field_github_repos_key: Optional[str] = None,
+    repo_value_format: str = "full",
+    github_repos_value_format: str = "full",
 ) -> Dict[str, str]:
-    """Map configured repo-related Plaky field keys to one or more GitHub repos."""
+    """Map configured repo-related Plaky field keys to one or more GitHub repos.
+
+    Use ``repo_value_format`` / ``github_repos_value_format`` of ``short`` for Plaky TAG columns
+    (values are repo names only, e.g. ``deepiri-platform``).
+    """
     cfg = cfg or load_team_assignments()
     out: Dict[str, str] = {}
     repo_key = (plaky_field_repo_key or cfg.plaky_field_repo or "").strip()
@@ -269,18 +300,21 @@ def build_repo_field_map(
     tokens = _dedupe_repo_list(github_repos)
     if not tokens and repo_label:
         tokens = [repo_label]
-    joined = ", ".join(tokens) if tokens else ""
+    tok_repo = _format_repo_tokens_for_plaky(tokens, repo_value_format)
+    tok_multi = _format_repo_tokens_for_plaky(tokens, github_repos_value_format)
+    joined_repo = ", ".join(tok_repo) if tok_repo else ""
+    joined_multi = ", ".join(tok_multi) if tok_multi else ""
 
     if repo_key and repos_multi_key and len(tokens) > 1:
-        out[repo_key] = tokens[0]
-        out[repos_multi_key] = joined
+        out[repo_key] = tok_repo[0] if tok_repo else ""
+        out[repos_multi_key] = joined_multi
     elif repo_key and repos_multi_key and len(tokens) == 1:
-        out[repo_key] = tokens[0]
-        out[repos_multi_key] = tokens[0]
-    elif repo_key and joined:
-        out[repo_key] = joined
-    elif repos_multi_key and joined:
-        out[repos_multi_key] = joined
+        out[repo_key] = tok_repo[0] if tok_repo else ""
+        out[repos_multi_key] = tok_multi[0] if tok_multi else ""
+    elif repo_key and joined_repo:
+        out[repo_key] = joined_repo
+    elif repos_multi_key and joined_multi:
+        out[repos_multi_key] = joined_multi
     return out
 
 
@@ -295,6 +329,8 @@ async def build_assignment_field_map(
     plaky_field_github_repos_key: Optional[str] = None,
     plaky_field_engineer_key: Optional[str] = None,
     plaky_field_qa_key: Optional[str] = None,
+    repo_value_format: str = "full",
+    github_repos_value_format: str = "full",
 ) -> Dict[str, str]:
     """Map Plaky field key -> person id or repo label(s) for create/patch. Overrides win for same keys."""
     cfg = cfg or load_team_assignments()
@@ -314,6 +350,8 @@ async def build_assignment_field_map(
             github_repos=github_repos,
             plaky_field_repo_key=plaky_field_repo_key,
             plaky_field_github_repos_key=plaky_field_github_repos_key,
+            repo_value_format=repo_value_format,
+            github_repos_value_format=github_repos_value_format,
         )
     )
     for k, v in (field_overrides or {}).items():

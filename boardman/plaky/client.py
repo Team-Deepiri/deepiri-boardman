@@ -1,5 +1,5 @@
 import time
-from typing import AbstractSet, Any, Dict, List, Optional
+from typing import AbstractSet, Any, Dict, List, Optional, Set
 
 import httpx
 
@@ -897,6 +897,48 @@ class PlakyClient:
         TAG / multi-value fields may need an array or tag wrapper — try several shapes after the raw string.
         """
         out: List[Any] = [v]
+        if isinstance(v, list):
+            if not v:
+                return [v]
+            nums: List[int] = []
+            for x in v:
+                if isinstance(x, int):
+                    nums.append(x)
+                elif isinstance(x, str) and x.strip().isdigit():
+                    nums.append(int(x.strip()))
+                else:
+                    nums = []
+                    break
+            if nums:
+                id_objs = [{"id": n} for n in nums]
+                id_str_objs = [{"id": str(n)} for n in nums]
+                return [
+                    nums,
+                    [str(n) for n in nums],
+                    {"tagValues": nums},
+                    {"tagValues": [str(n) for n in nums]},
+                    {"tagValues": id_objs},
+                    {"tagValues": id_str_objs},
+                    {"tags": nums},
+                    {"selectedTagValues": nums},
+                    {"value": {"tagValues": nums}},
+                    v,
+                ]
+            strs = [str(x).strip() for x in v if isinstance(x, str) and x.strip() and "/" in str(x)]
+            if strs and len(strs) == len(v):
+                return PlakyClient._patch_value_candidates(", ".join(strs))
+            if all(isinstance(x, str) and str(x).strip() for x in v):
+                literals = [str(x).strip() for x in v]
+                id_objs = [{"id": x} for x in literals]
+                return [
+                    literals,
+                    {"tagValues": literals},
+                    {"tagValues": id_objs},
+                    {"tags": literals},
+                    {"selectedTagValues": literals},
+                    {"value": {"tagValues": literals}},
+                    v,
+                ]
         if isinstance(v, bool):
             return out
         if isinstance(v, int):
@@ -913,6 +955,19 @@ class PlakyClient:
                 return [v]
             # GitHub owner/repo (TAG or text column) — raw string first, then tag-style shapes.
             if "/" in s and "\n" not in s:
+                parts = [p.strip() for p in s.split(",") if p.strip() and "/" in p.strip()]
+                if len(parts) > 1:
+                    # Multi-repo TAG columns need a list of tags, not one string "a/b, c/d".
+                    out.extend(
+                        [
+                            parts,
+                            {"tagValues": parts},
+                            {"tags": parts},
+                            {"values": parts},
+                            {"selectedTagValues": parts},
+                            {"value": {"tagValues": parts}},
+                        ]
+                    )
                 out.extend(
                     [
                         [s],
@@ -1046,50 +1101,61 @@ class PlakyClient:
 
             per_ok: List[str] = []
             per_fail: List[Dict[str, Any]] = []
-            skip_per_field = bool(
+            # Bulk PATCH often returns 200 while only applying some field types (e.g. PERSON coercions).
+            # Never treat the whole map as done unless we only skip per-field for keys we actually rewrote
+            # for bulk (`bulk_coerced` differs from caller `values` on that key).
+            trusted_bulk_keys: Set[str] = set()
+            if (
                 canonical_bulk
                 and bulk_ok_body == canonical_bulk
                 and bulk_last_status is not None
-            )
-            if skip_per_field:
-                per_ok = [str(k) for k in values]
-            else:
-                for k, v in values.items():
-                    url_single = f"{base}/fields/{k}"
-                    last_status = 0
-                    last_snip = ""
-                    hit = False
-                    for val in self._patch_value_candidates(v):
-                        if isinstance(val, dict):
-                            # Single-field PATCH schema is FieldValueChangeRequest: {"value": ...}. Sending the
-                            # payload as the root object often returns 200 without persisting (especially PERSON).
-                            bodies = [
-                                {"value": val},
-                                {"fieldValue": val},
-                                val,
-                            ]
-                        else:
-                            bodies = [
-                                {"value": val},
-                                {"fieldValue": val},
-                                {"selectedValue": val},
-                                {"selectedOptionId": val},
-                            ]
-                            bodies.insert(2, {"text": str(val)})
-                        for body in bodies:
-                            r = await _request_with_rate_limit_retry(
-                                client, "PATCH", url_single, headers=hdr, json=body
-                            )
-                            last_status = r.status_code
-                            last_snip = r.text[:500]
-                            if r.status_code in (200, 201, 204):
-                                per_ok.append(str(k))
-                                hit = True
-                                break
-                        if hit:
+            ):
+                for k in values:
+                    bk = str(k).strip()
+                    if not bk:
+                        continue
+                    if bulk_coerced.get(k) != values.get(k):
+                        trusted_bulk_keys.add(bk)
+
+            per_ok.extend(sorted(trusted_bulk_keys))
+            for k, v in values.items():
+                if str(k).strip() in trusted_bulk_keys:
+                    continue
+                url_single = f"{base}/fields/{k}"
+                last_status = 0
+                last_snip = ""
+                hit = False
+                for val in self._patch_value_candidates(v):
+                    if isinstance(val, dict):
+                        # Single-field PATCH schema is FieldValueChangeRequest: {"value": ...}. Sending the
+                        # payload as the root object often returns 200 without persisting (especially PERSON).
+                        bodies = [
+                            {"value": val},
+                            {"fieldValue": val},
+                            val,
+                        ]
+                    else:
+                        bodies = [
+                            {"value": val},
+                            {"fieldValue": val},
+                            {"selectedValue": val},
+                            {"selectedOptionId": val},
+                        ]
+                        bodies.insert(2, {"text": str(val)})
+                    for body in bodies:
+                        r = await _request_with_rate_limit_retry(
+                            client, "PATCH", url_single, headers=hdr, json=body
+                        )
+                        last_status = r.status_code
+                        last_snip = r.text[:500]
+                        if r.status_code in (200, 201, 204):
+                            per_ok.append(str(k))
+                            hit = True
                             break
-                    if not hit:
-                        per_fail.append({"key": k, "status": last_status, "message": last_snip})
+                    if hit:
+                        break
+                if not hit:
+                    per_fail.append({"key": k, "status": last_status, "message": last_snip})
             mode = "bulk_then_per_field" if bulk_last_status is not None else "per_field"
             out: Dict[str, Any] = {
                 "ok": len(per_fail) == 0,
