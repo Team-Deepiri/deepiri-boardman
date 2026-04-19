@@ -217,17 +217,86 @@ def pick_engineer_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
     return top.id, f"engineer={top.display}"
 
 
+def _dedupe_repo_list(repos: Optional[List[str]]) -> List[str]:
+    out: List[str] = []
+    seen_set: set[str] = set()
+    if not repos:
+        return out
+    for raw in repos:
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen_set:
+            continue
+        seen_set.add(k)
+        out.append(s)
+    return out
+
+
+def normalize_github_repo_inputs(
+    primary_repo: str = "",
+    github_repos: Optional[List[str]] = None,
+    *,
+    extra_repo_text: str = "",
+) -> List[str]:
+    """Return ordered unique owner/repo values from list and comma/newline text."""
+    tokens: List[str] = []
+    if primary_repo and primary_repo.strip():
+        tokens.append(primary_repo)
+    if isinstance(github_repos, list):
+        tokens.extend(str(repo or "") for repo in github_repos)
+    raw_extra = (extra_repo_text or "").strip()
+    if raw_extra:
+        tokens.extend(raw_extra.replace("\n", ",").split(","))
+    return _dedupe_repo_list(tokens)
+
+
+def build_repo_field_map(
+    cfg: Optional[TeamAssignmentsConfig] = None,
+    *,
+    repo_value: Optional[str] = None,
+    github_repos: Optional[List[str]] = None,
+    plaky_field_repo_key: Optional[str] = None,
+    plaky_field_github_repos_key: Optional[str] = None,
+) -> Dict[str, str]:
+    """Map configured repo-related Plaky field keys to one or more GitHub repos."""
+    cfg = cfg or load_team_assignments()
+    out: Dict[str, str] = {}
+    repo_key = (plaky_field_repo_key or cfg.plaky_field_repo or "").strip()
+    repos_multi_key = (plaky_field_github_repos_key or cfg.plaky_field_github_repos or "").strip()
+    repo_label = (repo_value or "").strip()
+    tokens = _dedupe_repo_list(github_repos)
+    if not tokens and repo_label:
+        tokens = [repo_label]
+    joined = ", ".join(tokens) if tokens else ""
+
+    if repo_key and repos_multi_key and len(tokens) > 1:
+        out[repo_key] = tokens[0]
+        out[repos_multi_key] = joined
+    elif repo_key and repos_multi_key and len(tokens) == 1:
+        out[repo_key] = tokens[0]
+        out[repos_multi_key] = tokens[0]
+    elif repo_key and joined:
+        out[repo_key] = joined
+    elif repos_multi_key and joined:
+        out[repos_multi_key] = joined
+    return out
+
+
 async def build_assignment_field_map(
     full_name: str,
     cfg: Optional[TeamAssignmentsConfig] = None,
     field_overrides: Optional[Dict[str, str]] = None,
     *,
     repo_value: Optional[str] = None,
+    github_repos: Optional[List[str]] = None,
     plaky_field_repo_key: Optional[str] = None,
+    plaky_field_github_repos_key: Optional[str] = None,
     plaky_field_engineer_key: Optional[str] = None,
     plaky_field_qa_key: Optional[str] = None,
 ) -> Dict[str, str]:
-    """Map Plaky field key -> person id or repo label for create/patch. Overrides win for same keys."""
+    """Map Plaky field key -> person id or repo label(s) for create/patch. Overrides win for same keys."""
     cfg = cfg or load_team_assignments()
     out: Dict[str, str] = {}
     eng_key = (plaky_field_engineer_key or cfg.plaky_field_engineer or "").strip()
@@ -238,10 +307,15 @@ async def build_assignment_field_map(
     qid, _ = await pick_qa_for_repo(full_name, cfg)
     if qid and qa_key:
         out[qa_key] = qid
-    repo_key = (plaky_field_repo_key or cfg.plaky_field_repo or "").strip()
-    repo_label = (repo_value if repo_value is not None else full_name).strip()
-    if repo_key and repo_label:
-        out[repo_key] = repo_label
+    out.update(
+        build_repo_field_map(
+            cfg,
+            repo_value=repo_value if repo_value is not None else full_name,
+            github_repos=github_repos,
+            plaky_field_repo_key=plaky_field_repo_key,
+            plaky_field_github_repos_key=plaky_field_github_repos_key,
+        )
+    )
     for k, v in (field_overrides or {}).items():
         ks, vs = str(k).strip(), str(v).strip()
         if ks and vs:

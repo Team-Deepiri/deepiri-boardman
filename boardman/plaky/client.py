@@ -1,5 +1,5 @@
 import time
-from typing import Any, Dict, List, Optional
+from typing import AbstractSet, Any, Dict, List, Optional
 
 import httpx
 
@@ -617,11 +617,16 @@ class PlakyClient:
         except Exception:
             pass
 
-        patch_values: Dict[str, Any] = {"name": title, "title": title, "description": description}
+        patch_values: Dict[str, Any] = {}
         for k in title_fields:
             patch_values[k] = title
         for k in description_fields:
             patch_values[k] = description
+        if not patch_values:
+            return {
+                "ok": False,
+                "message": "Item title/description not set via item PATCH; board has no matching title/description field keys.",
+            }
 
         field_patch = await self.patch_item_field_values(
             board_id.strip(),
@@ -888,23 +893,54 @@ class PlakyClient:
     @staticmethod
     def _patch_value_candidates(v: Any) -> List[Any]:
         """
-        Plaky PERSON fields expect a structured value (see public API docs), not a bare user-id string.
-        Try the caller's value first, then common person-field shapes so status/select fields still work.
+        Plaky PERSON fields need a structured assignee payload; reads often use assignedUsers/assignedTeams.
+        TAG / multi-value fields may need an array or tag wrapper — try several shapes after the raw string.
         """
         out: List[Any] = [v]
         if isinstance(v, bool):
             return out
         if isinstance(v, int):
-            out.append({"users": [{"id": v}], "teams": []})
-            return out
+            # Writes use `users`/`teams` per Plaky FieldValueChangeRequest; `assignedUsers` is response shape.
+            return [
+                {"users": [{"id": v}], "teams": []},
+                {"users": [{"id": str(v)}], "teams": []},
+                {"assignedUsers": [{"id": v}], "assignedTeams": []},
+                v,
+            ]
         if isinstance(v, str):
             s = v.strip()
             if not s:
                 return [v]
+            # GitHub owner/repo (TAG or text column) — raw string first, then tag-style shapes.
+            if "/" in s and "\n" not in s:
+                out.extend(
+                    [
+                        [s],
+                        {"tagValues": [s]},
+                        {"tags": [s]},
+                        {"values": [s]},
+                        {"selectedTagValues": [s]},
+                        {"value": {"tagValues": [s]}},
+                    ]
+                )
+                return out
+            if "\n" in s:
+                return out
+            # Long numeric strings are usually Plaky user ids; short digit strings are often STATUS indices.
             if s.isdigit():
                 n = int(s)
-                out.append({"users": [{"id": n}], "teams": []})
-            out.append({"users": [{"id": s}], "teams": []})
+                if len(s) >= 5:
+                    # OpenAPI examples use string user ids in `users`; try those before int / assignedUsers.
+                    return [
+                        {"users": [{"id": s}], "teams": []},
+                        {"users": [{"id": n}], "teams": []},
+                        {"assignedUsers": [{"id": n}], "assignedTeams": []},
+                        {"assignedUsers": [{"id": s}], "assignedTeams": []},
+                        v,
+                    ]
+                return out
+            # Do not treat arbitrary strings (STATUS labels, etc.) as person ids.
+            return out
         return out
 
     async def patch_item_field_values(
@@ -912,15 +948,36 @@ class PlakyClient:
         board_id: str,
         item_id: str,
         values: Dict[str, Any],
+        *,
+        person_field_keys: Optional[AbstractSet[str]] = None,
     ) -> Dict[str, Any]:
         """
         Set custom / board field values via Plaky v1/public PATCH .../items/{id}/fields.
         `values` maps itemFieldKey (or field id from board schema) -> value (string, id, or structure API expects).
+        When `person_field_keys` is set, PATCH is done in two passes (non-person first, then person columns).
+        Some Plaky boards reject mixed bulk payloads; splitting avoids silent drops for repo/status/etc.
         """
         if not self.api_key:
             return {"ok": False, "message": "PLAKY_API_KEY is missing."}
         if not values:
             return {"ok": True, "skipped": True, "message": "no field values supplied"}
+        if person_field_keys and len(values) > 1:
+            pk = {str(x).strip() for x in person_field_keys if str(x).strip()}
+            first = {k: v for k, v in values.items() if str(k).strip() not in pk}
+            second = {k: v for k, v in values.items() if str(k).strip() in pk}
+            if first and second:
+                r1 = await self.patch_item_field_values(board_id, item_id, first, person_field_keys=None)
+                r2 = await self.patch_item_field_values(board_id, item_id, second, person_field_keys=None)
+                ok = bool(r1.get("ok")) and bool(r2.get("ok"))
+                return {
+                    "ok": ok,
+                    "mode": "split_person_second",
+                    "phase_non_person": r1,
+                    "phase_person": r2,
+                    "patched_keys": (r1.get("patched_keys") or [])
+                    + (r2.get("patched_keys") or []),
+                    "failed": (r1.get("failed") or []) + (r2.get("failed") or []),
+                }
         root = self._public_root()
         if not root:
             return {"ok": False, "message": "Plaky v1/public base URL required for field patch"}
@@ -931,82 +988,119 @@ class PlakyClient:
         hdr = _headers(self.api_key)
 
         def _bulk_bodies_for(mapping: Dict[str, Any]) -> List[Dict[str, Any]]:
+            """Prefer the OpenAPI flat object shape first; older envelope keys are fallbacks only."""
             entries_kv = [{"key": str(k), "value": val} for k, val in mapping.items()]
             entries_ifk = [{"itemFieldKey": str(k), "value": val} for k, val in mapping.items()]
+            flat = dict(mapping)
             return [
+                flat,
                 {"fields": entries_ifk},
                 {"fieldValues": entries_ifk},
                 {"fieldUpdates": entries_ifk},
                 {"fields": entries_kv},
                 {"updates": entries_ifk},
-                dict(mapping),
             ]
 
-        # Bulk: try raw mapping, then a person-shaped mapping (Plaky user ids -> users[]).
-        # Do not treat free text (e.g. owner/repo) as a user id — that breaks the second bulk pass.
-        def _coerce_person_bulk_value(v: Any) -> Any:
+        # Plaky changeItemAttributeValues / FieldValueChangeRequest use `users` + `teams` for PERSON
+        # writes — not `assignedUsers` (that shape appears on reads). Do not coerce owner/repo strings.
+        def _person_field_write_bulk_value(v: Any) -> Any:
             if isinstance(v, str) and v.strip():
                 s = v.strip()
                 if "/" in s or "\n" in s:
                     return v
-                uid: Any = int(s) if s.isdigit() else s
-                return {"users": [{"id": uid}], "teams": []}
+                if s.isdigit() and len(s) >= 5:
+                    return {"users": [{"id": s}], "teams": []}
+                if s.isdigit():
+                    return v
+                return v
+            if isinstance(v, int):
+                return {"users": [{"id": v}], "teams": []}
             return v
 
-        person_mapping: Dict[str, Any] = {}
+        bulk_coerced: Dict[str, Any] = {}
         for k, v in values.items():
-            person_mapping[k] = _coerce_person_bulk_value(v)
+            bulk_coerced[k] = _person_field_write_bulk_value(v)
 
         bulk_bodies: List[Dict[str, Any]] = []
-        bulk_bodies.extend(_bulk_bodies_for(values))
-        if person_mapping != values:
-            bulk_bodies.extend(_bulk_bodies_for(person_mapping))
+        if bulk_coerced != values:
+            bulk_bodies.extend(_bulk_bodies_for(bulk_coerced))
 
+        bulk_last_status: Optional[int] = None
+        bulk_last_parsed: Any = None
+        bulk_ok_body: Optional[Dict[str, Any]] = None
         async with httpx.AsyncClient() as client:
+            canonical_bulk = dict(bulk_coerced) if bulk_coerced != values else {}
             for body in bulk_bodies:
                 url = f"{base}/fields"
                 r = await _request_with_rate_limit_retry(client, "PATCH", url, headers=hdr, json=body)
                 if r.status_code in (200, 201, 204):
+                    bulk_last_status = r.status_code
                     try:
-                        parsed = r.json() if r.content else {}
+                        bulk_last_parsed = r.json() if r.content else {}
                     except ValueError:
-                        parsed = {}
-                    return {"ok": True, "status": r.status_code, "mode": "bulk", "response": parsed}
+                        bulk_last_parsed = {}
+                    bulk_ok_body = body
+                    # First successful bulk is almost always the canonical flat map; further bulks only
+                    # duplicate Plaky activity (X ➞ X) without changing reliability meaningfully.
+                    break
 
             per_ok: List[str] = []
             per_fail: List[Dict[str, Any]] = []
-            for k, v in values.items():
-                url_single = f"{base}/fields/{k}"
-                last_status = 0
-                last_snip = ""
-                hit = False
-                for val in self._patch_value_candidates(v):
-                    bodies: List[Dict[str, Any]] = [
-                        {"value": val},
-                        {"fieldValue": val},
-                        {"selectedValue": val},
-                        {"selectedOptionId": val},
-                    ]
-                    if not isinstance(val, dict):
-                        bodies.insert(2, {"text": str(val)})
-                    for body in bodies:
-                        r = await _request_with_rate_limit_retry(client, "PATCH", url_single, headers=hdr, json=body)
-                        last_status = r.status_code
-                        last_snip = r.text[:500]
-                        if r.status_code in (200, 201, 204):
-                            per_ok.append(str(k))
-                            hit = True
+            skip_per_field = bool(
+                canonical_bulk
+                and bulk_ok_body == canonical_bulk
+                and bulk_last_status is not None
+            )
+            if skip_per_field:
+                per_ok = [str(k) for k in values]
+            else:
+                for k, v in values.items():
+                    url_single = f"{base}/fields/{k}"
+                    last_status = 0
+                    last_snip = ""
+                    hit = False
+                    for val in self._patch_value_candidates(v):
+                        if isinstance(val, dict):
+                            # Single-field PATCH schema is FieldValueChangeRequest: {"value": ...}. Sending the
+                            # payload as the root object often returns 200 without persisting (especially PERSON).
+                            bodies = [
+                                {"value": val},
+                                {"fieldValue": val},
+                                val,
+                            ]
+                        else:
+                            bodies = [
+                                {"value": val},
+                                {"fieldValue": val},
+                                {"selectedValue": val},
+                                {"selectedOptionId": val},
+                            ]
+                            bodies.insert(2, {"text": str(val)})
+                        for body in bodies:
+                            r = await _request_with_rate_limit_retry(
+                                client, "PATCH", url_single, headers=hdr, json=body
+                            )
+                            last_status = r.status_code
+                            last_snip = r.text[:500]
+                            if r.status_code in (200, 201, 204):
+                                per_ok.append(str(k))
+                                hit = True
+                                break
+                        if hit:
                             break
-                    if hit:
-                        break
-                if not hit:
-                    per_fail.append({"key": k, "status": last_status, "message": last_snip})
-            return {
+                    if not hit:
+                        per_fail.append({"key": k, "status": last_status, "message": last_snip})
+            mode = "bulk_then_per_field" if bulk_last_status is not None else "per_field"
+            out: Dict[str, Any] = {
                 "ok": len(per_fail) == 0,
-                "mode": "per_field",
+                "mode": mode,
                 "patched_keys": per_ok,
                 "failed": per_fail,
             }
+            if bulk_last_status is not None:
+                out["bulk_status"] = bulk_last_status
+                out["bulk_response"] = bulk_last_parsed
+            return out
 
     async def create_task(
         self,
@@ -1017,7 +1111,11 @@ class PlakyClient:
         board_id: Optional[str] = None,
         group_id: Optional[str] = None,
         field_values: Optional[Dict[str, Any]] = None,
+        person_field_keys: Optional[AbstractSet[str]] = None,
+        defer_field_patch: bool = False,
     ) -> Dict[str, Any]:
+        """Create a board item. When ``defer_field_patch`` is True, ``field_values`` are not PATCHed here
+        (caller should patch once, e.g. POST /tasks uses ``_run_post_create_assignments`` only)."""
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
 
@@ -1042,7 +1140,7 @@ class PlakyClient:
                         iid,
                         f"Description:\n{description.strip()}",
                     )
-            if res.get("ok") and field_values:
+            if res.get("ok") and field_values and not defer_field_patch:
                 task = res.get("task") if isinstance(res.get("task"), dict) else {}
                 iid = str(
                     res.get("task_id")
@@ -1053,12 +1151,20 @@ class PlakyClient:
                     or ""
                 ).strip()
                 if iid:
-                    res["field_patch"] = await self.patch_item_field_values(bid, iid, field_values)
+                    res["field_patch"] = await self.patch_item_field_values(
+                        bid, iid, field_values, person_field_keys=person_field_keys
+                    )
                 else:
                     res["field_patch"] = {
                         "ok": False,
                         "message": "Created item but could not read id for field patch",
                     }
+            elif res.get("ok") and field_values and defer_field_patch:
+                res["field_patch"] = {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "deferred to caller (avoid duplicate PATCH with post-create assignment)",
+                }
             return res
 
         url = f"{self.base_url.rstrip('/')}/tasks"

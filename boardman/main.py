@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from boardman.assignment.config import sync_team_assignment_field_keys_from_board
 from boardman.broker.arq_pool import close_arq_pool
 from boardman.database.session import init_db
 from boardman.logging_config import setup_logging
@@ -33,6 +34,19 @@ async def lifespan(app: FastAPI):
             "Plaky: PLAKY_API_KEY is empty — set it in `.env` (docker: env_file) or the environment. "
             "Boards/match and agent Plaky tools will not call the API."
         )
+    if pk and settings.plaky_auto_sync_team_assignment_field_keys:
+        bid = (settings.plaky_default_board_id or "").strip()
+        if bid:
+            try:
+                synced = await sync_team_assignment_field_keys_from_board(bid)
+                if synced.get("updated"):
+                    _log.info("team_assignments: synced field keys from board %s -> %s", bid, synced.get("updated"))
+                else:
+                    _log.info("team_assignments: field-key sync skipped (%s)", synced.get("message", "no changes"))
+            except Exception as e:
+                _log.warning("team_assignments: startup field-key sync failed: %s", e)
+        else:
+            _log.info("team_assignments: startup field-key sync skipped (plaky_default_board_id empty)")
     prov = (settings.llm_provider or "ollama").lower()
     if prov == "ollama":
         try:

@@ -6,6 +6,8 @@ import logging
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
+import shutil
+import time
 from typing import Any, Dict, List, Optional
 
 import yaml
@@ -14,10 +16,17 @@ from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.assignment.llm_identity_match import clear_identity_llm_cache
 from boardman.assignment.repo_rules import QaRepoRules, default_qa_repo_rules
 from boardman.github.team_roster import clear_support_team_cache, get_cached_support_team_roster
+from boardman.plaky.board_schema import (
+    field_likely_github_repo_column,
+    field_likely_person_column,
+    field_row_item_key,
+    plaky_field_row_label,
+)
 from boardman.plaky.client import PlakyClient
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
+_last_field_sync_by_board: Dict[str, float] = {}
 
 
 @dataclass
@@ -53,6 +62,7 @@ class TeamAssignmentsConfig:
     plaky_field_engineer: str = ""
     plaky_field_qa: str = ""
     plaky_field_repo: str = ""
+    plaky_field_github_repos: str = "" # for use if more than one repo connected to the task
     tiers: Dict[str, TierSpec] = field(default_factory=dict)
     members: List[TeamMember] = field(default_factory=list)
     heavy_repo_patterns: List[str] = field(default_factory=list)
@@ -68,6 +78,11 @@ def _path() -> Path:
     return Path.cwd() / p
 
 
+def _example_path() -> Path:
+    path = _path()
+    return path.with_name(f"{path.name}.example")
+
+
 @lru_cache
 def _raw() -> Dict[str, Any]:
     path = _path()
@@ -81,6 +96,138 @@ def reload_team_assignments() -> None:
     _raw.cache_clear()
     clear_support_team_cache()
     clear_identity_llm_cache()
+
+
+def ensure_team_assignments_file_exists() -> Path:
+    """Create team_assignments.yml from the example file when missing."""
+    path = _path()
+    if path.is_file():
+        return path
+    if path.exists() and not path.is_file():
+        _log.warning("team_assignments path exists but is not a file: %s", path)
+        return path
+    ex = _example_path()
+    if ex.is_file():
+        shutil.copyfile(ex, path)
+    else:
+        path.write_text("plaky_field_keys:\n  engineer: \"\"\n  qa: \"\"\n  repo: \"\"\n  github_repos: \"\"\n", encoding="utf-8")
+    reload_team_assignments()
+    return path
+
+
+def infer_plaky_field_keys_from_normalized(normalized: Optional[Dict[str, Any]]) -> Dict[str, str]:
+    """Infer likely team_assignments `plaky_field_keys` entries from board schema field names/types."""
+    fields = normalized.get("fields") if isinstance(normalized, dict) else None
+    if not isinstance(fields, list):
+        return {}
+
+    person_fields: List[tuple[str, str]] = []
+    repo_like_fields: List[tuple[str, str]] = []
+    for raw in fields:
+        if not isinstance(raw, dict):
+            continue
+        key = field_row_item_key(raw)
+        name = plaky_field_row_label(raw)
+        if not key:
+            continue
+        if field_likely_person_column(raw):
+            person_fields.append((key, name))
+            continue
+        if field_likely_github_repo_column(raw):
+            repo_like_fields.append((key, name))
+
+    out: Dict[str, str] = {}
+
+    for key, name in person_fields:
+        if "qa" in name or "quality" in name:
+            out.setdefault("qa", key)
+            continue
+        if any(tok in name for tok in ("engineer", "developer", "dev", "contributor", "owner", "assignee")):
+            out.setdefault("engineer", key)
+
+    if "engineer" not in out:
+        for key, _ in person_fields:
+            if key != out.get("qa"):
+                out["engineer"] = key
+                break
+    if "qa" not in out and person_fields:
+        out["qa"] = person_fields[0][0]
+
+    singular_repo_tokens = ("github repo", "repository", "repo")
+    plural_repo_tokens = ("github repos", "repositories", "repo list", "repos")
+    for key, name in repo_like_fields:
+        if any(tok in name for tok in plural_repo_tokens):
+            out.setdefault("github_repos", key)
+    for key, name in repo_like_fields:
+        if key == out.get("github_repos"):
+            continue
+        if any(tok in name for tok in singular_repo_tokens):
+            out.setdefault("repo", key)
+    if "repo" not in out and repo_like_fields:
+        out["repo"] = repo_like_fields[0][0]
+    if "github_repos" not in out and len(repo_like_fields) >= 2:
+        out["github_repos"] = next((k for k, _ in repo_like_fields if k != out.get("repo")), repo_like_fields[1][0])
+    return out
+
+
+async def sync_team_assignment_field_keys_from_board(board_id: str) -> Dict[str, Any]:
+    """
+    Fill blank `plaky_field_keys` entries in team_assignments.yml from the default board schema.
+    Existing non-empty values are preserved.
+    """
+    bid = (board_id or "").strip()
+    if not bid:
+        return {"ok": False, "skipped": True, "message": "board_id is empty"}
+    cooldown = max(0.0, float(settings.plaky_team_assignment_field_sync_cooldown_seconds or 0.0))
+    now = time.monotonic()
+    if cooldown > 0:
+        last = _last_field_sync_by_board.get(bid)
+        if last is not None and (now - last) < cooldown:
+            wait_for = round(cooldown - (now - last), 2)
+            return {
+                "ok": True,
+                "skipped": True,
+                "message": f"Sync cooldown active for board {bid}; try again in {wait_for}s",
+                "board_id": bid,
+            }
+
+    path = ensure_team_assignments_file_exists()
+    if not path.is_file():
+        return {"ok": False, "skipped": True, "message": f"team_assignments path is not a file: {path}"}
+
+    from boardman.plaky.board_schema import fetch_board_schema_bundle
+
+    bundle = await fetch_board_schema_bundle(bid)
+    normalized = bundle.get("normalized") if isinstance(bundle, dict) else None
+    inferred = infer_plaky_field_keys_from_normalized(normalized)
+    if not inferred:
+        _last_field_sync_by_board[bid] = now
+        return {"ok": False, "skipped": True, "message": "No field keys inferred from board schema", "bundle": bundle}
+
+    current = _raw()
+    data: Dict[str, Any] = dict(current) if isinstance(current, dict) else {}
+    keys = data.get("plaky_field_keys")
+    if not isinstance(keys, dict):
+        keys = {}
+        data["plaky_field_keys"] = keys
+
+    updated: Dict[str, str] = {}
+    for name, inferred_key in inferred.items():
+        cur = str(keys.get(name) or "").strip()
+        if cur or not inferred_key:
+            continue
+        keys[name] = inferred_key
+        updated[name] = inferred_key
+
+    if not updated:
+        _last_field_sync_by_board[bid] = now
+        return {"ok": True, "updated": {}, "skipped": True, "message": "No blank field keys needed updating"}
+
+    with path.open("w", encoding="utf-8") as f:
+        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=False)
+    _last_field_sync_by_board[bid] = now
+    reload_team_assignments()
+    return {"ok": True, "updated": updated, "path": str(path)}
 
 
 def _parse_roles(val: Any) -> List[str]:
@@ -105,6 +252,18 @@ def _parse_explicit_repos(val: Any) -> List[str]:
     if isinstance(val, list):
         return [str(r).strip().lower() for r in val if str(r).strip()]
     return []
+
+
+def _augment_repo_globs_with_github_org(globs: List[str]) -> List[str]:
+    """Ensure roster members match repos under settings.github_org (e.g. Team-Deepiri/* vs deepiri-org/*)."""
+    org = (settings.github_org or "").strip()
+    if not org:
+        return globs
+    extra = f"{org.lower()}/*"
+    seen = {g.strip().lower() for g in globs if g and str(g).strip()}
+    if extra not in seen:
+        return list(globs) + [extra]
+    return globs
 
 
 def _parse_qa_tier(val: Any) -> int:
@@ -215,6 +374,7 @@ def _members_from_github_roster(data: Dict[str, Any]) -> List[TeamMember]:
         if globs_src is None:
             globs_src = defaults.get("repo_globs") or defaults.get("repos_globs")
         globs = _parse_glob_list(globs_src)
+        globs = _augment_repo_globs_with_github_org(globs)
 
         ex_src = ov.get("repos") or ov.get("explicit_repos")
         if ex_src is None:
@@ -343,6 +503,9 @@ def load_team_assignments() -> TeamAssignmentsConfig:
         plaky_field_engineer=str(keys.get("engineer") or keys.get("assignee_dev") or ""),
         plaky_field_qa=str(keys.get("qa") or keys.get("qa_engineer") or ""),
         plaky_field_repo=str(keys.get("repo") or keys.get("repository") or keys.get("github_repo") or ""),
+        plaky_field_github_repos=str(
+            keys.get("github_repos") or keys.get("repos") or keys.get("repositories") or ""
+        ),
         tiers=tiers_out,
         members=members,
         heavy_repo_patterns=heavy,

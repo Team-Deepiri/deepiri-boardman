@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     # Plaky hierarchy: Item lives under Board + Group (no separate "table" in API)
     plaky_default_board_id: str = ""
     plaky_default_group_id: str = ""
+    # On startup, fetch the default board schema and fill blank `plaky_field_keys` in team_assignments.yml.
+    plaky_auto_sync_team_assignment_field_keys: bool = True
+    # Minimum interval between field-key sync attempts for the same board,
+    # this is mainly for use if the board schema changes and it runs on startup to account for that.
+    plaky_team_assignment_field_sync_cooldown_seconds: float = 60.0
     # Seconds; 0 disables TTL cache for fetch_board_schema_bundle
     plaky_board_schema_cache_ttl_seconds: float = 90.0
 
