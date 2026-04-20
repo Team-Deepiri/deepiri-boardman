@@ -406,6 +406,110 @@ async def test_post_tasks_merges_default_status_type_priority_from_schema(monkey
     assert ck.get("field_values") is not None
     assert ck["field_values"].get("fld_status") == 20
     assert ck.get("defer_field_patch") is True
+    assert ck.get("priority") == "medium"
+    insp = body.get("assignment_inspect") or {}
+    assert insp.get("task_status") == "In Progress"
+    assert insp.get("task_type") == "Feature"
+    assert insp.get("task_priority") == "Medium"
+
+
+@pytest.mark.asyncio
+async def test_post_tasks_accepts_status_type_priority_tags_and_type_json_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: Dict[str, Any] = {}
+
+    async def _noop_sync(_board_id: str):
+        return {"ok": True}
+
+    async def _schema_bundle(_board_id: str):
+        return {
+            "normalized": {
+                "fields": [
+                    {
+                        "name": "Status",
+                        "key": "fld_status",
+                        "type": "SELECT",
+                        "options": [
+                            {"name": "In Progress", "id": 20},
+                            {"name": "Needs QA", "id": 30},
+                        ],
+                    },
+                    {
+                        "name": "Type",
+                        "key": "fld_type",
+                        "type": "SELECT",
+                        "options": [{"name": "Bug", "id": 1}, {"name": "Feature", "id": 2}],
+                    },
+                    {
+                        "name": "Priority",
+                        "key": "fld_pri",
+                        "type": "SELECT",
+                        "options": [
+                            {"name": "Medium", "id": 3},
+                            {"name": "Very Important", "id": 9},
+                        ],
+                    },
+                ]
+            }
+        }
+
+    class FakePlaky:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        async def list_groups(self, board_id: str) -> dict:
+            return {"ok": True, "groups": [{"id": "grp-from-api"}]}
+
+        async def create_task(self, **kwargs: Any) -> dict:
+            captured["create_kwargs"] = dict(kwargs)
+            return {"ok": True, "task": {"id": "item-99"}, "task_id": "item-99"}
+
+        async def patch_item_field_values(self, board_id: str, item_id: str, values: dict, **kwargs: Any) -> dict:
+            captured["patch"] = (board_id, item_id, dict(values))
+            return {"ok": True, "mode": "bulk", "patched_keys": list(values)}
+
+        async def get_board_item_public(self, board_id: str, item_id: str) -> dict:
+            return {"ok": True, "item": {"id": item_id, "refetched": True}}
+
+        async def list_board_items(self, *a: Any, **k: Any) -> dict:
+            return {"ok": True, "items": []}
+
+    monkeypatch.setattr("boardman.routes.tasks.sync_team_assignment_field_keys_from_board", _noop_sync)
+    monkeypatch.setattr("boardman.routes.tasks.fetch_board_schema_bundle", _schema_bundle)
+    monkeypatch.setattr("boardman.routes.tasks.PlakyClient", FakePlaky)
+    monkeypatch.setattr("boardman.routes.tasks.load_team_assignments", lambda: _cfg_for_route())
+
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post(
+            "/api/v1/tasks",
+            json={
+                "title": "Tagged task",
+                "repo": "acme/widget",
+                "plaky_board_id": "board-77",
+                "plaky_group_id": "grp-1",
+                "auto_assign_team": True,
+                "status": "Needs QA",
+                "type": "Bug",
+                "priority": "Very Important",
+            },
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("ok") is True, body
+    patch = captured.get("patch")
+    assert patch is not None
+    _, _, values = patch
+    assert values.get("fld_status") == 30
+    assert values.get("fld_type") == 1
+    assert values.get("fld_pri") == 9
+    insp = body.get("assignment_inspect") or {}
+    assert insp.get("task_status") == "Needs QA"
+    assert insp.get("task_type") == "Bug"
+    assert insp.get("task_priority") == "Very Important"
+    ck = captured.get("create_kwargs") or {}
+    assert ck.get("priority") == "high"
 
 
 def test_field_stubs_from_board_items_extracts_item_field_keys():

@@ -376,7 +376,7 @@ export default function App() {
       }>("/api/v1/tasks", {
         title: t,
         description: createBody,
-        priority: "medium",
+        priority: "Medium",
         repo: repo.trim() || undefined,
         plaky_board_id: plakyBoardId || undefined,
         plaky_group_id: plakyGroupId || undefined,

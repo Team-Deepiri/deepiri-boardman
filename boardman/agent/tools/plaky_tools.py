@@ -16,6 +16,7 @@ from boardman.plaky.board_schema import (
     validate_field_values_against_board_schema,
 )
 from boardman.plaky.client import PlakyClient
+from boardman.plaky.task_tag_vocab import canonical_task_priority, plaky_create_legacy_priority_param
 from boardman.plaky.name_match import rank_plaky_rows
 
 
@@ -155,7 +156,7 @@ async def _plaky_save_task_preferences(preferences_json: str) -> str:
 async def _plaky_create_task(
     title: str,
     description: str,
-    priority: str = "medium",
+    priority: str = "Medium",
     repo_tag: str = "",
     board_id: str = "",
     group_id: str = "",
@@ -242,10 +243,12 @@ async def _plaky_create_task(
             return json.dumps({"ok": False, "message": err}, default=str)
 
     fv = merged if merged else None
+    canon_pri = canonical_task_priority(priority)
+    pri = plaky_create_legacy_priority_param(canon_pri)
     r = await c.create_task(
         title=title,
         description=description,
-        priority=priority,
+        priority=pri,
         board_id=bid,
         group_id=gid,
         field_values=fv,
@@ -299,8 +302,11 @@ async def _plaky_update_task(
     status: Optional[str] = None,
 ) -> str:
     c = PlakyClient()
+    pri_kw: Optional[str] = None
+    if priority is not None:
+        pri_kw = plaky_create_legacy_priority_param(canonical_task_priority(str(priority)))
     r = await c.update_task_fields(
-        task_id, title=title, description=description, priority=priority, status=status
+        task_id, title=title, description=description, priority=pri_kw, status=status
     )
     return json.dumps(r, default=str)
 
@@ -403,7 +409,8 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                         "Create a Plaky item. Call plaky_board_schema first if field_values_json is non-empty. "
                         "field_values_json keys MUST match schema key= strings; assignee ids from plaky_list_workspace_users. "
                         "Placement: pass board_id/group_id or rely on Current Plaky placement. "
-                        "Args: title, description, priority, repo_tag?, board_id?, group_id?, field_values_json?. "
+                        "Args: title, description, priority (High|Low|Medium|Very Important or legacy low|medium|high), "
+                        "repo_tag?, board_id?, group_id?, field_values_json?. "
                         "repo_tag may include one or more owner/repo values separated by commas or new lines."
                     ),
                 ),
@@ -419,7 +426,8 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                     coroutine=_plaky_update_task,
                     name="plaky_update_task",
                     description=(
-                        "Patch a Plaky task. Args: task_id, optional title, description, priority, status."
+                        "Patch a Plaky task (legacy /tasks). Args: task_id, optional title, description, "
+                        "priority (High|Low|Medium|Very Important or legacy low|medium|high), status."
                     ),
                 ),
                 StructuredTool.from_function(

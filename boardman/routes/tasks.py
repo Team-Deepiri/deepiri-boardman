@@ -2,7 +2,7 @@ import logging
 from typing import Any, List, Optional, Set
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import AliasChoices, BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.agent.tool_context import get_context_plaky_board_id, get_context_plaky_group_id
@@ -28,6 +28,15 @@ from boardman.plaky.board_schema import (
     plaky_repo_field_value_format,
     resolve_repo_tag_field_values_from_schema,
     select_field_patch_pair_from_schema,
+)
+from boardman.plaky.task_tag_vocab import (
+    canonical_task_priority,
+    canonical_task_status,
+    canonical_task_type,
+    plaky_create_legacy_priority_param,
+    priority_field_patch_candidates,
+    status_field_patch_candidates,
+    type_field_patch_candidates,
 )
 from boardman.settings import settings
 
@@ -291,7 +300,12 @@ async def _run_post_create_assignments(
 class CreateTaskRequest(BaseModel):
     title: str
     description: str = ""
-    priority: str = "medium"
+    priority: str = "Medium"
+    status: str = "In Progress"
+    task_type: str = Field(
+        default="Feature",
+        validation_alias=AliasChoices("type", "task_type"),
+    )
     repo: Optional[str] = None
     github_repos: Optional[List[str]] = None  # more owner/repo strings; merged with repo, deduped
     plaky_board_id: Optional[str] = None
@@ -353,6 +367,14 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
 
     raw_title = (req.title or "").strip() or str(filters.get("title") or "").strip()
     raw_description = (req.description or "").strip() or str(filters.get("description") or "").strip()
+    raw_status = (req.status or "").strip() or str(filters.get("status") or "").strip()
+    raw_task_type = (req.task_type or "").strip() or str(
+        filters.get("type") or filters.get("task_type") or ""
+    ).strip()
+    raw_priority = (req.priority or "").strip() or str(filters.get("priority") or "").strip()
+    canon_status = canonical_task_status(raw_status)
+    canon_type = canonical_task_type(raw_task_type)
+    canon_priority = canonical_task_priority(raw_priority)
     engineer_plaky_id = (req.engineer_plaky_id or "").strip() or str(filters.get("engineer_plaky_id") or "").strip()
     qa_plaky_id = (req.qa_plaky_id or "").strip() or str(filters.get("qa_plaky_id") or "").strip()
 
@@ -491,27 +513,19 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
     if qa_apply and qa_field_key:
         field_values[qa_field_key] = str(qa_apply).strip()
 
-    pri = (req.priority or "medium").strip().lower()
-    if pri not in ("low", "medium", "high"):
-        pri = "medium"
-    priority_labels = (pri,)
-    if pri == "medium":
-        priority_labels = (pri, "med", "normal", "p2", "2")
-    elif pri == "low":
-        priority_labels = (pri, "minor", "p3", "3")
-    elif pri == "high":
-        priority_labels = (pri, "urgent", "major", "p1", "1")
+    pri = plaky_create_legacy_priority_param(canon_priority)
+    priority_labels = priority_field_patch_candidates(canon_priority)
 
     for pair in (
         select_field_patch_pair_from_schema(
             schema_normalized,
             column_name_substrings=("status", "state", "workflow"),
-            value_label_candidates=("in progress", "in-progress", "doing", "active", "wip"),
+            value_label_candidates=status_field_patch_candidates(canon_status),
         ),
         select_field_patch_pair_from_schema(
             schema_normalized,
             column_name_substrings=("type", "issue type", "category", "kind"),
-            value_label_candidates=("feature", "story"),
+            value_label_candidates=type_field_patch_candidates(canon_type),
             exclude_name_substrings=("subtype",),
         ),
         select_field_patch_pair_from_schema(
@@ -570,6 +584,9 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
         "pick_engineer_reason": pick_eng_reason,
         "pick_qa_plaky_id": pick_qa_id,
         "pick_qa_reason": pick_qa_reason,
+        "task_status": canon_status,
+        "task_type": canon_type,
+        "task_priority": canon_priority,
         "field_value_keys": sorted(field_values.keys()),
         "field_values": dict(field_values),
         "person_field_keys_for_patch": sorted(person_keys) if person_keys else [],
