@@ -1,4 +1,4 @@
-
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     plaky_qa_item_field_key: str = ""
     # Do not move draft PRs to Needs QA until ready_for_review (if needs_qa status is configured).
     plaky_skip_needs_qa_for_draft: bool = True
-    # After any automated Plaky status change, enqueue arq job to reorder items in default board/group.
+    # After any automated Plaky status change, enqueue SQLite job to reorder items in default board/group.
     plaky_reorder_after_status_change: bool = False
     # Comma-separated substrings (case-insensitive) marking Plaky item status as “done” for reorder heuristics.
     plaky_reorder_done_status_markers: str = "done,complete,closed,resolved,archive,shipped,merged"
@@ -125,17 +125,26 @@ class Settings(BaseSettings):
     # Blend SequenceMatcher title/body score with word-bag cosine in [0, 1] (0 = legacy behavior only).
     pr_linking_cosine_weight: float = 0.35
 
-    # Redis: agent job queue (arq) + optional distributed leaky-bucket limits
-    redis_url: str = ""
-    # When REDIS_URL is set, POST /agent/chat may use async_enqueue=true (requires arq worker)
+    # POST /agent/chat with queue=true writes to SQLite `background_jobs` (requires boardman-worker).
     agent_async_enqueue_enabled: bool = True
+    # Worker loop when no pending jobs (seconds).
+    queue_worker_poll_seconds: float = 0.25
+    # Jobs stuck in `running` longer than this are marked incomplete on worker startup.
+    queue_worker_stale_running_seconds: int = 7200
 
     # Leaky-bucket rate limit for POST /agent/chat and /agent/scan (per client IP)
     agent_rate_limit_enabled: bool = True
     agent_rate_limit_capacity: float = 16.0
     agent_rate_limit_leak_per_second: float = 0.5
-    # Use Redis for the bucket when true and redis_url is set (multi-instance safe)
-    agent_rate_limit_use_redis: bool = False
+    # When true, store bucket state in SQLite (`agent_rate_limit_buckets`) for multi-instance safety.
+    # Also accepts legacy env AGENT_RATE_LIMIT_USE_REDIS.
+    agent_rate_limit_use_sqlite: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "AGENT_RATE_LIMIT_USE_SQLITE",
+            "AGENT_RATE_LIMIT_USE_REDIS",
+        ),
+    )
 
 
 settings = Settings()

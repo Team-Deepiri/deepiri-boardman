@@ -5,7 +5,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from boardman.assignment.config import sync_team_assignment_field_keys_from_board
-from boardman.broker.arq_pool import close_arq_pool
+from boardman.broker.job_queue import close_job_queue
 from boardman.database.session import init_db
 from boardman.logging_config import setup_logging
 from boardman.llm.completion import aclose_ollama_http_client
@@ -69,7 +69,7 @@ async def lifespan(app: FastAPI):
         )
     yield
 
-    await close_arq_pool()
+    await close_job_queue()
     await aclose_ollama_http_client()
 
 
