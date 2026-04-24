@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -20,8 +21,12 @@ _schema_lock = asyncio.Lock()
 
 
 def clear_board_schema_cache() -> None:
-    """Tests / hot reload."""
+    """Tests / hot reload (in-process only; Redis entries expire by TTL)."""
     _schema_cache.clear()
+
+
+def _schema_redis_key(board_id: str) -> str:
+    return f"boardman:plaky_schema_bundle:{board_id}"
 
 
 def _opt_label(o: Any) -> str:
@@ -727,6 +732,26 @@ async def fetch_board_schema_bundle(board_id: str) -> Dict[str, Any]:
             if hit is not None and (now - hit[0]) < ttl:
                 return hit[1]
 
+    if ttl > 0:
+        from boardman.cache.agent_redis import agent_redis_get_json
+
+        remote = await agent_redis_get_json(_schema_redis_key(bid))
+        if isinstance(remote, dict) and remote.get("_boardman_schema_v1") is True:
+            try:
+                payload = remote.get("data")
+                if isinstance(payload, str):
+                    data = json.loads(payload)
+                elif isinstance(payload, dict):
+                    data = payload
+                else:
+                    data = None
+                if isinstance(data, dict):
+                    async with _schema_lock:
+                        _schema_cache[bid] = (time.monotonic(), data)
+                    return data
+            except (json.JSONDecodeError, TypeError):
+                pass
+
     c = PlakyClient()
     groups_r, board_r = await asyncio.gather(c.list_groups(bid), c.get_board(bid))
     groups = groups_r.get("groups") or []
@@ -776,4 +801,11 @@ async def fetch_board_schema_bundle(board_id: str) -> Dict[str, Any]:
     if ttl > 0:
         async with _schema_lock:
             _schema_cache[bid] = (time.monotonic(), result)
+        from boardman.cache.agent_redis import agent_redis_set_json
+
+        await agent_redis_set_json(
+            _schema_redis_key(bid),
+            {"_boardman_schema_v1": True, "data": json.dumps(result, default=str)},
+            int(ttl),
+        )
     return result

@@ -132,6 +132,10 @@ class Settings(BaseSettings):
     # Jobs stuck in `running` longer than this are marked incomplete on worker startup.
     queue_worker_stale_running_seconds: int = 7200
 
+    # Optional Redis for **API/agent** caching only (local dev or multi-replica). Leave empty in
+    # production and for `boardman-worker` — the worker must not depend on Redis.
+    agent_redis_url: str = ""
+
     # Leaky-bucket rate limit for POST /agent/chat and /agent/scan (per client IP)
     agent_rate_limit_enabled: bool = True
     agent_rate_limit_capacity: float = 16.0

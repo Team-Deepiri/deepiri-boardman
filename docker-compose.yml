@@ -33,6 +33,8 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8088,http://127.0.0.1:8088}
+      # Optional local agent cache; empty = in-process only (safe for prod). See AGENT_REDIS_URL in .env.example
+      AGENT_REDIS_URL: ${AGENT_REDIS_URL:-}
     volumes:
       - ./boardman:/app/boardman
       - ./boardman.db:/app/boardman.db
@@ -58,6 +60,8 @@ services:
       OLLAMA_BASE_URL: http://ollama:11434
       PLAKY_API_BASE: ${PLAKY_API_BASE:-https://api.plaky.com/v1/public}
       AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
+      # Worker must not use Redis; SQLite queue + in-memory / SQLite rate limits only.
+      AGENT_REDIS_URL: ""
     volumes:
       - ./boardman:/app/boardman
       - ./boardman.db:/app/boardman.db
@@ -65,6 +69,15 @@ services:
       - ./team_assignments.yml:/app/team_assignments.yml:ro
     depends_on:
       - ollama
+    networks:
+      - deepiri-network
+
+  # Optional local agent cache: `docker compose --profile agent-cache up -d` then set AGENT_REDIS_URL in .env
+  redis:
+    profiles: ["agent-cache"]
+    image: redis:7-alpine
+    container_name: deepiri-boardman-redis-cache
+    restart: unless-stopped
     networks:
       - deepiri-network
 
