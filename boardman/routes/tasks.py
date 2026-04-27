@@ -558,41 +558,6 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
 
     person_keys = _person_item_field_keys_from_normalized(schema_normalized)
 
-    assignment_inspect: dict[str, Any] = {
-        "effective_board_id": effective_board_id or None,
-        "effective_group_id": effective_group_id or None,
-        "repo_full": repo_full,
-        "repo_display": repo_display,
-        "merged_repos": merged_repos,
-        "auto_assign_team": req.auto_assign_team,
-        "member_count": len(cfg.members),
-        "yaml_plaky_field_engineer": cfg_engineer_key or None,
-        "yaml_plaky_field_qa": cfg_qa_key or None,
-        "scrubbed_placeholder_field_keys": scrubbed_placeholder_keys or None,
-        "allowed_board_field_keys_count": len(allowed_board_keys),
-        "resolved_engineer_field_key": (engineer_field_key or None),
-        "resolved_qa_field_key": (qa_field_key or None),
-        "applied_engineer_plaky_id": (str(eng_apply).strip() if eng_apply else None),
-        "applied_qa_plaky_id": (str(qa_apply).strip() if qa_apply else None),
-        "engineer_source": ("request" if engineer_plaky_id else ("roster" if eng_apply else None)),
-        "qa_source": ("request" if qa_plaky_id else ("roster" if qa_apply else None)),
-        "repo_plaky_key": repo_plaky_key or None,
-        "github_repos_plaky_key": github_repos_plaky_key or None,
-        "inferred_from_schema": dict(inferred_from_schema),
-        "schema_sample_field_labels": schema_sample_labels,
-        "pick_engineer_plaky_id": pick_eng_id,
-        "pick_engineer_reason": pick_eng_reason,
-        "pick_qa_plaky_id": pick_qa_id,
-        "pick_qa_reason": pick_qa_reason,
-        "task_status": canon_status,
-        "task_type": canon_type,
-        "task_priority": canon_priority,
-        "field_value_keys": sorted(field_values.keys()),
-        "field_values": dict(field_values),
-        "person_field_keys_for_patch": sorted(person_keys) if person_keys else [],
-        "tag_option_resolution_warnings": tag_resolution_warnings or None,
-    }
-
     async with plaky_placement_context(
         effective_board_id or None,
         effective_group_id or None,
@@ -605,31 +570,40 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
             group_id=effective_group_id or None,
             field_values=field_values or None,
             person_field_keys=person_keys or None,
-            # HTTP handler always runs `_run_post_create_assignments`; avoid patching twice (noisy in Plaky).
-            defer_field_patch=bool(field_values),
+            # Prefer patching as part of initial create call to avoid an extra request.
+            # If client create path did not produce a successful `field_patch`, we fallback below.
+            defer_field_patch=False,
         )
 
     if not result.get("ok"):
-        if isinstance(result, dict):
-            result["assignment_inspect"] = assignment_inspect
-        _log.info("POST /tasks assignment_inspect=%s", assignment_inspect)
         return result
 
-    patch_board_id = (effective_board_id or "").strip() or _board_id_from_create_result(result)
-    assignment_inspect["patch_board_id"] = patch_board_id or None
-    _log.info("POST /tasks assignment_inspect=%s", assignment_inspect)
+    explicit_board_id = (req.plaky_board_id or "").strip()
+    created_board_id = _board_id_from_create_result(result)
+    if explicit_board_id:
+        patch_board_id = explicit_board_id
+    elif created_board_id:
+        patch_board_id = created_board_id
+    else:
+        patch_board_id = (effective_board_id or "").strip()
 
-    post_assign = await _run_post_create_assignments(
-        plaky,
-        result=result,
-        board_id=patch_board_id,
-        group_id=effective_group_id,
-        title=title,
-        field_values=field_values,
-        person_field_keys=person_keys or None,
-    )
+    post_assign: dict[str, Any]
+    field_patch = result.get("field_patch") if isinstance(result, dict) else None
+    field_patch_ok = isinstance(field_patch, dict) and bool(field_patch.get("ok"))
+    if field_values and field_patch_ok:
+        # Initial create already applied field values; avoid duplicate post-create PATCH.
+        post_assign = dict(field_patch)
+    else:
+        post_assign = await _run_post_create_assignments(
+            plaky,
+            result=result,
+            board_id=patch_board_id,
+            group_id=effective_group_id,
+            title=title,
+            field_values=field_values,
+            person_field_keys=person_keys or None,
+        )
     result["post_create_assignment"] = post_assign
-    result["assignment_inspect"] = assignment_inspect
 
     return result
 

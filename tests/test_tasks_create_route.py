@@ -162,7 +162,7 @@ async def test_post_tasks_passes_board_to_plaky_and_patches_assignments(monkeypa
     ck = captured.get("create_kwargs") or {}
     assert ck.get("board_id") == "board-77"
     assert ck.get("group_id") == "grp-1"
-    assert ck.get("defer_field_patch") is True
+    assert ck.get("defer_field_patch") is False
 
     patch = captured.get("patch")
     assert patch is not None
@@ -234,9 +234,6 @@ async def test_post_tasks_scrubs_placeholder_yaml_keys_and_infers_real_columns(
     assert r.status_code == 200
     body = r.json()
     assert body.get("ok") is True, body
-    insp = body.get("assignment_inspect") or {}
-    assert insp.get("scrubbed_placeholder_field_keys")
-    assert "person-1" not in (insp.get("field_value_keys") or [])
 
     patch = captured.get("patch")
     assert patch is not None
@@ -308,8 +305,6 @@ async def test_post_tasks_keeps_native_plaky_keys_when_they_appear_on_board_sche
     assert r.status_code == 200
     body = r.json()
     assert body.get("ok") is True, body
-    insp = body.get("assignment_inspect") or {}
-    assert not insp.get("scrubbed_placeholder_field_keys")
     patch = captured.get("patch")
     assert patch is not None
     _, _, values = patch
@@ -405,12 +400,8 @@ async def test_post_tasks_merges_default_status_type_priority_from_schema(monkey
     ck = captured.get("create_kwargs") or {}
     assert ck.get("field_values") is not None
     assert ck["field_values"].get("fld_status") == 20
-    assert ck.get("defer_field_patch") is True
+    assert ck.get("defer_field_patch") is False
     assert ck.get("priority") == "medium"
-    insp = body.get("assignment_inspect") or {}
-    assert insp.get("task_status") == "In Progress"
-    assert insp.get("task_type") == "Feature"
-    assert insp.get("task_priority") == "Medium"
 
 
 @pytest.mark.asyncio
@@ -504,10 +495,6 @@ async def test_post_tasks_accepts_status_type_priority_tags_and_type_json_key(
     assert values.get("fld_status") == 30
     assert values.get("fld_type") == 1
     assert values.get("fld_pri") == 9
-    insp = body.get("assignment_inspect") or {}
-    assert insp.get("task_status") == "Needs QA"
-    assert insp.get("task_type") == "Bug"
-    assert insp.get("task_priority") == "Very Important"
     ck = captured.get("create_kwargs") or {}
     assert ck.get("priority") == "high"
 
