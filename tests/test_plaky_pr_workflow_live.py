@@ -22,6 +22,7 @@ from typing import Any
 
 import httpx
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -42,6 +43,7 @@ from boardman.repos_config import RepoRouting
 from boardman.services.pr_handler import handle_pr_opened, handle_pr_review_comment
 from boardman.services.pr_review_handler import handle_issue_comment_on_pr, handle_pull_request_review
 from boardman.settings import settings
+from boardman.main import create_app
 
 pytestmark = [pytest.mark.plaky_live, pytest.mark.plaky_pr_workflow_live]
 
@@ -119,17 +121,25 @@ async def _live_plaky_user_with_github(plaky: PlakyClient) -> tuple[str, str] | 
     return first_with_gh
 
 
-async def _create_live_task(plaky: PlakyClient, board_id: str, group_id: str, title: str) -> str:
-    cr = await plaky.create_task(
-        title=title,
-        description="boardman live pytest — safe to delete",
-        priority="low",
-        board_id=board_id,
-        group_id=group_id,
-    )
-    assert cr.get("ok") is True, cr.get("message")
+async def _create_live_task(_plaky: PlakyClient, board_id: str, group_id: str, title: str) -> str:
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post(
+            "/api/v1/tasks",
+            json={
+                "title": title,
+                "description": "boardman live pytest - safe to delete",
+                "repo": "deepiri-platform",
+                "plaky_board_id": board_id,
+                "plaky_group_id": group_id,
+                "auto_assign_team": False,
+            },
+        )
+    assert r.status_code == 200, r.text
+    cr = r.json()
+    assert cr.get("ok") is True, cr
     task = cr.get("task") or {}
-    task_id = str(task.get("id") or task.get("taskId") or task.get("itemId") or "").strip()
+    task_id = str(task.get("id") or task.get("taskId") or task.get("itemId") or cr.get("task_id") or "").strip()
     assert task_id, f"could not resolve task id from create_task: {task!r}"
     return task_id
 

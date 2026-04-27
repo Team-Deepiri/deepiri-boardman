@@ -173,12 +173,20 @@ async def test_live_create_item_hierarchy():
     if not gid:
         assert groups, "need at least one group or PLAKY_DEFAULT_GROUP_ID"
         gid = str(groups[0]["id"])
+    app = create_app()
     title = "[boardman pytest PLAKY_LIVE_WRITE] delete me"
-    r = await c.create_task(
-        title=title,
-        description="Automated test task; safe to delete.",
-        priority="low",
-        board_id=board_id,
-        group_id=gid,
-    )
-    assert r.get("ok") is True, r.get("message")
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post(
+            "/api/v1/tasks",
+            json={
+                "title": title,
+                "description": "Automated test task; safe to delete.",
+                "repo": "deepiri-platform",
+                "plaky_board_id": board_id,
+                "plaky_group_id": gid,
+                "auto_assign_team": False,
+            },
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("ok") is True, body.get("message")
