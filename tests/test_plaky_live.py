@@ -41,6 +41,16 @@ def _pick_board_id(boards: list) -> str:
     return str(boards[0]["id"])
 
 
+def _find_named_row(rows: list[dict], target_name: str) -> dict | None:
+    want = (target_name or "").strip().lower()
+    if not want:
+        return None
+    exact = next((r for r in rows if str(r.get("name") or "").strip().lower() == want), None)
+    if exact:
+        return exact
+    return next((r for r in rows if want in str(r.get("name") or "").strip().lower()), None)
+
+
 @skip_no_plaky
 @pytest.mark.asyncio
 async def test_live_list_boards():
@@ -190,3 +200,84 @@ async def test_live_create_item_hierarchy():
     assert r.status_code == 200
     body = r.json()
     assert body.get("ok") is True, body.get("message")
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    os.environ.get("PLAKY_LIVE_WRITE") != "1",
+    reason="Set PLAKY_LIVE_WRITE=1 to run live create+update route test in Boardman Test Board/Sprint 2",
+)
+async def test_live_create_then_update_task_in_boardman_test_board_sprint_2():
+    if not _plaky_configured():
+        pytest.skip("PLAKY_API_KEY missing")
+
+    plaky = PlakyClient()
+    br = await plaky.list_boards()
+    assert br.get("ok") is True, br.get("message")
+    boards = br.get("boards") or []
+    assert isinstance(boards, list) and boards, "No boards returned from Plaky"
+    board = _find_named_row(boards, "Boardman Test Board")
+    assert board is not None, "Could not find 'Boardman Test Board'"
+    board_id = str(board["id"])
+
+    gr = await plaky.list_groups(board_id)
+    assert gr.get("ok") is True, gr.get("message")
+    groups = gr.get("groups") or []
+    assert isinstance(groups, list) and groups, "No groups returned for Boardman Test Board"
+    group = _find_named_row(groups, "Sprint 2")
+    assert group is not None, "Could not find 'Sprint 2' group on Boardman Test Board"
+    group_id = str(group["id"])
+
+    title = "[boardman pytest live create+update] Boardman Test Board / Sprint 2"
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        create_r = await client.post(
+            "/api/v1/tasks",
+            json={
+                "title": title,
+                "description": "Live test task for create->update route verification.",
+                "repo": "team-deepiri/boardman",
+                "plaky_board_id": board_id,
+                "plaky_group_id": group_id,
+                "auto_assign_team": False,
+            },
+        )
+        assert create_r.status_code == 200
+        create_body = create_r.json()
+        assert create_body.get("ok") is True, create_body
+        task_id = str(
+            create_body.get("task_id")
+            or ((create_body.get("task") or {}).get("id") if isinstance(create_body.get("task"), dict) else "")
+            or ""
+        ).strip()
+        assert task_id, f"Could not resolve task id from create response: {create_body}"
+
+        update_comment = (
+            "Updated field values via PATCH /api/v1/tasks/{task_id}:\n"
+            "- status: Needs QA\n"
+            "- type: Bug\n"
+            "- priority: Very Important\n"
+            "- repo: team-deepiri/boardman\n"
+            "- github_repos: team-deepiri/boardman, team-deepiri/deepiri-boardman"
+        )
+        patch_r = await client.patch(
+            f"/api/v1/tasks/{task_id}",
+            json={
+                "comment": update_comment,
+                "plaky_board_id": board_id,
+                "status": "Needs QA",
+                "type": "Bug",
+                "priority": "Very Important",
+                "repo": "team-deepiri/boardman",
+                "github_repos": [
+                    "team-deepiri/boardman",
+                    "team-deepiri/deepiri-boardman",
+                ],
+            },
+        )
+    assert patch_r.status_code == 200
+    patch_body = patch_r.json()
+    assert patch_body.get("ok") is True, patch_body
+    ops = patch_body.get("operations") or {}
+    assert (ops.get("comment_add") or {}).get("ok") is True
+    assert (ops.get("field_patch") or {}).get("ok") is True

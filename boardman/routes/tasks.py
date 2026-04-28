@@ -354,10 +354,108 @@ def _board_id_from_create_result(result: Optional[dict]) -> str:
     return ""
 
 
+def _schema_field_maps(schema_normalized: Optional[dict]) -> tuple[dict[str, str], dict[str, dict[Any, str]]]:
+    labels: dict[str, str] = {}
+    option_labels: dict[str, dict[Any, str]] = {}
+    if not isinstance(schema_normalized, dict):
+        return labels, option_labels
+    raw_fields = schema_normalized.get("fields") or []
+    if not isinstance(raw_fields, list):
+        return labels, option_labels
+    for f in raw_fields:
+        if not isinstance(f, dict):
+            continue
+        key = field_row_item_key(f)
+        if not key:
+            continue
+        label = plaky_field_row_label(f) or key
+        labels[key] = label
+        opts = f.get("options") or []
+        if not isinstance(opts, list):
+            continue
+        by_val: dict[Any, str] = {}
+        for opt in opts:
+            if not isinstance(opt, dict):
+                continue
+            lab = str(opt.get("name") or "").strip()
+            if not lab:
+                continue
+            for k in ("id", "optionId", "value", "_id", "name"):
+                raw = opt.get(k)
+                if raw is None:
+                    continue
+                by_val[raw] = lab
+                by_val[str(raw)] = lab
+        if by_val:
+            option_labels[key] = by_val
+    return labels, option_labels
+
+
+def _value_for_comment(value: Any, option_map: Optional[dict[Any, str]] = None) -> str:
+    if value is None:
+        return "(empty)"
+    if option_map:
+        if value in option_map:
+            return option_map[value]
+        sv = str(value)
+        if sv in option_map:
+            return option_map[sv]
+    if isinstance(value, dict):
+        for k in ("name", "label", "text", "value"):
+            v = value.get(k)
+            if v is not None and str(v).strip():
+                return str(v).strip()
+        for k in ("users", "assignedUsers", "tagValues", "tags"):
+            v = value.get(k)
+            if isinstance(v, list) and v:
+                return ", ".join(_value_for_comment(x, option_map) for x in v)
+        if "id" in value:
+            return str(value.get("id"))
+        return str(value)
+    if isinstance(value, list):
+        if not value:
+            return "(empty)"
+        return ", ".join(_value_for_comment(x, option_map) for x in value)
+    return str(value)
+
+
 class LinkPRRequest(BaseModel):
     pr_url: str
     task_id: str
     update_status: bool = False
+
+
+class UpdateTaskRequest(BaseModel):
+    title: Optional[str] = None
+    comment: Optional[str] = None
+    status: Optional[str] = None
+    task_type: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("type", "task_type"),
+    )
+    priority: Optional[str] = None
+    repo: Optional[str] = None
+    github_repos: Optional[List[str]] = None
+    engineer_plaky_id: Optional[str] = None
+    qa_plaky_id: Optional[str] = None
+    plaky_board_id: Optional[str] = None
+
+
+def _board_id_from_task_payload(task: Optional[dict]) -> str:
+    if not isinstance(task, dict):
+        return ""
+    for k in ("boardId", "board_id"):
+        val = task.get(k)
+        if isinstance(val, dict):
+            val = val.get("id") or val.get("boardId")
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    board = task.get("board")
+    if isinstance(board, dict):
+        val = board.get("id") or board.get("boardId")
+        if val is not None and str(val).strip():
+            return str(val).strip()
+    return ""
 
 
 @router.post("/tasks")
@@ -620,6 +718,216 @@ async def get_task(task_id: str, session: AsyncSession = Depends(get_db)):
     plaky = PlakyClient()
     result = await plaky.get_task(task_id)
     return result
+
+
+@router.patch("/tasks/{task_id}")
+async def update_task(task_id: str, req: UpdateTaskRequest, session: AsyncSession = Depends(get_db)):
+    plaky = PlakyClient()
+    ops: dict[str, Any] = {}
+    comment_change_lines: list[str] = []
+
+    update_title = (req.title or "").strip()
+    update_comment = (req.comment or "").strip()
+    update_status_raw = (req.status or "").strip()
+    update_type_raw = (req.task_type or "").strip()
+    update_priority_raw = (req.priority or "").strip()
+    update_engineer = (req.engineer_plaky_id or "").strip()
+    update_qa = (req.qa_plaky_id or "").strip()
+    update_repo = (req.repo or "").strip()
+    update_github_repos = req.github_repos if isinstance(req.github_repos, list) else None
+
+    wants_board_patch = any(
+        (
+            update_status_raw,
+            update_type_raw,
+            update_priority_raw,
+            update_engineer,
+            update_qa,
+            update_repo,
+            bool(update_github_repos),
+        )
+    )
+
+    if update_title:
+        ops["title_update"] = await plaky.update_task_fields(task_id, title=update_title)
+
+    board_id = (req.plaky_board_id or "").strip()
+    needs_board_lookup = wants_board_patch or bool(update_comment)
+    if needs_board_lookup and not board_id:
+        got = await plaky.get_task(task_id)
+        task = got.get("task") if isinstance(got, dict) and isinstance(got.get("task"), dict) else {}
+        board_id = _board_id_from_task_payload(task)
+        if got:
+            ops["task_lookup"] = got
+    if needs_board_lookup and not board_id:
+        board_id = (settings.plaky_default_board_id or "").strip() or (get_context_plaky_board_id() or "").strip()
+
+    if wants_board_patch and board_id:
+        schema_normalized: Optional[dict] = None
+        inferred_from_schema: dict[str, str] = {}
+        try:
+            await sync_team_assignment_field_keys_from_board(board_id)
+        except Exception:
+            pass
+        try:
+            bundle = await fetch_board_schema_bundle(board_id)
+            sn = bundle.get("normalized") if isinstance(bundle, dict) else None
+            if isinstance(sn, dict):
+                schema_normalized = sn
+                inferred_from_schema = infer_plaky_field_keys_from_normalized(sn)
+        except Exception:
+            pass
+
+        allowed_board_keys = _allowed_item_field_keys_from_schema(schema_normalized)
+        cfg = load_team_assignments()
+        engineer_field_key = _scrub_placeholder_field_key(
+            (cfg.plaky_field_engineer or "").strip(), allowed_board_keys=allowed_board_keys
+        )
+        qa_field_key = _scrub_placeholder_field_key(
+            (cfg.plaky_field_qa or "").strip(), allowed_board_keys=allowed_board_keys
+        )
+        engineer_field_key, qa_field_key = await _infer_plaky_person_column_keys(
+            board_id,
+            engineer_field_key,
+            qa_field_key,
+            normalized=schema_normalized,
+        )
+        engineer_field_key = _scrub_placeholder_field_key(
+            engineer_field_key, allowed_board_keys=allowed_board_keys
+        )
+        qa_field_key = _scrub_placeholder_field_key(qa_field_key, allowed_board_keys=allowed_board_keys)
+
+        repo_plaky_key = _scrub_placeholder_field_key(
+            ((cfg.plaky_field_repo or "").strip() or (inferred_from_schema.get("repo") or "").strip()),
+            allowed_board_keys=allowed_board_keys,
+        )
+        github_repos_plaky_key = _scrub_placeholder_field_key(
+            (
+                (cfg.plaky_field_github_repos or "").strip()
+                or (inferred_from_schema.get("github_repos") or "").strip()
+            ),
+            allowed_board_keys=allowed_board_keys,
+        )
+
+        merged_repos = _merge_github_repo_inputs(
+            primary_repo=update_repo,
+            extra_repos=update_github_repos,
+            filters={},
+        )
+        repo_display = merged_repos[0] if merged_repos else update_repo
+        repo_val_fmt = plaky_repo_field_value_format(schema_normalized, repo_plaky_key)
+        gh_repos_val_fmt = plaky_repo_field_value_format(schema_normalized, github_repos_plaky_key)
+        rk_set, gk_set = (repo_plaky_key or "").strip(), (github_repos_plaky_key or "").strip()
+        if rk_set == gk_set and rk_set and (repo_val_fmt == "short" or gh_repos_val_fmt == "short"):
+            repo_val_fmt = gh_repos_val_fmt = "short"
+
+        field_values = build_repo_field_map(
+            cfg,
+            repo_value=repo_display,
+            github_repos=merged_repos if merged_repos else None,
+            plaky_field_repo_key=repo_plaky_key or None,
+            plaky_field_github_repos_key=github_repos_plaky_key or None,
+            repo_value_format=repo_val_fmt,
+            github_repos_value_format=gh_repos_val_fmt,
+        )
+        if update_engineer and engineer_field_key:
+            field_values[engineer_field_key] = update_engineer
+        if update_qa and qa_field_key:
+            field_values[qa_field_key] = update_qa
+
+        canon_status = canonical_task_status(update_status_raw) if update_status_raw else ""
+        canon_type = canonical_task_type(update_type_raw) if update_type_raw else ""
+        canon_priority = canonical_task_priority(update_priority_raw) if update_priority_raw else ""
+        pairs = (
+            select_field_patch_pair_from_schema(
+                schema_normalized,
+                column_name_substrings=("status", "state", "workflow"),
+                value_label_candidates=status_field_patch_candidates(canon_status),
+            )
+            if canon_status
+            else None,
+            select_field_patch_pair_from_schema(
+                schema_normalized,
+                column_name_substrings=("type", "issue type", "category", "kind"),
+                value_label_candidates=type_field_patch_candidates(canon_type),
+                exclude_name_substrings=("subtype",),
+            )
+            if canon_type
+            else None,
+            select_field_patch_pair_from_schema(
+                schema_normalized,
+                column_name_substrings=("priority", "prio"),
+                value_label_candidates=priority_field_patch_candidates(canon_priority),
+            )
+            if canon_priority
+            else None,
+        )
+        for pair in pairs:
+            if pair:
+                fk, fv = pair
+                if fk and fv is not None:
+                    field_values[fk] = fv
+
+        tag_keys = {k.strip() for k in (repo_plaky_key, github_repos_plaky_key) if (k or "").strip()}
+        tag_resolution_warnings: List[dict] = []
+        if tag_keys and isinstance(schema_normalized, dict):
+            _, tag_resolution_warnings = resolve_repo_tag_field_values_from_schema(
+                field_values, schema_normalized, keys=tag_keys
+            )
+
+        if field_values:
+            field_labels, option_labels = _schema_field_maps(schema_normalized)
+            comment_change_lines = [
+                f"- {(field_labels.get(k) or k)}: {_value_for_comment(v, option_labels.get(k))}"
+                for k, v in field_values.items()
+            ]
+            person_keys = _person_item_field_keys_from_normalized(schema_normalized)
+            patch = await plaky.patch_item_field_values(
+                board_id,
+                task_id,
+                field_values,
+                person_field_keys=person_keys or None,
+            )
+            if tag_resolution_warnings:
+                patch["tag_resolution_warnings"] = tag_resolution_warnings
+            patch["field_values_attempted"] = dict(field_values)
+            ops["field_patch"] = patch
+        else:
+            ops["field_patch"] = {"ok": True, "skipped": True, "message": "No board fields requested"}
+    elif wants_board_patch:
+        ops["field_patch"] = {
+            "ok": False,
+            "message": "Board id required for assignee/status/type/priority/repo updates",
+        }
+
+    if update_comment:
+        if comment_change_lines:
+            comment_body = "Updated fields:\n" + "\n".join(comment_change_lines)
+        else:
+            comment_body = update_comment
+        comment_result: dict[str, Any] | None = None
+        if board_id:
+            try:
+                comment_result = await plaky.add_item_comment_public(board_id, task_id, comment_body)
+            except Exception:
+                comment_result = None
+        if not comment_result or not comment_result.get("ok"):
+            comment_result = await plaky.add_comment(task_id, comment_body)
+        ops["comment_add"] = comment_result
+
+    requested_any = any(
+        (
+            update_title,
+            update_comment,
+            wants_board_patch,
+        )
+    )
+    if not requested_any:
+        return {"ok": False, "status": 400, "message": "No update fields provided"}
+
+    op_results = [v for v in ops.values() if isinstance(v, dict)]
+    ok = bool(op_results) and all(bool(v.get("ok")) for v in op_results if "ok" in v)
+    return {"ok": ok, "task_id": task_id, "operations": ops}
 
 
 @router.post("/tasks/{task_id}/link-pr")
