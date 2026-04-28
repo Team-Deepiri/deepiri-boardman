@@ -98,13 +98,13 @@ services:
     restart: unless-stopped
     # GPU support - prioritized. Comment out the 'deploy' block below for pure CPU mode
     # if you encounter 'nvidia-container-cli' errors in WSL/Linux.
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     ports:
       - "11434:11434"
     volumes:
