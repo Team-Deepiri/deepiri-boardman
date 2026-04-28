@@ -79,6 +79,8 @@ class Settings(BaseSettings):
     # Ollama: leave llm_model empty to auto-pick from GET /api/tags (Docker-friendly).
     llm_provider: str = "ollama"
     llm_model: str = ""
+    # Model to prefer when CPU-only mode is detected (no GPU).
+    llm_ollama_cpu_model: str = "qwen2.5:0.5b"
     ollama_base_url: str = "http://localhost:11434"
     # Keep Ollama model loaded between requests (reduces cold-start latency). Examples: "30m", "-1" (forever)
     ollama_keep_alive: str = "30m"
