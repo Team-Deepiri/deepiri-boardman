@@ -1,5 +1,5 @@
 # Ollama GPU: requires NVIDIA Container Toolkit (Linux/WSL2 with GPU) or Docker Desktop GPU.
-# For CPU-only, remove the `gpus` block from the ollama service.
+# For CPU-only, keep docker-compose.yml as-is.
 #
 # Secrets (PLAKY_API_KEY, GITHUB_PAT, …): put them in `.env` next to this file.
 # Do NOT use `KEY=${KEY}` here for secrets — an empty shell interpolation overrides `env_file`
@@ -96,15 +96,9 @@ services:
     image: ollama/ollama:latest
     container_name: deepiri-ollama-boardman
     restart: unless-stopped
-    # GPU support - prioritized. Comment out the 'deploy' block below for pure CPU mode
-    # if you encounter 'nvidia-container-cli' errors in WSL/Linux.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # CPU-safe by default.
+    # For NVIDIA GPU acceleration, add the override file:
+    #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
     ports:
       - "11434:11434"
     volumes:
