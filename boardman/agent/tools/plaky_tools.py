@@ -9,6 +9,12 @@ from langchain_core.tools import StructuredTool
 
 from boardman.assignment.config import infer_plaky_field_keys_from_normalized, load_team_assignments
 from boardman.assignment.qa_picker import build_repo_field_map, normalize_github_repo_inputs
+from boardman.services.task_mutations import (
+    CreateTaskInput,
+    UpdateTaskInput,
+    create_task_internal,
+    update_task_internal,
+)
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
     plaky_repo_field_value_format,
@@ -166,12 +172,12 @@ async def _plaky_create_task(
     from boardman.agent.tool_context import (
         get_agent_session_pk,
         get_context_plaky_board_id,
+        get_context_plaky_group_id,
         get_tool_db_session,
     )
 
-    c = PlakyClient()
-    bid = board_id.strip() or None
-    gid = group_id.strip() or None
+    bid = board_id.strip() or get_context_plaky_board_id() or None
+    gid = group_id.strip() or get_context_plaky_group_id() or None
     repo_tokens = normalize_github_repo_inputs(extra_repo_text=repo_tag)
 
     parsed: Dict[str, Any] = {}
@@ -242,20 +248,23 @@ async def _plaky_create_task(
         if err:
             return json.dumps({"ok": False, "message": err}, default=str)
 
-    fv = merged if merged else None
     canon_pri = canonical_task_priority(priority)
-    pri = plaky_create_legacy_priority_param(canon_pri)
-    r = await c.create_task(
-        title=title,
-        description=description,
-        priority=pri,
-        board_id=bid,
-        group_id=gid,
-        field_values=fv,
+    r = await create_task_internal(
+        CreateTaskInput(
+            title=title,
+            description=description,
+            priority=canon_pri,
+            repo=repo_tokens[0] if repo_tokens else "",
+            github_repos=repo_tokens if repo_tokens else None,
+            plaky_board_id=bid,
+            plaky_group_id=gid,
+            field_values=merged if merged else None,
+            auto_assign_team=False,
+        )
     )
     out = dict(r) if isinstance(r, dict) else {"result": r}
-    if fv:
-        out["merged_field_values"] = fv
+    if merged:
+        out["merged_field_values"] = merged
     return json.dumps(out, default=str)
 
 
@@ -301,12 +310,15 @@ async def _plaky_update_task(
     priority: Optional[str] = None,
     status: Optional[str] = None,
 ) -> str:
-    c = PlakyClient()
-    pri_kw: Optional[str] = None
-    if priority is not None:
-        pri_kw = plaky_create_legacy_priority_param(canonical_task_priority(str(priority)))
-    r = await c.update_task_fields(
-        task_id, title=title, description=description, priority=pri_kw, status=status
+    r = await update_task_internal(
+        task_id,
+        UpdateTaskInput(
+            title=title,
+            description=description,
+            status=status,
+            priority=priority,
+            task_type=None,
+        ),
     )
     return json.dumps(r, default=str)
 
