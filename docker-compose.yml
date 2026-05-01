@@ -94,9 +94,21 @@ services:
 
   ollama:
     image: ollama/ollama:latest
-    container_name: deepiri-ollama-boardman # TODO: rename to deepiri-ollama later when extracted in to deepiri-ollama submodule
+    container_name: deepiri-ollama-boardman
     restart: unless-stopped
+<<<<<<< sophia_zhang/feature/agent_improvements
     # gpus: all  # Uncomment if you have NVIDIA Container Toolkit installed
+=======
+    # GPU support - prioritized. Comment out the 'deploy' block below for pure CPU mode
+    # if you encounter 'nvidia-container-cli' errors in WSL/Linux.
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+>>>>>>> main
     ports:
       - "11434:11434"
     volumes:
