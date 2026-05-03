@@ -60,12 +60,12 @@ async def pick_qa_internal(body: PickQaBody, authorization: Optional[str] = Head
 
 @router.post("/assignment/sync-field-keys", response_model=SyncFieldKeysResponse)
 async def sync_field_keys(board_id: Optional[str] = None) -> SyncFieldKeysResponse:
-    bid = (board_id or settings.plaky_default_board_id or "").strip()
+    bid = (board_id or "").strip()
     if not bid:
         return SyncFieldKeysResponse(
             ok=False,
             skipped=True,
-            message="board_id is required (or set PLAKY_DEFAULT_BOARD_ID)",
+            message="board_id query parameter is required",
             board_id="",
         )
     result = await sync_team_assignment_field_keys_from_board(bid)

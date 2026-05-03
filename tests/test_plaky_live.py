@@ -6,6 +6,9 @@ Run:
 
 Optional write (creates one task):
   PLAKY_LIVE_WRITE=1 poetry run pytest tests/test_plaky_live.py -v -k create_item
+
+All live Plaky tests use the Boardman Test Board and the test group (default name \"Sprint 2\"); see tests/plaky_test_board.py
+and optional env PLAKY_BOARDMAN_TEST_BOARD_ID / PLAKY_BOARDMAN_TEST_GROUP_ID.
 """
 
 from __future__ import annotations
@@ -21,6 +24,13 @@ from boardman.plaky.client import PlakyClient
 from boardman.plaky.name_match import rank_plaky_rows
 from boardman.settings import settings
 
+from tests.plaky_test_board import (
+    BOARDMAN_TEST_BOARD_NAME,
+    find_row_by_name,
+    resolve_boardman_test_board_id,
+    resolve_boardman_test_group_id,
+)
+
 pytestmark = pytest.mark.plaky_live
 
 
@@ -32,23 +42,6 @@ skip_no_plaky = pytest.mark.skipif(
     not _plaky_configured(),
     reason="PLAKY_API_KEY missing — set in repo .env or export before pytest",
 )
-
-
-def _pick_board_id(boards: list) -> str:
-    if settings.plaky_default_board_id.strip():
-        return settings.plaky_default_board_id.strip()
-    assert boards, "list_boards returned no boards"
-    return str(boards[0]["id"])
-
-
-def _find_named_row(rows: list[dict], target_name: str) -> dict | None:
-    want = (target_name or "").strip().lower()
-    if not want:
-        return None
-    exact = next((r for r in rows if str(r.get("name") or "").strip().lower() == want), None)
-    if exact:
-        return exact
-    return next((r for r in rows if want in str(r.get("name") or "").strip().lower()), None)
 
 
 @skip_no_plaky
@@ -71,9 +64,7 @@ async def test_live_list_boards():
 @pytest.mark.asyncio
 async def test_live_list_groups():
     c = PlakyClient()
-    br = await c.list_boards()
-    assert br.get("ok") is True, br.get("message")
-    board_id = _pick_board_id(br["boards"])
+    board_id = await resolve_boardman_test_board_id(c)
     gr = await c.list_groups(board_id)
     assert gr.get("ok") is True, (
         f"list_groups failed for board_id={board_id!r}: status={gr.get('status')} "
@@ -89,9 +80,7 @@ async def test_live_list_groups():
 @pytest.mark.asyncio
 async def test_live_get_board():
     c = PlakyClient()
-    br = await c.list_boards()
-    assert br.get("ok") is True
-    board_id = _pick_board_id(br["boards"])
+    board_id = await resolve_boardman_test_board_id(c)
     r = await c.get_board(board_id)
     assert r.get("ok") is True, r.get("message")
     assert isinstance(r.get("board"), dict)
@@ -100,9 +89,8 @@ async def test_live_get_board():
 @skip_no_plaky
 @pytest.mark.asyncio
 async def test_live_board_schema_bundle():
-    br = await PlakyClient().list_boards()
-    assert br.get("ok") is True
-    board_id = _pick_board_id(br["boards"])
+    c = PlakyClient()
+    board_id = await resolve_boardman_test_board_id(c)
     bundle = await fetch_board_schema_bundle(board_id)
     assert bundle.get("ok") is True, bundle.get("message")
     assert bundle.get("normalized") is not None
@@ -117,12 +105,17 @@ async def test_live_name_match_boards():
     boards = r.get("boards") or []
     matches, best = rank_plaky_rows(boards, "")
     assert len(matches) == len(boards)
-    if boards:
-        full_name = str(boards[0].get("name") or "").strip()
-        if full_name:
-            m2, _ = rank_plaky_rows(boards, full_name)
-            assert m2[0]["id"] == str(boards[0]["id"])
-            assert m2[0]["score"] >= 700
+    btest = find_row_by_name(boards, BOARDMAN_TEST_BOARD_NAME)
+    if not btest:
+        pytest.skip(
+            f"Board {BOARDMAN_TEST_BOARD_NAME!r} not returned by list_boards — "
+            "create it or set PLAKY_BOARDMAN_TEST_BOARD_ID"
+        )
+    full_name = str(btest.get("name") or "").strip()
+    if full_name:
+        m2, _ = rank_plaky_rows(boards, full_name)
+        assert m2[0]["id"] == str(btest["id"])
+        assert m2[0]["score"] >= 700
 
 
 @skip_no_plaky
@@ -140,9 +133,7 @@ async def test_live_http_boards_match_route():
 @skip_no_plaky
 @pytest.mark.asyncio
 async def test_live_http_board_schema_route():
-    br = await PlakyClient().list_boards()
-    assert br.get("ok") is True
-    board_id = _pick_board_id(br["boards"])
+    board_id = await resolve_boardman_test_board_id(PlakyClient())
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.get(f"/api/v1/plaky/boards/{board_id}/schema")
@@ -167,22 +158,14 @@ async def test_live_get_tasks_smoke():
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     os.environ.get("PLAKY_LIVE_WRITE") != "1",
-    reason="Set PLAKY_LIVE_WRITE=1 to create a real Plaky item (uses default or first board/group)",
+    reason="Set PLAKY_LIVE_WRITE=1 to create a real Plaky item on Boardman Test Board (see tests/plaky_test_board.py)",
 )
 async def test_live_create_item_hierarchy():
     if not _plaky_configured():
         pytest.skip("PLAKY_API_KEY missing")
     c = PlakyClient()
-    br = await c.list_boards()
-    assert br.get("ok") is True
-    board_id = _pick_board_id(br["boards"])
-    gr = await c.list_groups(board_id)
-    assert gr.get("ok") is True, gr.get("message")
-    groups = gr.get("groups") or []
-    gid = (settings.plaky_default_group_id or "").strip()
-    if not gid:
-        assert groups, "need at least one group or PLAKY_DEFAULT_GROUP_ID"
-        gid = str(groups[0]["id"])
+    board_id = await resolve_boardman_test_board_id(c)
+    gid = await resolve_boardman_test_group_id(c, board_id)
     app = create_app()
     title = "[boardman pytest PLAKY_LIVE_WRITE] delete me"
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -205,28 +188,15 @@ async def test_live_create_item_hierarchy():
 @pytest.mark.asyncio
 @pytest.mark.skipif(
     os.environ.get("PLAKY_LIVE_WRITE") != "1",
-    reason="Set PLAKY_LIVE_WRITE=1 to run live create+update route test in Boardman Test Board/Sprint 2",
+    reason="Set PLAKY_LIVE_WRITE=1 to run live create+update route test in Boardman Test Board / default test group",
 )
 async def test_live_create_then_update_task_in_boardman_test_board_sprint_2():
     if not _plaky_configured():
         pytest.skip("PLAKY_API_KEY missing")
 
     plaky = PlakyClient()
-    br = await plaky.list_boards()
-    assert br.get("ok") is True, br.get("message")
-    boards = br.get("boards") or []
-    assert isinstance(boards, list) and boards, "No boards returned from Plaky"
-    board = _find_named_row(boards, "Boardman Test Board")
-    assert board is not None, "Could not find 'Boardman Test Board'"
-    board_id = str(board["id"])
-
-    gr = await plaky.list_groups(board_id)
-    assert gr.get("ok") is True, gr.get("message")
-    groups = gr.get("groups") or []
-    assert isinstance(groups, list) and groups, "No groups returned for Boardman Test Board"
-    group = _find_named_row(groups, "Sprint 2")
-    assert group is not None, "Could not find 'Sprint 2' group on Boardman Test Board"
-    group_id = str(group["id"])
+    board_id = await resolve_boardman_test_board_id(plaky)
+    group_id = await resolve_boardman_test_group_id(plaky, board_id)
 
     title = "[boardman pytest live create+update] Boardman Test Board / Sprint 2"
     app = create_app()

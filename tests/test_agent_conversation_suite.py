@@ -21,6 +21,8 @@ from boardman.database.models import Base
 from boardman.database.session import get_db
 from boardman.main import create_app
 
+from tests.plaky_test_board import resolve_boardman_test_board_id, resolve_boardman_test_group_id
+
 
 async def _memory_engine_and_factory():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -317,17 +319,11 @@ async def test_live_http_agent_with_plaky_board_and_group_ids(
     monkeypatch.setattr(bs.settings, "agent_langchain_tools", False)
 
     client_api = PlakyClient()
-    br = await client_api.list_boards()
-    if not br.get("ok") or not br.get("boards"):
-        pytest.skip(f"Plaky list_boards not available: {br.get('message')}")
-
-    board = br["boards"][0]
-    board_id = str(board["id"])
-    gr = await client_api.list_groups(board_id)
-    if not gr.get("ok") or not gr.get("groups"):
-        pytest.skip(f"Plaky list_groups failed for board {board_id}: {gr.get('message')}")
-
-    group_id = str(gr["groups"][0]["id"])
+    try:
+        board_id = await resolve_boardman_test_board_id(client_api)
+        group_id = await resolve_boardman_test_group_id(client_api, board_id)
+    except AssertionError as e:
+        pytest.skip(f"Boardman test board/group not available: {e}")
 
     engine, factory = await _memory_engine_and_factory()
 

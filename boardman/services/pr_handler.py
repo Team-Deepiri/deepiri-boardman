@@ -27,7 +27,7 @@ from boardman.services.pr_task_registry import (
     mark_pr_withdrawn,
     upsert_pr_task_link,
 )
-from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_job
+from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
 from boardman.services.pr_tracker import upsert_pr_row, remove_pr_row
 from boardman.settings import settings
 
@@ -94,7 +94,7 @@ async def _maybe_set_needs_qa(
     await _update_plaky_task_status(
         plaky, task_id, st, bid, status_field_key=status_field_key
     )
-    await maybe_enqueue_plaky_reorder_job()
+    await maybe_enqueue_plaky_reorder_after_task(plaky, task_id)
 
 
 async def _maybe_triage_ambiguous_pr(
@@ -184,7 +184,7 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
 
     from boardman.repos_config import get_routing
     routing = get_routing(full_name, repo_name, settings.github_org)
-    board_id = routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     plaky = PlakyClient()
     results = []
@@ -340,7 +340,7 @@ async def handle_pr_ready_for_review(
     from boardman.repos_config import get_routing
 
     routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
-    board_id = routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     for tid in task_ids:
         await _maybe_set_needs_qa(plaky, tid, is_draft=False, board_id=board_id or "")
@@ -364,7 +364,7 @@ async def handle_pr_review_requested(
     from boardman.repos_config import get_routing
 
     routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
-    board_id = routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     in_qa = (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
     in_qa_field_key: str | None = None
@@ -384,7 +384,8 @@ async def handle_pr_review_requested(
             plaky, tid, in_qa, board_id or "", status_field_key=in_qa_field_key
         )
     await session.commit()
-    await maybe_enqueue_plaky_reorder_job()
+    if task_ids:
+        await maybe_enqueue_plaky_reorder_after_task(plaky, task_ids[0])
     return {"ok": True, "tasks": task_ids, "status": in_qa, "event": "review_requested"}
 
 
@@ -440,8 +441,11 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
         await session.commit()
         return {"ok": True, "skipped": True, "message": "No linked Plaky tasks for this PR"}
 
+    from boardman.repos_config import get_routing
+
     merge_status = (settings.plaky_pr_merge_status or "").strip() or "in_review"
-    board_id_merge = (settings.plaky_default_board_id or "").strip()
+    merge_routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
+    board_id_merge = (merge_routing.plaky_board_id if merge_routing and merge_routing.plaky_board_id else "") or ""
     results: list[dict[str, Any]] = []
 
     for task_id in sorted(affected_tasks):
@@ -468,7 +472,7 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
         )
         session.add(log)
         results.append({"task_id": task_id, "status": merge_status})
-        await maybe_enqueue_plaky_reorder_job()
+        await maybe_enqueue_plaky_reorder_after_task(plaky, task_id)
 
     await remove_pr_row(payload.pull_request, payload.repository, session)
 
@@ -519,7 +523,7 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
 
     cfg = load_team_assignments()
     routing = get_routing(full_name, repo_name, settings.github_org)
-    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id) or ""
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     qa_field = await resolve_qa_assignee_field_key(board_id, cfg.plaky_field_qa)
     if not qa_field:
@@ -594,5 +598,7 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
 
     await session.commit()
     if results:
-        await maybe_enqueue_plaky_reorder_job()
+        tid0 = results[0].get("task_id") if results else None
+        if tid0:
+            await maybe_enqueue_plaky_reorder_after_task(plaky, str(tid0))
     return {"ok": True, "updated": results}

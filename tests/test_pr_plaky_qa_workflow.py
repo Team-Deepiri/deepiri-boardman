@@ -28,6 +28,7 @@ from boardman.services.pr_handler import (
     handle_pr_review_requested,
 )
 from boardman.services.pr_review_handler import handle_issue_comment_on_pr, handle_pull_request_review
+from boardman.repos_config import RepoRouting
 from boardman.settings import settings
 
 
@@ -88,7 +89,13 @@ def qa_settings(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "plaky_status_qa_rejected", "qa_rejected")
     monkeypatch.setattr(settings, "plaky_status_completed", "completed")
     monkeypatch.setattr(settings, "plaky_pr_merge_status", "completed")
-    monkeypatch.setattr(settings, "plaky_default_board_id", "board-1")
+
+    def _fixed_routing(*a, **k):
+        return RepoRouting(plaky_board_id="board-1")
+
+    monkeypatch.setattr("boardman.repos_config.get_routing", _fixed_routing)
+    monkeypatch.setattr("boardman.services.pr_review_handler.get_routing", _fixed_routing)
+    monkeypatch.setattr("boardman.services.pr_task_linking.get_routing", _fixed_routing)
     monkeypatch.setattr(settings, "plaky_complete_when_all_prs_merged", False)
     monkeypatch.setattr(settings, "github_org", "deepiri-org")
 

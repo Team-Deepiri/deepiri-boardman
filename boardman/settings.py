@@ -33,9 +33,6 @@ class Settings(BaseSettings):
     plaky_status_completed: str = "completed"
     plaky_pr_tracking_board_id: str = ""
     plaky_pr_tracking_group_id: str = ""
-    # Plaky hierarchy: Item lives under Board + Group (no separate "table" in API)
-    plaky_default_board_id: str = ""
-    plaky_default_group_id: str = ""
     # On startup, fetch the default board schema and fill blank `plaky_field_keys` in team_assignments.yml.
     plaky_auto_sync_team_assignment_field_keys: bool = True
     # Minimum interval between field-key sync attempts for the same board,

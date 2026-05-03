@@ -25,6 +25,7 @@ from boardman.plaky.board_schema import (
     select_field_patch_pair_from_schema,
 )
 from boardman.plaky.client import PlakyClient
+from boardman.plaky.task_payload_ids import board_id_from_plaky_task as _board_id_from_task_payload
 from boardman.plaky.placement import plaky_placement_context
 from boardman.plaky.task_tag_vocab import (
     canonical_task_priority,
@@ -290,12 +291,8 @@ async def _run_post_create_assignments(
 def _http_placement_ids(req: CreateTaskInput) -> tuple[str, str]:
     board = (req.plaky_board_id or "").strip()
     if not board:
-        board = (settings.plaky_default_board_id or "").strip()
-    if not board:
         board = (get_context_plaky_board_id() or "").strip()
     group = (req.plaky_group_id or "").strip()
-    if not group:
-        group = (settings.plaky_default_group_id or "").strip()
     if not group:
         group = (get_context_plaky_group_id() or "").strip()
     return board, group
@@ -384,23 +381,6 @@ def _value_for_comment(value: Any, option_map: dict[Any, str] | None = None) -> 
             return "(empty)"
         return ", ".join(_value_for_comment(x, option_map) for x in value)
     return str(value)
-
-
-def _board_id_from_task_payload(task: dict | None) -> str:
-    if not isinstance(task, dict):
-        return ""
-    for k in ("boardId", "board_id"):
-        val = task.get(k)
-        if isinstance(val, dict):
-            val = val.get("id") or val.get("boardId")
-        if val is not None and str(val).strip():
-            return str(val).strip()
-    board = task.get("board")
-    if isinstance(board, dict):
-        val = board.get("id") or board.get("boardId")
-        if val is not None and str(val).strip():
-            return str(val).strip()
-    return ""
 
 
 async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
@@ -623,7 +603,7 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
         if got:
             ops["task_lookup"] = got
     if needs_board_lookup and not board_id:
-        board_id = (settings.plaky_default_board_id or "").strip() or (get_context_plaky_board_id() or "").strip()
+        board_id = (get_context_plaky_board_id() or "").strip()
 
     if wants_board_patch and board_id:
         schema_normalized: dict[str, Any] | None = None

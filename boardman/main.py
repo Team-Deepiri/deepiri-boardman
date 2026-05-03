@@ -36,7 +36,9 @@ async def lifespan(app: FastAPI):
             "Boards/match and agent Plaky tools will not call the API."
         )
     if pk and settings.plaky_auto_sync_team_assignment_field_keys:
-        bid = (settings.plaky_default_board_id or "").strip()
+        from boardman.repos_config import team_assignment_field_sync_board_id
+
+        bid = team_assignment_field_sync_board_id()
         if bid:
             try:
                 synced = await sync_team_assignment_field_keys_from_board(bid)
@@ -47,7 +49,7 @@ async def lifespan(app: FastAPI):
             except Exception as e:
                 _log.warning("team_assignments: startup field-key sync failed: %s", e)
         else:
-            _log.info("team_assignments: startup field-key sync skipped (plaky_default_board_id empty)")
+            _log.info("team_assignments: startup field-key sync skipped (repos.yml defaults.plaky_board_id empty)")
     prov = (settings.llm_provider or "ollama").lower()
     if prov == "ollama":
         try:
