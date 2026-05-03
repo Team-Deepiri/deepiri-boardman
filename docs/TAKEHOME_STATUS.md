@@ -5,9 +5,9 @@
 The goal is a fully dynamic, zero-hardcoded tier classification system. Current implementation cannot achieve user's target distribution:
 
 **User's Target:**
-- **Tier 1**: 7 simple/web repos (web-frontend, landing, axiom, api-gateway, auth, shared-utils, platform)
-- **Tier 2**: 16 repos (AI/research - diri-cyrex, diri-persola, deepiri-modelkit, etc.)
-- **Tier 3**: All remaining repos - can handle ANY repo
+- **Tier 1**: From my analsis: i think that there should be 7 simple/web repos (web-frontend, landing, axiom, api-gateway, auth, shared-utils, platform) that the tier 1 qa's can perform as well as any tier can perform technically
+- **Tier 2**: from my analysis: 16 repos (AI/research - diri-cyrex, diri-persola, deepiri-modelkit, etc.) that tier 3 and tier 2 can perform
+- **Tier 3**: All remaining repos (and also a tier 3 QA can perform any repo)
 
 **Current Issue:**
 - IDF-based scores from file tree signals don't correlate with user's domain knowledge
