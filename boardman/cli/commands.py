@@ -257,7 +257,6 @@ def sync(
                             title=title,
                             description=body,
                             priority="medium",
-                            repo=repo,
                             github_repos=[repo],
                         )
                     )

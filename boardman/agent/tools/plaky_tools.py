@@ -254,7 +254,6 @@ async def _plaky_create_task(
             title=title,
             description=description,
             priority=canon_pri,
-            repo=repo_tokens[0] if repo_tokens else "",
             github_repos=repo_tokens if repo_tokens else None,
             plaky_board_id=bid,
             plaky_group_id=gid,

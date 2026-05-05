@@ -134,6 +134,12 @@ body {
   appearance: auto;
 }
 
+.field__select[multiple] {
+  min-height: 10.5rem;
+  max-height: 12.5rem;
+  overflow-y: auto;
+}
+
 .field__select:disabled {
   opacity: 0.55;
   cursor: not-allowed;

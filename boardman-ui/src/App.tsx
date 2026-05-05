@@ -124,7 +124,7 @@ function EmptyState() {
 }
 
 export default function App() {
-  const [repo, setRepo] = useState("");
+  const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
   const [orgRepos, setOrgRepos] = useState<string[]>([]);
   const [orgReposHint, setOrgReposHint] = useState<string | null>(null);
   const [allowWrites, setAllowWrites] = useState(true);
@@ -377,7 +377,7 @@ export default function App() {
         title: t,
         description: createBody,
         priority: "Medium",
-        repo: repo.trim() || undefined,
+        github_repos: selectedRepos.length > 0 ? selectedRepos : undefined,
         plaky_board_id: plakyBoardId || undefined,
         plaky_group_id: plakyGroupId || undefined,
         engineer_plaky_id: engPick || undefined,
@@ -400,7 +400,7 @@ export default function App() {
     createTitle,
     createBody,
     createBusy,
-    repo,
+    selectedRepos,
     plakyBoardId,
     plakyGroupId,
     engPick,
@@ -419,7 +419,7 @@ export default function App() {
         text,
         {
           sessionId,
-          repo,
+          repo: selectedRepos[0] || "",
           allowWrites,
           useTools,
           plakyBoardId,
@@ -474,7 +474,7 @@ export default function App() {
       setLoading(false);
       textareaRef.current?.focus();
     }
-  }, [input, loading, sessionId, repo, allowWrites, useTools, plakyBoardId, plakyGroupId, selectedModel]);
+  }, [input, loading, sessionId, selectedRepos, allowWrites, useTools, plakyBoardId, plakyGroupId, selectedModel]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -526,21 +526,33 @@ export default function App() {
         <div className="field">
           <label className="field__label" htmlFor="repo-select">
             <IconRepo className="field__label-icon" />
-            Repository
+            Repositories
           </label>
-          <AppSelect
+          <select
             id="repo-select"
-            value={repo}
-            onChange={setRepo}
-            emptyLabel="None"
-            options={orgRepos.map((full) => {
+            className="field__input field__select ui-scroll--translucent"
+            multiple
+            size={8}
+            value={selectedRepos}
+            onChange={(e) => {
+              const values = Array.from(e.target.selectedOptions).map((o) => o.value);
+              setSelectedRepos(values);
+            }}
+          >
+            {orgRepos.map((full) => {
               const i = full.indexOf("/");
               const short = i >= 0 ? full.slice(i + 1) : full;
-              return { value: full, label: short };
+              return (
+                <option key={full} value={full}>
+                  {short}
+                </option>
+              );
             })}
-          />
+          </select>
           {orgReposHint ? <p className="field__hint field__hint--warn">{orgReposHint}</p> : null}
-          <p className="field__hint">Optional. Passed to the agent for scoped answers.</p>
+          <p className="field__hint">
+            Multi-select. Used for task creation (`github_repos`); first selected repo is used for chat scoping. Use CTRL+CLICK to select multiple.
+          </p>
         </div>
 
         <div className="toggle-field">
@@ -729,7 +741,7 @@ export default function App() {
           <button
             type="button"
             className="field__button"
-            disabled={createBusy || !createTitle.trim()}
+            disabled={createBusy || !createTitle.trim() || selectedRepos.length === 0}
             onClick={onCreateTask}
           >
             {createBusy ? "Creating…" : "Create task"}
