@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 from typing import Optional
 
 import httpx
@@ -14,6 +15,8 @@ from boardman.plaky.placement import context_board_id, context_group_id, plaky_p
 from boardman.database.models import AgentSession, ProjectContext, ScanRun
 from boardman.database.session import async_session
 from boardman.plaky.client import PlakyClient
+from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
+from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
 from boardman.repos_config import list_registered_repos, list_workspace_repos, upsert_repo
 from boardman.services.direction_init import init_direction_file
 from boardman.services.scan_handler import run_repo_scan
@@ -45,19 +48,33 @@ def create_task(
 
 @app.command()
 def link_pr(
-    pr_url: str = typer.Option(..., prompt=True, help="GitHub PR URL"),
+    pr_urls: str = typer.Option(
+        ...,
+        "--pr-url",
+        "-u",
+        prompt=True,
+        help="GitHub PR URL(s): one URL, or several comma- or whitespace-separated",
+    ),
     task_id: str = typer.Option(..., prompt=True, help="Plaky task ID"),
     update_status: bool = typer.Option(False, "--update-status", help="Update task status on merge"),
 ):
     plaky = PlakyClient()
 
     async def run():
-        comment = f"**PR Linked:** [View PR]({pr_url})"
+        parts = [p for p in re.split(r"[\s,]+", (pr_urls or "").strip()) if p.strip()]
+        urls = collect_pr_urls(pr_url=None, pr_urls=parts or None)
+        if not urls:
+            console.print("[red]Error:[/red] supply at least one PR URL")
+            return
+        comment = format_pr_link_comment(urls)
         result = await plaky.add_comment(task_id, comment)
         if result.get("ok"):
             console.print("[green]PR linked successfully[/green]")
             if update_status:
-                await plaky.update_task_status(task_id, settings.plaky_pr_merge_status)
+                await update_task_internal(
+                    task_id,
+                    UpdateTaskInput(status=settings.plaky_pr_merge_status),
+                )
                 console.print(f"[green]Status updated to {settings.plaky_pr_merge_status}[/green]")
         else:
             console.print(f"[red]Error:[/red] {result.get('message')}")

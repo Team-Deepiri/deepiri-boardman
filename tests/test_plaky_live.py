@@ -222,32 +222,18 @@ async def test_live_create_then_update_task_in_boardman_test_board_sprint_2():
         ).strip()
         assert task_id, f"Could not resolve task id from create response: {create_body}"
 
-        update_comment = (
-            "Updated field values via PATCH /api/v1/tasks/{task_id}:\n"
-            "- status: Needs QA\n"
-            "- type: Bug\n"
-            "- priority: Very Important\n"
-            "- repo: team-deepiri/boardman\n"
-            "- github_repos: team-deepiri/boardman, team-deepiri/deepiri-boardman"
-        )
         patch_r = await client.patch(
             f"/api/v1/tasks/{task_id}",
             json={
-                "comment": update_comment,
                 "plaky_board_id": board_id,
                 "status": "Needs QA",
                 "type": "Bug",
                 "priority": "Very Important",
-                "repo": "team-deepiri/boardman",
-                "github_repos": [
-                    "team-deepiri/boardman",
-                    "team-deepiri/deepiri-boardman",
-                ],
             },
         )
     assert patch_r.status_code == 200
     patch_body = patch_r.json()
     assert patch_body.get("ok") is True, patch_body
     ops = patch_body.get("operations") or {}
-    assert (ops.get("comment_add") or {}).get("ok") is True
+    assert ops.get("comment_add") is None
     assert (ops.get("field_patch") or {}).get("ok") is True

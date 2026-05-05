@@ -29,6 +29,7 @@ sys.path.insert(0, REPO)
 
 from boardman.settings import settings
 from boardman.plaky.client import PlakyClient
+from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
 from boardman.github.team_roster import get_cached_support_team_roster
 from boardman.assignment.config import load_team_assignments
 from boardman.assignment.qa_picker import pick_qa_for_repo
@@ -358,12 +359,15 @@ async def test_plaky_write(board_id: str | None, group_id: str | None):
         else:
             warn("add_comment", cres.get("message", ""))
 
-        # Update status (use raw update_task_status which tries multiple field names)
-        sres = await plaky.update_task_status(task_id, settings.plaky_status_needs_qa)
+        # Update status via same path as PATCH /tasks (board field patch + legacy /tasks fallback)
+        sres = await update_task_internal(
+            str(task_id),
+            UpdateTaskInput(status=settings.plaky_status_needs_qa),
+        )
         if sres.get("ok"):
-            ok("update_task_status → needs_qa")
+            ok("update_task_internal → needs_qa")
         else:
-            warn("update_task_status", sres.get("message", ""))
+            warn("update_task_internal", sres.get("message", ""))
 
         print(f"\n  Task URL: {res.get('task_url') or '(no url returned)'}")
         print(f"  Task ID:  {task_id}")

@@ -59,15 +59,13 @@ class CreateTaskInput:
 
 @dataclass(slots=True)
 class UpdateTaskInput:
-    title: str | None = None
-    description: str | None = None
-    comment: str | None = None
+    """Partial updates only: workflow fields and QA assignee (create sets title, repos, engineer, etc.)."""
+
     status: str | None = None
+    # With status: optional board field key (e.g. option id from resolve_plaky_status_patch).
+    status_plaky_field_key: str | None = None
     task_type: str | None = None
     priority: str | None = None
-    repo: str | None = None
-    github_repos: list[str] | None = None
-    engineer_plaky_id: str | None = None
     qa_plaky_id: str | None = None
     plaky_board_id: str | None = None
 
@@ -562,40 +560,24 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
 async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, Any]:
     plaky = PlakyClient()
     ops: dict[str, Any] = {}
-    comment_change_lines: list[str] = []
 
-    update_title = (req.title or "").strip()
-    update_description = (req.description or "").strip()
-    update_comment = (req.comment or "").strip()
     update_status_raw = (req.status or "").strip()
+    update_status_plaky_key_raw = (req.status_plaky_field_key or "").strip()
     update_type_raw = (req.task_type or "").strip()
     update_priority_raw = (req.priority or "").strip()
-    update_engineer = (req.engineer_plaky_id or "").strip()
     update_qa = (req.qa_plaky_id or "").strip()
-    update_repo = (req.repo or "").strip()
-    update_github_repos = req.github_repos if isinstance(req.github_repos, list) else None
 
     wants_board_patch = any(
         (
             update_status_raw,
             update_type_raw,
             update_priority_raw,
-            update_engineer,
             update_qa,
-            update_repo,
-            bool(update_github_repos),
         )
     )
 
-    if update_title or update_description:
-        ops["title_update"] = await plaky.update_task_fields(
-            task_id,
-            title=update_title if update_title else None,
-            description=update_description if update_description else None,
-        )
-
     board_id = (req.plaky_board_id or "").strip()
-    needs_board_lookup = wants_board_patch or bool(update_comment)
+    needs_board_lookup = wants_board_patch
     if needs_board_lookup and not board_id:
         got = await plaky.get_task(task_id)
         task = got.get("task") if isinstance(got, dict) and isinstance(got.get("task"), dict) else {}
@@ -605,9 +587,10 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
     if needs_board_lookup and not board_id:
         board_id = (get_context_plaky_board_id() or "").strip()
 
+    status_added_to_field_values = False
+
     if wants_board_patch and board_id:
         schema_normalized: dict[str, Any] | None = None
-        inferred_from_schema: dict[str, str] = {}
         try:
             await sync_team_assignment_field_keys_from_board(board_id)
         except Exception:
@@ -617,62 +600,41 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
             sn = bundle.get("normalized") if isinstance(bundle, dict) else None
             if isinstance(sn, dict):
                 schema_normalized = sn
-                inferred_from_schema = infer_plaky_field_keys_from_normalized(sn)
         except Exception:
             pass
 
         allowed_board_keys = _allowed_item_field_keys_from_schema(schema_normalized)
         cfg = load_team_assignments()
-        engineer_field_key = _scrub_placeholder_field_key((cfg.plaky_field_engineer or "").strip(), allowed_board_keys=allowed_board_keys)
         qa_field_key = _scrub_placeholder_field_key((cfg.plaky_field_qa or "").strip(), allowed_board_keys=allowed_board_keys)
-        engineer_field_key, qa_field_key = await _infer_plaky_person_column_keys(
-            board_id, engineer_field_key, qa_field_key, normalized=schema_normalized
+        _, qa_field_key = await _infer_plaky_person_column_keys(
+            board_id, "", qa_field_key, normalized=schema_normalized
         )
-        engineer_field_key = _scrub_placeholder_field_key(engineer_field_key, allowed_board_keys=allowed_board_keys)
         qa_field_key = _scrub_placeholder_field_key(qa_field_key, allowed_board_keys=allowed_board_keys)
 
-        repo_plaky_key = _scrub_placeholder_field_key(
-            ((cfg.plaky_field_repo or "").strip() or (inferred_from_schema.get("repo") or "").strip()),
-            allowed_board_keys=allowed_board_keys,
-        )
-        github_repos_plaky_key = _scrub_placeholder_field_key(
-            ((cfg.plaky_field_github_repos or "").strip() or (inferred_from_schema.get("github_repos") or "").strip()),
-            allowed_board_keys=allowed_board_keys,
-        )
-
-        merged_repos = _merge_github_repo_inputs(primary_repo=update_repo, extra_repos=update_github_repos, filters={})
-        repo_display = merged_repos[0] if merged_repos else update_repo
-        repo_val_fmt = plaky_repo_field_value_format(schema_normalized, repo_plaky_key)
-        gh_repos_val_fmt = plaky_repo_field_value_format(schema_normalized, github_repos_plaky_key)
-        rk_set, gk_set = (repo_plaky_key or "").strip(), (github_repos_plaky_key or "").strip()
-        if rk_set == gk_set and rk_set and (repo_val_fmt == "short" or gh_repos_val_fmt == "short"):
-            repo_val_fmt = gh_repos_val_fmt = "short"
-
-        field_values = build_repo_field_map(
-            cfg,
-            repo_value=repo_display,
-            github_repos=merged_repos if merged_repos else None,
-            plaky_field_repo_key=repo_plaky_key or None,
-            plaky_field_github_repos_key=github_repos_plaky_key or None,
-            repo_value_format=repo_val_fmt,
-            github_repos_value_format=gh_repos_val_fmt,
-        )
-        if update_engineer and engineer_field_key:
-            field_values[engineer_field_key] = update_engineer
+        field_values: dict[str, Any] = {}
         if update_qa and qa_field_key:
             field_values[qa_field_key] = update_qa
 
         canon_status = canonical_task_status(update_status_raw) if update_status_raw else ""
         canon_type = canonical_task_type(update_type_raw) if update_type_raw else ""
         canon_priority = canonical_task_priority(update_priority_raw) if update_priority_raw else ""
-        pairs = (
-            select_field_patch_pair_from_schema(
+
+        direct_status_key = _scrub_placeholder_field_key(
+            update_status_plaky_key_raw, allowed_board_keys=allowed_board_keys
+        )
+        if update_status_raw and direct_status_key:
+            field_values[direct_status_key] = update_status_raw
+            status_added_to_field_values = True
+
+        status_pair = None
+        if canon_status and not status_added_to_field_values:
+            status_pair = select_field_patch_pair_from_schema(
                 schema_normalized,
                 column_name_substrings=("status", "state", "workflow"),
                 value_label_candidates=status_field_patch_candidates(canon_status),
             )
-            if canon_status
-            else None,
+        pairs = (
+            status_pair,
             select_field_patch_pair_from_schema(
                 schema_normalized,
                 column_name_substrings=("type", "issue type", "category", "kind"),
@@ -694,43 +656,26 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
                 fk, fv = pair
                 if fk and fv is not None:
                     field_values[fk] = fv
-
-        tag_keys = {k.strip() for k in (repo_plaky_key, github_repos_plaky_key) if (k or "").strip()}
-        tag_resolution_warnings: list[dict[str, Any]] = []
-        if tag_keys and isinstance(schema_normalized, dict):
-            _, tag_resolution_warnings = resolve_repo_tag_field_values_from_schema(field_values, schema_normalized, keys=tag_keys)
+                    if pair is status_pair:
+                        status_added_to_field_values = True
 
         if field_values:
-            field_labels, option_labels = _schema_field_maps(schema_normalized)
-            comment_change_lines = [
-                f"- {(field_labels.get(k) or k)}: {_value_for_comment(v, option_labels.get(k))}" for k, v in field_values.items()
-            ]
             person_keys = _person_item_field_keys_from_normalized(schema_normalized)
             patch = await plaky.patch_item_field_values(
                 board_id, task_id, field_values, person_field_keys=person_keys or None
             )
-            if tag_resolution_warnings:
-                patch["tag_resolution_warnings"] = tag_resolution_warnings
             patch["field_values_attempted"] = dict(field_values)
             ops["field_patch"] = patch
         else:
             ops["field_patch"] = {"ok": True, "skipped": True, "message": "No board fields requested"}
     elif wants_board_patch:
-        ops["field_patch"] = {"ok": False, "message": "Board id required for assignee/status/type/priority/repo updates"}
+        ops["field_patch"] = {"ok": False, "message": "Board id required for QA/status/type/priority updates"}
 
-    if update_comment:
-        comment_body = "Updated fields:\n" + "\n".join(comment_change_lines) if comment_change_lines else update_comment
-        comment_result: dict[str, Any] | None = None
-        if board_id:
-            try:
-                comment_result = await plaky.add_item_comment_public(board_id, task_id, comment_body)
-            except Exception:
-                comment_result = None
-        if not comment_result or not comment_result.get("ok"):
-            comment_result = await plaky.add_comment(task_id, comment_body)
-        ops["comment_add"] = comment_result
+    if update_status_raw and not status_added_to_field_values:
+        legacy = await plaky.update_task_fields(task_id, status=update_status_raw)
+        ops["legacy_task_fields"] = legacy
 
-    requested_any = any((update_title, update_description, update_comment, wants_board_patch))
+    requested_any = wants_board_patch
     if not requested_any:
         return {"ok": False, "status": 400, "message": "No update fields provided"}
     op_results = [v for v in ops.values() if isinstance(v, dict)]

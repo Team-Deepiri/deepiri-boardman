@@ -1,11 +1,12 @@
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import AliasChoices, BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.session import get_db
 from boardman.plaky.client import PlakyClient
+from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
 from boardman.settings import settings
 from boardman.services.task_mutations import (
     CreateTaskInput,
@@ -40,23 +41,23 @@ class CreateTaskRequest(BaseModel):
 
 
 class LinkPRRequest(BaseModel):
-    pr_url: str
-    task_id: str
+    """Link one or more GitHub PRs to the task. Task id is the URL path param `{task_id}`."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    # Backward compatible single URL; combine with pr_urls when both sent.
+    pr_url: Optional[str] = None
+    pr_urls: Optional[List[str]] = None
     update_status: bool = False
 
 
 class UpdateTaskRequest(BaseModel):
-    title: Optional[str] = None
-    comment: Optional[str] = None
     status: Optional[str] = None
     task_type: Optional[str] = Field(
         default=None,
         validation_alias=AliasChoices("type", "task_type"),
     )
     priority: Optional[str] = None
-    repo: Optional[str] = None
-    github_repos: Optional[List[str]] = None
-    engineer_plaky_id: Optional[str] = None
     qa_plaky_id: Optional[str] = None
     plaky_board_id: Optional[str] = None
 
@@ -101,14 +102,9 @@ async def update_task(task_id: str, req: UpdateTaskRequest, session: AsyncSessio
     return await update_task_internal(
         task_id,
         UpdateTaskInput(
-            title=req.title,
-            comment=req.comment,
             status=req.status,
             task_type=req.task_type,
             priority=req.priority,
-            repo=req.repo,
-            github_repos=req.github_repos,
-            engineer_plaky_id=req.engineer_plaky_id,
             qa_plaky_id=req.qa_plaky_id,
             plaky_board_id=req.plaky_board_id,
         ),
@@ -117,14 +113,21 @@ async def update_task(task_id: str, req: UpdateTaskRequest, session: AsyncSessio
 
 @router.post("/tasks/{task_id}/link-pr")
 async def link_pr(task_id: str, req: LinkPRRequest, session: AsyncSession = Depends(get_db)):
+    urls = collect_pr_urls(pr_url=req.pr_url, pr_urls=req.pr_urls)
+    if not urls:
+        return {"ok": False, "status": 400, "message": "Provide pr_url and/or pr_urls with at least one PR URL"}
+
     plaky = PlakyClient()
-    comment = f"**PR Linked:** [View PR]({req.pr_url})"
+    comment = format_pr_link_comment(urls)
     result = await plaky.add_comment(task_id, comment)
 
     if not result.get("ok"):
         return result
 
     if req.update_status:
-        await plaky.update_task_status(task_id, settings.plaky_pr_merge_status)
+        await update_task_internal(
+            task_id,
+            UpdateTaskInput(status=settings.plaky_pr_merge_status),
+        )
 
     return result

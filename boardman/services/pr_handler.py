@@ -12,7 +12,6 @@ from boardman.assignment.config import load_team_assignments
 from boardman.assignment.qa_picker import pick_qa_for_repo
 from boardman.database.models import SyncLog
 from boardman.github.webhooks import PullRequestEventPayload, PullRequestReviewCommentEventPayload
-from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.services.issue_handler import find_plaky_task_by_issue, get_linked_issue_numbers
 from boardman.services.pr_task_linking import (
@@ -27,6 +26,7 @@ from boardman.services.pr_task_registry import (
     mark_pr_withdrawn,
     upsert_pr_task_link,
 )
+from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
 from boardman.services.pr_tracker import upsert_pr_row, remove_pr_row
 from boardman.settings import settings
@@ -35,37 +35,21 @@ _log = logging.getLogger(__name__)
 
 
 async def _update_plaky_task_status(
-    plaky: PlakyClient,
     task_id: str,
     status_value: str,
     board_id: str,
     *,
     status_field_key: Optional[str] = None,
 ) -> dict:
-    """Update task status using board schema to find the status field key."""
-    if not board_id:
-        return await plaky.update_task_status(task_id, status_value)
-
-    schema_bundle = await fetch_board_schema_bundle(board_id)
-    if not schema_bundle.get("ok") or not schema_bundle.get("normalized"):
-        return await plaky.update_task_status(task_id, status_value)
-
-    normalized = schema_bundle["normalized"]
-    fields = normalized.get("fields") or []
-
-    key_use = (status_field_key or "").strip() or None
-    if not key_use:
-        for f in fields:
-            ftype = (f.get("type") or "").lower()
-            fname = (f.get("name") or "").lower()
-            if "status" in ftype or "status" in fname:
-                key_use = str(f.get("key") or "").strip() or None
-                break
-
-    if not key_use:
-        return await plaky.update_task_status(task_id, status_value)
-
-    return await plaky.patch_item_field_values(board_id, task_id, {key_use: status_value})
+    """Apply status via the same path as PATCH /tasks (schema-aware field patch + legacy /tasks fallback)."""
+    return await update_task_internal(
+        task_id,
+        UpdateTaskInput(
+            status=status_value,
+            plaky_board_id=board_id or None,
+            status_plaky_field_key=status_field_key,
+        ),
+    )
 
 
 def _needs_qa_status_value() -> str:
@@ -92,7 +76,7 @@ async def _maybe_set_needs_qa(
     if is_draft and settings.plaky_skip_needs_qa_for_draft:
         return
     await _update_plaky_task_status(
-        plaky, task_id, st, bid, status_field_key=status_field_key
+        task_id, st, bid, status_field_key=status_field_key
     )
     await maybe_enqueue_plaky_reorder_after_task(plaky, task_id)
 
@@ -381,7 +365,7 @@ async def handle_pr_review_requested(
     plaky = PlakyClient()
     for tid in task_ids:
         await _update_plaky_task_status(
-            plaky, tid, in_qa, board_id or "", status_field_key=in_qa_field_key
+            tid, in_qa, board_id or "", status_field_key=in_qa_field_key
         )
     await session.commit()
     if task_ids:
@@ -461,7 +445,7 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
             )
             continue
 
-        await _update_plaky_task_status(plaky, task_id, merge_status, board_id_merge)
+        await _update_plaky_task_status(task_id, merge_status, board_id_merge)
         merge_detail = {"pr_url": pr_url, "status": merge_status, "all_prs_done": True}
         log = SyncLog(
             action="pr_merged",
@@ -566,7 +550,7 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
             if not status_to_set:
                 continue
             await _update_plaky_task_status(
-                plaky, task_id, status_to_set, board_id, status_field_key=status_field_key
+                task_id, status_to_set, board_id, status_field_key=status_field_key
             )
             comment_text = f"**PR Comment:** by @{commenter_login}"
             await plaky.add_comment(task_id, comment_text)

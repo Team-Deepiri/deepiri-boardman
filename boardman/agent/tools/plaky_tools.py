@@ -305,19 +305,18 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
 
 async def _plaky_update_task(
     task_id: str,
-    title: Optional[str] = None,
-    description: Optional[str] = None,
-    priority: Optional[str] = None,
     status: Optional[str] = None,
+    task_type: Optional[str] = None,
+    priority: Optional[str] = None,
+    qa_plaky_id: Optional[str] = None,
 ) -> str:
     r = await update_task_internal(
         task_id,
         UpdateTaskInput(
-            title=title,
-            description=description,
             status=status,
+            task_type=task_type,
             priority=priority,
-            task_type=None,
+            qa_plaky_id=qa_plaky_id,
         ),
     )
     return json.dumps(r, default=str)
@@ -438,8 +437,9 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                     coroutine=_plaky_update_task,
                     name="plaky_update_task",
                     description=(
-                        "Patch a Plaky task (legacy /tasks). Args: task_id, optional title, description, "
-                        "priority (High|Low|Medium|Very Important or legacy low|medium|high), status."
+                        "Update workflow fields on an existing task: status, type, priority, QA assignee id. "
+                        "Use plaky_create_task for title/description/repo/engineer. "
+                        "Args: task_id; optional status, task_type, priority, qa_plaky_id (from plaky_list_workspace_users)."
                     ),
                 ),
                 StructuredTool.from_function(

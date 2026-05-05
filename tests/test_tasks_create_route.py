@@ -594,7 +594,7 @@ async def test_post_tasks_uses_board_from_create_when_patch_board_unknown(monkey
 
 
 @pytest.mark.asyncio
-async def test_patch_tasks_create_then_update_and_comment_field_values(
+async def test_patch_tasks_create_then_update_status_type_priority_qa(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     captured: Dict[str, Any] = {}
@@ -609,7 +609,6 @@ async def test_patch_tasks_create_then_update_and_comment_field_values(
                     {"name": "Contributor", "key": "fld_eng", "type": "PERSON"},
                     {"name": "QA engineer assigned", "key": "fld_qa", "type": "PERSON"},
                     {"name": "Repository", "key": "fld_repo", "type": "TAG"},
-                    {"name": "GitHub Repos", "key": "fld_repos_multi", "type": "TAG"},
                     {
                         "name": "Status",
                         "key": "fld_status",
@@ -650,7 +649,7 @@ async def test_patch_tasks_create_then_update_and_comment_field_values(
             return {"ok": True, "items": []}
 
         async def update_task_fields(self, task_id: str, **kwargs: Any) -> dict:
-            captured["title"] = {"task_id": task_id, **kwargs}
+            captured["legacy_task_fields"] = {"task_id": task_id, **kwargs}
             return {"ok": True, "task": {"id": task_id}}
 
         async def add_comment(self, task_id: str, body: str) -> dict:
@@ -688,61 +687,37 @@ async def test_patch_tasks_create_then_update_and_comment_field_values(
         created = create_r.json()
         assert created.get("ok") is True, created
 
-        update_comment = (
-            "Updated fields:\n"
-            "- engineer_plaky_id: eng-9\n"
-            "- qa_plaky_id: qa-9\n"
-            "- status: Needs QA\n"
-            "- type: Bug\n"
-            "- priority: Very Important\n"
-            "- repo: acme/widget\n"
-            "- github_repos: acme/widget, acme/api"
-        )
         r = await client.patch(
             "/api/v1/tasks/item-123",
             json={
-                "title": "Updated title",
-                "comment": update_comment,
                 "plaky_board_id": "board-77",
-                "engineer_plaky_id": "eng-9",
                 "qa_plaky_id": "qa-9",
                 "status": "Needs QA",
                 "type": "Bug",
                 "priority": "Very Important",
-                "repo": "acme/widget",
-                "github_repos": ["acme/widget", "acme/api"],
             },
         )
     assert r.status_code == 200
     body = r.json()
     assert body.get("ok") is True, body
     ops = body.get("operations") or {}
-    assert (ops.get("title_update") or {}).get("ok") is True
-    assert (ops.get("comment_add") or {}).get("ok") is True
+    assert ops.get("title_update") is None
+    assert ops.get("comment_add") is None
     assert (ops.get("field_patch") or {}).get("ok") is True
 
-    title_update = captured.get("title") or {}
-    assert title_update.get("task_id") == "item-123"
-    assert title_update.get("title") == "Updated title"
-    comment = captured.get("comment") or {}
-    assert comment.get("task_id") == "item-123"
-    comment_body = str(comment.get("body") or "")
-    assert "Updated fields:" in comment_body
-    assert update_comment not in comment_body
-    assert "status: Needs QA" in comment_body
+    assert "legacy_task_fields" not in captured
     patches = captured.get("patches") or []
     assert len(patches) >= 2  # one from create flow, one from update flow
     update_patch = patches[-1]
     assert update_patch.get("board_id") == "board-77"
     assert update_patch.get("item_id") == "item-123"
     vals = update_patch.get("values") or {}
-    assert vals.get("fld_eng") == "eng-9"
     assert vals.get("fld_qa") == "qa-9"
     assert vals.get("fld_status") == 30
     assert vals.get("fld_type") == 1
     assert vals.get("fld_pri") == 9
-    assert "fld_repo" in vals
-    assert "fld_repos_multi" in vals
+    assert "fld_eng" not in vals
+    assert "fld_repo" not in vals
 
 
 @pytest.mark.asyncio

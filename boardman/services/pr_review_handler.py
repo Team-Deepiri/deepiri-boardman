@@ -168,7 +168,7 @@ async def handle_pull_request_review(
                 continue
 
         res = await _update_plaky_task_status(
-            plaky, tid, target_status, board_id or "", status_field_key=status_field_key
+            tid, target_status, board_id or "", status_field_key=status_field_key
         )
         log = SyncLog(
             action="pr_review_plaky_status",
@@ -294,7 +294,7 @@ async def handle_issue_comment_on_pr(
     updated: list[dict[str, Any]] = []
     for tid in task_ids:
         res = await _update_plaky_task_status(
-            plaky, tid, in_qa, board_id or "", status_field_key=in_qa_field_key
+            tid, in_qa, board_id or "", status_field_key=in_qa_field_key
         )
         log = SyncLog(
             action="pr_comment_in_qa",

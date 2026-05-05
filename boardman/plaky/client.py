@@ -1314,26 +1314,6 @@ class PlakyClient:
 
         return {"ok": False, "status": response.status_code, "message": f"Failed to add comment ({response.status_code}): {response.text[:200]}"}
 
-    async def update_task_status(self, task_id: str, status: str) -> Dict[str, Any]:
-        if not self.api_key:
-            return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
-
-        url = f"{self.base_url.rstrip('/')}/tasks/{task_id}"
-        payload = {"status": status}
-
-        async with httpx.AsyncClient() as client:
-            response = await _request_with_rate_limit_retry(
-                client, "PATCH", url, headers=_headers(self.api_key), json=payload
-            )
-
-        if response.status_code in (200, 201):
-            return {"ok": True, "status": response.status_code, "task": response.json()}
-
-        if response.status_code == 429:
-            return {"ok": False, "status": 429, "message": "Plaky API rate limited the request."}
-
-        return {"ok": False, "status": response.status_code, "message": f"Failed to update task ({response.status_code}): {response.text[:200]}"}
-
     async def get_task(self, task_id: str) -> Dict[str, Any]:
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
