@@ -28,8 +28,7 @@ class CreateTaskRequest(BaseModel):
         default="Feature",
         validation_alias=AliasChoices("type", "task_type"),
     )
-    repo: Optional[str] = None
-    github_repos: Optional[List[str]] = None  # more owner/repo strings; merged with repo, deduped
+    github_repos: Optional[List[str]] = None  # owner/repo strings; deduped
     plaky_board_id: Optional[str] = None
     plaky_group_id: Optional[str] = None
     engineer_plaky_id: Optional[str] = None
@@ -59,6 +58,8 @@ class UpdateTaskRequest(BaseModel):
     )
     priority: Optional[str] = None
     qa_plaky_id: Optional[str] = None
+    auto_assign_qa: bool = False
+    github_repo: Optional[str] = None
     plaky_board_id: Optional[str] = None
 
 
@@ -71,7 +72,6 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
             priority=req.priority,
             status=req.status,
             task_type=req.task_type,
-            repo=req.repo,
             github_repos=req.github_repos,
             plaky_board_id=req.plaky_board_id,
             plaky_group_id=req.plaky_group_id,
@@ -106,6 +106,8 @@ async def update_task(task_id: str, req: UpdateTaskRequest, session: AsyncSessio
             task_type=req.task_type,
             priority=req.priority,
             qa_plaky_id=req.qa_plaky_id,
+            auto_assign_qa=req.auto_assign_qa,
+            github_repo=req.github_repo,
             plaky_board_id=req.plaky_board_id,
         ),
     )

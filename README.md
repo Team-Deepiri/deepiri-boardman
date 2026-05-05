@@ -51,7 +51,10 @@ curl http://localhost:8090/api/v1/health
 Use `poetry run boardman …` (or activate `poetry shell` first).
 
 ```bash
-poetry run boardman create-task --title "Task" --description "..." --priority medium --repo my-repo
+poetry run boardman create-task --title "Task" --description "..." --priority "Medium" --github-repo owner/repo --status "In Progress" --type "Feature"
+poetry run boardman create-task --title "Task" --github-repo "owner/repo1 owner/repo2"  # also supports comma-separated
+poetry run boardman update-task --task-id XYZ --status in_review --priority high --qa-id PLAKY_USER_ID
+poetry run boardman update-task --task-id XYZ --auto-assign-qa --github-repo owner/repo --board-id PLAKY_BOARD_ID
 poetry run boardman link-pr --pr-url https://github.com/.../pull/123 --task-id XYZ
 poetry run boardman list --status open
 poetry run boardman sync --repo owner/repo

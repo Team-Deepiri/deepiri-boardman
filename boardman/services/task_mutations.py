@@ -67,6 +67,8 @@ class UpdateTaskInput:
     task_type: str | None = None
     priority: str | None = None
     qa_plaky_id: str | None = None
+    auto_assign_qa: bool = False
+    github_repo: str | None = None
     plaky_board_id: str | None = None
 
 
@@ -118,14 +120,18 @@ def _merge_github_repo_inputs(
     seen: set[str] = set()
 
     def add(s: str) -> None:
-        t = (s or "").strip()
-        if not t:
+        raw = (s or "").strip()
+        if not raw:
             return
-        k = t.lower()
-        if k in seen:
-            return
-        seen.add(k)
-        out.append(t)
+        # Accept either repeated values or one combined value:
+        # "owner/a owner/b", "owner/a,owner/b", or newline-separated.
+        tokens = [p.strip() for p in raw.replace("\n", ",").replace("\t", " ").replace(",", " ").split(" ") if p.strip()]
+        for t in tokens:
+            k = t.lower()
+            if k in seen:
+                continue
+            seen.add(k)
+            out.append(t)
 
     add(primary_repo)
     if isinstance(extra_repos, list):
@@ -399,9 +405,15 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
         return {"ok": False, "status": 400, "message": "title is required"}
 
     title = raw_title
-    primary_repo = (req.repo or "").strip() or str(filters.get("repo") or "").strip()
+    primary_repo = str(filters.get("repo") or "").strip()
     merged_repos = _merge_github_repo_inputs(primary_repo=primary_repo, extra_repos=req.github_repos, filters=filters)
-    repo_full = merged_repos[0] if merged_repos else (primary_repo or "deepiri-org/unknown")
+    if not merged_repos:
+        return {
+            "ok": False,
+            "status": 400,
+            "message": "At least one GitHub repo is required (use github_repos).",
+        }
+    repo_full = merged_repos[0]
     repo_display = merged_repos[0] if merged_repos else repo_full
     qa_field_fallback = (settings.plaky_qa_item_field_key or "").strip()
     effective_board_id, effective_group_id = _http_placement_ids(req)
@@ -566,6 +578,32 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
     update_type_raw = (req.task_type or "").strip()
     update_priority_raw = (req.priority or "").strip()
     update_qa = (req.qa_plaky_id or "").strip()
+    update_repo_raw = (req.github_repo or "").strip()
+    auto_assign_qa = bool(req.auto_assign_qa)
+
+    if auto_assign_qa and not update_qa:
+        if not update_repo_raw:
+            return {
+                "ok": False,
+                "status": 400,
+                "message": "github_repo is required when auto_assign_qa is enabled and qa_plaky_id is not provided",
+            }
+        cfg_for_pick = load_team_assignments()
+        picked_qa, picked_reason = await pick_qa_for_repo(update_repo_raw, cfg_for_pick)
+        ops["qa_auto_assign"] = {
+            "ok": bool((picked_qa or "").strip()),
+            "repo": update_repo_raw,
+            "picked_qa_plaky_id": picked_qa,
+            "reason": picked_reason,
+        }
+        if not picked_qa:
+            return {
+                "ok": False,
+                "status": 400,
+                "message": f"Could not auto-assign QA for repo '{update_repo_raw}': {picked_reason}",
+                "operations": ops,
+            }
+        update_qa = str(picked_qa).strip()
 
     wants_board_patch = any(
         (
@@ -573,6 +611,7 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
             update_type_raw,
             update_priority_raw,
             update_qa,
+            auto_assign_qa,
         )
     )
 
