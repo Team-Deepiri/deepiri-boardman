@@ -105,6 +105,8 @@ See `.env.example` for all options. Key variables:
 - `PLAKY_PR_MERGE_STATUS` - Status to set on PR merge (default: `in_review`)
 - `LLM_PROVIDER`, `LLM_MODEL`, `OLLAMA_BASE_URL`, cloud API keys — see `.env.example`
 
+Deployment runbook: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
 Full roadmap: [docs/PLAN.md](docs/PLAN.md).
 
 ## Tests

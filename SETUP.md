@@ -76,6 +76,9 @@ The API image installs dependencies with **Poetry** (`Dockerfile`: `poetry insta
 docker compose up -d --build
 ```
 
+For VPS deployment, service credentials, worker setup, webhook smoke tests, and rotation steps, see
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
 ## CLI Usage
 
 ```bash
