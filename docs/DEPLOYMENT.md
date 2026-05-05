@@ -95,6 +95,16 @@ For Docker Compose, keep `OLLAMA_BASE_URL` as configured by `docker-compose.yml`
 
 ## Start the Stack
 
+Pre-create the SQLite database file before the first Compose start. If this file does not exist,
+Docker can create `boardman.db` as a directory during bind mounting, which prevents SQLite from
+opening the database.
+
+```bash
+test -d boardman.db && rm -rf boardman.db
+: > boardman.db
+chmod 600 boardman.db
+```
+
 ```bash
 docker compose up -d --build
 docker compose ps
