@@ -125,6 +125,12 @@ curl -fsS http://localhost:8088/api/v1/health
 curl -fsS http://localhost:11434/api/tags
 ```
 
+Or run the bundled runtime smoke script from the repo root:
+
+```bash
+bash scripts/deploy_smoke.sh
+```
+
 Expected:
 
 - `boardman` health returns HTTP 200.
@@ -132,6 +138,7 @@ Expected:
 - Ollama lists at least one pulled model.
 - Redis is not exposed publicly.
 - Logs say the Plaky API key is present and identify the Ollama base URL.
+- Webhook `ping` returns HTTP 200 with `pong`.
 
 ## GitHub Webhook Setup
 
