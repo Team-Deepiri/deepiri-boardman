@@ -51,7 +51,7 @@ def create_task(
     auto_assign_team: bool = typer.Option(
         True,
         "--auto-assign-team/--no-auto-assign-team",
-        help="Auto-pick engineer/QA from team assignments when ids are not provided",
+        help="Auto-pick QA from team assignments when --qa-id is not set (engineer is never auto-picked)",
     ),
 ):
     async def run():

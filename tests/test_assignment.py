@@ -1,4 +1,4 @@
-"""QA/engineer assignment picker (team_assignments.yml logic)."""
+"""QA assignment picker (team_assignments.yml logic)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ from boardman.assignment.qa_picker import (
     build_repo_field_map,
     github_repo_suffix_name,
     normalize_github_repo_inputs,
-    pick_engineer_for_repo,
     pick_qa_for_repo,
     repo_is_heavy,
 )
@@ -90,33 +89,26 @@ async def test_non_heavy_repo_allows_light_qa_in_pool():
     assert qid in ("qa-heavy", "qa-light")
 
 
-def test_engineer_is_highest_weight():
-    cfg = _sample_cfg()
-    eid, _ = pick_engineer_for_repo("deepiri-org/boardman", cfg)
-    assert eid == "dev-1"
-
-
 @pytest.mark.asyncio
 async def test_build_assignment_field_map():
     cfg = _sample_cfg()
     m = await build_assignment_field_map("deepiri-org/emotion-desktop", cfg)
-    assert m.get("fld_eng") == "dev-1"
+    assert "fld_eng" not in m
     assert m.get("fld_qa") == "qa-heavy"
 
 
 @pytest.mark.asyncio
-async def test_build_assignment_field_map_engineer_qa_key_overrides():
-    """Board-inferred keys (when YAML omits plaky_field_engineer/qa) must still receive ids."""
+async def test_build_assignment_field_map_qa_key_override():
+    """Board-inferred QA key (when YAML omits plaky_field_qa) still receives roster QA id."""
     cfg = _sample_cfg()
     cfg.plaky_field_engineer = ""
     cfg.plaky_field_qa = ""
     m = await build_assignment_field_map(
         "deepiri-org/emotion-desktop",
         cfg,
-        plaky_field_engineer_key="inferred_contributor",
         plaky_field_qa_key="inferred_qa",
     )
-    assert m.get("inferred_contributor") == "dev-1"
+    assert "inferred_contributor" not in m
     assert m.get("inferred_qa") == "qa-heavy"
 
 
@@ -207,6 +199,6 @@ async def test_assignment_preview_tool():
     try:
         raw = await _assignment_preview("deepiri-org/emotion-desktop")
         assert "qa-heavy" in raw
-        assert "dev-1" in raw
+        assert "dev-1" not in raw
     finally:
         monkeypatch.undo()

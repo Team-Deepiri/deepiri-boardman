@@ -9,11 +9,7 @@ from boardman.assignment.config import (
     load_team_assignments,
     sync_team_assignment_field_keys_from_board,
 )
-from boardman.assignment.qa_picker import (
-    build_repo_field_map,
-    pick_engineer_for_repo,
-    pick_qa_for_repo,
-)
+from boardman.assignment.qa_picker import build_repo_field_map, pick_qa_for_repo
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
     field_likely_person_column,
@@ -59,7 +55,7 @@ class CreateTaskInput:
 
 @dataclass(slots=True)
 class UpdateTaskInput:
-    """Partial updates only: workflow fields and QA assignee (create sets title, repos, engineer, etc.)."""
+    """Partial updates only: workflow fields and QA assignee."""
 
     status: str | None = None
     # With status: optional board field key (e.g. option id from resolve_plaky_status_patch).
@@ -457,13 +453,11 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
     engineer_field_key = cfg_engineer_key
     qa_field_key = cfg_qa_key or qa_env_fallback
 
-    pick_eng_id, _ = pick_engineer_for_repo(repo_full, cfg)
     pick_qa_id, _ = await pick_qa_for_repo(repo_full, cfg)
     needs_infer = effective_board_id and (
         (engineer_plaky_id and not engineer_field_key)
         or (qa_plaky_id and not qa_field_key)
         or (not cfg_engineer_key or not cfg_qa_key)
-        or (req.auto_assign_team and bool(str(pick_eng_id or "").strip()) and not engineer_field_key)
         or (req.auto_assign_team and bool(str(pick_qa_id or "").strip()) and not qa_field_key)
     )
     if needs_infer:
@@ -493,7 +487,7 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
         repo_value_format=repo_val_fmt,
         github_repos_value_format=gh_repos_val_fmt,
     )
-    eng_apply = engineer_plaky_id or (pick_eng_id if req.auto_assign_team else "")
+    eng_apply = engineer_plaky_id
     qa_apply = qa_plaky_id or (pick_qa_id if req.auto_assign_team else "")
     if eng_apply and engineer_field_key:
         field_values[engineer_field_key] = str(eng_apply).strip()

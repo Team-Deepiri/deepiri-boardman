@@ -718,7 +718,7 @@ export default function App() {
             id="eng-assign"
             value={engPick}
             onChange={setEngPick}
-            emptyLabel="None / use auto only"
+            emptyLabel="None"
             options={workspaceUsers.map((u) => ({
               value: u.id,
               label: u.name?.trim() || u.id,

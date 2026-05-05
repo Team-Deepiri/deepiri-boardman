@@ -1,5 +1,5 @@
 """
-Semi-random QA (and engineer) selection for Plaky assignment.
+Semi-random QA selection for Plaky assignment.
 
 - Tier + hardware: heavy repos filter out low-tier QAs when configured.
 - Overlap pools: QAs who share org or explicit repo overlap form a pool; we pick within pool.
@@ -205,18 +205,6 @@ async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
     return chosen.id, f"qa={chosen.display} pool_size={len(pool)} repo_tier={repo_tier}"
 
 
-def pick_engineer_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] = None) -> Tuple[Optional[str], str]:
-    """Deterministic: highest weight among matching engineers (no random)."""
-    cfg = cfg or load_team_assignments()
-    fn = (full_name or "").strip()
-    eng = [m for m in cfg.members if "engineer" in m.roles and repo_matches_member(fn, m)]
-    if not eng:
-        return None, "no engineer matched"
-    eng.sort(key=lambda m: (-m.weight, m.display))
-    top = eng[0]
-    return top.id, f"engineer={top.display}"
-
-
 def github_repo_suffix_name(full: str) -> str:
     """Return repository name only (segment after last ``/``); unchanged if no slash."""
     s = (full or "").strip()
@@ -327,19 +315,14 @@ async def build_assignment_field_map(
     github_repos: Optional[List[str]] = None,
     plaky_field_repo_key: Optional[str] = None,
     plaky_field_github_repos_key: Optional[str] = None,
-    plaky_field_engineer_key: Optional[str] = None,
     plaky_field_qa_key: Optional[str] = None,
     repo_value_format: str = "full",
     github_repos_value_format: str = "full",
 ) -> Dict[str, str]:
-    """Map Plaky field key -> person id or repo label(s) for create/patch. Overrides win for same keys."""
+    """Map Plaky field key -> QA person id or repo label(s) for create/patch. Overrides win for same keys."""
     cfg = cfg or load_team_assignments()
     out: Dict[str, str] = {}
-    eng_key = (plaky_field_engineer_key or cfg.plaky_field_engineer or "").strip()
     qa_key = (plaky_field_qa_key or cfg.plaky_field_qa or "").strip()
-    eid, _ = pick_engineer_for_repo(full_name, cfg)
-    if eid and eng_key:
-        out[eng_key] = eid
     qid, _ = await pick_qa_for_repo(full_name, cfg)
     if qid and qa_key:
         out[qa_key] = qid

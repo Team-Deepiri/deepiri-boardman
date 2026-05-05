@@ -146,7 +146,7 @@ async def test_post_tasks_passes_board_to_plaky_and_patches_assignments(monkeypa
             json={
                 "title": "Route test task",
                 "description": "",
-                "repo": "acme/widget",
+                "github_repos": ["acme/widget"],
                 "plaky_board_id": "board-77",
                 "plaky_group_id": "grp-1",
                 "auto_assign_team": True,
@@ -169,7 +169,7 @@ async def test_post_tasks_passes_board_to_plaky_and_patches_assignments(monkeypa
     board_id, item_id, values = patch
     assert board_id == "board-77"
     assert item_id == "item-42"
-    assert values.get("fld_eng") == "eng-1"
+    assert "fld_eng" not in values
     assert values.get("fld_qa") == "qa-1"
     assert values.get("fld_repo") == "acme/widget"
 
@@ -225,7 +225,7 @@ async def test_post_tasks_scrubs_placeholder_yaml_keys_and_infers_real_columns(
             "/api/v1/tasks",
             json={
                 "title": "Scrub keys",
-                "repo": "acme/widget",
+                "github_repos": ["acme/widget"],
                 "plaky_board_id": "board-77",
                 "plaky_group_id": "grp-1",
                 "auto_assign_team": True,
@@ -239,7 +239,7 @@ async def test_post_tasks_scrubs_placeholder_yaml_keys_and_infers_real_columns(
     assert patch is not None
     _, _, values = patch
     assert "person-1" not in values
-    assert values.get("col_contributor") == "eng-1"
+    assert "col_contributor" not in values
     assert values.get("col_qa_person") == "qa-1"
 
 
@@ -296,7 +296,7 @@ async def test_post_tasks_keeps_native_plaky_keys_when_they_appear_on_board_sche
             "/api/v1/tasks",
             json={
                 "title": "Native keys",
-                "repo": "acme/widget",
+                "github_repos": ["acme/widget"],
                 "plaky_board_id": "board-77",
                 "plaky_group_id": "grp-1",
                 "auto_assign_team": True,
@@ -308,7 +308,7 @@ async def test_post_tasks_keeps_native_plaky_keys_when_they_appear_on_board_sche
     patch = captured.get("patch")
     assert patch is not None
     _, _, values = patch
-    assert values.get("person-1") == "eng-1"
+    assert "person-1" not in values
     assert values.get("person-2") == "qa-1"
     assert values.get("tag-2") == "widget"
 
@@ -381,7 +381,7 @@ async def test_post_tasks_merges_default_status_type_priority_from_schema(monkey
             "/api/v1/tasks",
             json={
                 "title": "Schema defaults",
-                "repo": "acme/widget",
+                "github_repos": ["acme/widget"],
                 "plaky_board_id": "board-77",
                 "plaky_group_id": "grp-1",
                 "auto_assign_team": True,
@@ -477,7 +477,7 @@ async def test_post_tasks_accepts_status_type_priority_tags_and_type_json_key(
             "/api/v1/tasks",
             json={
                 "title": "Tagged task",
-                "repo": "acme/widget",
+                "github_repos": ["acme/widget"],
                 "plaky_board_id": "board-77",
                 "plaky_group_id": "grp-1",
                 "auto_assign_team": True,
@@ -583,7 +583,7 @@ async def test_post_tasks_uses_board_from_create_when_patch_board_unknown(monkey
             "/api/v1/tasks",
             json={
                 "title": "No board in json",
-                "repo": "acme/widget",
+                "github_repos": ["acme/widget"],
                 "auto_assign_team": True,
             },
         )
@@ -677,7 +677,7 @@ async def test_patch_tasks_create_then_update_status_type_priority_qa(
             json={
                 "title": "Create before update",
                 "description": "seed",
-                "repo": "acme/widget",
+                "github_repos": ["acme/widget"],
                 "plaky_board_id": "board-77",
                 "plaky_group_id": "grp-1",
                 "auto_assign_team": True,

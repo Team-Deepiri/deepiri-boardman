@@ -8,7 +8,7 @@ from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
 from boardman.assignment.config import sync_team_assignment_field_keys_from_board
-from boardman.assignment.qa_picker import pick_engineer_for_repo, pick_qa_for_repo
+from boardman.assignment.qa_picker import pick_qa_for_repo
 from boardman.settings import settings
 
 router = APIRouter()
@@ -21,9 +21,7 @@ class PickQaBody(BaseModel):
 class PickQaResponse(BaseModel):
     ok: bool
     qa_plaky_id: Optional[str] = None
-    engineer_plaky_id: Optional[str] = None
     reason_qa: str = ""
-    reason_engineer: str = ""
 
 
 class SyncFieldKeysResponse(BaseModel):
@@ -48,14 +46,7 @@ def _require_internal(authorization: Optional[str]) -> None:
 async def pick_qa_internal(body: PickQaBody, authorization: Optional[str] = Header(None)) -> PickQaResponse:
     _require_internal(authorization)
     qid, rq = await pick_qa_for_repo(body.repo)
-    eid, re = pick_engineer_for_repo(body.repo)
-    return PickQaResponse(
-        ok=True,
-        qa_plaky_id=qid,
-        engineer_plaky_id=eid,
-        reason_qa=rq,
-        reason_engineer=re,
-    )
+    return PickQaResponse(ok=True, qa_plaky_id=qid, reason_qa=rq)
 
 
 @router.post("/assignment/sync-field-keys", response_model=SyncFieldKeysResponse)

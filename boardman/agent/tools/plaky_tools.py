@@ -404,7 +404,7 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
             description=(
                 "Save assignee + Plaky field defaults for **this chat session** (persists in DB). "
                 "Args: preferences_json — JSON with field_values {fieldKey: value}, optional "
-                "engineer_plaky_id, qa_plaky_id (mapped via team_assignments Plaky keys), summary, "
+                "engineer_plaky_id, qa_plaky_id (explicit Plaky user ids), summary, "
                 "replace_field_values (bool). Next **plaky_create_task** merges these automatically."
             ),
         ),

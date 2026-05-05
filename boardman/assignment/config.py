@@ -1,4 +1,4 @@
-"""Load team_assignments.yml (QA/engineer routing + Plaky field keys)."""
+"""Load team_assignments.yml (QA roster, member roles, Plaky field keys)."""
 
 from __future__ import annotations
 

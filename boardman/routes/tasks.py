@@ -33,8 +33,9 @@ class CreateTaskRequest(BaseModel):
     plaky_group_id: Optional[str] = None
     engineer_plaky_id: Optional[str] = None
     qa_plaky_id: Optional[str] = None
-    # When True (default), empty engineer/QA in the request are filled from team_assignments.yml.
-    # Explicit engineer_plaky_id / qa_plaky_id always win over roster picks for that slot.
+    # When True (default), empty qa_plaky_id is filled from team_assignments.yml (repo roster).
+    # Engineer/contributor is never roster-filled; set engineer_plaky_id to assign dev.
+    # Explicit qa_plaky_id always wins over the roster pick.
     auto_assign_team: bool = True
     filters: Optional[dict] = None
 
