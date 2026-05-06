@@ -1484,11 +1484,6 @@ class PlakyClient:
                     f"Subtask endpoint failed ({response.status_code}) and public fallback failed: "
                     f"{via_public.get('message')}"
                 ),
-                "subtask_endpoint_error": {
-                    "status": response.status_code,
-                    "body": response.text[:300],
-                },
-                "public_fallback": via_public,
             }
 
         if response.status_code == 429:

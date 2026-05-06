@@ -579,13 +579,6 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
     result["post_create_assignment"] = post_assign
     if tag_resolution_warnings:
         result["tag_resolution_warnings"] = tag_resolution_warnings
-    result["qa_roster_pick"] = {
-        "repo": repo_full,
-        "picked_plaky_id": str(pick_qa_id or "").strip() or None,
-        "reason": pick_qa_reason,
-        "qa_field_key": (qa_field_key or "").strip() or None,
-        "applied_to_payload": bool(qa_apply and qa_field_key),
-    }
     return result
 
 
@@ -719,13 +712,6 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
         )
     if isinstance(result, dict):
         result.setdefault("parent_task_id", parent_task_id)
-        result["qa_roster_pick"] = {
-            "repo": repo_full,
-            "picked_plaky_id": str(pick_qa_id or "").strip() or None,
-            "reason": pick_qa_reason,
-            "qa_field_key": (qa_field_key or "").strip() or None,
-            "applied_to_payload": bool(qa_apply and qa_field_key),
-        }
     return result
 
 
@@ -790,8 +776,6 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
         got = await plaky.get_task(task_id)
         task = got.get("task") if isinstance(got, dict) and isinstance(got.get("task"), dict) else {}
         board_id = _board_id_from_task_payload(task)
-        if got:
-            ops["task_lookup"] = got
     if needs_board_lookup and not board_id:
         board_id = (get_context_plaky_board_id() or "").strip()
 

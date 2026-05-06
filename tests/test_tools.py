@@ -238,6 +238,10 @@ class TestPlakyTools:
             "boardman.agent.tool_context.get_context_plaky_board_id",
             lambda: "board-from-context",
         )
+        monkeypatch.setattr(
+            "boardman.agent.tool_context.get_context_plaky_group_id",
+            lambda: "group-from-context",
+        )
 
         from boardman.agent.tools.plaky_tools import _plaky_create_subtask
 
@@ -247,11 +251,13 @@ class TestPlakyTools:
         assert req.title == "Investigate logs"
         assert req.description == "Check API traces"
         assert req.plaky_board_id == "board-from-context"
+        assert req.plaky_group_id == "group-from-context"
 
-        await _plaky_create_subtask("task-2", "Write tests", board_id="explicit-board")
+        await _plaky_create_subtask("task-2", "Write tests", board_id="explicit-board", group_id="explicit-group")
         req2 = captured["req"]
         assert req2.parent_task_id == "task-2"
         assert req2.plaky_board_id == "explicit-board"
+        assert req2.plaky_group_id == "explicit-group"
 
 
 class TestGitHubTools:

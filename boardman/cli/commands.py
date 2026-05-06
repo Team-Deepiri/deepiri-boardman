@@ -135,11 +135,6 @@ def create_subtask(
         "--group-id",
         help="Plaky group id used for subtask placement fallback",
     ),
-    print_response: bool = typer.Option(
-        False,
-        "--print-response",
-        help="Print full JSON response payload from subtask creation.",
-    ),
 ):
     async def run():
         result = await create_subtask_internal(
@@ -158,8 +153,6 @@ def create_subtask(
                 plaky_group_id=plaky_group_id,
             )
         )
-        if print_response:
-            console.print(json.dumps(result, indent=2, default=str))
         if result.get("ok"):
             subtask = result.get("subtask") if isinstance(result.get("subtask"), dict) else {}
             subtask_ref = subtask.get("url") or subtask.get("id") or subtask.get("taskId")
@@ -167,8 +160,6 @@ def create_subtask(
             console.print(f"[green]Subtask created:[/green] {created_ref}")
         else:
             console.print(f"[red]Error:[/red] {result.get('message')}")
-            if not print_response:
-                console.print(json.dumps(result, indent=2, default=str))
             raise typer.Exit(1)
 
     asyncio.run(run())
