@@ -75,6 +75,7 @@ cd boardman-ui && npm install && npm run dev
 ### Full stack (Docker)
 
 ```bash
+./scripts/deploy_preflight.sh
 docker compose up --build
 # API http://localhost:8090
 # UI + proxy http://localhost:8088  (nginx → boardman)
