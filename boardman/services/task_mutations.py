@@ -81,6 +81,7 @@ class CreateSubtaskInput:
     qa_plaky_id: str | None = None
     auto_assign_qa: bool = True
     plaky_board_id: str | None = None
+    plaky_group_id: str | None = None
 
 
 def _allowed_item_field_keys_from_schema(schema_normalized: Optional[dict]) -> set[str]:
@@ -594,7 +595,8 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
     parent_task_id = (req.parent_task_id or "").strip()
     title = (req.title or "").strip()
     description = (req.description or "").strip()
-    board_id = (req.plaky_board_id or "").strip()
+    board_id = (req.plaky_board_id or "").strip() or (get_context_plaky_board_id() or "").strip()
+    group_id = (req.plaky_group_id or "").strip() or (get_context_plaky_group_id() or "").strip()
     canon_status = canonical_task_status((req.status or "").strip())
     canon_type = canonical_task_type((req.task_type or "").strip())
     canon_priority = canonical_task_priority((req.priority or "").strip())
@@ -702,7 +704,7 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
     person_keys = _person_item_field_keys_from_normalized(schema_normalized)
     pri = plaky_create_legacy_priority_param(canon_priority)
 
-    async with plaky_placement_context(board_id or None, None):
+    async with plaky_placement_context(board_id or None, group_id or None):
         result = await plaky.create_subtask(
             parent_task_id=parent_task_id,
             title=title,
@@ -713,6 +715,7 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
             field_values=field_values or None,
             person_field_keys=person_keys or None,
             board_id=board_id or None,
+            group_id=group_id or None,
         )
     if isinstance(result, dict):
         result.setdefault("parent_task_id", parent_task_id)

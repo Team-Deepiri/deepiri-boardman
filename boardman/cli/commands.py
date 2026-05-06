@@ -130,6 +130,11 @@ def create_subtask(
         "--board-id",
         help="Plaky board id used for schema/field patch resolution",
     ),
+    plaky_group_id: Optional[str] = typer.Option(
+        None,
+        "--group-id",
+        help="Plaky group id used for subtask placement fallback",
+    ),
     print_response: bool = typer.Option(
         False,
         "--print-response",
@@ -150,6 +155,7 @@ def create_subtask(
                 qa_plaky_id=qa_plaky_id,
                 auto_assign_qa=auto_assign_qa,
                 plaky_board_id=plaky_board_id,
+                plaky_group_id=plaky_group_id,
             )
         )
         if print_response:

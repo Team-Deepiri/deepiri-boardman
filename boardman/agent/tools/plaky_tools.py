@@ -382,10 +382,12 @@ async def _plaky_create_subtask(
     qa_plaky_id: str = "",
     auto_assign_qa: bool = True,
     board_id: str = "",
+    group_id: str = "",
 ) -> str:
-    from boardman.agent.tool_context import get_context_plaky_board_id
+    from boardman.agent.tool_context import get_context_plaky_board_id, get_context_plaky_group_id
 
     bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    gid = (group_id or "").strip() or (get_context_plaky_group_id() or "").strip() or None
     repo_tokens = normalize_github_repo_inputs(extra_repo_text=repo_tag)
     r = await create_subtask_internal(
         CreateSubtaskInput(
@@ -400,6 +402,7 @@ async def _plaky_create_subtask(
             qa_plaky_id=(qa_plaky_id or "").strip() or None,
             auto_assign_qa=auto_assign_qa,
             plaky_board_id=bid,
+            plaky_group_id=gid,
         )
     )
     return json.dumps(r, default=str)
@@ -545,7 +548,7 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                     description=(
                         "Create a subtask on parent_task_id with workflow/assignment/repo fields. "
                         "Args: parent_task_id, title, description, priority, status, task_type, repo_tag, "
-                        "engineer_plaky_id, qa_plaky_id, auto_assign_qa, optional board_id."
+                        "engineer_plaky_id, qa_plaky_id, auto_assign_qa, optional board_id, optional group_id."
                     ),
                 ),
             ]

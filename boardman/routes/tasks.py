@@ -93,6 +93,7 @@ class CreateSubtaskRequest(BaseModel):
     qa_plaky_id: Optional[str] = None
     auto_assign_qa: bool = True
     plaky_board_id: Optional[str] = None
+    plaky_group_id: Optional[str] = None
 
 
 @router.post("/tasks")
@@ -130,6 +131,7 @@ async def create_subtask(task_id: str, req: CreateSubtaskRequest, session: Async
             qa_plaky_id=req.qa_plaky_id,
             auto_assign_qa=req.auto_assign_qa,
             plaky_board_id=req.plaky_board_id,
+            plaky_group_id=req.plaky_group_id,
         )
     )
 

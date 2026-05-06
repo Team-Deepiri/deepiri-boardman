@@ -66,6 +66,14 @@ def _headers(api_key: str) -> Dict[str, str]:
     }
 
 
+def _headers_bearer(api_key: str) -> Dict[str, str]:
+    return {
+        "Authorization": f"Bearer {api_key}",
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+    }
+
+
 def _normalize_id(obj: Dict[str, Any]) -> str:
     return str(obj.get("id") or obj.get("_id") or obj.get("boardId") or obj.get("groupId") or "")
 
@@ -123,6 +131,8 @@ def _public_api_root_from_base_url(base_url: str) -> Optional[str]:
         i = u.index("/v1/public")
         return u[: i + len("/v1/public")]
     if "api.plaky.com" in u and "/v2" in u:
+        return "https://api.plaky.com/v1/public"
+    if "api.plaky.com" in u:
         return "https://api.plaky.com/v1/public"
     return None
 
@@ -1409,8 +1419,9 @@ class PlakyClient:
         field_values: Optional[Dict[str, Any]] = None,
         person_field_keys: Optional[Set[str]] = None,
         board_id: str | None = None,
+        group_id: str | None = None,
     ) -> Dict[str, Any]:
-        """Create a subtask through Plaky subtask endpoint; never falls back to comments."""
+        """Create a subtask. Prefer /tasks/{id}/subtasks; fallback to v1/public board item hierarchy."""
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
 
@@ -1427,6 +1438,10 @@ class PlakyClient:
             response = await _request_with_rate_limit_retry(
                 client, "POST", url, headers=_headers(self.api_key), json=payload
             )
+            if response.status_code == 401:
+                response = await _request_with_rate_limit_retry(
+                    client, "POST", url, headers=_headers_bearer(self.api_key), json=payload
+                )
 
         if response.status_code in (200, 201):
             out: Dict[str, Any] = {"ok": True, "status": response.status_code, "subtask": response.json()}
@@ -1450,10 +1465,140 @@ class PlakyClient:
                 }
             return out
 
+        if response.status_code in (401, 404, 405):
+            via_public = await self._create_subtask_via_public_items(
+                parent_task_id=parent_task_id,
+                title=title,
+                description=description,
+                board_id=board_id,
+                group_id=group_id,
+                field_values=field_values,
+                person_field_keys=person_field_keys,
+            )
+            if via_public.get("ok"):
+                return via_public
+            return {
+                "ok": False,
+                "status": int(via_public.get("status") or response.status_code),
+                "message": (
+                    f"Subtask endpoint failed ({response.status_code}) and public fallback failed: "
+                    f"{via_public.get('message')}"
+                ),
+                "subtask_endpoint_error": {
+                    "status": response.status_code,
+                    "body": response.text[:300],
+                },
+                "public_fallback": via_public,
+            }
+
         if response.status_code == 429:
             return {"ok": False, "status": 429, "message": "Plaky API rate limited the request."}
         return {
             "ok": False,
             "status": response.status_code,
             "message": f"Failed to create subtask ({response.status_code}): {response.text[:200]}",
+        }
+
+    async def _create_subtask_via_public_items(
+        self,
+        *,
+        parent_task_id: str,
+        title: str,
+        description: str,
+        board_id: str | None,
+        group_id: str | None,
+        field_values: Optional[Dict[str, Any]],
+        person_field_keys: Optional[Set[str]],
+    ) -> Dict[str, Any]:
+        root = self._public_root()
+        if not root:
+            return {"ok": False, "message": "Public item API unavailable for subtask fallback."}
+
+        parent_id = (parent_task_id or "").strip()
+        if not parent_id:
+            return {"ok": False, "message": "parent_task_id is required."}
+
+        bid = (board_id or "").strip()
+        if not bid:
+            bid = (await self._resolve_board_id_for_item_public(parent_id)) or ""
+        if not bid:
+            return {"ok": False, "message": "Could not resolve board for parent task id."}
+
+        parent_item = await self.get_board_item_public(bid, parent_id)
+        if not parent_item.get("ok"):
+            return {"ok": False, "message": f"Could not load parent item on board {bid}."}
+        parent = parent_item.get("item") if isinstance(parent_item.get("item"), dict) else {}
+        gid = (group_id or "").strip()
+        parent_gid = str(
+            parent.get("groupId")
+            or parent.get("group_id")
+            or ((parent.get("group") or {}).get("id") if isinstance(parent.get("group"), dict) else "")
+            or ""
+        ).strip()
+        if not gid:
+            gid = parent_gid
+        if not gid:
+            try:
+                gr = await self.list_groups(bid)
+                groups = gr.get("groups") if isinstance(gr, dict) else []
+                if isinstance(groups, list) and groups:
+                    gid = str((groups[0] or {}).get("id") or "").strip() if isinstance(groups[0], dict) else ""
+            except Exception:
+                gid = ""
+        if not gid:
+            return {"ok": False, "message": "Could not resolve parent item group id (provide --group-id)."}
+
+        sid = await self.resolve_space_for_board(bid)
+        if not sid:
+            return {"ok": False, "message": "Could not resolve space for board."}
+        url = f"{root.rstrip('/')}/spaces/{sid}/boards/{bid}/items"
+
+        bodies: List[Dict[str, Any]] = [
+            {"title": title, "description": description or "", "groupId": gid, "parentId": parent_id},
+            {"title": title, "description": description or "", "groupId": gid, "parentItemId": parent_id},
+            {"title": title, "description": description or "", "groupId": gid, "parentTaskId": parent_id},
+            {"title": title, "description": description or "", "group_id": gid, "parent_id": parent_id},
+            {"title": title, "description": description or "", "group_id": gid, "parentItemId": parent_id},
+            {"name": title, "description": description or "", "groupId": gid, "parentId": parent_id},
+            {"name": title, "description": description or "", "groupId": gid, "parentItemId": parent_id},
+            {"title": title, "groupId": gid, "parentId": parent_id},
+        ]
+
+        last_status = 400
+        last_snip = ""
+        async with httpx.AsyncClient() as client:
+            for body in bodies:
+                r = await _request_with_rate_limit_retry(client, "POST", url, headers=_headers(self.api_key), json=body)
+                last_status = r.status_code
+                last_snip = r.text[:200]
+                if r.status_code in (200, 201):
+                    payload = r.json()
+                    sub_id = str(
+                        payload.get("id") or payload.get("itemId") or payload.get("taskId") or payload.get("_id") or ""
+                    ).strip()
+                    out: Dict[str, Any] = {
+                        "ok": True,
+                        "status": r.status_code,
+                        "subtask": payload,
+                        "route": "public_items_parent",
+                    }
+                    if sub_id and field_values:
+                        out["field_patch"] = await self.patch_item_field_values(
+                            bid, sub_id, field_values, person_field_keys=person_field_keys
+                        )
+                    elif field_values:
+                        out["field_patch"] = {
+                            "ok": False,
+                            "skipped": True,
+                            "message": "Subtask created via public items but item id missing for field patch.",
+                        }
+                    return out
+                if r.status_code not in (400, 401, 404, 405, 422):
+                    break
+
+        return {
+            "ok": False,
+            "status": last_status,
+            "message": f"Failed to create subtask via public items ({last_status}): {last_snip}",
+            "route": "public_items_parent",
         }
