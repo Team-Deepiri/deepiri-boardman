@@ -10,8 +10,10 @@ from langchain_core.tools import StructuredTool
 from boardman.assignment.config import infer_plaky_field_keys_from_normalized, load_team_assignments
 from boardman.assignment.qa_picker import build_repo_field_map, normalize_github_repo_inputs
 from boardman.services.task_mutations import (
+    CreateSubtaskInput,
     CreateTaskInput,
     UpdateTaskInput,
+    create_subtask_internal,
     create_task_internal,
     update_task_internal,
 )
@@ -368,9 +370,38 @@ async def _plaky_link_prs(task_id: str, pr_urls: str, board_id: str = "") -> str
     return json.dumps(r2, default=str)
 
 
-async def _plaky_create_subtask(parent_task_id: str, title: str, description: str = "") -> str:
-    c = PlakyClient()
-    r = await c.create_subtask(parent_task_id, title, description)
+async def _plaky_create_subtask(
+    parent_task_id: str,
+    title: str,
+    description: str = "",
+    priority: str = "Medium",
+    status: str = "In Progress",
+    task_type: str = "Feature",
+    repo_tag: str = "",
+    engineer_plaky_id: str = "",
+    qa_plaky_id: str = "",
+    auto_assign_qa: bool = True,
+    board_id: str = "",
+) -> str:
+    from boardman.agent.tool_context import get_context_plaky_board_id
+
+    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    repo_tokens = normalize_github_repo_inputs(extra_repo_text=repo_tag)
+    r = await create_subtask_internal(
+        CreateSubtaskInput(
+            parent_task_id=parent_task_id,
+            title=title,
+            description=description,
+            priority=priority,
+            status=status,
+            task_type=task_type,
+            github_repos=repo_tokens if repo_tokens else None,
+            engineer_plaky_id=(engineer_plaky_id or "").strip() or None,
+            qa_plaky_id=(qa_plaky_id or "").strip() or None,
+            auto_assign_qa=auto_assign_qa,
+            plaky_board_id=bid,
+        )
+    )
     return json.dumps(r, default=str)
 
 
@@ -512,8 +543,9 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                     coroutine=_plaky_create_subtask,
                     name="plaky_create_subtask",
                     description=(
-                        "Create a subtask or subtask comment on parent_task_id. "
-                        "Args: parent_task_id, title, description."
+                        "Create a subtask on parent_task_id with workflow/assignment/repo fields. "
+                        "Args: parent_task_id, title, description, priority, status, task_type, repo_tag, "
+                        "engineer_plaky_id, qa_plaky_id, auto_assign_qa, optional board_id."
                     ),
                 ),
             ]

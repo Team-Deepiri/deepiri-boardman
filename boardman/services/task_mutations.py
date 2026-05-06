@@ -68,6 +68,21 @@ class UpdateTaskInput:
     plaky_board_id: str | None = None
 
 
+@dataclass(slots=True)
+class CreateSubtaskInput:
+    parent_task_id: str
+    title: str
+    description: str = ""
+    priority: str = "Medium"
+    status: str = "In Progress"
+    task_type: str = "Feature"
+    github_repos: list[str] | None = None
+    engineer_plaky_id: str | None = None
+    qa_plaky_id: str | None = None
+    auto_assign_qa: bool = True
+    plaky_board_id: str | None = None
+
+
 def _allowed_item_field_keys_from_schema(schema_normalized: Optional[dict]) -> set[str]:
     out: set[str] = set()
     if not isinstance(schema_normalized, dict):
@@ -570,6 +585,144 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
         "qa_field_key": (qa_field_key or "").strip() or None,
         "applied_to_payload": bool(qa_apply and qa_field_key),
     }
+    return result
+
+
+async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
+    plaky = PlakyClient()
+
+    parent_task_id = (req.parent_task_id or "").strip()
+    title = (req.title or "").strip()
+    description = (req.description or "").strip()
+    board_id = (req.plaky_board_id or "").strip()
+    canon_status = canonical_task_status((req.status or "").strip())
+    canon_type = canonical_task_type((req.task_type or "").strip())
+    canon_priority = canonical_task_priority((req.priority or "").strip())
+    engineer_plaky_id = (req.engineer_plaky_id or "").strip()
+    qa_plaky_id = (req.qa_plaky_id or "").strip()
+
+    if not parent_task_id:
+        return {"ok": False, "status": 400, "message": "parent_task_id is required"}
+    if not title:
+        return {"ok": False, "status": 400, "message": "title is required"}
+    merged_repos = _merge_github_repo_inputs(primary_repo="", extra_repos=req.github_repos, filters={})
+    if not merged_repos:
+        return {
+            "ok": False,
+            "status": 400,
+            "message": "At least one GitHub repo is required (use github_repos).",
+        }
+    repo_full = merged_repos[0]
+
+    schema_normalized: dict[str, Any] | None = None
+    inferred_from_schema: dict[str, str] = {}
+    if board_id:
+        try:
+            await sync_team_assignment_field_keys_from_board(board_id)
+        except Exception:
+            pass
+        try:
+            bundle = await fetch_board_schema_bundle(board_id)
+            sn = bundle.get("normalized") if isinstance(bundle, dict) else None
+            if isinstance(sn, dict):
+                schema_normalized = sn
+                inferred_from_schema = infer_plaky_field_keys_from_normalized(sn)
+        except Exception:
+            pass
+
+    allowed_board_keys = _allowed_item_field_keys_from_schema(schema_normalized)
+    cfg = load_team_assignments()
+    cfg_engineer_key = _scrub_placeholder_field_key((cfg.plaky_field_engineer or "").strip(), allowed_board_keys=allowed_board_keys)
+    cfg_qa_key = _scrub_placeholder_field_key((cfg.plaky_field_qa or "").strip(), allowed_board_keys=allowed_board_keys)
+    cfg_repo_key = _scrub_placeholder_field_key((cfg.plaky_field_repo or "").strip(), allowed_board_keys=allowed_board_keys)
+    cfg_github_repos_key = _scrub_placeholder_field_key(
+        (cfg.plaky_field_github_repos or "").strip(), allowed_board_keys=allowed_board_keys
+    )
+
+    engineer_field_key = cfg_engineer_key
+    qa_field_key = cfg_qa_key
+    pick_qa_id, pick_qa_reason = await pick_qa_for_repo(repo_full, cfg)
+    needs_infer = board_id and (
+        (engineer_plaky_id and not engineer_field_key)
+        or (qa_plaky_id and not qa_field_key)
+        or (req.auto_assign_qa and bool(str(pick_qa_id or "").strip()) and not qa_field_key)
+    )
+    if needs_infer:
+        engineer_field_key, qa_field_key = await _infer_plaky_person_column_keys(
+            board_id, engineer_field_key, qa_field_key, normalized=schema_normalized
+        )
+    engineer_field_key = _scrub_placeholder_field_key(engineer_field_key, allowed_board_keys=allowed_board_keys)
+    qa_field_key = _scrub_placeholder_field_key(qa_field_key, allowed_board_keys=allowed_board_keys)
+
+    repo_plaky_key = (cfg_repo_key or inferred_from_schema.get("repo") or "").strip()
+    github_repos_plaky_key = (cfg_github_repos_key or inferred_from_schema.get("github_repos") or "").strip()
+    repo_plaky_key = _scrub_placeholder_field_key(repo_plaky_key, allowed_board_keys=allowed_board_keys)
+    github_repos_plaky_key = _scrub_placeholder_field_key(github_repos_plaky_key, allowed_board_keys=allowed_board_keys)
+    repo_val_fmt = plaky_repo_field_value_format(schema_normalized, repo_plaky_key)
+    gh_repos_val_fmt = plaky_repo_field_value_format(schema_normalized, github_repos_plaky_key)
+
+    field_values = build_repo_field_map(
+        cfg,
+        repo_value=repo_full,
+        github_repos=merged_repos if merged_repos else None,
+        plaky_field_repo_key=repo_plaky_key or None,
+        plaky_field_github_repos_key=github_repos_plaky_key or None,
+        repo_value_format=repo_val_fmt,
+        github_repos_value_format=gh_repos_val_fmt,
+    )
+    qa_apply = qa_plaky_id or (pick_qa_id if req.auto_assign_qa else "")
+    if engineer_plaky_id and engineer_field_key:
+        field_values[engineer_field_key] = engineer_plaky_id
+    if qa_apply and qa_field_key:
+        field_values[qa_field_key] = qa_apply
+
+    for pair in (
+        select_field_patch_pair_from_schema(
+            schema_normalized,
+            column_name_substrings=("status", "state", "workflow"),
+            value_label_candidates=status_field_patch_candidates(canon_status),
+        ),
+        select_field_patch_pair_from_schema(
+            schema_normalized,
+            column_name_substrings=("type", "issue type", "category", "kind"),
+            value_label_candidates=type_field_patch_candidates(canon_type),
+            exclude_name_substrings=("subtype",),
+        ),
+        select_field_patch_pair_from_schema(
+            schema_normalized,
+            column_name_substrings=("priority", "prio"),
+            value_label_candidates=priority_field_patch_candidates(canon_priority),
+        ),
+    ):
+        if pair:
+            fk, fv = pair
+            if fk and fv is not None and fk not in field_values:
+                field_values[fk] = fv
+
+    person_keys = _person_item_field_keys_from_normalized(schema_normalized)
+    pri = plaky_create_legacy_priority_param(canon_priority)
+
+    async with plaky_placement_context(board_id or None, None):
+        result = await plaky.create_subtask(
+            parent_task_id=parent_task_id,
+            title=title,
+            description=description,
+            status=canon_status,
+            task_type=canon_type,
+            priority=pri,
+            field_values=field_values or None,
+            person_field_keys=person_keys or None,
+            board_id=board_id or None,
+        )
+    if isinstance(result, dict):
+        result.setdefault("parent_task_id", parent_task_id)
+        result["qa_roster_pick"] = {
+            "repo": repo_full,
+            "picked_plaky_id": str(pick_qa_id or "").strip() or None,
+            "reason": pick_qa_reason,
+            "qa_field_key": (qa_field_key or "").strip() or None,
+            "applied_to_payload": bool(qa_apply and qa_field_key),
+        }
     return result
 
 

@@ -9,8 +9,10 @@ from boardman.plaky.client import PlakyClient
 from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
 from boardman.settings import settings
 from boardman.services.task_mutations import (
+    CreateSubtaskInput,
     CreateTaskInput,
     UpdateTaskInput,
+    create_subtask_internal,
     create_task_internal,
     update_task_internal,
 )
@@ -77,6 +79,22 @@ class UpdateTaskRequest(BaseModel):
     plaky_board_id: Optional[str] = None
 
 
+class CreateSubtaskRequest(BaseModel):
+    title: str
+    description: str = ""
+    priority: str = "Medium"
+    status: str = "In Progress"
+    task_type: str = Field(
+        default="Feature",
+        validation_alias=AliasChoices("type", "task_type"),
+    )
+    github_repos: Optional[List[str]] = None
+    engineer_plaky_id: Optional[str] = None
+    qa_plaky_id: Optional[str] = None
+    auto_assign_qa: bool = True
+    plaky_board_id: Optional[str] = None
+
+
 @router.post("/tasks")
 async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(get_db)):
     return await create_task_internal(
@@ -93,6 +111,25 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
             qa_plaky_id=req.qa_plaky_id,
             auto_assign_team=req.auto_assign_team,
             filters=_merged_create_task_filters(req),
+        )
+    )
+
+
+@router.post("/tasks/{task_id}/subtasks")
+async def create_subtask(task_id: str, req: CreateSubtaskRequest, session: AsyncSession = Depends(get_db)):
+    return await create_subtask_internal(
+        CreateSubtaskInput(
+            parent_task_id=task_id,
+            title=req.title,
+            description=req.description,
+            priority=req.priority,
+            status=req.status,
+            task_type=req.task_type,
+            github_repos=req.github_repos,
+            engineer_plaky_id=req.engineer_plaky_id,
+            qa_plaky_id=req.qa_plaky_id,
+            auto_assign_qa=req.auto_assign_qa,
+            plaky_board_id=req.plaky_board_id,
         )
     )
 

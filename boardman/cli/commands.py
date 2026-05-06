@@ -17,8 +17,10 @@ from boardman.database.session import async_session
 from boardman.plaky.client import PlakyClient
 from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
 from boardman.services.task_mutations import (
+    CreateSubtaskInput,
     CreateTaskInput,
     UpdateTaskInput,
+    create_subtask_internal,
     create_task_internal,
     update_task_internal,
 )
@@ -98,6 +100,69 @@ def create_task(
                 console.print(f"[dim]QA roster pick:[/dim] {json.dumps(qa_pick, indent=2)}")
         else:
             console.print(f"[red]Error:[/red] {result.get('message')}")
+            raise typer.Exit(1)
+
+    asyncio.run(run())
+
+
+@app.command()
+def create_subtask(
+    parent_task_id: str = typer.Option(..., "--parent-task-id", prompt=True, help="Parent Plaky task ID"),
+    title: str = typer.Option(..., "--title", "-t", prompt=True, help="Subtask title"),
+    description: str = typer.Option("", "--description", "-d", help="Subtask description"),
+    priority: str = typer.Option("medium", "--priority", "-p", help="Priority: low, medium, high"),
+    status: str = typer.Option("in_progress", "--status", help="Workflow status"),
+    task_type: str = typer.Option("feature", "--type", help="Task type"),
+    github_repos: Optional[List[str]] = typer.Option(
+        None,
+        "--github-repo",
+        help="GitHub repo slug(s), repeatable or comma/space separated",
+    ),
+    engineer_plaky_id: Optional[str] = typer.Option(None, "--engineer-id", help="Plaky user id for contributor/engineer"),
+    qa_plaky_id: Optional[str] = typer.Option(None, "--qa-id", help="Plaky user id for QA"),
+    auto_assign_qa: bool = typer.Option(
+        True,
+        "--auto-assign-qa/--no-auto-assign-qa",
+        help="Auto-pick QA from team assignments when --qa-id is not set",
+    ),
+    plaky_board_id: Optional[str] = typer.Option(
+        None,
+        "--board-id",
+        help="Plaky board id used for schema/field patch resolution",
+    ),
+    print_response: bool = typer.Option(
+        False,
+        "--print-response",
+        help="Print full JSON response payload from subtask creation.",
+    ),
+):
+    async def run():
+        result = await create_subtask_internal(
+            CreateSubtaskInput(
+                parent_task_id=parent_task_id,
+                title=title,
+                description=description,
+                priority=priority,
+                status=status,
+                task_type=task_type,
+                github_repos=github_repos,
+                engineer_plaky_id=engineer_plaky_id,
+                qa_plaky_id=qa_plaky_id,
+                auto_assign_qa=auto_assign_qa,
+                plaky_board_id=plaky_board_id,
+            )
+        )
+        if print_response:
+            console.print(json.dumps(result, indent=2, default=str))
+        if result.get("ok"):
+            subtask = result.get("subtask") if isinstance(result.get("subtask"), dict) else {}
+            subtask_ref = subtask.get("url") or subtask.get("id") or subtask.get("taskId")
+            created_ref = subtask_ref or f"parent={parent_task_id}"
+            console.print(f"[green]Subtask created:[/green] {created_ref}")
+        else:
+            console.print(f"[red]Error:[/red] {result.get('message')}")
+            if not print_response:
+                console.print(json.dumps(result, indent=2, default=str))
             raise typer.Exit(1)
 
     asyncio.run(run())

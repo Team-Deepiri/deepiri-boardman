@@ -222,6 +222,37 @@ class TestPlakyTools:
         assert inp2.qa_plaky_id == "user-qa-1"
         assert inp2.plaky_board_id == "explicit-board"
 
+    @pytest.mark.asyncio
+    async def test_plaky_create_subtask_tool_uses_internal_mutation_and_context(self, monkeypatch):
+        captured: dict = {}
+
+        async def stub(req):
+            captured["req"] = req
+            return {"ok": True, "subtask": {"id": "sub-1"}}
+
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.create_subtask_internal",
+            stub,
+        )
+        monkeypatch.setattr(
+            "boardman.agent.tool_context.get_context_plaky_board_id",
+            lambda: "board-from-context",
+        )
+
+        from boardman.agent.tools.plaky_tools import _plaky_create_subtask
+
+        await _plaky_create_subtask("task-1", "Investigate logs", "Check API traces")
+        req = captured["req"]
+        assert req.parent_task_id == "task-1"
+        assert req.title == "Investigate logs"
+        assert req.description == "Check API traces"
+        assert req.plaky_board_id == "board-from-context"
+
+        await _plaky_create_subtask("task-2", "Write tests", board_id="explicit-board")
+        req2 = captured["req"]
+        assert req2.parent_task_id == "task-2"
+        assert req2.plaky_board_id == "explicit-board"
+
 
 class TestGitHubTools:
     def test_build_github_tools_count(self):

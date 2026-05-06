@@ -1397,13 +1397,31 @@ class PlakyClient:
 
         return {"ok": False, "status": response.status_code, "message": f"Failed to patch task ({response.status_code}): {response.text[:200]}"}
 
-    async def create_subtask(self, parent_task_id: str, title: str, description: str = "") -> Dict[str, Any]:
-        """Try Plaky subtask endpoint; on 404, add a structured comment as fallback."""
+    async def create_subtask(
+        self,
+        parent_task_id: str,
+        title: str,
+        description: str = "",
+        *,
+        status: str | None = None,
+        task_type: str | None = None,
+        priority: str | None = None,
+        field_values: Optional[Dict[str, Any]] = None,
+        person_field_keys: Optional[Set[str]] = None,
+        board_id: str | None = None,
+    ) -> Dict[str, Any]:
+        """Create a subtask through Plaky subtask endpoint; never falls back to comments."""
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
 
         url = f"{self.base_url.rstrip('/')}/tasks/{parent_task_id}/subtasks"
-        payload = {"title": title, "description": description or ""}
+        payload: Dict[str, Any] = {"title": title, "description": description or ""}
+        if (status or "").strip():
+            payload["status"] = (status or "").strip()
+        if (task_type or "").strip():
+            payload["type"] = (task_type or "").strip()
+        if (priority or "").strip():
+            payload["priority"] = (priority or "").strip()
 
         async with httpx.AsyncClient() as client:
             response = await _request_with_rate_limit_retry(
@@ -1411,7 +1429,31 @@ class PlakyClient:
             )
 
         if response.status_code in (200, 201):
-            return {"ok": True, "status": response.status_code, "subtask": response.json()}
+            out: Dict[str, Any] = {"ok": True, "status": response.status_code, "subtask": response.json()}
+            iid = str(
+                out.get("subtask", {}).get("id")
+                or out.get("subtask", {}).get("itemId")
+                or out.get("subtask", {}).get("taskId")
+                or out.get("subtask", {}).get("_id")
+                or ""
+            ).strip()
+            bid = (board_id or "").strip()
+            if bid and iid and field_values:
+                out["field_patch"] = await self.patch_item_field_values(
+                    bid, iid, field_values, person_field_keys=person_field_keys
+                )
+            elif field_values:
+                out["field_patch"] = {
+                    "ok": False,
+                    "skipped": True,
+                    "message": "Subtask created but board_id/item_id missing for field patch.",
+                }
+            return out
 
-        body = f"**Subtask:** {title}\n{description}".strip()
-        return await self.add_comment(parent_task_id, body)
+        if response.status_code == 429:
+            return {"ok": False, "status": 429, "message": "Plaky API rate limited the request."}
+        return {
+            "ok": False,
+            "status": response.status_code,
+            "message": f"Failed to create subtask ({response.status_code}): {response.text[:200]}",
+        }
