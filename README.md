@@ -82,6 +82,12 @@ docker compose up --build
 # Ollama http://localhost:11434  (set OLLAMA_BASE_URL=http://ollama:11434 in .env for compose)
 ```
 
+Deployment smoke checks (after the stack is up):
+
+```bash
+bash scripts/deploy_smoke.sh
+```
+
 ## API Endpoints
 
 - `GET /api/v1/health` - Health check
