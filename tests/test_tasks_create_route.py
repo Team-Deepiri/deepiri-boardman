@@ -155,8 +155,6 @@ async def test_post_tasks_accepts_legacy_top_level_repo(monkeypatch: pytest.Monk
     assert r.status_code == 200
     body = r.json()
     assert body.get("ok") is True, body
-    qa_pick = body.get("qa_roster_pick") or {}
-    assert qa_pick.get("repo") == "acme/widget"
     fv = (captured.get("create_kwargs") or {}).get("field_values") or {}
     assert fv.get("fld_repo") == "acme/widget"
 

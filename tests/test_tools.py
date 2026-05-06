@@ -174,7 +174,7 @@ class TestPlakyTools:
         from boardman.agent.tools.plaky_tools import build_plaky_tools
 
         tools = build_plaky_tools(allow_writes=True)
-        assert len(tools) == 14
+        assert len(tools) == 15
         tool_names = [t.name for t in tools]
         assert "plaky_create_task" in tool_names
         assert "plaky_update_task" in tool_names
@@ -342,4 +342,4 @@ class TestToolBuilding:
         from boardman.agent.tools import build_all_tools
 
         tools = build_all_tools(allow_writes=True)
-        assert len(tools) == 22
+        assert len(tools) == 23
