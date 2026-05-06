@@ -14,6 +14,7 @@ from boardman.database.models import SyncLog
 from boardman.github.webhooks import PullRequestEventPayload, PullRequestReviewCommentEventPayload
 from boardman.plaky.client import PlakyClient
 from boardman.services.issue_handler import find_plaky_task_by_issue, get_linked_issue_numbers
+from boardman.services.pr_link_comment import format_pr_notice_with_url
 from boardman.services.pr_task_linking import (
     format_triage_comment,
     run_pr_task_pipeline,
@@ -135,10 +136,14 @@ async def _maybe_triage_ambiguous_pr(
     task_id = res.get("task", {}).get("id") or res.get("task", {}).get("taskId")
     if task_id:
         triage_comment = (
-            f"**PR opened (no issue link):** [{pr_number}]({pr_url}). "
-            "Automation created this triage task because the PR did not reference an issue."
+            format_pr_notice_with_url(
+                headline="**PR opened (no issue link):**",
+                pr_number=pr_number,
+                pr_url=pr_url,
+            )
+            + "\n\nAutomation created this triage task because the PR did not reference an issue."
         )
-        await plaky.add_comment(str(task_id), triage_comment)
+        await plaky.add_comment(str(task_id), triage_comment, board_id=bid)
 
     log = SyncLog(
         action="pr_ambiguous_triage",
@@ -189,8 +194,12 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                 github_issue_number=int(issue_num),
                 link_source="issue_keyword",
             )
-            comment = f"**PR Opened:** [{pr_number}]({pr_url})"
-            await plaky.add_comment(mapping.plaky_task_id, comment)
+            comment = format_pr_notice_with_url(
+                headline="**PR Opened:**",
+                pr_number=pr_number,
+                pr_url=pr_url,
+            )
+            await plaky.add_comment(mapping.plaky_task_id, comment, board_id=board_id or None)
             await _maybe_set_needs_qa(plaky, mapping.plaky_task_id, is_draft, board_id)
 
             log = SyncLog(
@@ -256,11 +265,12 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                     github_issue_number=0,
                     link_source=pipe.decision,
                 )
-                comment = (
-                    f"**PR Opened** (automation link — {pipe.decision}): "
-                    f"[{pr_number}]({pr_url})"
+                comment = format_pr_notice_with_url(
+                    headline=f"**PR Opened** (automation link — {pipe.decision}):",
+                    pr_number=pr_number,
+                    pr_url=pr_url,
                 )
-                await plaky.add_comment(pipe.task_id, comment)
+                await plaky.add_comment(pipe.task_id, comment, board_id=board_id or None)
                 await _maybe_set_needs_qa(plaky, pipe.task_id, is_draft, board_id)
                 log = SyncLog(
                     action="pr_linked_fuzzy",
@@ -553,7 +563,7 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
                 task_id, status_to_set, board_id, status_field_key=status_field_key
             )
             comment_text = f"**PR Comment:** by @{commenter_login}"
-            await plaky.add_comment(task_id, comment_text)
+            await plaky.add_comment(task_id, comment_text, board_id=board_id or None)
 
             log = SyncLog(
                 action="in_qa_comment",

@@ -82,7 +82,7 @@ class RecordingPlaky:
         self.status_calls.append((item_id, str(st)))
         return {"ok": True}
 
-    async def add_comment(self, task_id: str, body: str) -> Dict[str, Any]:
+    async def add_comment(self, task_id: str, body: str, **kwargs: Any) -> Dict[str, Any]:
         self.comments.append((task_id, body))
         return {"ok": True}
 

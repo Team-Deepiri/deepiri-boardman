@@ -809,48 +809,31 @@ class PlakyClient:
             return {"ok": True, "status": r.status_code, "comment": cmt}
         return {"ok": False, "status": r.status_code, "message": r.text[:300]}
 
-        base = self.base_url.rstrip("/")
-        bodies = [
-            {
-                "board_id": board_id,
-                "group_id": group_id,
-                "name": title,
-                "description": description,
-                "priority": priority,
-            },
-            {
-                "boardId": board_id,
-                "groupId": group_id,
-                "title": title,
-                "description": description,
-                "priority": priority,
-            },
-        ]
-        async with httpx.AsyncClient() as client:
-            for path in ("/items", "/tasks"):
-                url = f"{base}{path}"
-                for body in bodies:
-                    response = await _request_with_rate_limit_retry(
-                        client, "POST", url, headers=_headers(self.api_key), json=body
-                    )
-                    last_status = response.status_code
-                    last_snip = response.text[:200]
-                    if response.status_code in (200, 201):
-                        payload = response.json()
-                        task_id = payload.get("id") or payload.get("taskId") or payload.get("itemId")
-                        task_url = (
-                            payload.get("url")
-                            or payload.get("taskUrl")
-                            or (f"https://app.plaky.com/task/{task_id}" if task_id else None)
-                        )
-                        return {"ok": True, "status": response.status_code, "task": payload, "task_url": task_url}
-                    if response.status_code not in (404, 422):
-                        break
-        return {
-            "ok": False,
-            "status": last_status,
-            "message": f"Plaky item create failed ({last_status}): {last_snip}",
-        }
+    async def _resolve_board_id_for_item_public(
+        self, item_id: str, *, skip_board_ids: Optional[AbstractSet[str]] = None
+    ) -> Optional[str]:
+        """Find which board contains this item id (Plaky v1/public board items)."""
+        root = self._public_root()
+        if not root or not self.api_key:
+            return None
+        iid = (item_id or "").strip()
+        if not iid:
+            return None
+        skip = {str(x).strip() for x in (skip_board_ids or ()) if str(x).strip()}
+        lb = await self.list_boards()
+        boards = lb.get("boards") if isinstance(lb, dict) else []
+        if not isinstance(boards, list):
+            return None
+        for b in boards:
+            if not isinstance(b, dict):
+                continue
+            bid = str(b.get("id") or "").strip()
+            if not bid or bid in skip:
+                continue
+            gr = await self.get_board_item_public(bid, iid)
+            if gr.get("ok") and isinstance(gr.get("item"), dict):
+                return bid
+        return None
 
     async def get_board_item_public(self, board_id: str, item_id: str) -> Dict[str, Any]:
         """GET item on Plaky v1/public (custom fields + group on full payload)."""
@@ -1294,12 +1277,49 @@ class PlakyClient:
             "message": f"Failed to fetch tasks ({response.status_code}): {response.text[:200]}",
         }
 
-    async def add_comment(self, task_id: str, body: str) -> Dict[str, Any]:
+    async def add_comment(
+        self, task_id: str, body: str, *, board_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Post a task comment. On Plaky v1/public, prefers ``…/items/{id}/comments`` (same as item creation)."""
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
 
-        url = f"{self.base_url.rstrip('/')}/tasks/{task_id}/comments"
-        payload = {"body": body}
+        tid = (task_id or "").strip()
+        if not tid:
+            return {"ok": False, "status": 400, "message": "task_id is required."}
+
+        async def _via_item_public(bid: str) -> Optional[Dict[str, Any]]:
+            r = await self.add_item_comment_public(bid, tid, body or "")
+            if r.get("skipped"):
+                return {"ok": True, "status": 200, "comment": None, "route": "item_public"}
+            if r.get("ok"):
+                return {
+                    "ok": True,
+                    "status": int(r.get("status") or 201),
+                    "comment": r.get("comment"),
+                    "route": "item_public",
+                }
+            return None
+
+        root = self._public_root()
+        if root:
+            tried: Set[str] = set()
+            for cand in ((board_id or "").strip(), (settings.plaky_pr_tracking_board_id or "").strip()):
+                if not cand or cand in tried:
+                    continue
+                tried.add(cand)
+                via = await _via_item_public(cand)
+                if via is not None:
+                    return via
+
+            resolved = await self._resolve_board_id_for_item_public(tid, skip_board_ids=tried)
+            if resolved:
+                via = await _via_item_public(resolved)
+                if via is not None:
+                    return via
+
+        url = f"{self.base_url.rstrip('/')}/tasks/{tid}/comments"
+        payload = {"body": body or ""}
 
         async with httpx.AsyncClient() as client:
             response = await _request_with_rate_limit_retry(
@@ -1307,12 +1327,19 @@ class PlakyClient:
             )
 
         if response.status_code in (200, 201):
-            return {"ok": True, "status": response.status_code, "comment": response.json()}
+            out: Dict[str, Any] = {"ok": True, "status": response.status_code, "comment": response.json()}
+            if root:
+                out["route"] = "tasks_legacy"
+            return out
 
         if response.status_code == 429:
             return {"ok": False, "status": 429, "message": "Plaky API rate limited the request."}
 
-        return {"ok": False, "status": response.status_code, "message": f"Failed to add comment ({response.status_code}): {response.text[:200]}"}
+        return {
+            "ok": False,
+            "status": response.status_code,
+            "message": f"Failed to add comment ({response.status_code}): {response.text[:200]}",
+        }
 
     async def get_task(self, task_id: str) -> Dict[str, Any]:
         if not self.api_key:

@@ -113,7 +113,17 @@ def link_pr(
         help="GitHub PR URL(s): one URL, or several comma- or whitespace-separated",
     ),
     task_id: str = typer.Option(..., prompt=True, help="Plaky task ID"),
+    plaky_board_id: Optional[str] = typer.Option(
+        None,
+        "--board-id",
+        help="Plaky board id (optional; speeds v1/public item comments).",
+    ),
     update_status: bool = typer.Option(False, "--update-status", help="Update task status on merge"),
+    print_response: bool = typer.Option(
+        False,
+        "--print-response",
+        help="Print full JSON result from Plaky (status, route, comment payload, posted text).",
+    ),
 ):
     plaky = PlakyClient()
 
@@ -124,7 +134,12 @@ def link_pr(
             console.print("[red]Error:[/red] supply at least one PR URL")
             return
         comment = format_pr_link_comment(urls)
-        result = await plaky.add_comment(task_id, comment)
+        bid = (plaky_board_id or "").strip() or None
+        result = await plaky.add_comment(task_id, comment, board_id=bid)
+        if print_response:
+            dbg = dict(result)
+            dbg["posted_comment_text"] = comment
+            console.print(json.dumps(dbg, indent=2, default=str))
         if result.get("ok"):
             console.print("[green]PR linked successfully[/green]")
             if update_status:

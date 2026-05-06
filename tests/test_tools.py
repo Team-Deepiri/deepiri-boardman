@@ -1,5 +1,7 @@
 import json
 
+import boardman.plaky.client
+import boardman.settings as boardman_settings
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -71,6 +73,60 @@ class TestPlakyClient:
         result = await c.add_comment("123", "comment")
         assert result["ok"] is False
         assert "missing" in result["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_add_comment_prefers_public_item_comments_with_board_id(self, monkeypatch):
+        calls: list[tuple[str, str, str]] = []
+
+        async def stub_public(self, board_id: str, item_id: str, text: str) -> dict:
+            calls.append((board_id, item_id, text))
+            return {"ok": True, "status": 201, "comment": {"ok": True}}
+
+        monkeypatch.setattr(
+            boardman.plaky.client.PlakyClient,
+            "add_item_comment_public",
+            stub_public,
+            raising=True,
+        )
+        from boardman.plaky.client import PlakyClient
+
+        c = PlakyClient(api_key="x", base_url="https://api.plaky.com/v1/public")
+        r = await c.add_comment("6079528", "**PR:** http://example", board_id="218760")
+        assert r["ok"] is True
+        assert r.get("route") == "item_public"
+        assert calls == [("218760", "6079528", "**PR:** http://example")]
+
+    @pytest.mark.asyncio
+    async def test_add_comment_resolve_board_then_item_comment(self, monkeypatch):
+        calls: list[str] = []
+
+        async def stub_public(self, board_id: str, item_id: str, text: str) -> dict:
+            calls.append(board_id)
+            return {"ok": True, "status": 200, "comment": {}}
+
+        async def stub_resolve(self, item_id: str, *, skip_board_ids=None):
+            assert item_id == "99"
+            return "board-found"
+
+        monkeypatch.setattr(
+            boardman.plaky.client.PlakyClient,
+            "add_item_comment_public",
+            stub_public,
+            raising=True,
+        )
+        monkeypatch.setattr(
+            boardman.plaky.client.PlakyClient,
+            "_resolve_board_id_for_item_public",
+            stub_resolve,
+            raising=True,
+        )
+        monkeypatch.setattr(boardman_settings.settings, "plaky_pr_tracking_board_id", "")
+
+        from boardman.plaky.client import PlakyClient
+
+        r = await PlakyClient(api_key="x", base_url="https://api.plaky.com/v1/public").add_comment("99", "hi")
+        assert r["ok"] is True
+        assert calls == ["board-found"]
 
     @pytest.mark.asyncio
     async def test_update_task_fields_missing_api_key(self, plaky_key_cleared):

@@ -332,9 +332,12 @@ async def _plaky_update_task(
     return json.dumps(r, default=str)
 
 
-async def _plaky_add_comment(task_id: str, body: str) -> str:
+async def _plaky_add_comment(task_id: str, body: str, board_id: str = "") -> str:
+    from boardman.agent.tool_context import get_context_plaky_board_id
+
     c = PlakyClient()
-    r = await c.add_comment(task_id, body)
+    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    r = await c.add_comment(task_id, body, board_id=bid)
     return json.dumps(r, default=str)
 
 
@@ -464,7 +467,10 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                 StructuredTool.from_function(
                     coroutine=_plaky_add_comment,
                     name="plaky_add_comment",
-                    description="Add a comment to a Plaky task. Args: task_id, body (markdown).",
+                    description=(
+                        "Add a comment to a Plaky task (v1/public uses board item comments). "
+                        "Args: task_id, body (markdown). Optional board_id or Current Plaky placement."
+                    ),
                 ),
                 StructuredTool.from_function(
                     coroutine=_plaky_create_subtask,

@@ -33,6 +33,8 @@ class Settings(BaseSettings):
     plaky_status_completed: str = "completed"
     plaky_pr_tracking_board_id: str = ""
     plaky_pr_tracking_group_id: str = ""
+    # When true, GitHub PR link comments use HTML <a href> (Plaky often does not linkify bare URLs).
+    plaky_pr_comment_links_as_html: bool = True
     # On startup, fetch the default board schema and fill blank `plaky_field_keys` in team_assignments.yml.
     plaky_auto_sync_team_assignment_field_keys: bool = True
     # Minimum interval between field-key sync attempts for the same board,

@@ -61,6 +61,7 @@ class LinkPRRequest(BaseModel):
     pr_url: Optional[str] = None
     pr_urls: Optional[List[str]] = None
     update_status: bool = False
+    plaky_board_id: Optional[str] = None
 
 
 class UpdateTaskRequest(BaseModel):
@@ -134,7 +135,8 @@ async def link_pr(task_id: str, req: LinkPRRequest, session: AsyncSession = Depe
 
     plaky = PlakyClient()
     comment = format_pr_link_comment(urls)
-    result = await plaky.add_comment(task_id, comment)
+    bid = (req.plaky_board_id or "").strip() or None
+    result = await plaky.add_comment(task_id, comment, board_id=bid)
 
     if not result.get("ok"):
         return result

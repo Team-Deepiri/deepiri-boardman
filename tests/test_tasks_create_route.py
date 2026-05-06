@@ -710,7 +710,7 @@ async def test_patch_tasks_create_then_update_status_type_priority_qa(
             captured["legacy_task_fields"] = {"task_id": task_id, **kwargs}
             return {"ok": True, "task": {"id": task_id}}
 
-        async def add_comment(self, task_id: str, body: str) -> dict:
+        async def add_comment(self, task_id: str, body: str, **kwargs: Any) -> dict:
             captured["comment"] = {"task_id": task_id, "body": body}
             return {"ok": True, "comment": {"id": "c1"}}
 
