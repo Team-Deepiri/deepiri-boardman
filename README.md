@@ -75,10 +75,17 @@ cd boardman-ui && npm install && npm run dev
 ### Full stack (Docker)
 
 ```bash
+./scripts/deploy_preflight.sh
 docker compose up --build
 # API http://localhost:8090
 # UI + proxy http://localhost:8088  (nginx → boardman)
 # Ollama http://localhost:11434  (set OLLAMA_BASE_URL=http://ollama:11434 in .env for compose)
+```
+
+Deployment smoke checks (after the stack is up):
+
+```bash
+bash scripts/deploy_smoke.sh
 ```
 
 ## API Endpoints
@@ -104,6 +111,8 @@ See `.env.example` for all options. Key variables:
 - `GITHUB_PAT` - Optional. For CLI sync command
 - `PLAKY_PR_MERGE_STATUS` - Status to set on PR merge (default: `in_review`)
 - `LLM_PROVIDER`, `LLM_MODEL`, `OLLAMA_BASE_URL`, cloud API keys — see `.env.example`
+
+Deployment runbook: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 Full roadmap: [docs/PLAN.md](docs/PLAN.md).
 

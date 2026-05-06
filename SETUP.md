@@ -73,8 +73,13 @@ curl http://localhost:8090/api/v1/health
 The API image installs dependencies with **Poetry** (`Dockerfile`: `poetry install --without dev`). Lockfile: `poetry.lock`.
 
 ```bash
+test -d boardman.db && rm -rf boardman.db
+: > boardman.db
 docker compose up -d --build
 ```
+
+For VPS deployment, service credentials, worker setup, webhook smoke tests, and rotation steps, see
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 ## CLI Usage
 
