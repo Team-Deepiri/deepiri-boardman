@@ -341,6 +341,33 @@ async def _plaky_add_comment(task_id: str, body: str, board_id: str = "") -> str
     return json.dumps(r, default=str)
 
 
+async def _plaky_link_prs(task_id: str, pr_urls: str, board_id: str = "") -> str:
+    """
+    Link one or more GitHub PR URLs to a Plaky item by posting a consistently-formatted comment.
+
+    `pr_urls` may be a single URL or a comma/whitespace/newline-separated list.
+    """
+    import re
+
+    from boardman.agent.tool_context import get_context_plaky_board_id
+    from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
+
+    raw = (pr_urls or "").strip()
+    parts = [p for p in re.split(r"[\s,]+", raw) if p.strip()]
+    urls = collect_pr_urls(pr_url=None, pr_urls=parts or None)
+    if not urls:
+        return json.dumps({"ok": False, "status": 400, "message": "supply at least one PR URL"}, default=str)
+
+    c = PlakyClient()
+    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    comment = format_pr_link_comment(urls)
+    r = await c.add_comment(task_id, comment, board_id=bid)
+    r2 = dict(r) if isinstance(r, dict) else {"ok": False, "message": "invalid result"}
+    r2["posted_comment_text"] = comment
+    r2["linked_pr_urls"] = urls
+    return json.dumps(r2, default=str)
+
+
 async def _plaky_create_subtask(parent_task_id: str, title: str, description: str = "") -> str:
     c = PlakyClient()
     r = await c.create_subtask(parent_task_id, title, description)
@@ -470,6 +497,15 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                     description=(
                         "Add a comment to a Plaky task (v1/public uses board item comments). "
                         "Args: task_id, body (markdown). Optional board_id or Current Plaky placement."
+                    ),
+                ),
+                StructuredTool.from_function(
+                    coroutine=_plaky_link_prs,
+                    name="plaky_link_prs",
+                    description=(
+                        "Link one or more GitHub PR URLs to an existing Plaky task/item by adding a PR links comment. "
+                        "Uses the same formatting and Plaky comment route as the CLI `link-pr`. "
+                        "Args: task_id, pr_urls (string containing one or more URLs), optional board_id/placement."
                     ),
                 ),
                 StructuredTool.from_function(

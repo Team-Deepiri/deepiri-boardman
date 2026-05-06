@@ -30,7 +30,7 @@ def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
     assert len(build_all_tools(allow_writes=False)) == 17
-    assert len(build_all_tools(allow_writes=True)) == 22
+    assert len(build_all_tools(allow_writes=True)) == 23
 
 
 @pytest.fixture
