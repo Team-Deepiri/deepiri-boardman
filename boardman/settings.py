@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     github_webhook_secret: str = ""
     github_pat: str | None = None
     github_org: str = "deepiri-org"
+    # Prepended to bare repo slugs (no "owner/") for QA roster + create-task; e.g. Team-Deepiri/foo.
+    # When empty, falls back to github_org. github_org is still used for API org listing and routing.
+    github_bare_repo_owner: str = "Team-Deepiri"
     # Org team for support roster: GET /api/v1/github/support-team/members (names/logins from GitHub)
     github_support_team: str = "Team-Deepiri/support-team"
     # List org teams (GET /orgs/{org}/teams) and parse tier from slug/name (qa-tier-3, t2-qa, …).

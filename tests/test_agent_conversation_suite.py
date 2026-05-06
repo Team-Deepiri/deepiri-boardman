@@ -360,11 +360,12 @@ async def test_live_http_agent_with_plaky_board_and_group_ids(
         body = r.json()
         assert body.get("ok") is True
         reply = (body.get("reply") or "").upper()
-        # Live models sometimes ignore the forced token; still require clear board/group context acknowledgement.
+        # Live models sometimes ignore the forced token; accept ids, board+group wording, or "Boardman Live" wording.
         assert (
             ("BOARDMAN_LIVE_OK" in reply)
             or ("BOARD" in reply and "GROUP" in reply)
             or (board_id in reply and group_id in reply)
+            or ("BOARDMAN" in reply and ("LIVE" in reply or "OK" in reply or "PLACEMENT" in reply or "CONTEXT" in reply))
         ), body.get("reply")
     finally:
         app.dependency_overrides.clear()

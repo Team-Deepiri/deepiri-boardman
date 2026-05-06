@@ -9,7 +9,7 @@ from boardman.assignment.config import (
     load_team_assignments,
     sync_team_assignment_field_keys_from_board,
 )
-from boardman.assignment.qa_picker import build_repo_field_map, pick_qa_for_repo
+from boardman.assignment.qa_picker import build_repo_field_map, ensure_github_owner_repo, pick_qa_for_repo
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
     field_likely_person_column,
@@ -123,11 +123,14 @@ def _merge_github_repo_inputs(
         # "owner/a owner/b", "owner/a,owner/b", or newline-separated.
         tokens = [p.strip() for p in raw.replace("\n", ",").replace("\t", " ").replace(",", " ").split(" ") if p.strip()]
         for t in tokens:
-            k = t.lower()
+            canon = ensure_github_owner_repo(t)
+            if not canon:
+                continue
+            k = canon.lower()
             if k in seen:
                 continue
             seen.add(k)
-            out.append(t)
+            out.append(canon)
 
     add(primary_repo)
     if isinstance(extra_repos, list):
@@ -453,7 +456,7 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
     engineer_field_key = cfg_engineer_key
     qa_field_key = cfg_qa_key or qa_env_fallback
 
-    pick_qa_id, _ = await pick_qa_for_repo(repo_full, cfg)
+    pick_qa_id, pick_qa_reason = await pick_qa_for_repo(repo_full, cfg)
     needs_infer = effective_board_id and (
         (engineer_plaky_id and not engineer_field_key)
         or (qa_plaky_id and not qa_field_key)
@@ -560,6 +563,13 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
     result["post_create_assignment"] = post_assign
     if tag_resolution_warnings:
         result["tag_resolution_warnings"] = tag_resolution_warnings
+    result["qa_roster_pick"] = {
+        "repo": repo_full,
+        "picked_plaky_id": str(pick_qa_id or "").strip() or None,
+        "reason": pick_qa_reason,
+        "qa_field_key": (qa_field_key or "").strip() or None,
+        "applied_to_payload": bool(qa_apply and qa_field_key),
+    }
     return result
 
 
@@ -572,29 +582,38 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
     update_type_raw = (req.task_type or "").strip()
     update_priority_raw = (req.priority or "").strip()
     update_qa = (req.qa_plaky_id or "").strip()
-    update_repo_raw = (req.github_repo or "").strip()
+    update_repo_in = (req.github_repo or "").strip()
     auto_assign_qa = bool(req.auto_assign_qa)
 
     if auto_assign_qa and not update_qa:
-        if not update_repo_raw:
+        if not update_repo_in:
             return {
                 "ok": False,
                 "status": 400,
                 "message": "github_repo is required when auto_assign_qa is enabled and qa_plaky_id is not provided",
             }
+        repo_for_pick = ensure_github_owner_repo(update_repo_in)
         cfg_for_pick = load_team_assignments()
-        picked_qa, picked_reason = await pick_qa_for_repo(update_repo_raw, cfg_for_pick)
-        ops["qa_auto_assign"] = {
+        picked_qa, picked_reason = await pick_qa_for_repo(repo_for_pick, cfg_for_pick)
+        qa_ops: dict[str, Any] = {
             "ok": bool((picked_qa or "").strip()),
-            "repo": update_repo_raw,
+            "repo": repo_for_pick,
             "picked_qa_plaky_id": picked_qa,
             "reason": picked_reason,
         }
+        if repo_for_pick.casefold() != update_repo_in.casefold():
+            qa_ops["repo_input"] = update_repo_in
+        ops["qa_auto_assign"] = qa_ops
         if not picked_qa:
             return {
                 "ok": False,
                 "status": 400,
-                "message": f"Could not auto-assign QA for repo '{update_repo_raw}': {picked_reason}",
+                "message": (
+                    f"Could not auto-assign QA for repo '{repo_for_pick}'"
+                    f" (from '{update_repo_in}'): {picked_reason}"
+                    if repo_for_pick.casefold() != update_repo_in.casefold()
+                    else f"Could not auto-assign QA for repo '{repo_for_pick}': {picked_reason}"
+                ),
                 "operations": ops,
             }
         update_qa = str(picked_qa).strip()

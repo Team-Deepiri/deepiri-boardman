@@ -255,15 +255,20 @@ def _parse_explicit_repos(val: Any) -> List[str]:
 
 
 def _augment_repo_globs_with_github_org(globs: List[str]) -> List[str]:
-    """Ensure roster members match repos under settings.github_org (e.g. Team-Deepiri/* vs deepiri-org/*)."""
-    org = (settings.github_org or "").strip()
-    if not org:
-        return globs
-    extra = f"{org.lower()}/*"
+    """Append owner/* globs from github_bare_repo_owner and github_org when missing (roster matching)."""
     seen = {g.strip().lower() for g in globs if g and str(g).strip()}
-    if extra not in seen:
-        return list(globs) + [extra]
-    return globs
+    out: List[str] = list(globs)
+    for raw in (
+        (settings.github_bare_repo_owner or "").strip(),
+        (settings.github_org or "").strip(),
+    ):
+        if not raw:
+            continue
+        extra = f"{raw.lower()}/*"
+        if extra not in seen:
+            seen.add(extra)
+            out.append(extra)
+    return out
 
 
 def _parse_qa_tier(val: Any) -> int:

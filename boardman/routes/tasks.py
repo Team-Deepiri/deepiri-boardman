@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -29,6 +29,8 @@ class CreateTaskRequest(BaseModel):
         validation_alias=AliasChoices("type", "task_type"),
     )
     github_repos: Optional[List[str]] = None  # owner/repo strings; deduped
+    # Older clients/scripts send a single slug here; prefer github_repos. Same effect as filters.repo.
+    repo: Optional[str] = None
     plaky_board_id: Optional[str] = None
     plaky_group_id: Optional[str] = None
     engineer_plaky_id: Optional[str] = None
@@ -38,6 +40,16 @@ class CreateTaskRequest(BaseModel):
     # Explicit qa_plaky_id always wins over the roster pick.
     auto_assign_team: bool = True
     filters: Optional[dict] = None
+
+
+def _merged_create_task_filters(req: CreateTaskRequest) -> Optional[dict[str, Any]]:
+    """Merge legacy top-level ``repo`` into ``filters.repo`` without overriding an explicit filters entry."""
+    merged: dict[str, Any] = dict(req.filters) if req.filters else {}
+    top_repo = (req.repo or "").strip()
+    existing = str(merged.get("repo") or "").strip()
+    if top_repo and not existing:
+        merged["repo"] = top_repo
+    return merged if merged else None
 
 
 class LinkPRRequest(BaseModel):
@@ -79,7 +91,7 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
             engineer_plaky_id=req.engineer_plaky_id,
             qa_plaky_id=req.qa_plaky_id,
             auto_assign_team=req.auto_assign_team,
-            filters=req.filters,
+            filters=_merged_create_task_filters(req),
         )
     )
 

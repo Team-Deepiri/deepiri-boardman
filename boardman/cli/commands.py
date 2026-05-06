@@ -93,6 +93,9 @@ def create_task(
             warnings = result.get("tag_resolution_warnings")
             if isinstance(warnings, list) and warnings:
                 console.print(f"[yellow]Tag resolution warnings:[/yellow] {json.dumps(warnings, indent=2)}")
+            qa_pick = result.get("qa_roster_pick")
+            if isinstance(qa_pick, dict):
+                console.print(f"[dim]QA roster pick:[/dim] {json.dumps(qa_pick, indent=2)}")
         else:
             console.print(f"[red]Error:[/red] {result.get('message')}")
             raise typer.Exit(1)
@@ -183,7 +186,7 @@ def update_task_cmd(
     github_repo: Optional[str] = typer.Option(
         None,
         "--github-repo",
-        help="owner/repo used when --auto-assign-qa is enabled",
+        help="GitHub repo for --auto-assign-qa (owner/repo or repo name; bare names get GITHUB_BARE_REPO_OWNER)",
     ),
     plaky_board_id: Optional[str] = typer.Option(None, "--board-id", help="Explicit board id for field patch"),
 ):

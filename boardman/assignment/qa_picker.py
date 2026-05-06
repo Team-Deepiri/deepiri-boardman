@@ -177,6 +177,14 @@ async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
     if not fn:
         return None, "empty repo"
 
+    if not cfg.members:
+        return (
+            None,
+            "no team members loaded (GitHub roster failed, use_github_support_team_roster=false with no static "
+            "members list, or every roster login lacks a Plaky id — set member_overrides[login].id or enable "
+            "auto_match_plaky_ids)",
+        )
+
     repo_tier = 2
     routing = get_routing(fn, "", settings.github_org)
     if routing and routing.tier > 0:
@@ -184,14 +192,31 @@ async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
     else:
         repo_tier = await _auto_classify_repo_tier(fn)
 
-    qas = [m for m in cfg.members if "qa" in m.roles and repo_matches_member(fn, m)]
+    with_qa_role = [m for m in cfg.members if "qa" in m.roles]
+    if not with_qa_role:
+        return (
+            None,
+            "no team members have role 'qa' (set member_defaults.roles to include 'qa', "
+            "or add qa under member_overrides for each GitHub login; Plaky id required per roster member)",
+        )
+
+    qas = [m for m in with_qa_role if repo_matches_member(fn, m)]
     if not qas:
-        return None, "no QA member matched repo globs"
+        return (
+            None,
+            f"no QA-role member matches repo {fn!r} (check repo_globs / explicit_repos); "
+            f"{len(with_qa_role)} member(s) have qa role",
+        )
 
     # Filter by QA tier (repo_tier is the tier required - QAs must have qa_tier >= repo_tier)
+    tier_before = list(qas)
     qas = [m for m in qas if m.qa_tier >= repo_tier]
     if not qas:
-        return None, f"no QA after tier filter (repo tier={repo_tier}, QA tiers: {[m.qa_tier for m in qas]})"
+        return (
+            None,
+            f"no QA after tier filter: repo requires qa_tier>={repo_tier}; "
+            f"candidates had qa_tiers {[m.qa_tier for m in tier_before]}",
+        )
 
     if repo_is_heavy(fn, cfg.heavy_repo_patterns):
         qas = [m for m in qas if m.tier.lower() not in ("light", "minimal", "low")]
@@ -213,13 +238,34 @@ def github_repo_suffix_name(full: str) -> str:
     return s.rsplit("/", 1)[-1] if "/" in s else s
 
 
+def ensure_github_owner_repo(slug: str) -> str:
+    """If ``slug`` has no ``owner/`` prefix, prepend bare-repo owner (see settings.github_bare_repo_owner)."""
+    s = (slug or "").strip()
+    if not s or "/" in s:
+        return s
+    org = (settings.github_bare_repo_owner or "").strip() or (settings.github_org or "").strip()
+    if org:
+        return f"{org}/{s}"
+    return s
+
+
+def _tokenize_repo_slugs(text: str) -> List[str]:
+    """Split comma/newline/whitespace-separated repo tokens (CLI ``--github-repo a b`` / agent ``repo_tag``)."""
+    out: List[str] = []
+    for chunk in (text or "").replace("\n", ",").split(","):
+        for p in chunk.replace("\t", " ").split():
+            if p.strip():
+                out.append(p.strip())
+    return out
+
+
 def _dedupe_repo_list(repos: Optional[List[str]]) -> List[str]:
     out: List[str] = []
     seen_set: set[str] = set()
     if not repos:
         return out
     for raw in repos:
-        s = str(raw or "").strip()
+        s = ensure_github_owner_repo(str(raw or "").strip())
         if not s:
             continue
         k = s.lower()
@@ -239,12 +285,13 @@ def normalize_github_repo_inputs(
     """Return ordered unique owner/repo values from list and comma/newline text."""
     tokens: List[str] = []
     if primary_repo and primary_repo.strip():
-        tokens.append(primary_repo)
+        tokens.extend(_tokenize_repo_slugs(primary_repo))
     if isinstance(github_repos, list):
-        tokens.extend(str(repo or "") for repo in github_repos)
+        for repo in github_repos:
+            tokens.extend(_tokenize_repo_slugs(str(repo or "")))
     raw_extra = (extra_repo_text or "").strip()
     if raw_extra:
-        tokens.extend(raw_extra.replace("\n", ",").split(","))
+        tokens.extend(_tokenize_repo_slugs(raw_extra))
     return _dedupe_repo_list(tokens)
 
 

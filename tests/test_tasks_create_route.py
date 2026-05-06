@@ -104,6 +104,64 @@ def _cfg_for_route() -> TeamAssignmentsConfig:
 
 
 @pytest.mark.asyncio
+async def test_post_tasks_accepts_legacy_top_level_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Older live tests and scripts POST ``repo`` without ``github_repos``; route must merge into filters."""
+    captured: Dict[str, Any] = {}
+
+    async def _noop_sync(_board_id: str):
+        return {"ok": True}
+
+    async def _empty_schema_bundle(_board_id: str):
+        return {"normalized": {"fields": []}}
+
+    class FakePlaky:
+        def __init__(self, *a: Any, **k: Any) -> None:
+            pass
+
+        async def list_groups(self, board_id: str) -> dict:
+            return {"ok": True, "groups": [{"id": "grp-from-api"}]}
+
+        async def create_task(self, **kwargs: Any) -> dict:
+            captured["create_kwargs"] = dict(kwargs)
+            return {"ok": True, "task": {"id": "item-42"}, "task_id": "item-42"}
+
+        async def patch_item_field_values(self, board_id: str, item_id: str, values: dict, **kwargs: Any) -> dict:
+            return {"ok": True, "patched_keys": list(values)}
+
+        async def get_board_item_public(self, board_id: str, item_id: str) -> dict:
+            return {"ok": True, "item": {"id": item_id}}
+
+        async def list_board_items(self, *a: Any, **k: Any) -> dict:
+            return {"ok": True, "items": []}
+
+    monkeypatch.setattr("boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync)
+    monkeypatch.setattr("boardman.services.task_mutations.fetch_board_schema_bundle", _empty_schema_bundle)
+    monkeypatch.setattr("boardman.services.task_mutations.PlakyClient", FakePlaky)
+    monkeypatch.setattr("boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route())
+
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post(
+            "/api/v1/tasks",
+            json={
+                "title": "Legacy repo field",
+                "description": "",
+                "repo": "acme/widget",
+                "plaky_board_id": "board-77",
+                "plaky_group_id": "grp-1",
+                "auto_assign_team": False,
+            },
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body.get("ok") is True, body
+    qa_pick = body.get("qa_roster_pick") or {}
+    assert qa_pick.get("repo") == "acme/widget"
+    fv = (captured.get("create_kwargs") or {}).get("field_values") or {}
+    assert fv.get("fld_repo") == "acme/widget"
+
+
+@pytest.mark.asyncio
 async def test_post_tasks_passes_board_to_plaky_and_patches_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
     captured: Dict[str, Any] = {}
 

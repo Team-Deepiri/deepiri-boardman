@@ -1,47 +1,24 @@
-# Live roster: GitHub org team @Team-Deepiri/support-team (override with github_support_team).
-# Boardman fetches logins + names (+ public GitHub email when visible) on each load (cached ~2 min).
-#
-# You maintain:
-#   - member_defaults  — shared repo scope / role defaults
-#   - member_overrides — per GitHub login: optional Plaky `id` + role/repo overrides
-#
-# Plaky person `id`: set explicitly under member_overrides, **or** leave it out and enable
-# auto_match_plaky_ids (default true). Boardman lists Plaky workspace users and scores matches using
-# exact / similar emails, same email local-part with different domains, display names, last names,
-# and GitHub login vs Plaky email local-part (when work vs personal email differ). Ties within
-# auto_match_ambiguity_margin are rejected so we don’t assign the wrong person.
-#
-# auto_match_plaky_ids: true
-# auto_match_min_score: 640
-# auto_match_ambiguity_margin: 45
-#
-# To use a fully static list instead, set `members: [ ... ]` with id/roles/globs; that disables
-# GitHub roster merging for that file.
-
 plaky_field_keys:
-  engineer: ""
-  qa: ""
-  repo: ""
-  github_repos: ""
-
-# use_github_support_team_roster: true   # default; set false to disable GitHub roster
-# github_support_team: Team-Deepiri/support-team
-
+  engineer: person-1
+  qa: person-2
+  repo: tag-2
+  github_repos: tag-2
 member_defaults:
-  roles: [engineer]
+  roles:
+  - engineer
+  - qa
   qa_tier: 3
   tier: standard
   repo_globs:
-    - "deepiri-org/*"
+  - deepiri-org/*
   weight: 1.0
-
-# Keys = GitHub login (lowercase). Required: id = Plaky assignee field option id for that person.
 member_overrides:
   your-github-login:
-    id: ""
-    roles: [engineer, qa]
+    id: ''
+    roles:
+    - engineer
+    - qa
     qa_tier: 3
-
 hardware_tiers:
   light:
     weight_bias: 0.75
@@ -49,24 +26,16 @@ hardware_tiers:
     weight_bias: 1.0
   heavy:
     weight_bias: 1.15
-
 repo_requirements:
   heavy_repo_patterns:
-    - "*emotion*"
-    - "*gpu*"
-    - "*cuda*"
-
+  - '*emotion*'
+  - '*gpu*'
+  - '*cuda*'
 selection:
   random_jitter: 0.12
-
-# Optional QA tier pattern overrides: boardman/assignment/repo_rules.py defaults apply if omitted.
-# qa_repo_rules:
-#   tier2_excluded_patterns: ["*boardman*"]
-#   tier1_only_patterns: ["*deepiriweb-frontend*"]
-
 ambiguous_pr:
   enabled: false
-  triage_board_id: ""
-  triage_group_id: ""
+  triage_board_id: ''
+  triage_group_id: ''
   assign_qa: true
-  title_template: "Triage: PR #{number} — {repo}"
+  title_template: "Triage: PR #{number} \u2014 {repo}"

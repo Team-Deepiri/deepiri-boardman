@@ -126,6 +126,46 @@ class TestPlakyTools:
         assert "plaky_create_subtask" in tool_names
         assert "plaky_patch_item_fields" in tool_names
 
+    @pytest.mark.asyncio
+    async def test_plaky_update_task_tool_passes_auto_assign_fields(self, monkeypatch):
+        """Agent update tool should mirror CLI UpdateTaskInput (QA roster + placement)."""
+
+        captured: dict = {}
+
+        async def stub(task_id: str, req):
+            captured["task_id"] = task_id
+            captured["req"] = req
+            return {"ok": True}
+
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.update_task_internal",
+            stub,
+        )
+        monkeypatch.setattr(
+            "boardman.agent.tool_context.get_context_plaky_board_id",
+            lambda: "board-from-context",
+        )
+
+        from boardman.agent.tools.plaky_tools import _plaky_update_task
+
+        await _plaky_update_task(
+            "task-99",
+            status="In QA",
+            auto_assign_qa=True,
+            github_repo="bare-repo-name",
+            board_id="",
+        )
+        assert captured["task_id"] == "task-99"
+        inp = captured["req"]
+        assert inp.auto_assign_qa is True
+        assert inp.github_repo == "bare-repo-name"
+        assert inp.plaky_board_id == "board-from-context"
+
+        await _plaky_update_task("task-100", qa_plaky_id="user-qa-1", board_id="explicit-board")
+        inp2 = captured["req"]
+        assert inp2.qa_plaky_id == "user-qa-1"
+        assert inp2.plaky_board_id == "explicit-board"
+
 
 class TestGitHubTools:
     def test_build_github_tools_count(self):

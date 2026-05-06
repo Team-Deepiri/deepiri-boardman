@@ -8,14 +8,17 @@ import pytest
 
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, TierSpec
 from boardman.assignment.repo_rules import QaRepoRules
+from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
 from boardman.assignment.qa_picker import (
     build_assignment_field_map,
     build_repo_field_map,
+    ensure_github_owner_repo,
     github_repo_suffix_name,
     normalize_github_repo_inputs,
     pick_qa_for_repo,
     repo_is_heavy,
 )
+from boardman.settings import settings
 
 
 def _sample_cfg() -> TeamAssignmentsConfig:
@@ -137,6 +140,26 @@ def test_github_repo_suffix_name():
     assert github_repo_suffix_name("solo-repo") == "solo-repo"
 
 
+def test_ensure_github_owner_repo_uses_bare_repo_owner_then_github_org(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "github_bare_repo_owner", "Team-Deepiri")
+    monkeypatch.setattr(settings, "github_org", "deepiri-org")
+    assert ensure_github_owner_repo("deepiri-platform") == "Team-Deepiri/deepiri-platform"
+    assert ensure_github_owner_repo("Team-Deepiri/deepiri-platform") == "Team-Deepiri/deepiri-platform"
+
+
+def test_ensure_github_owner_repo_falls_back_when_bare_owner_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "github_bare_repo_owner", "")
+    monkeypatch.setattr(settings, "github_org", "deepiri-org")
+    assert ensure_github_owner_repo("x") == "deepiri-org/x"
+
+
+def test_normalize_github_repo_inputs_space_separated_and_prefix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "github_bare_repo_owner", "Team-Deepiri")
+    monkeypatch.setattr(settings, "github_org", "deepiri-org")
+    got = normalize_github_repo_inputs(extra_repo_text="deepiri-platform deepiri-pkg-version-manager")
+    assert got == ["Team-Deepiri/deepiri-platform", "Team-Deepiri/deepiri-pkg-version-manager"]
+
+
 def test_build_repo_field_map_short_format_for_tag_columns():
     cfg = _sample_cfg()
     cfg.plaky_field_repo = "tag_col"
@@ -202,3 +225,23 @@ async def test_assignment_preview_tool():
         assert "dev-1" not in raw
     finally:
         monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_update_task_auto_assign_qa_prefixes_bare_github_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    picked: list[str] = []
+
+    async def _pick(full_name: str, cfg=None):
+        picked.append(full_name)
+        return None, "intentional-no-match"
+
+    monkeypatch.setattr("boardman.services.task_mutations.pick_qa_for_repo", _pick)
+    monkeypatch.setattr("boardman.services.task_mutations.load_team_assignments", lambda: _sample_cfg())
+    monkeypatch.setattr(settings, "github_bare_repo_owner", "Team-Deepiri")
+
+    r = await update_task_internal(
+        "6078697",
+        UpdateTaskInput(auto_assign_qa=True, github_repo="deepiri-platform", plaky_board_id="218760"),
+    )
+    assert r.get("ok") is False
+    assert picked == ["Team-Deepiri/deepiri-platform"]

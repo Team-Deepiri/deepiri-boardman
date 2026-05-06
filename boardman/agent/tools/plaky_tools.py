@@ -167,6 +167,7 @@ async def _plaky_create_task(
     board_id: str = "",
     group_id: str = "",
     field_values_json: str = "",
+    auto_assign_team: bool = True,
 ) -> str:
     from boardman.agent.task_draft import load_task_draft, merge_draft_into_field_values
     from boardman.agent.tool_context import (
@@ -258,7 +259,7 @@ async def _plaky_create_task(
             plaky_board_id=bid,
             plaky_group_id=gid,
             field_values=merged if merged else None,
-            auto_assign_team=False,
+            auto_assign_team=auto_assign_team,
         )
     )
     out = dict(r) if isinstance(r, dict) else {"result": r}
@@ -308,7 +309,14 @@ async def _plaky_update_task(
     task_type: Optional[str] = None,
     priority: Optional[str] = None,
     qa_plaky_id: Optional[str] = None,
+    auto_assign_qa: bool = False,
+    github_repo: Optional[str] = None,
+    board_id: str = "",
 ) -> str:
+    from boardman.agent.tool_context import get_context_plaky_board_id
+
+    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    gh = (github_repo or "").strip() or None
     r = await update_task_internal(
         task_id,
         UpdateTaskInput(
@@ -316,6 +324,9 @@ async def _plaky_update_task(
             task_type=task_type,
             priority=priority,
             qa_plaky_id=qa_plaky_id,
+            auto_assign_qa=auto_assign_qa,
+            github_repo=gh,
+            plaky_board_id=bid,
         ),
     )
     return json.dumps(r, default=str)
@@ -420,8 +431,13 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                         "field_values_json keys MUST match schema key= strings; assignee ids from plaky_list_workspace_users. "
                         "Placement: pass board_id/group_id or rely on Current Plaky placement. "
                         "Args: title, description, priority (High|Low|Medium|Very Important or legacy low|medium|high), "
-                        "repo_tag?, board_id?, group_id?, field_values_json?. "
-                        "repo_tag may include one or more owner/repo values separated by commas or new lines."
+                        "repo_tag?, board_id?, group_id?, field_values_json?, auto_assign_team (default true). "
+                        "Set auto_assign_team false to skip roster QA assignment; set QA explicitly via field_values_json / "
+                        "session draft keys from plaky_board_schema instead. "
+                        "When auto_assign_team is true and repo_tag lists a GitHub repo, team_assignments.yml picks QA "
+                        "unless the QA person field is already set in field_values_json or saved draft. "
+                        "Bare repo names (e.g. my-repo) normalize to GITHUB_BARE_REPO_OWNER/my-repo like the CLI. "
+                        "repo_tag may include one or more owner/repo tokens separated by commas or new lines."
                     ),
                 ),
                 StructuredTool.from_function(
@@ -436,9 +452,13 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                     coroutine=_plaky_update_task,
                     name="plaky_update_task",
                     description=(
-                        "Update workflow fields on an existing task: status, type, priority, QA assignee id. "
+                        "Update workflow fields on an existing task: status, type, priority, QA assignment. "
                         "Use plaky_create_task for title/description/repo/engineer. "
-                        "Args: task_id; optional status, task_type, priority, qa_plaky_id (from plaky_list_workspace_users)."
+                        "QA: pass qa_plaky_id for explicit assignee id, OR set auto_assign_qa true and github_repo (owner/repo "
+                        "or bare repo name; roster uses team_assignments.yml like the CLI). Omit both to leave QA unchanged "
+                        "(you can still update status/type/priority). Optional board_id or Current Plaky placement resolves "
+                        "field keys for PATCH. Args: task_id; optional status, task_type, priority, qa_plaky_id, "
+                        "auto_assign_qa (default false), github_repo, board_id."
                     ),
                 ),
                 StructuredTool.from_function(
