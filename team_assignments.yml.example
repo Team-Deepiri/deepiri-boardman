@@ -21,15 +21,12 @@
 plaky_field_keys:
   engineer: ""
   qa: ""
-  repo: ""
-  github_repos: ""
 
 # use_github_support_team_roster: true   # default; set false to disable GitHub roster
 # github_support_team: Team-Deepiri/support-team
 
-# Include `qa` so roster members are eligible for pick_qa_for_repo (auto QA on task create).
 member_defaults:
-  roles: [engineer, qa]
+  roles: [engineer]
   qa_tier: 3
   tier: standard
   repo_globs:

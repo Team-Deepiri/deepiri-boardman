@@ -1,14 +1,43 @@
-"""Leaky-bucket limiter: in-memory (single process) or SQLite (multi-instance)."""
+"""Leaky-bucket limiter: in-memory (single process) or Redis (multi-instance)."""
 
 from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime
 from typing import Optional, Protocol
 
-from boardman.database.models import AgentRateLimitBucket
-from boardman.database.session import async_session
+import redis.asyncio as aioredis
+
+_LEAKY_LUA = """
+local key = KEYS[1]
+local capacity = tonumber(ARGV[1])
+local leak = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
+local h = redis.call('HMGET', key, 'w', 't')
+local function num(x)
+  if not x or x == false then return 0 end
+  return tonumber(x) or 0
+end
+local w = num(h[1])
+local t = now
+if h[2] and h[2] ~= false then
+  local tt = tonumber(h[2])
+  if tt then t = tt end
+end
+local dt = now - t
+if dt > 0 then
+  w = math.max(0, w - dt * leak)
+end
+if w + 1 > capacity then
+  redis.call('HMSET', key, 'w', tostring(w), 't', tostring(now))
+  redis.call('EXPIRE', key, 7200)
+  return 0
+end
+w = w + 1
+redis.call('HMSET', key, 'w', tostring(w), 't', tostring(now))
+redis.call('EXPIRE', key, 7200)
+return 1
+"""
 
 
 class LeakyAcquire(Protocol):
@@ -37,45 +66,28 @@ class MemoryLeakyBucket:
             return True
 
 
-class SqliteLeakyBucket:
-    """Distributed leaky bucket using SQLite (`AgentRateLimitBucket`), wall-clock time.time()."""
+class RedisLeakyBucket:
+    """Distributed leaky bucket (wall-clock time.time() for cross-process consistency)."""
 
     def __init__(
         self,
+        client: aioredis.Redis,
         *,
         capacity: float,
         leak_per_second: float,
         key_prefix: str = "boardman:leaky:agent",
     ) -> None:
+        self._r = client
         self._capacity = max(0.01, capacity)
         self._leak = max(1e-6, leak_per_second)
         self._prefix = key_prefix.rstrip(":")
-        self._serialize = asyncio.Lock()
+        self._script = client.register_script(_LEAKY_LUA)
 
     async def try_acquire(self, key: str) -> bool:
-        full_key = f"{self._prefix}:{key}"
-        async with self._serialize:
-            async with async_session() as session:
-                async with session.begin():
-                    row = await session.get(AgentRateLimitBucket, full_key)
-                    now = time.time()
-                    water, t = (0.0, now)
-                    if row is not None:
-                        water, t = float(row.water), float(row.ts)
-                    dt = now - t
-                    if dt > 0:
-                        water = max(0.0, water - dt * self._leak)
-                    allow = water + 1.0 <= self._capacity + 1e-9
-                    if allow:
-                        water = water + 1.0
-                    if row is None:
-                        row = AgentRateLimitBucket(bucket_key=full_key, water=water, ts=now)
-                    else:
-                        row.water = water
-                        row.ts = now
-                    row.updated_at = datetime.utcnow()
-                    session.add(row)
-                    return allow
+        now = time.time()
+        k = f"{self._prefix}:{key}"
+        n = await self._script(keys=[k], args=[str(self._capacity), str(self._leak), str(now)])
+        return int(n) == 1
 
 
 _agent_limiter: Optional[LeakyAcquire] = None
@@ -96,8 +108,13 @@ async def get_agent_leaky_limiter() -> Optional[LeakyAcquire]:
             return _agent_limiter
         cap = float(settings.agent_rate_limit_capacity)
         leak = float(settings.agent_rate_limit_leak_per_second)
-        if settings.agent_rate_limit_use_sqlite:
-            _agent_limiter = SqliteLeakyBucket(capacity=cap, leak_per_second=leak)
+        if settings.agent_rate_limit_use_redis and (settings.redis_url or "").strip():
+            client = aioredis.from_url(
+                settings.redis_url.strip(),
+                encoding="utf-8",
+                decode_responses=True,
+            )
+            _agent_limiter = RedisLeakyBucket(client, capacity=cap, leak_per_second=leak)
         else:
             _agent_limiter = MemoryLeakyBucket(capacity=cap, leak_per_second=leak)
     return _agent_limiter

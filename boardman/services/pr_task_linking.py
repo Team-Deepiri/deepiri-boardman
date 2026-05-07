@@ -562,7 +562,7 @@ async def run_pr_task_pipeline(
     )
 
     routing = get_routing(repo_full, repo_name, org)
-    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
+    board_id = (routing.plaky_board_id if routing else "") or settings.plaky_default_board_id
     board_id = board_id.strip()
 
     # Dynamic status detection from schema

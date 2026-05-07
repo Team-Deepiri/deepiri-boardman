@@ -134,136 +134,9 @@ body {
   appearance: auto;
 }
 
-.field__select[multiple] {
-  min-height: 10.5rem;
-  max-height: 12.5rem;
-  overflow-y: auto;
-}
-
 .field__select:disabled {
   opacity: 0.55;
   cursor: not-allowed;
-}
-
-/* Shared translucent scrollbar — use on overflow-y: auto panels */
-.ui-scroll--translucent {
-  scrollbar-width: thin;
-  scrollbar-color: rgba(255, 255, 255, 0.38) transparent;
-}
-
-.ui-scroll--translucent::-webkit-scrollbar {
-  width: 10px;
-}
-
-.ui-scroll--translucent::-webkit-scrollbar-track {
-  background: transparent;
-  margin: calc(var(--radius-md) - 2px) 3px calc(var(--radius-md) - 2px) 0;
-  border-radius: var(--radius-md);
-}
-
-.ui-scroll--translucent::-webkit-scrollbar-thumb {
-  border-radius: var(--radius-md);
-  border: 2px solid transparent;
-  background-color: rgba(255, 255, 255, 0.38);
-  background-clip: padding-box;
-}
-
-.ui-scroll--translucent::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(255, 255, 255, 0.5);
-}
-
-/* Custom listbox — replaces native <select> for themeable panel + scrollbar + focus ring */
-.app-select {
-  position: relative;
-  width: 100%;
-}
-
-.app-select__trigger {
-  display: flex;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 0.5rem;
-  width: 100%;
-  text-align: left;
-  cursor: pointer;
-}
-
-.app-select__trigger:focus {
-  outline: none;
-}
-
-.app-select__trigger:focus-visible {
-  border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px var(--accent-muted);
-}
-
-.app-select__trigger--open {
-  border-color: var(--border-focus);
-  box-shadow: 0 0 0 3px var(--accent-muted);
-}
-
-.app-select__trigger:disabled {
-  opacity: 0.55;
-  cursor: not-allowed;
-}
-
-.app-select__value {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.app-select__chevron {
-  flex-shrink: 0;
-  width: 0;
-  height: 0;
-  border-left: 4px solid transparent;
-  border-right: 4px solid transparent;
-  border-top: 5px solid var(--text-muted);
-  transition: transform 0.15s ease;
-}
-
-.app-select__trigger--open .app-select__chevron {
-  transform: rotate(180deg);
-}
-
-.app-select__list {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(100% + 4px);
-  z-index: 40;
-  max-height: 12rem;
-  overflow-y: auto;
-  margin: 0;
-  padding: 0.35rem 0;
-  list-style: none;
-  background: var(--bg-input);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-md);
-  box-shadow: var(--shadow-floating);
-  font-size: 0.8rem;
-  line-height: 1.4;
-}
-
-.app-select__option {
-  padding: 0.45rem 0.75rem;
-  cursor: pointer;
-  font-family: var(--font-mono);
-  color: var(--text-primary);
-  outline: none;
-}
-
-.app-select__option:hover,
-.app-select__option:focus-visible {
-  background: var(--accent-muted);
-}
-
-.app-select__option[aria-selected="true"] {
-  background: rgba(249, 115, 22, 0.12);
-  color: var(--text-primary);
 }
 
 .field__textarea {
@@ -282,10 +155,6 @@ body {
 .field--create-task {
   border-top: 1px solid var(--border-subtle);
   padding-top: 1rem;
-}
-
-.field--create-task .field__textarea {
-  margin-top: 0.65rem;
 }
 
 .field__button {
@@ -316,19 +185,7 @@ body {
   margin: 0.35rem 0 0.35rem;
 }
 
-.support-roster__label {
-  font-size: 0.72rem;
-}
-
-.support-roster__heading-primary {
-  display: block;
-  margin-bottom: 0;
-}
-
 .support-roster__spec {
-  display: block;
-  margin-top: 0.12rem;
-  margin-bottom: 0.3rem;
   font-weight: 400;
   color: var(--text-muted);
 }

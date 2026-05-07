@@ -11,7 +11,6 @@ import {
   IconSpark,
   IconUser,
 } from "./components/Icons";
-import { AppSelect } from "./components/AppSelect";
 
 type Role = "user" | "assistant";
 
@@ -124,9 +123,7 @@ function EmptyState() {
 }
 
 export default function App() {
-  const [selectedRepos, setSelectedRepos] = useState<string[]>([]);
-  const [orgRepos, setOrgRepos] = useState<string[]>([]);
-  const [orgReposHint, setOrgReposHint] = useState<string | null>(null);
+  const [repo, setRepo] = useState("");
   const [allowWrites, setAllowWrites] = useState(true);
   const [useTools, setUseTools] = useState(true);
   const [sessionId, setSessionId] = useState<string | null>(null);
@@ -154,6 +151,7 @@ export default function App() {
   const [createMsg, setCreateMsg] = useState<string | null>(null);
   const [engPick, setEngPick] = useState("");
   const [qaPick, setQaPick] = useState("");
+  const [autoTeam, setAutoTeam] = useState(true);
   const [supportTeam, setSupportTeam] = useState<SupportTeamRow[]>([]);
   const [supportTeamHint, setSupportTeamHint] = useState<string | null>(null);
   const [supportTeamSpec, setSupportTeamSpec] = useState("Team-Deepiri/support-team");
@@ -196,35 +194,6 @@ export default function App() {
         if (!cancelled) {
           setBoards([]);
           setPlakyBoardsHint("Could not reach Plaky boards endpoint.");
-        }
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const { data } = await api.get<{
-          ok?: boolean;
-          repos?: string[];
-          message?: string;
-        }>("/api/v1/repos/org");
-        if (cancelled) return;
-        if (data.ok && Array.isArray(data.repos)) {
-          setOrgRepos(data.repos);
-          setOrgReposHint(null);
-        } else {
-          setOrgRepos([]);
-          setOrgReposHint(data.message || "Could not load org repositories.");
-        }
-      } catch {
-        if (!cancelled) {
-          setOrgRepos([]);
-          setOrgReposHint("Could not reach org repositories endpoint.");
         }
       }
     })();
@@ -376,13 +345,13 @@ export default function App() {
       }>("/api/v1/tasks", {
         title: t,
         description: createBody,
-        priority: "Medium",
-        github_repos: selectedRepos.length > 0 ? selectedRepos : undefined,
+        priority: "medium",
+        repo: repo.trim() || undefined,
         plaky_board_id: plakyBoardId || undefined,
         plaky_group_id: plakyGroupId || undefined,
         engineer_plaky_id: engPick || undefined,
         qa_plaky_id: qaPick || undefined,
-        auto_assign_team: true,
+        auto_assign_team: autoTeam,
       });
       if (data.ok) {
         setCreateMsg(data.task_url || data.task?.url || "Task created.");
@@ -400,11 +369,12 @@ export default function App() {
     createTitle,
     createBody,
     createBusy,
-    selectedRepos,
+    repo,
     plakyBoardId,
     plakyGroupId,
     engPick,
     qaPick,
+    autoTeam,
   ]);
 
   const onSend = useCallback(async () => {
@@ -419,7 +389,7 @@ export default function App() {
         text,
         {
           sessionId,
-          repo: selectedRepos[0] || "",
+          repo,
           allowWrites,
           useTools,
           plakyBoardId,
@@ -474,7 +444,7 @@ export default function App() {
       setLoading(false);
       textareaRef.current?.focus();
     }
-  }, [input, loading, sessionId, selectedRepos, allowWrites, useTools, plakyBoardId, plakyGroupId, selectedModel]);
+  }, [input, loading, sessionId, repo, allowWrites, useTools, plakyBoardId, plakyGroupId, selectedModel]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
@@ -524,35 +494,19 @@ export default function App() {
         </div>
 
         <div className="field">
-          <label className="field__label" htmlFor="repo-select">
+          <label className="field__label" htmlFor="repo-input">
             <IconRepo className="field__label-icon" />
-            Repositories
+            Repository context
           </label>
-          <select
-            id="repo-select"
-            className="field__input field__select ui-scroll--translucent"
-            multiple
-            size={8}
-            value={selectedRepos}
-            onChange={(e) => {
-              const values = Array.from(e.target.selectedOptions).map((o) => o.value);
-              setSelectedRepos(values);
-            }}
-          >
-            {orgRepos.map((full) => {
-              const i = full.indexOf("/");
-              const short = i >= 0 ? full.slice(i + 1) : full;
-              return (
-                <option key={full} value={full}>
-                  {short}
-                </option>
-              );
-            })}
-          </select>
-          {orgReposHint ? <p className="field__hint field__hint--warn">{orgReposHint}</p> : null}
-          <p className="field__hint">
-            Multi-select. Used for task creation (`github_repos`); first selected repo is used for chat scoping. Use CTRL+CLICK to select multiple.
-          </p>
+          <input
+            id="repo-input"
+            className="field__input"
+            value={repo}
+            onChange={(e) => setRepo(e.target.value)}
+            placeholder="owner/repo"
+            autoComplete="off"
+          />
+          <p className="field__hint">Optional. Passed to the agent for scoped answers.</p>
         </div>
 
         <div className="toggle-field">
@@ -595,13 +549,19 @@ export default function App() {
               <IconAgent className="field__label-icon" />
               LLM Model
             </label>
-            <AppSelect
+            <select
               id="llm-model-select"
+              className="field__input field__select"
               value={selectedModel}
-              onChange={setSelectedModel}
-              emptyLabel="Default (server config)"
-              options={llmModels.map((m) => ({ value: m.name, label: m.name }))}
-            />
+              onChange={(e) => setSelectedModel(e.target.value)}
+            >
+              <option value="">Default (server config)</option>
+              {llmModels.map((m) => (
+                <option key={m.name} value={m.name}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
             {llmModelsHint ? <p className="field__hint field__hint--warn">{llmModelsHint}</p> : null}
             <p className="field__hint">
               Override the model for this session. Default uses server LLM_MODEL or auto-selects.
@@ -614,16 +574,22 @@ export default function App() {
             <IconBoard className="field__label-icon" />
             Plaky board
           </label>
-          <AppSelect
+          <select
             id="plaky-board-select"
+            className="field__input field__select"
             value={plakyBoardId}
-            onChange={(v) => {
-              setPlakyBoardId(v);
+            onChange={(e) => {
+              setPlakyBoardId(e.target.value);
               setPlakyGroupId("");
             }}
-            emptyLabel="Default (env / server)"
-            options={boards.map((b) => ({ value: b.id, label: b.name || b.id }))}
-          />
+          >
+            <option value="">Default (env / server)</option>
+            {boards.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name || b.id}
+              </option>
+            ))}
+          </select>
           {plakyBoardsHint ? <p className="field__hint field__hint--warn">{plakyBoardsHint}</p> : null}
           <p className="field__hint">
             API uses a board (project) and a group (section). There is no separate &quot;table&quot; id.
@@ -635,16 +601,22 @@ export default function App() {
             <IconBoard className="field__label-icon" />
             Plaky group
           </label>
-          <AppSelect
+          <select
             id="plaky-group-select"
+            className="field__input field__select"
             value={plakyGroupId}
-            onChange={setPlakyGroupId}
             disabled={!plakyBoardId}
-            emptyLabel={
-              plakyBoardId ? "Default for board / env" : "Pick a board first"
-            }
-            options={groups.map((g) => ({ value: g.id, label: g.name || g.id }))}
-          />
+            onChange={(e) => setPlakyGroupId(e.target.value)}
+          >
+            <option value="">
+              {plakyBoardId ? "Default for board / env" : "Pick a board first"}
+            </option>
+            {groups.map((g) => (
+              <option key={g.id} value={g.id}>
+                {g.name || g.id}
+              </option>
+            ))}
+          </select>
           {plakyGroupsHint && plakyBoardId ? (
             <p className="field__hint field__hint--warn">{plakyGroupsHint}</p>
           ) : null}
@@ -684,19 +656,31 @@ export default function App() {
             onChange={(e) => setCreateBody(e.target.value)}
             placeholder="Description (optional)"
           />
-          <div className="support-roster__label" id="support-roster-label">
-            <span className="field__label field__label--sub support-roster__heading-primary">
-              GitHub support team
-            </span>
-            <span className="support-roster__spec">({supportTeamSpec})</span>
+          <div className="toggle-field toggle-field--compact">
+            <div className="toggle-field__text">
+              <span className="toggle-field__title">Auto-assign engineer + QA</span>
+              <span className="toggle-field__desc">Uses team_assignments.yml for this repo</span>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={autoTeam}
+              className={`switch ${autoTeam ? "switch--on" : ""}`}
+              onClick={() => setAutoTeam((v) => !v)}
+            >
+              <span className="switch__thumb" />
+            </button>
           </div>
+          <p className="field__label field__label--sub" id="support-roster-label">
+            GitHub support team <span className="support-roster__spec">({supportTeamSpec})</span>
+          </p>
           {supportTeamHint ? (
             <p className="field__hint field__hint--warn" role="status">
               {supportTeamHint}
             </p>
           ) : supportTeam.length > 0 ? (
             <ul
-              className="support-roster ui-scroll--translucent"
+              className="support-roster"
               aria-labelledby="support-roster-label"
             >
               {supportTeam.map((m) => (
@@ -712,36 +696,42 @@ export default function App() {
             <p className="field__hint">No members yet (configure GITHUB_PAT with read:org).</p>
           )}
           <label className="field__label field__label--sub" htmlFor="eng-assign">
-            Contributor (Plaky member)
+            Engineer (Plaky member)
           </label>
-          <AppSelect
+          <select
             id="eng-assign"
+            className="field__input field__select"
             value={engPick}
-            onChange={setEngPick}
-            emptyLabel="None"
-            options={workspaceUsers.map((u) => ({
-              value: u.id,
-              label: u.name?.trim() || u.id,
-            }))}
-          />
+            onChange={(e) => setEngPick(e.target.value)}
+          >
+            <option value="">None / use auto only</option>
+            {workspaceUsers.map((u) => (
+              <option key={u.id} value={u.id}>
+                {u.name || u.id}
+              </option>
+            ))}
+          </select>
           <label className="field__label field__label--sub" htmlFor="qa-assign">
             QA (Plaky member)
           </label>
-          <AppSelect
+          <select
             id="qa-assign"
+            className="field__input field__select"
             value={qaPick}
-            onChange={setQaPick}
-            emptyLabel="None / use auto only"
-            options={workspaceUsers.map((u) => ({
-              value: u.id,
-              label: u.name?.trim() || u.id,
-            }))}
-          />
+            onChange={(e) => setQaPick(e.target.value)}
+          >
+            <option value="">None / use auto only</option>
+            {workspaceUsers.map((u) => (
+              <option key={`qa-${u.id}`} value={u.id}>
+                {u.name || u.id}
+              </option>
+            ))}
+          </select>
           {usersHint ? <p className="field__hint field__hint--warn">{usersHint}</p> : null}
           <button
             type="button"
             className="field__button"
-            disabled={createBusy || !createTitle.trim() || selectedRepos.length === 0}
+            disabled={createBusy || !createTitle.trim()}
             onClick={onCreateTask}
           >
             {createBusy ? "Creating…" : "Create task"}
@@ -762,7 +752,7 @@ export default function App() {
           <div>
             <h1 className="main__title">Chat</h1>
             <p className="main__subtitle">
-              <strong>Deepiri</strong> Board Manager Agent
+              <strong>Deepiri</strong> Board Manager agent
             </p>
           </div>
         </header>

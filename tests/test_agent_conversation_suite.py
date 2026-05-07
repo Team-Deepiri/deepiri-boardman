@@ -21,8 +21,6 @@ from boardman.database.models import Base
 from boardman.database.session import get_db
 from boardman.main import create_app
 
-from tests.plaky_test_board import resolve_boardman_test_board_id, resolve_boardman_test_group_id
-
 
 async def _memory_engine_and_factory():
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
@@ -291,9 +289,7 @@ async def test_live_ollama_multi_turn_conversation_memory_db(
             )
             await session.commit()
         assert sid2 == sid
-        # Live models vary; accept explicit recall or a clear reference to the previous-message prompt.
-        r2u = (r2 or "").upper()
-        assert ("PONG" in r2u) or ("PREVIOUS MESSAGE" in r2u) or ("EXACT WORD" in r2u), r2
+        assert "PONG" in (r2 or "").upper(), r2
     finally:
         await engine.dispose()
 
@@ -319,11 +315,17 @@ async def test_live_http_agent_with_plaky_board_and_group_ids(
     monkeypatch.setattr(bs.settings, "agent_langchain_tools", False)
 
     client_api = PlakyClient()
-    try:
-        board_id = await resolve_boardman_test_board_id(client_api)
-        group_id = await resolve_boardman_test_group_id(client_api, board_id)
-    except AssertionError as e:
-        pytest.skip(f"Boardman test board/group not available: {e}")
+    br = await client_api.list_boards()
+    if not br.get("ok") or not br.get("boards"):
+        pytest.skip(f"Plaky list_boards not available: {br.get('message')}")
+
+    board = br["boards"][0]
+    board_id = str(board["id"])
+    gr = await client_api.list_groups(board_id)
+    if not gr.get("ok") or not gr.get("groups"):
+        pytest.skip(f"Plaky list_groups failed for board {board_id}: {gr.get('message')}")
+
+    group_id = str(gr["groups"][0]["id"])
 
     engine, factory = await _memory_engine_and_factory()
 
@@ -360,13 +362,7 @@ async def test_live_http_agent_with_plaky_board_and_group_ids(
         body = r.json()
         assert body.get("ok") is True
         reply = (body.get("reply") or "").upper()
-        # Live models sometimes ignore the forced token; accept ids, board+group wording, or "Boardman Live" wording.
-        assert (
-            ("BOARDMAN_LIVE_OK" in reply)
-            or ("BOARD" in reply and "GROUP" in reply)
-            or (board_id in reply and group_id in reply)
-            or ("BOARDMAN" in reply and ("LIVE" in reply or "OK" in reply or "PLACEMENT" in reply or "CONTEXT" in reply))
-        ), body.get("reply")
+        assert "BOARDMAN_LIVE_OK" in reply, body.get("reply")
     finally:
         app.dependency_overrides.clear()
         await engine.dispose()

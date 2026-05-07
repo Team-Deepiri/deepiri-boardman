@@ -1,7 +1,6 @@
 import asyncio
 import json
-import re
-from typing import List, Optional
+from typing import Optional
 
 import httpx
 import typer
@@ -15,15 +14,6 @@ from boardman.plaky.placement import context_board_id, context_group_id, plaky_p
 from boardman.database.models import AgentSession, ProjectContext, ScanRun
 from boardman.database.session import async_session
 from boardman.plaky.client import PlakyClient
-from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
-from boardman.services.task_mutations import (
-    CreateSubtaskInput,
-    CreateTaskInput,
-    UpdateTaskInput,
-    create_subtask_internal,
-    create_task_internal,
-    update_task_internal,
-)
 from boardman.repos_config import list_registered_repos, list_workspace_repos, upsert_repo
 from boardman.services.direction_init import init_direction_file
 from boardman.services.scan_handler import run_repo_scan
@@ -39,176 +29,36 @@ def create_task(
     title: str = typer.Option(..., prompt=True, help="Task title"),
     description: str = typer.Option("", "--description", "-d", help="Task description"),
     priority: str = typer.Option("medium", "--priority", "-p", help="Priority: low, medium, high"),
-    status: str = typer.Option("in_progress", "--status", help="Workflow status"),
-    task_type: str = typer.Option("feature", "--type", help="Task type"),
-    github_repos: Optional[List[str]] = typer.Option(
-        None,
-        "--github-repo",
-        help="GitHub repo slug(s), repeatable or comma/space separated",
-    ),
-    plaky_board_id: Optional[str] = typer.Option(None, "--board-id", help="Explicit Plaky board id"),
-    plaky_group_id: Optional[str] = typer.Option(None, "--group-id", help="Explicit Plaky group id"),
-    engineer_plaky_id: Optional[str] = typer.Option(None, "--engineer-id", help="Plaky user id for engineer"),
-    qa_plaky_id: Optional[str] = typer.Option(None, "--qa-id", help="Plaky user id for QA"),
-    auto_assign_team: bool = typer.Option(
-        True,
-        "--auto-assign-team/--no-auto-assign-team",
-        help="Auto-pick QA from team assignments when --qa-id is not set (engineer is never auto-picked)",
-    ),
+    repo: Optional[str] = typer.Option(None, "--repo", "-r", help="Repository name for tag"),
 ):
+    plaky = PlakyClient()
+    full_title = f"[{repo}] {title}" if repo else title
+
     async def run():
-        result = await create_task_internal(
-            CreateTaskInput(
-                title=title,
-                description=description,
-                priority=priority,
-                status=status,
-                task_type=task_type,
-                github_repos=github_repos,
-                plaky_board_id=plaky_board_id,
-                plaky_group_id=plaky_group_id,
-                engineer_plaky_id=engineer_plaky_id,
-                qa_plaky_id=qa_plaky_id,
-                auto_assign_team=auto_assign_team,
-            )
-        )
+        result = await plaky.create_task(title=full_title, description=description, priority=priority)
         if result.get("ok"):
-            task_url = result.get("task_url")
-            if not task_url:
-                task = result.get("task") if isinstance(result.get("task"), dict) else {}
-                task_url = task.get("url") or task.get("task_url")
-            task_id = (
-                result.get("task_id")
-                or ((result.get("task") or {}).get("id") if isinstance(result.get("task"), dict) else None)
-            )
-            created_ref = task_url or (f"id={task_id}" if task_id else "(no url/id returned)")
-            console.print(f"[green]Task created:[/green] {created_ref}")
-            post_assign = result.get("post_create_assignment")
-            if isinstance(post_assign, dict):
-                if post_assign.get("ok"):
-                    if not post_assign.get("skipped"):
-                        source = post_assign.get("item_id_source")
-                        source_msg = f" source={source}" if source else ""
-                        console.print(f"[green]Field patch applied[/green]{source_msg}")
-                else:
-                    console.print(f"[yellow]Field patch warning:[/yellow] {post_assign.get('message')}")
-            warnings = result.get("tag_resolution_warnings")
-            if isinstance(warnings, list) and warnings:
-                console.print(f"[yellow]Tag resolution warnings:[/yellow] {json.dumps(warnings, indent=2)}")
-            qa_pick = result.get("qa_roster_pick")
-            if isinstance(qa_pick, dict):
-                console.print(f"[dim]QA roster pick:[/dim] {json.dumps(qa_pick, indent=2)}")
+            console.print(f"[green]Task created:[/green] {result.get('task_url')}")
         else:
             console.print(f"[red]Error:[/red] {result.get('message')}")
-            raise typer.Exit(1)
-
-    asyncio.run(run())
-
-
-@app.command()
-def create_subtask(
-    parent_task_id: str = typer.Option(..., "--parent-task-id", prompt=True, help="Parent Plaky task ID"),
-    title: str = typer.Option(..., "--title", "-t", prompt=True, help="Subtask title"),
-    description: str = typer.Option("", "--description", "-d", help="Subtask description"),
-    priority: str = typer.Option("medium", "--priority", "-p", help="Priority: low, medium, high"),
-    status: str = typer.Option("in_progress", "--status", help="Workflow status"),
-    task_type: str = typer.Option("feature", "--type", help="Task type"),
-    github_repos: Optional[List[str]] = typer.Option(
-        None,
-        "--github-repo",
-        help="GitHub repo slug(s), repeatable or comma/space separated",
-    ),
-    engineer_plaky_id: Optional[str] = typer.Option(None, "--engineer-id", help="Plaky user id for contributor/engineer"),
-    qa_plaky_id: Optional[str] = typer.Option(None, "--qa-id", help="Plaky user id for QA"),
-    auto_assign_qa: bool = typer.Option(
-        True,
-        "--auto-assign-qa/--no-auto-assign-qa",
-        help="Auto-pick QA from team assignments when --qa-id is not set",
-    ),
-    plaky_board_id: Optional[str] = typer.Option(
-        None,
-        "--board-id",
-        help="Plaky board id used for schema/field patch resolution",
-    ),
-    plaky_group_id: Optional[str] = typer.Option(
-        None,
-        "--group-id",
-        help="Plaky group id used for subtask placement fallback",
-    ),
-):
-    async def run():
-        result = await create_subtask_internal(
-            CreateSubtaskInput(
-                parent_task_id=parent_task_id,
-                title=title,
-                description=description,
-                priority=priority,
-                status=status,
-                task_type=task_type,
-                github_repos=github_repos,
-                engineer_plaky_id=engineer_plaky_id,
-                qa_plaky_id=qa_plaky_id,
-                auto_assign_qa=auto_assign_qa,
-                plaky_board_id=plaky_board_id,
-                plaky_group_id=plaky_group_id,
-            )
-        )
-        if result.get("ok"):
-            subtask = result.get("subtask") if isinstance(result.get("subtask"), dict) else {}
-            subtask_ref = subtask.get("url") or subtask.get("id") or subtask.get("taskId")
-            created_ref = subtask_ref or f"parent={parent_task_id}"
-            console.print(f"[green]Subtask created:[/green] {created_ref}")
-        else:
-            console.print(f"[red]Error:[/red] {result.get('message')}")
-            raise typer.Exit(1)
 
     asyncio.run(run())
 
 
 @app.command()
 def link_pr(
-    pr_urls: str = typer.Option(
-        ...,
-        "--pr-url",
-        "-u",
-        prompt=True,
-        help="GitHub PR URL(s): one URL, or several comma- or whitespace-separated",
-    ),
+    pr_url: str = typer.Option(..., prompt=True, help="GitHub PR URL"),
     task_id: str = typer.Option(..., prompt=True, help="Plaky task ID"),
-    plaky_board_id: Optional[str] = typer.Option(
-        None,
-        "--board-id",
-        help="Plaky board id (optional; speeds v1/public item comments).",
-    ),
     update_status: bool = typer.Option(False, "--update-status", help="Update task status on merge"),
-    print_response: bool = typer.Option(
-        False,
-        "--print-response",
-        help="Print full JSON result from Plaky (status, route, comment payload, posted text).",
-    ),
 ):
     plaky = PlakyClient()
 
     async def run():
-        parts = [p for p in re.split(r"[\s,]+", (pr_urls or "").strip()) if p.strip()]
-        urls = collect_pr_urls(pr_url=None, pr_urls=parts or None)
-        if not urls:
-            console.print("[red]Error:[/red] supply at least one PR URL")
-            return
-        comment = format_pr_link_comment(urls)
-        bid = (plaky_board_id or "").strip() or None
-        result = await plaky.add_comment(task_id, comment, board_id=bid)
-        if print_response:
-            dbg = dict(result)
-            dbg["posted_comment_text"] = comment
-            console.print(json.dumps(dbg, indent=2, default=str))
+        comment = f"**PR Linked:** [View PR]({pr_url})"
+        result = await plaky.add_comment(task_id, comment)
         if result.get("ok"):
             console.print("[green]PR linked successfully[/green]")
             if update_status:
-                await update_task_internal(
-                    task_id,
-                    UpdateTaskInput(status=settings.plaky_pr_merge_status),
-                )
+                await plaky.update_task_status(task_id, settings.plaky_pr_merge_status)
                 console.print(f"[green]Status updated to {settings.plaky_pr_merge_status}[/green]")
         else:
             console.print(f"[red]Error:[/red] {result.get('message')}")
@@ -216,8 +66,8 @@ def link_pr(
     asyncio.run(run())
 
 
-@app.command("list")
-def list_tasks_cmd(
+@app.command()
+def list(
     status: str = typer.Option("open", "--status", "-s", help="Task status: open, done, etc."),
     format: str = typer.Option("table", "--format", "-f", help="Output format: table, json"),
 ):
@@ -248,64 +98,6 @@ def list_tasks_cmd(
     asyncio.run(run())
 
 
-@app.command("update-task")
-def update_task_cmd(
-    task_id: str = typer.Option(..., "--task-id", prompt=True, help="Plaky task ID"),
-    status: Optional[str] = typer.Option(None, "--status", help="New status"),
-    task_type: Optional[str] = typer.Option(None, "--type", help="New task type"),
-    priority: Optional[str] = typer.Option(None, "--priority", "-p", help="New priority"),
-    qa_plaky_id: Optional[str] = typer.Option(None, "--qa-id", help="Plaky user id for QA field"),
-    auto_assign_qa: bool = typer.Option(
-        False,
-        "--auto-assign-qa/--no-auto-assign-qa",
-        help="Auto-pick QA from team assignments using --github-repo",
-    ),
-    github_repo: Optional[str] = typer.Option(
-        None,
-        "--github-repo",
-        help="GitHub repo for --auto-assign-qa (owner/repo or repo name; bare names get GITHUB_BARE_REPO_OWNER)",
-    ),
-    plaky_board_id: Optional[str] = typer.Option(None, "--board-id", help="Explicit board id for field patch"),
-):
-    async def run():
-        result = await update_task_internal(
-            task_id,
-            UpdateTaskInput(
-                status=status,
-                task_type=task_type,
-                priority=priority,
-                qa_plaky_id=qa_plaky_id,
-                auto_assign_qa=auto_assign_qa,
-                github_repo=github_repo,
-                plaky_board_id=plaky_board_id,
-            ),
-        )
-        ops = result.get("operations")
-        op_messages: list[str] = []
-        if isinstance(ops, dict):
-            for name, payload in ops.items():
-                if isinstance(payload, dict):
-                    msg = str(payload.get("message") or "").strip()
-                    if msg:
-                        op_messages.append(f"{name}: {msg}")
-
-        if result.get("ok"):
-            console.print("[green]Task updated[/green]")
-        else:
-            summary = str(result.get("message") or "").strip() or (op_messages[0] if op_messages else "Update failed")
-            console.print(f"[red]Error:[/red] {summary}")
-            if len(op_messages) > 1:
-                for extra in op_messages[1:]:
-                    console.print(f"[yellow]- {extra}[/yellow]")
-            if not op_messages and isinstance(ops, dict) and ops:
-                console.print(json.dumps(ops, indent=2))
-            raise typer.Exit(1)
-        if isinstance(ops, dict) and ops:
-            console.print(json.dumps(ops, indent=2))
-
-    asyncio.run(run())
-
-
 @app.command()
 def sync(
     repo: str = typer.Option(..., prompt=True, help="GitHub repo (owner/repo)"),
@@ -332,14 +124,7 @@ def sync(
                 body = f"{issue.get('body', '')}\n\n{issue['html_url']}"
                 console.print(f"  - #{issue['number']}: {issue['title']}")
                 if not dry_run:
-                    result = await create_task_internal(
-                        CreateTaskInput(
-                            title=title,
-                            description=body,
-                            priority="medium",
-                            github_repos=[repo],
-                        )
-                    )
+                    result = await plaky.create_task(title=title, description=body, priority="medium")
                     if result.get("ok"):
                         console.print(f"    [green]Created:[/green] {result.get('task_url')}")
                     else:

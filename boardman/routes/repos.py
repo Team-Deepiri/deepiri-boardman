@@ -7,7 +7,7 @@ from typing import Optional
 import httpx
 
 from boardman.assignment.tier_classifier import classify_repos_tier, classify_repo_tier
-from boardman.github.repo_metadata import fetch_repo_metadata, fetch_repos_metadata, RepoMetadata
+from boardman.github.repo_metadata import fetch_repos_metadata
 from boardman.repos_config import _load_raw, update_repo_tiers
 from boardman.settings import settings
 from fastapi import APIRouter, HTTPException
@@ -104,31 +104,3 @@ async def get_repo_tier(full_name: str) -> SingleRepoResponse:
             await client.aclose()
     
     return SingleRepoResponse(full_name=full_name, tier=tier)
-
-
-class OrgReposResponse(BaseModel):
-    ok: bool
-    repos: list[str] = []
-    message: Optional[str] = None
-
-
-@router.get("/org", response_model=OrgReposResponse)
-async def list_org_repositories() -> OrgReposResponse:
-    """List full names (owner/repo) for repositories in the configured GitHub org."""
-    if not settings.github_pat:
-        return OrgReposResponse(ok=False, repos=[], message="GITHUB_PAT not configured")
-
-    from boardman.github.org_repos import fetch_org_repository_full_names
-
-    client = httpx.AsyncClient(timeout=60.0)
-    try:
-        names = await fetch_org_repository_full_names(
-            client,
-            settings.github_org,
-            skip_archived=settings.github_skip_archived,
-        )
-        return OrgReposResponse(ok=True, repos=names)
-    except Exception as e:
-        return OrgReposResponse(ok=False, repos=[], message=str(e))
-    finally:
-        await client.aclose()

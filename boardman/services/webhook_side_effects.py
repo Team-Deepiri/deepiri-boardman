@@ -1,32 +1,29 @@
-"""Fire-and-forget side effects from GitHub webhooks (SQLite background jobs)."""
+"""Fire-and-forget side effects from GitHub webhooks (arq jobs)."""
 
 from __future__ import annotations
 
 import logging
 
-from boardman.plaky.client import PlakyClient
-from boardman.plaky.task_payload_ids import placement_ids_from_plaky_task
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
 
-async def maybe_enqueue_plaky_reorder_after_task(plaky: PlakyClient, task_id: str) -> None:
-    """After a Plaky item status change, optionally reorder that item's group (board/group from the task)."""
+async def maybe_enqueue_plaky_reorder_job() -> None:
     if not settings.plaky_reorder_after_status_change:
         return
-    tid = (task_id or "").strip()
-    if not tid:
+    url = (settings.redis_url or "").strip()
+    if not url:
+        return
+    bid = (settings.plaky_default_board_id or "").strip()
+    gid = (settings.plaky_default_group_id or "").strip()
+    if not bid or not gid:
         return
     try:
-        got = await plaky.get_task(tid)
-        task = got.get("task") if isinstance(got, dict) else None
-        bid, gid = placement_ids_from_plaky_task(task if isinstance(task, dict) else None)
-        if not bid or not gid:
-            return
-        from boardman.broker.job_queue import get_job_queue
+        from boardman.broker.arq_pool import get_arq_pool
 
-        await get_job_queue().enqueue_job(
+        pool = await get_arq_pool()
+        await pool.enqueue_job(
             "plaky_reorder_group_job",
             {"board_id": bid, "group_id": gid},
         )

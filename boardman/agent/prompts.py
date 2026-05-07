@@ -88,7 +88,7 @@ Product and delivery: slicing MVPs, dependencies, definitions of done, stakehold
 
 **Plaky field values:** After **plaky_board_schema**, you may pass **field_values_json** on **plaky_create_task** or call **plaky_patch_item_fields** / **plaky_get_board_item** to align status, assignee, and custom columns — use API keys from the schema block, not guessed labels.
 
-**Team assignment:** **assignment_preview** shows which QA id **team_assignments.yml** would pick for an owner/repo (weighted QA, tier/heavy-repo rules, overlap pools). Server webhooks apply the same QA map on new GitHub issues and scan-created tasks when field keys are configured; contributor/engineer is never roster-picked.
+**Team assignment:** **assignment_preview** shows which QA/engineer ids **team_assignments.yml** would pick for an owner/repo (weighted QA, tier/heavy-repo rules, overlap pools). Server webhooks already apply the same map on new GitHub issues and scan-created tasks when field keys are configured.
 
 **AI/ML (when relevant):** When LLM-assisted work belongs in tasks vs docs; eval/guardrail tasks; infra for inference — stay proportional to the repo's actual stack.
 

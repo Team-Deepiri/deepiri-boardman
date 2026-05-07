@@ -4,9 +4,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from boardman.assignment.config import sync_team_assignment_field_keys_from_board
-from boardman.broker.job_queue import close_job_queue
-from boardman.cache.agent_redis import aclose_agent_redis
+from boardman.broker.arq_pool import close_arq_pool
 from boardman.database.session import init_db
 from boardman.logging_config import setup_logging
 from boardman.llm.completion import aclose_ollama_http_client
@@ -35,21 +33,6 @@ async def lifespan(app: FastAPI):
             "Plaky: PLAKY_API_KEY is empty — set it in `.env` (docker: env_file) or the environment. "
             "Boards/match and agent Plaky tools will not call the API."
         )
-    if pk and settings.plaky_auto_sync_team_assignment_field_keys:
-        from boardman.repos_config import team_assignment_field_sync_board_id
-
-        bid = team_assignment_field_sync_board_id()
-        if bid:
-            try:
-                synced = await sync_team_assignment_field_keys_from_board(bid)
-                if synced.get("updated"):
-                    _log.info("team_assignments: synced field keys from board %s -> %s", bid, synced.get("updated"))
-                else:
-                    _log.info("team_assignments: field-key sync skipped (%s)", synced.get("message", "no changes"))
-            except Exception as e:
-                _log.warning("team_assignments: startup field-key sync failed: %s", e)
-        else:
-            _log.info("team_assignments: startup field-key sync skipped (repos.yml defaults.plaky_board_id empty)")
     prov = (settings.llm_provider or "ollama").lower()
     if prov == "ollama":
         try:
@@ -70,12 +53,9 @@ async def lifespan(app: FastAPI):
             (settings.llm_model or "").strip() or "(provider default)",
             settings.ollama_base_url,
         )
-    if (settings.agent_redis_url or "").strip():
-        _log.info("Agent Redis cache: AGENT_REDIS_URL is set (API-only; worker should leave it empty)")
     yield
 
-    await close_job_queue()
-    await aclose_agent_redis()
+    await close_arq_pool()
     await aclose_ollama_http_client()
 
 
