@@ -28,12 +28,18 @@ from boardman.services.pr_handler import (
     handle_pr_review_requested,
 )
 from boardman.services.pr_review_handler import handle_issue_comment_on_pr, handle_pull_request_review
+from boardman.repos_config import RepoRouting
 from boardman.settings import settings
 
 
 async def _schema_off(*_a, **_k):
-    """Force legacy update_task_status path in tests."""
+    """Force legacy /tasks status patch path (no board schema) in tests."""
     return {"ok": False}
+
+
+def _patch_task_mutations_plaky(monkeypatch: pytest.MonkeyPatch, fake: Any) -> None:
+    monkeypatch.setattr("boardman.services.task_mutations.PlakyClient", lambda: fake)
+    monkeypatch.setattr("boardman.services.task_mutations.fetch_board_schema_bundle", _schema_off)
 
 
 async def _memory_session_factory():
@@ -62,8 +68,13 @@ class RecordingPlaky:
             },
         }
 
-    async def update_task_status(self, task_id: str, status: str) -> Dict[str, Any]:
-        self.status_calls.append((task_id, status))
+    async def get_task(self, task_id: str) -> Dict[str, Any]:
+        return {"ok": True, "task": {"boardId": self.board_id, "id": task_id}}
+
+    async def update_task_fields(self, task_id: str, **kwargs: Any) -> Dict[str, Any]:
+        st = kwargs.get("status")
+        if st is not None:
+            self.status_calls.append((task_id, str(st)))
         return {"ok": True}
 
     async def patch_item_field_values(self, board_id: str, item_id: str, values: dict) -> Dict[str, Any]:
@@ -71,7 +82,7 @@ class RecordingPlaky:
         self.status_calls.append((item_id, str(st)))
         return {"ok": True}
 
-    async def add_comment(self, task_id: str, body: str) -> Dict[str, Any]:
+    async def add_comment(self, task_id: str, body: str, **kwargs: Any) -> Dict[str, Any]:
         self.comments.append((task_id, body))
         return {"ok": True}
 
@@ -88,7 +99,13 @@ def qa_settings(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "plaky_status_qa_rejected", "qa_rejected")
     monkeypatch.setattr(settings, "plaky_status_completed", "completed")
     monkeypatch.setattr(settings, "plaky_pr_merge_status", "completed")
-    monkeypatch.setattr(settings, "plaky_default_board_id", "board-1")
+
+    def _fixed_routing(*a, **k):
+        return RepoRouting(plaky_board_id="board-1")
+
+    monkeypatch.setattr("boardman.repos_config.get_routing", _fixed_routing)
+    monkeypatch.setattr("boardman.services.pr_review_handler.get_routing", _fixed_routing)
+    monkeypatch.setattr("boardman.services.pr_task_linking.get_routing", _fixed_routing)
     monkeypatch.setattr(settings, "plaky_complete_when_all_prs_merged", False)
     monkeypatch.setattr(settings, "github_org", "deepiri-org")
 
@@ -98,7 +115,7 @@ async def test_pull_request_review_approved_any_reviewer_to_qa_approved(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
     fake = RecordingPlaky()
-    monkeypatch.setattr("boardman.services.pr_handler.fetch_board_schema_bundle", _schema_off)
+    _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
 
     engine, factory = await _memory_session_factory()
@@ -141,7 +158,7 @@ async def test_pull_request_review_changes_requested_only_by_assigned_qa_moves_r
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
     fake = RecordingPlaky(qa_field="fld_qa", qa_plaky_id="qa-plaky-1")
-    monkeypatch.setattr("boardman.services.pr_handler.fetch_board_schema_bundle", _schema_off)
+    _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
 
     cfg = TeamAssignmentsConfig(
@@ -191,7 +208,7 @@ async def test_pull_request_review_changes_requested_by_non_qa_skipped(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
     fake = RecordingPlaky(qa_field="fld_qa", qa_plaky_id="qa-plaky-1")
-    monkeypatch.setattr("boardman.services.pr_handler.fetch_board_schema_bundle", _schema_off)
+    _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
 
     cfg = TeamAssignmentsConfig(
@@ -249,7 +266,7 @@ async def test_pr_merged_sets_completed_on_plaky(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
     fake = RecordingPlaky()
-    monkeypatch.setattr("boardman.services.pr_handler.fetch_board_schema_bundle", _schema_off)
+    _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_handler.PlakyClient", lambda: fake)
 
     async def _no_open(*_a, **_k):
@@ -297,7 +314,7 @@ async def test_pr_review_requested_moves_to_in_qa(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
     fake = RecordingPlaky()
-    monkeypatch.setattr("boardman.services.pr_handler.fetch_board_schema_bundle", _schema_off)
+    _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_handler.PlakyClient", lambda: fake)
 
     engine, factory = await _memory_session_factory()
@@ -340,7 +357,7 @@ async def test_pr_review_comment_assigned_qa_moves_in_qa_fuzzy_link(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
     fake = RecordingPlaky(qa_field="fld_qa", qa_plaky_id="qa-42")
-    monkeypatch.setattr("boardman.services.pr_handler.fetch_board_schema_bundle", _schema_off)
+    _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_handler.PlakyClient", lambda: fake)
 
     cfg = TeamAssignmentsConfig(
@@ -393,7 +410,7 @@ async def test_issue_comment_assignee_moves_in_qa(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
     fake = RecordingPlaky()
-    monkeypatch.setattr("boardman.services.pr_handler.fetch_board_schema_bundle", _schema_off)
+    _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
 
     async def _participants(*_a, **_k):
@@ -438,7 +455,7 @@ async def test_issue_comment_plaky_assigned_qa_moves_in_qa_without_github_partic
 ):
     """Plaky QA field matches commenter's roster login → IN QA even if not GitHub assignee/reviewer."""
     fake = RecordingPlaky(qa_field="fld_qa", qa_plaky_id="qa-plaky-77")
-    monkeypatch.setattr("boardman.services.pr_handler.fetch_board_schema_bundle", _schema_off)
+    _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
 
     async def _no_participants(*_a, **_k):
@@ -490,7 +507,7 @@ async def test_issue_comment_skips_when_not_participant_and_not_plaky_qa(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
     fake = RecordingPlaky(qa_field="fld_qa", qa_plaky_id="qa-plaky-77")
-    monkeypatch.setattr("boardman.services.pr_handler.fetch_board_schema_bundle", _schema_off)
+    _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
 
     async def _participants(*_a, **_k):

@@ -1,7 +1,10 @@
 from boardman.plaky.board_schema import (
     format_board_schema_markdown,
     looks_like_placeholder_plaky_field_key,
+    match_repo_tokens_to_plaky_tag_option_values,
     normalize_board_payload,
+    plaky_repo_field_value_format,
+    resolve_repo_tag_field_values_from_schema,
     validate_field_values_against_board_schema,
 )
 
@@ -55,13 +58,106 @@ def test_looks_like_placeholder_plaky_field_key():
     assert looks_like_placeholder_plaky_field_key("abc123-real-key") is False
 
 
-def test_validate_field_values_rejects_placeholders():
+def test_validate_field_values_rejects_placeholder_keys_not_on_board():
     msg = validate_field_values_against_board_schema(
-        {"person-1": "x", "real_uuid": "y"},
+        {"person-99": "x", "real_uuid": "y"},
         {"fields": [{"name": "A", "key": "real_uuid", "options": []}]},
     )
     assert msg is not None
-    assert "person-1" in msg
+    assert "person-99" in msg
+
+
+def test_validate_field_values_allows_native_plaky_key_pattern_when_on_board():
+    assert (
+        validate_field_values_against_board_schema(
+            {"person-1": "291493", "tag-2": "Team-Deepiri/x"},
+            {
+                "fields": [
+                    {"name": "Contributor", "key": "person-1", "type": "PERSON"},
+                    {"name": "Repos", "key": "tag-2", "type": "TAG"},
+                ]
+            },
+        )
+        is None
+    )
+
+
+def test_select_field_patch_pair_fallback_when_status_has_no_options():
+    from boardman.plaky.board_schema import select_field_patch_pair_from_schema
+
+    norm = {
+        "fields": [
+            {"name": "Status", "key": "status-1", "type": "STATUS", "options": []},
+        ]
+    }
+    pair = select_field_patch_pair_from_schema(
+        norm,
+        column_name_substrings=("status",),
+        value_label_candidates=("in progress", "doing"),
+    )
+    assert pair == ("status-1", "in progress")
+
+
+def test_plaky_repo_field_value_format_short_only_for_tag_columns():
+    norm = {
+        "fields": [
+            {"name": "Repo text", "key": "fld-1", "type": "TEXT"},
+            {"name": "Repos tag", "key": "tag-2", "type": "TAG"},
+        ]
+    }
+    assert plaky_repo_field_value_format(norm, "fld-1") == "full"
+    assert plaky_repo_field_value_format(norm, "tag-2") == "short"
+
+
+def test_plaky_repo_field_value_format_native_tag_key_without_schema():
+    assert plaky_repo_field_value_format(None, "tag-2") == "short"
+    assert plaky_repo_field_value_format({"fields": []}, "tag-2") == "short"
+    assert plaky_repo_field_value_format(None, "fld_repo") == "full"
+
+
+def test_match_repo_tokens_to_plaky_tag_option_values_case_insensitive():
+    field = {
+        "name": "GitHub Repos",
+        "key": "tag-2",
+        "type": "TAG",
+        "options": [
+            {"name": "Team-Deepiri/deepiri-platform", "id": 42},
+            {"name": "Other/Thing", "id": 7},
+        ],
+    }
+    matched, unmatched = match_repo_tokens_to_plaky_tag_option_values(
+        field, ["team-deepiri/deepiri-platform"]
+    )
+    assert matched == [42]
+    assert unmatched == []
+
+
+def test_match_repo_tokens_accepts_repo_short_name_without_owner():
+    field = {
+        "name": "GitHub Repos",
+        "key": "tag-2",
+        "type": "TAG",
+        "options": [{"name": "deepiri-platform", "id": 7}],
+    }
+    matched, unmatched = match_repo_tokens_to_plaky_tag_option_values(field, ["deepiri-platform"])
+    assert matched == [7]
+    assert unmatched == []
+
+
+def test_resolve_repo_tag_field_values_from_schema_rewrites_string_to_ids():
+    norm = {
+        "fields": [
+            {
+                "name": "GitHub Repos",
+                "key": "tag-2",
+                "type": "TAG",
+                "options": [{"name": "Team-Deepiri/deepiri-platform", "id": 99}],
+            },
+        ]
+    }
+    fv = {"tag-2": "Team-Deepiri/deepiri-platform"}
+    resolve_repo_tag_field_values_from_schema(fv, norm, keys={"tag-2"})
+    assert fv["tag-2"] == [99]
 
 
 def test_validate_field_values_unknown_keys_when_schema_has_keys():

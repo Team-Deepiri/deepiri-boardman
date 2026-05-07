@@ -58,8 +58,25 @@ async def test_plaky_board_schema_route_without_key():
         assert "markdown" in body
 
 
+@pytest.mark.asyncio
+async def test_assignment_sync_field_keys_route(monkeypatch):
+    app = create_app()
+
+    async def _fake_sync(_board_id: str):
+        return {"ok": True, "updated": {"repo": "repo_key"}, "path": "/tmp/ta.yml"}
+
+    monkeypatch.setattr("boardman.routes.assignment.sync_team_assignment_field_keys_from_board", _fake_sync)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post("/api/v1/assignment/sync-field-keys", params={"board_id": "board-123"})
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["updated"].get("repo") == "repo_key"
+        assert body["board_id"] == "board-123"
+
+
 def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
     assert len(build_all_tools(allow_writes=False)) == 17
-    assert len(build_all_tools(allow_writes=True)) == 22
+    assert len(build_all_tools(allow_writes=True)) == 23

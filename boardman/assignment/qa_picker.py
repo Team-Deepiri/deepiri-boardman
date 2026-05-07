@@ -1,5 +1,5 @@
 """
-Semi-random QA (and engineer) selection for Plaky assignment.
+Semi-random QA selection for Plaky assignment.
 
 - Tier + hardware: heavy repos filter out low-tier QAs when configured.
 - Overlap pools: QAs who share org or explicit repo overlap form a pool; we pick within pool.
@@ -177,6 +177,14 @@ async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
     if not fn:
         return None, "empty repo"
 
+    if not cfg.members:
+        return (
+            None,
+            "no team members loaded (GitHub roster failed, use_github_support_team_roster=false with no static "
+            "members list, or every roster login lacks a Plaky id — set member_overrides[login].id or enable "
+            "auto_match_plaky_ids)",
+        )
+
     repo_tier = 2
     routing = get_routing(fn, "", settings.github_org)
     if routing and routing.tier > 0:
@@ -184,14 +192,31 @@ async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
     else:
         repo_tier = await _auto_classify_repo_tier(fn)
 
-    qas = [m for m in cfg.members if "qa" in m.roles and repo_matches_member(fn, m)]
+    with_qa_role = [m for m in cfg.members if "qa" in m.roles]
+    if not with_qa_role:
+        return (
+            None,
+            "no team members have role 'qa' (set member_defaults.roles to include 'qa', "
+            "or add qa under member_overrides for each GitHub login; Plaky id required per roster member)",
+        )
+
+    qas = [m for m in with_qa_role if repo_matches_member(fn, m)]
     if not qas:
-        return None, "no QA member matched repo globs"
+        return (
+            None,
+            f"no QA-role member matches repo {fn!r} (check repo_globs / explicit_repos); "
+            f"{len(with_qa_role)} member(s) have qa role",
+        )
 
     # Filter by QA tier (repo_tier is the tier required - QAs must have qa_tier >= repo_tier)
+    tier_before = list(qas)
     qas = [m for m in qas if m.qa_tier >= repo_tier]
     if not qas:
-        return None, f"no QA after tier filter (repo tier={repo_tier}, QA tiers: {[m.qa_tier for m in qas]})"
+        return (
+            None,
+            f"no QA after tier filter: repo requires qa_tier>={repo_tier}; "
+            f"candidates had qa_tiers {[m.qa_tier for m in tier_before]}",
+        )
 
     if repo_is_heavy(fn, cfg.heavy_repo_patterns):
         qas = [m for m in qas if m.tier.lower() not in ("light", "minimal", "low")]
@@ -205,32 +230,160 @@ async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
     return chosen.id, f"qa={chosen.display} pool_size={len(pool)} repo_tier={repo_tier}"
 
 
-def pick_engineer_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] = None) -> Tuple[Optional[str], str]:
-    """Deterministic: highest weight among matching engineers (no random)."""
+def github_repo_suffix_name(full: str) -> str:
+    """Return repository name only (segment after last ``/``); unchanged if no slash."""
+    s = (full or "").strip()
+    if not s:
+        return ""
+    return s.rsplit("/", 1)[-1] if "/" in s else s
+
+
+def ensure_github_owner_repo(slug: str) -> str:
+    """If ``slug`` has no ``owner/`` prefix, prepend bare-repo owner (see settings.github_bare_repo_owner)."""
+    s = (slug or "").strip()
+    if not s or "/" in s:
+        return s
+    org = (settings.github_bare_repo_owner or "").strip() or (settings.github_org or "").strip()
+    if org:
+        return f"{org}/{s}"
+    return s
+
+
+def _tokenize_repo_slugs(text: str) -> List[str]:
+    """Split comma/newline/whitespace-separated repo tokens (CLI ``--github-repo a b`` / agent ``repo_tag``)."""
+    out: List[str] = []
+    for chunk in (text or "").replace("\n", ",").split(","):
+        for p in chunk.replace("\t", " ").split():
+            if p.strip():
+                out.append(p.strip())
+    return out
+
+
+def _dedupe_repo_list(repos: Optional[List[str]]) -> List[str]:
+    out: List[str] = []
+    seen_set: set[str] = set()
+    if not repos:
+        return out
+    for raw in repos:
+        s = ensure_github_owner_repo(str(raw or "").strip())
+        if not s:
+            continue
+        k = s.lower()
+        if k in seen_set:
+            continue
+        seen_set.add(k)
+        out.append(s)
+    return out
+
+
+def normalize_github_repo_inputs(
+    primary_repo: str = "",
+    github_repos: Optional[List[str]] = None,
+    *,
+    extra_repo_text: str = "",
+) -> List[str]:
+    """Return ordered unique owner/repo values from list and comma/newline text."""
+    tokens: List[str] = []
+    if primary_repo and primary_repo.strip():
+        tokens.extend(_tokenize_repo_slugs(primary_repo))
+    if isinstance(github_repos, list):
+        for repo in github_repos:
+            tokens.extend(_tokenize_repo_slugs(str(repo or "")))
+    raw_extra = (extra_repo_text or "").strip()
+    if raw_extra:
+        tokens.extend(_tokenize_repo_slugs(raw_extra))
+    return _dedupe_repo_list(tokens)
+
+
+def _format_repo_tokens_for_plaky(tokens: List[str], fmt: str) -> List[str]:
+    """``fmt`` ``short`` = repo name only (for TAG columns); ``full`` = keep ``owner/repo``."""
+    if fmt != "short" or not tokens:
+        return list(tokens)
+    out: List[str] = []
+    seen: set[str] = set()
+    for t in tokens:
+        sh = github_repo_suffix_name(t)
+        if not sh:
+            continue
+        k = sh.casefold()
+        if k not in seen:
+            seen.add(k)
+            out.append(sh)
+    return out
+
+
+def build_repo_field_map(
+    cfg: Optional[TeamAssignmentsConfig] = None,
+    *,
+    repo_value: Optional[str] = None,
+    github_repos: Optional[List[str]] = None,
+    plaky_field_repo_key: Optional[str] = None,
+    plaky_field_github_repos_key: Optional[str] = None,
+    repo_value_format: str = "full",
+    github_repos_value_format: str = "full",
+) -> Dict[str, str]:
+    """Map configured repo-related Plaky field keys to one or more GitHub repos.
+
+    Use ``repo_value_format`` / ``github_repos_value_format`` of ``short`` for Plaky TAG columns
+    (values are repo names only, e.g. ``deepiri-platform``).
+    """
     cfg = cfg or load_team_assignments()
-    fn = (full_name or "").strip()
-    eng = [m for m in cfg.members if "engineer" in m.roles and repo_matches_member(fn, m)]
-    if not eng:
-        return None, "no engineer matched"
-    eng.sort(key=lambda m: (-m.weight, m.display))
-    top = eng[0]
-    return top.id, f"engineer={top.display}"
+    out: Dict[str, str] = {}
+    repo_key = (plaky_field_repo_key or cfg.plaky_field_repo or "").strip()
+    repos_multi_key = (plaky_field_github_repos_key or cfg.plaky_field_github_repos or "").strip()
+    repo_label = (repo_value or "").strip()
+    tokens = _dedupe_repo_list(github_repos)
+    if not tokens and repo_label:
+        tokens = [repo_label]
+    tok_repo = _format_repo_tokens_for_plaky(tokens, repo_value_format)
+    tok_multi = _format_repo_tokens_for_plaky(tokens, github_repos_value_format)
+    joined_repo = ", ".join(tok_repo) if tok_repo else ""
+    joined_multi = ", ".join(tok_multi) if tok_multi else ""
+
+    if repo_key and repos_multi_key and len(tokens) > 1:
+        out[repo_key] = tok_repo[0] if tok_repo else ""
+        out[repos_multi_key] = joined_multi
+    elif repo_key and repos_multi_key and len(tokens) == 1:
+        out[repo_key] = tok_repo[0] if tok_repo else ""
+        out[repos_multi_key] = tok_multi[0] if tok_multi else ""
+    elif repo_key and joined_repo:
+        out[repo_key] = joined_repo
+    elif repos_multi_key and joined_multi:
+        out[repos_multi_key] = joined_multi
+    return out
 
 
 async def build_assignment_field_map(
     full_name: str,
     cfg: Optional[TeamAssignmentsConfig] = None,
     field_overrides: Optional[Dict[str, str]] = None,
+    *,
+    repo_value: Optional[str] = None,
+    github_repos: Optional[List[str]] = None,
+    plaky_field_repo_key: Optional[str] = None,
+    plaky_field_github_repos_key: Optional[str] = None,
+    plaky_field_qa_key: Optional[str] = None,
+    repo_value_format: str = "full",
+    github_repos_value_format: str = "full",
 ) -> Dict[str, str]:
-    """Map Plaky field key -> person id for create/patch. Overrides win for same keys."""
+    """Map Plaky field key -> QA person id or repo label(s) for create/patch. Overrides win for same keys."""
     cfg = cfg or load_team_assignments()
     out: Dict[str, str] = {}
-    eid, _ = pick_engineer_for_repo(full_name, cfg)
-    if eid and cfg.plaky_field_engineer:
-        out[cfg.plaky_field_engineer] = eid
+    qa_key = (plaky_field_qa_key or cfg.plaky_field_qa or "").strip()
     qid, _ = await pick_qa_for_repo(full_name, cfg)
-    if qid and cfg.plaky_field_qa:
-        out[cfg.plaky_field_qa] = qid
+    if qid and qa_key:
+        out[qa_key] = qid
+    out.update(
+        build_repo_field_map(
+            cfg,
+            repo_value=repo_value if repo_value is not None else full_name,
+            github_repos=github_repos,
+            plaky_field_repo_key=plaky_field_repo_key,
+            plaky_field_github_repos_key=plaky_field_github_repos_key,
+            repo_value_format=repo_value_format,
+            github_repos_value_format=github_repos_value_format,
+        )
+    )
     for k, v in (field_overrides or {}).items():
         ks, vs = str(k).strip(), str(v).strip()
         if ks and vs:

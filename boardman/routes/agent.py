@@ -12,7 +12,7 @@ from boardman.agent.service import (
     iter_agent_chat_sse,
     run_agent_chat,
 )
-from boardman.broker.arq_pool import get_arq_pool
+from boardman.broker.job_queue import get_job_queue
 from boardman.database.session import async_session, get_db
 from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
 from boardman.ratelimit.dependencies import require_agent_rate_limit
@@ -50,7 +50,7 @@ class AgentChatRequest(BaseModel):
     )
     queue: bool = Field(
         False,
-        description="If true and REDIS_URL is set, enqueue to arq worker; poll GET /agent/jobs/{job_id}.",
+        description="If true, enqueue to SQLite worker; poll GET /agent/jobs/{job_id}.",
     )
 
 
@@ -75,18 +75,11 @@ async def agent_chat(
 ) -> dict[str, Any]:
     await require_agent_rate_limit(request)
     if body.queue:
-        if not (settings.redis_url or "").strip():
-            raise HTTPException(
-                status_code=503,
-                detail="queue=true requires REDIS_URL and a running arq worker (see docker-compose).",
-            )
         if not settings.agent_async_enqueue_enabled:
             raise HTTPException(status_code=503, detail="Async agent enqueue is disabled in settings.")
         payload = body.model_dump(exclude={"queue"}, exclude_none=True)
-        pool = await get_arq_pool()
-        job = await pool.enqueue_job("boardman_agent_chat_job", payload)
-        if job is None:
-            raise HTTPException(status_code=409, detail="Could not enqueue job (duplicate id or Redis conflict).")
+        q = get_job_queue()
+        job = await q.enqueue_job("boardman_agent_chat_job", payload)
         return {"ok": True, "queued": True, "job_id": job.job_id}
 
     async with plaky_placement_context(body.plaky_board_id, body.plaky_group_id):
@@ -151,19 +144,16 @@ async def agent_chat_stream(body: AgentChatRequest, request: Request) -> Streami
 
 @router.get("/agent/jobs/{job_id}")
 async def agent_job_status(job_id: str) -> dict[str, Any]:
-    if not (settings.redis_url or "").strip():
-        raise HTTPException(status_code=503, detail="REDIS_URL is not configured.")
-    from arq.jobs import Job, JobStatus
-
-    redis = await get_arq_pool()
-    job = Job(job_id, redis)
-    st = await job.status()
-    out: dict[str, Any] = {"ok": True, "job_id": job_id, "status": st.value}
-    if st == JobStatus.complete:
-        info = await job.result_info()
-        if info is not None:
-            out["success"] = info.success
-            out["result"] = info.result
+    q = get_job_queue()
+    data = await q.fetch_public_job(job_id)
+    if data is None:
+        return {"ok": True, "job_id": job_id, "status": "not_found"}
+    out: dict[str, Any] = {"ok": True, "job_id": job_id, "status": data["status"]}
+    if data["status"] == "complete":
+        if "success" in data:
+            out["success"] = data["success"]
+        if "result" in data:
+            out["result"] = data["result"]
     return out
 
 
