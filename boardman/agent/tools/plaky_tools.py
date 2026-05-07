@@ -7,11 +7,24 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import StructuredTool
 
+from boardman.assignment.config import infer_plaky_field_keys_from_normalized, load_team_assignments
+from boardman.assignment.qa_picker import build_repo_field_map, normalize_github_repo_inputs
+from boardman.services.task_mutations import (
+    CreateSubtaskInput,
+    CreateTaskInput,
+    UpdateTaskInput,
+    create_subtask_internal,
+    create_task_internal,
+    update_task_internal,
+)
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
+    plaky_repo_field_value_format,
+    resolve_repo_tag_field_values_from_schema,
     validate_field_values_against_board_schema,
 )
 from boardman.plaky.client import PlakyClient
+from boardman.plaky.task_tag_vocab import canonical_task_priority, plaky_create_legacy_priority_param
 from boardman.plaky.name_match import rank_plaky_rows
 
 
@@ -154,23 +167,24 @@ async def _plaky_save_task_preferences(preferences_json: str) -> str:
 async def _plaky_create_task(
     title: str,
     description: str,
-    priority: str = "medium",
+    priority: str = "Medium",
     repo_tag: str = "",
     board_id: str = "",
     group_id: str = "",
     field_values_json: str = "",
+    auto_assign_team: bool = True,
 ) -> str:
     from boardman.agent.task_draft import load_task_draft, merge_draft_into_field_values
     from boardman.agent.tool_context import (
         get_agent_session_pk,
         get_context_plaky_board_id,
+        get_context_plaky_group_id,
         get_tool_db_session,
     )
 
-    c = PlakyClient()
-    full = f"[{repo_tag}] {title}" if repo_tag else title
-    bid = board_id.strip() or None
-    gid = group_id.strip() or None
+    bid = board_id.strip() or get_context_plaky_board_id() or None
+    gid = group_id.strip() or get_context_plaky_group_id() or None
+    repo_tokens = normalize_github_repo_inputs(extra_repo_text=repo_tag)
 
     parsed: Dict[str, Any] = {}
     raw_f = (field_values_json or "").strip()
@@ -192,27 +206,70 @@ async def _plaky_create_task(
         merged = dict(parsed)
 
     effective_board = (bid or get_context_plaky_board_id() or "").strip() or None
+    normalized: Optional[Dict[str, Any]] = None
+    if effective_board and (repo_tokens or merged):
+        bundle = await fetch_board_schema_bundle(effective_board)
+        normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+
+    if repo_tokens:
+        cfg = load_team_assignments()
+        inf_tags = infer_plaky_field_keys_from_normalized(normalized) if normalized else {}
+        repo_k = (cfg.plaky_field_repo or inf_tags.get("repo") or "").strip()
+        gh_k = (cfg.plaky_field_github_repos or inf_tags.get("github_repos") or "").strip()
+        repo_fmt = plaky_repo_field_value_format(normalized, repo_k)
+        gh_fmt = plaky_repo_field_value_format(normalized, gh_k)
+        if repo_k == gh_k and repo_k and (repo_fmt == "short" or gh_fmt == "short"):
+            repo_fmt = gh_fmt = "short"
+        repo_fields = build_repo_field_map(
+            cfg,
+            repo_value=repo_tokens[0],
+            github_repos=repo_tokens,
+            repo_value_format=repo_fmt,
+            github_repos_value_format=gh_fmt,
+        )
+        for key, value in repo_fields.items():
+            if key not in parsed:
+                merged[key] = value
+
     if merged:
-        normalized = None
-        if effective_board:
+        if normalized is None and effective_board:
             bundle = await fetch_board_schema_bundle(effective_board)
             normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+        if normalized:
+            cfg_tags = load_team_assignments()
+            inf_tags = infer_plaky_field_keys_from_normalized(normalized)
+            tag_keys = {
+                x
+                for x in (
+                    (cfg_tags.plaky_field_repo or "").strip(),
+                    (cfg_tags.plaky_field_github_repos or "").strip(),
+                    (inf_tags.get("repo") or "").strip(),
+                    (inf_tags.get("github_repos") or "").strip(),
+                )
+                if x
+            }
+            if tag_keys:
+                resolve_repo_tag_field_values_from_schema(merged, normalized, keys=tag_keys)
         err = validate_field_values_against_board_schema(merged, normalized)
         if err:
             return json.dumps({"ok": False, "message": err}, default=str)
 
-    fv = merged if merged else None
-    r = await c.create_task(
-        title=full,
-        description=description,
-        priority=priority,
-        board_id=bid,
-        group_id=gid,
-        field_values=fv,
+    canon_pri = canonical_task_priority(priority)
+    r = await create_task_internal(
+        CreateTaskInput(
+            title=title,
+            description=description,
+            priority=canon_pri,
+            github_repos=repo_tokens if repo_tokens else None,
+            plaky_board_id=bid,
+            plaky_group_id=gid,
+            field_values=merged if merged else None,
+            auto_assign_team=auto_assign_team,
+        )
     )
     out = dict(r) if isinstance(r, dict) else {"result": r}
-    if fv:
-        out["merged_field_values"] = fv
+    if merged:
+        out["merged_field_values"] = merged
     return json.dumps(out, default=str)
 
 
@@ -228,6 +285,21 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
     if parsed:
         bundle = await fetch_board_schema_bundle(bid)
         normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+        if normalized:
+            cfg_tags = load_team_assignments()
+            inf_tags = infer_plaky_field_keys_from_normalized(normalized)
+            tag_keys = {
+                x
+                for x in (
+                    (cfg_tags.plaky_field_repo or "").strip(),
+                    (cfg_tags.plaky_field_github_repos or "").strip(),
+                    (inf_tags.get("repo") or "").strip(),
+                    (inf_tags.get("github_repos") or "").strip(),
+                )
+                if x
+            }
+            if tag_keys:
+                resolve_repo_tag_field_values_from_schema(parsed, normalized, keys=tag_keys)
         err = validate_field_values_against_board_schema(parsed, normalized)
         if err:
             return json.dumps({"ok": False, "message": err}, default=str)
@@ -238,27 +310,104 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
 
 async def _plaky_update_task(
     task_id: str,
-    title: Optional[str] = None,
-    description: Optional[str] = None,
-    priority: Optional[str] = None,
     status: Optional[str] = None,
+    task_type: Optional[str] = None,
+    priority: Optional[str] = None,
+    qa_plaky_id: Optional[str] = None,
+    auto_assign_qa: bool = False,
+    github_repo: Optional[str] = None,
+    board_id: str = "",
 ) -> str:
-    c = PlakyClient()
-    r = await c.update_task_fields(
-        task_id, title=title, description=description, priority=priority, status=status
+    from boardman.agent.tool_context import get_context_plaky_board_id
+
+    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    gh = (github_repo or "").strip() or None
+    r = await update_task_internal(
+        task_id,
+        UpdateTaskInput(
+            status=status,
+            task_type=task_type,
+            priority=priority,
+            qa_plaky_id=qa_plaky_id,
+            auto_assign_qa=auto_assign_qa,
+            github_repo=gh,
+            plaky_board_id=bid,
+        ),
     )
     return json.dumps(r, default=str)
 
 
-async def _plaky_add_comment(task_id: str, body: str) -> str:
+async def _plaky_add_comment(task_id: str, body: str, board_id: str = "") -> str:
+    from boardman.agent.tool_context import get_context_plaky_board_id
+
     c = PlakyClient()
-    r = await c.add_comment(task_id, body)
+    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    r = await c.add_comment(task_id, body, board_id=bid)
     return json.dumps(r, default=str)
 
 
-async def _plaky_create_subtask(parent_task_id: str, title: str, description: str = "") -> str:
+async def _plaky_link_prs(task_id: str, pr_urls: str, board_id: str = "") -> str:
+    """
+    Link one or more GitHub PR URLs to a Plaky item by posting a consistently-formatted comment.
+
+    `pr_urls` may be a single URL or a comma/whitespace/newline-separated list.
+    """
+    import re
+
+    from boardman.agent.tool_context import get_context_plaky_board_id
+    from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
+
+    raw = (pr_urls or "").strip()
+    parts = [p for p in re.split(r"[\s,]+", raw) if p.strip()]
+    urls = collect_pr_urls(pr_url=None, pr_urls=parts or None)
+    if not urls:
+        return json.dumps({"ok": False, "status": 400, "message": "supply at least one PR URL"}, default=str)
+
     c = PlakyClient()
-    r = await c.create_subtask(parent_task_id, title, description)
+    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    comment = format_pr_link_comment(urls)
+    r = await c.add_comment(task_id, comment, board_id=bid)
+    r2 = dict(r) if isinstance(r, dict) else {"ok": False, "message": "invalid result"}
+    r2["posted_comment_text"] = comment
+    r2["linked_pr_urls"] = urls
+    return json.dumps(r2, default=str)
+
+
+async def _plaky_create_subtask(
+    parent_task_id: str,
+    title: str,
+    description: str = "",
+    priority: str = "Medium",
+    status: str = "In Progress",
+    task_type: str = "Feature",
+    repo_tag: str = "",
+    engineer_plaky_id: str = "",
+    qa_plaky_id: str = "",
+    auto_assign_qa: bool = True,
+    board_id: str = "",
+    group_id: str = "",
+) -> str:
+    from boardman.agent.tool_context import get_context_plaky_board_id, get_context_plaky_group_id
+
+    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    gid = (group_id or "").strip() or (get_context_plaky_group_id() or "").strip() or None
+    repo_tokens = normalize_github_repo_inputs(extra_repo_text=repo_tag)
+    r = await create_subtask_internal(
+        CreateSubtaskInput(
+            parent_task_id=parent_task_id,
+            title=title,
+            description=description,
+            priority=priority,
+            status=status,
+            task_type=task_type,
+            github_repos=repo_tokens if repo_tokens else None,
+            engineer_plaky_id=(engineer_plaky_id or "").strip() or None,
+            qa_plaky_id=(qa_plaky_id or "").strip() or None,
+            auto_assign_qa=auto_assign_qa,
+            plaky_board_id=bid,
+            plaky_group_id=gid,
+        )
+    )
     return json.dumps(r, default=str)
 
 
@@ -336,7 +485,7 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
             description=(
                 "Save assignee + Plaky field defaults for **this chat session** (persists in DB). "
                 "Args: preferences_json — JSON with field_values {fieldKey: value}, optional "
-                "engineer_plaky_id, qa_plaky_id (mapped via team_assignments Plaky keys), summary, "
+                "engineer_plaky_id, qa_plaky_id (explicit Plaky user ids), summary, "
                 "replace_field_values (bool). Next **plaky_create_task** merges these automatically."
             ),
         ),
@@ -351,7 +500,14 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                         "Create a Plaky item. Call plaky_board_schema first if field_values_json is non-empty. "
                         "field_values_json keys MUST match schema key= strings; assignee ids from plaky_list_workspace_users. "
                         "Placement: pass board_id/group_id or rely on Current Plaky placement. "
-                        "Args: title, description, priority, repo_tag?, board_id?, group_id?, field_values_json?."
+                        "Args: title, description, priority (High|Low|Medium|Very Important or legacy low|medium|high), "
+                        "repo_tag?, board_id?, group_id?, field_values_json?, auto_assign_team (default true). "
+                        "Set auto_assign_team false to skip roster QA assignment; set QA explicitly via field_values_json / "
+                        "session draft keys from plaky_board_schema instead. "
+                        "When auto_assign_team is true and repo_tag lists a GitHub repo, team_assignments.yml picks QA "
+                        "unless the QA person field is already set in field_values_json or saved draft. "
+                        "Bare repo names (e.g. my-repo) normalize to GITHUB_BARE_REPO_OWNER/my-repo like the CLI. "
+                        "repo_tag may include one or more owner/repo tokens separated by commas or new lines."
                     ),
                 ),
                 StructuredTool.from_function(
@@ -366,20 +522,39 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                     coroutine=_plaky_update_task,
                     name="plaky_update_task",
                     description=(
-                        "Patch a Plaky task. Args: task_id, optional title, description, priority, status."
+                        "Update workflow fields on an existing task: status, type, priority, QA assignment. "
+                        "Use plaky_create_task for title/description/repo/engineer. "
+                        "QA: pass qa_plaky_id for explicit assignee id, OR set auto_assign_qa true and github_repo (owner/repo "
+                        "or bare repo name; roster uses team_assignments.yml like the CLI). Omit both to leave QA unchanged "
+                        "(you can still update status/type/priority). Optional board_id or Current Plaky placement resolves "
+                        "field keys for PATCH. Args: task_id; optional status, task_type, priority, qa_plaky_id, "
+                        "auto_assign_qa (default false), github_repo, board_id."
                     ),
                 ),
                 StructuredTool.from_function(
                     coroutine=_plaky_add_comment,
                     name="plaky_add_comment",
-                    description="Add a comment to a Plaky task. Args: task_id, body (markdown).",
+                    description=(
+                        "Add a comment to a Plaky task (v1/public uses board item comments). "
+                        "Args: task_id, body (markdown). Optional board_id or Current Plaky placement."
+                    ),
+                ),
+                StructuredTool.from_function(
+                    coroutine=_plaky_link_prs,
+                    name="plaky_link_prs",
+                    description=(
+                        "Link one or more GitHub PR URLs to an existing Plaky task/item by adding a PR links comment. "
+                        "Uses the same formatting and Plaky comment route as the CLI `link-pr`. "
+                        "Args: task_id, pr_urls (string containing one or more URLs), optional board_id/placement."
+                    ),
                 ),
                 StructuredTool.from_function(
                     coroutine=_plaky_create_subtask,
                     name="plaky_create_subtask",
                     description=(
-                        "Create a subtask or subtask comment on parent_task_id. "
-                        "Args: parent_task_id, title, description."
+                        "Create a subtask on parent_task_id with workflow/assignment/repo fields. "
+                        "Args: parent_task_id, title, description, priority, status, task_type, repo_tag, "
+                        "engineer_plaky_id, qa_plaky_id, auto_assign_qa, optional board_id, optional group_id."
                     ),
                 ),
             ]
