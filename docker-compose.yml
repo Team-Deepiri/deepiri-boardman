@@ -1,5 +1,5 @@
-# Ollama GPU: requires NVIDIA Container Toolkit (Linux/WSL2 with GPU) or Docker Desktop GPU.
-# For CPU-only hosts, keep docker-compose.yml as-is (Ollama runs on CPU).
+# Ollama GPU: on NVIDIA hosts, configure Docker's default runtime with nvidia-ctk.
+# CPU-only hosts use this same file unchanged (Ollama runs on CPU).
 #
 # Secrets (PLAKY_API_KEY, GITHUB_PAT, …): put them in `.env` next to this file.
 # Do NOT use `KEY=${KEY}` here for secrets — an empty shell interpolation overrides `env_file`
@@ -98,15 +98,9 @@ services:
     image: ollama/ollama:latest
     container_name: deepiri-ollama-boardman
     restart: unless-stopped
-    # GPU is used when NVIDIA runtime/toolkit is available.
-    # On CPU-only hosts, this still runs in CPU mode.
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # Single-file CPU/GPU behavior:
+    # - CPU-only hosts: runs normally on CPU.
+    # - NVIDIA hosts: if Docker default runtime is configured for NVIDIA, Ollama uses GPU automatically.
     ports:
       - "11434:11434"
     volumes:

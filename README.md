@@ -84,6 +84,13 @@ docker compose up -d --build
 # Ollama http://localhost:11434  (set OLLAMA_BASE_URL=http://ollama:11434 in .env for compose)
 ```
 
+For NVIDIA GPU hosts, configure Docker's default runtime once:
+
+```bash
+sudo nvidia-ctk runtime configure --runtime=docker --set-as-default
+sudo systemctl restart docker
+```
+
 Deployment smoke checks (after the stack is up):
 
 ```bash
