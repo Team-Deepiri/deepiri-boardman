@@ -77,12 +77,8 @@ cd boardman-ui && npm install && npm run dev
 ### Full stack (Docker)
 
 ```bash
-<<<<<<< Updated upstream
 ./scripts/deploy_preflight.sh
 docker compose up --build
-=======
-docker compose up -d --build
->>>>>>> Stashed changes
 # API http://localhost:8090
 # UI + proxy http://localhost:8088  (nginx → boardman)
 # Ollama http://localhost:11434  (set OLLAMA_BASE_URL=http://ollama:11434 in .env for compose)
