@@ -25,7 +25,12 @@ from boardman.services.task_mutations import (
     create_task_internal,
     update_task_internal,
 )
-from boardman.repos_config import list_registered_repos, list_workspace_repos, upsert_repo
+from boardman.repos_config import (
+    list_registered_repos,
+    list_workspace_repos,
+    repos_yaml_canonical_repo_key,
+    upsert_repo,
+)
 from boardman.services.direction_init import init_direction_file
 from boardman.services.scan_handler import run_repo_scan
 from boardman.assignment.qa_picker import ensure_github_owner_repo
@@ -395,13 +400,22 @@ def sync(
 
 @app.command("register")
 def register_repo(
-    repo: str = typer.Argument(..., help="GitHub repo owner/name"),
+    repo: str = typer.Argument(
+        ...,
+        help="Repository name or owner/repo; YAML key is repo name only. Bare names prepend "
+        "GITHUB_BARE_REPO_OWNER for GitHub as owner/repo elsewhere in the toolchain.",
+    ),
     category: str = typer.Option(..., "--category", "-c", help="ai|ml|backend|frontend|infrastructure"),
     plaky_table: str = typer.Option(..., "--table", "-t", help="Plaky table name"),
     description: str = typer.Option("", "--description", "-d"),
 ):
+    canon = repos_yaml_canonical_repo_key(repo)
+    full_slug = ensure_github_owner_repo(repo)
     upsert_repo(repo, category, plaky_table, description)
-    console.print(f"[green]Registered[/green] {repo} → {plaky_table}")
+    extra = ""
+    if full_slug.strip() != canon.strip():
+        extra = f" [dim]({full_slug})[/dim]"
+    console.print(f"[green]Registered[/green] {canon}{extra} → {plaky_table}")
 
 
 @app.command("scan")
