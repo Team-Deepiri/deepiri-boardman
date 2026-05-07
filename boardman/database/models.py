@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -131,3 +131,32 @@ class RepoTierCache(Base):
     repo_full_name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
     tier: Mapped[int] = mapped_column(Integer, nullable=False)
     classified_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class BackgroundJob(Base):
+    """SQLite-backed async job queue (replaces arq/Redis)."""
+
+    __tablename__ = "background_jobs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    kind: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="pending", index=True
+    )  # pending, running, complete, incomplete
+    result_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    success: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+    started_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+
+class AgentRateLimitBucket(Base):
+    """Shared leaky-bucket state (multi-process) using the same SQLite DB."""
+
+    __tablename__ = "agent_rate_limit_buckets"
+
+    bucket_key: Mapped[str] = mapped_column(String(768), primary_key=True)
+    water: Mapped[float] = mapped_column(Float, nullable=False)
+    ts: Mapped[float] = mapped_column(Float, nullable=False)  # unix seconds (wall clock)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)

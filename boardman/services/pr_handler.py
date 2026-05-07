@@ -12,9 +12,9 @@ from boardman.assignment.config import load_team_assignments
 from boardman.assignment.qa_picker import pick_qa_for_repo
 from boardman.database.models import SyncLog
 from boardman.github.webhooks import PullRequestEventPayload, PullRequestReviewCommentEventPayload
-from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.services.issue_handler import find_plaky_task_by_issue, get_linked_issue_numbers
+from boardman.services.pr_link_comment import format_pr_notice_with_url
 from boardman.services.pr_task_linking import (
     format_triage_comment,
     run_pr_task_pipeline,
@@ -27,7 +27,8 @@ from boardman.services.pr_task_registry import (
     mark_pr_withdrawn,
     upsert_pr_task_link,
 )
-from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_job
+from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
+from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
 from boardman.services.pr_tracker import upsert_pr_row, remove_pr_row
 from boardman.settings import settings
 
@@ -35,37 +36,21 @@ _log = logging.getLogger(__name__)
 
 
 async def _update_plaky_task_status(
-    plaky: PlakyClient,
     task_id: str,
     status_value: str,
     board_id: str,
     *,
     status_field_key: Optional[str] = None,
 ) -> dict:
-    """Update task status using board schema to find the status field key."""
-    if not board_id:
-        return await plaky.update_task_status(task_id, status_value)
-
-    schema_bundle = await fetch_board_schema_bundle(board_id)
-    if not schema_bundle.get("ok") or not schema_bundle.get("normalized"):
-        return await plaky.update_task_status(task_id, status_value)
-
-    normalized = schema_bundle["normalized"]
-    fields = normalized.get("fields") or []
-
-    key_use = (status_field_key or "").strip() or None
-    if not key_use:
-        for f in fields:
-            ftype = (f.get("type") or "").lower()
-            fname = (f.get("name") or "").lower()
-            if "status" in ftype or "status" in fname:
-                key_use = str(f.get("key") or "").strip() or None
-                break
-
-    if not key_use:
-        return await plaky.update_task_status(task_id, status_value)
-
-    return await plaky.patch_item_field_values(board_id, task_id, {key_use: status_value})
+    """Apply status via the same path as PATCH /tasks (schema-aware field patch + legacy /tasks fallback)."""
+    return await update_task_internal(
+        task_id,
+        UpdateTaskInput(
+            status=status_value,
+            plaky_board_id=board_id or None,
+            status_plaky_field_key=status_field_key,
+        ),
+    )
 
 
 def _needs_qa_status_value() -> str:
@@ -92,9 +77,9 @@ async def _maybe_set_needs_qa(
     if is_draft and settings.plaky_skip_needs_qa_for_draft:
         return
     await _update_plaky_task_status(
-        plaky, task_id, st, bid, status_field_key=status_field_key
+        task_id, st, bid, status_field_key=status_field_key
     )
-    await maybe_enqueue_plaky_reorder_job()
+    await maybe_enqueue_plaky_reorder_after_task(plaky, task_id)
 
 
 async def _maybe_triage_ambiguous_pr(
@@ -151,10 +136,14 @@ async def _maybe_triage_ambiguous_pr(
     task_id = res.get("task", {}).get("id") or res.get("task", {}).get("taskId")
     if task_id:
         triage_comment = (
-            f"**PR opened (no issue link):** [{pr_number}]({pr_url}). "
-            "Automation created this triage task because the PR did not reference an issue."
+            format_pr_notice_with_url(
+                headline="**PR opened (no issue link):**",
+                pr_number=pr_number,
+                pr_url=pr_url,
+            )
+            + "\n\nAutomation created this triage task because the PR did not reference an issue."
         )
-        await plaky.add_comment(str(task_id), triage_comment)
+        await plaky.add_comment(str(task_id), triage_comment, board_id=bid)
 
     log = SyncLog(
         action="pr_ambiguous_triage",
@@ -184,7 +173,7 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
 
     from boardman.repos_config import get_routing
     routing = get_routing(full_name, repo_name, settings.github_org)
-    board_id = routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     plaky = PlakyClient()
     results = []
@@ -205,8 +194,12 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                 github_issue_number=int(issue_num),
                 link_source="issue_keyword",
             )
-            comment = f"**PR Opened:** [{pr_number}]({pr_url})"
-            await plaky.add_comment(mapping.plaky_task_id, comment)
+            comment = format_pr_notice_with_url(
+                headline="**PR Opened:**",
+                pr_number=pr_number,
+                pr_url=pr_url,
+            )
+            await plaky.add_comment(mapping.plaky_task_id, comment, board_id=board_id or None)
             await _maybe_set_needs_qa(plaky, mapping.plaky_task_id, is_draft, board_id)
 
             log = SyncLog(
@@ -272,11 +265,12 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                     github_issue_number=0,
                     link_source=pipe.decision,
                 )
-                comment = (
-                    f"**PR Opened** (automation link — {pipe.decision}): "
-                    f"[{pr_number}]({pr_url})"
+                comment = format_pr_notice_with_url(
+                    headline=f"**PR Opened** (automation link — {pipe.decision}):",
+                    pr_number=pr_number,
+                    pr_url=pr_url,
                 )
-                await plaky.add_comment(pipe.task_id, comment)
+                await plaky.add_comment(pipe.task_id, comment, board_id=board_id or None)
                 await _maybe_set_needs_qa(plaky, pipe.task_id, is_draft, board_id)
                 log = SyncLog(
                     action="pr_linked_fuzzy",
@@ -340,7 +334,7 @@ async def handle_pr_ready_for_review(
     from boardman.repos_config import get_routing
 
     routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
-    board_id = routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     for tid in task_ids:
         await _maybe_set_needs_qa(plaky, tid, is_draft=False, board_id=board_id or "")
@@ -364,7 +358,7 @@ async def handle_pr_review_requested(
     from boardman.repos_config import get_routing
 
     routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
-    board_id = routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     in_qa = (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
     in_qa_field_key: str | None = None
@@ -381,10 +375,11 @@ async def handle_pr_review_requested(
     plaky = PlakyClient()
     for tid in task_ids:
         await _update_plaky_task_status(
-            plaky, tid, in_qa, board_id or "", status_field_key=in_qa_field_key
+            tid, in_qa, board_id or "", status_field_key=in_qa_field_key
         )
     await session.commit()
-    await maybe_enqueue_plaky_reorder_job()
+    if task_ids:
+        await maybe_enqueue_plaky_reorder_after_task(plaky, task_ids[0])
     return {"ok": True, "tasks": task_ids, "status": in_qa, "event": "review_requested"}
 
 
@@ -440,8 +435,11 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
         await session.commit()
         return {"ok": True, "skipped": True, "message": "No linked Plaky tasks for this PR"}
 
+    from boardman.repos_config import get_routing
+
     merge_status = (settings.plaky_pr_merge_status or "").strip() or "in_review"
-    board_id_merge = (settings.plaky_default_board_id or "").strip()
+    merge_routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
+    board_id_merge = (merge_routing.plaky_board_id if merge_routing and merge_routing.plaky_board_id else "") or ""
     results: list[dict[str, Any]] = []
 
     for task_id in sorted(affected_tasks):
@@ -457,7 +455,7 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
             )
             continue
 
-        await _update_plaky_task_status(plaky, task_id, merge_status, board_id_merge)
+        await _update_plaky_task_status(task_id, merge_status, board_id_merge)
         merge_detail = {"pr_url": pr_url, "status": merge_status, "all_prs_done": True}
         log = SyncLog(
             action="pr_merged",
@@ -468,7 +466,7 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
         )
         session.add(log)
         results.append({"task_id": task_id, "status": merge_status})
-        await maybe_enqueue_plaky_reorder_job()
+        await maybe_enqueue_plaky_reorder_after_task(plaky, task_id)
 
     await remove_pr_row(payload.pull_request, payload.repository, session)
 
@@ -519,7 +517,7 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
 
     cfg = load_team_assignments()
     routing = get_routing(full_name, repo_name, settings.github_org)
-    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id) or ""
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     qa_field = await resolve_qa_assignee_field_key(board_id, cfg.plaky_field_qa)
     if not qa_field:
@@ -562,10 +560,10 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
             if not status_to_set:
                 continue
             await _update_plaky_task_status(
-                plaky, task_id, status_to_set, board_id, status_field_key=status_field_key
+                task_id, status_to_set, board_id, status_field_key=status_field_key
             )
             comment_text = f"**PR Comment:** by @{commenter_login}"
-            await plaky.add_comment(task_id, comment_text)
+            await plaky.add_comment(task_id, comment_text, board_id=board_id or None)
 
             log = SyncLog(
                 action="in_qa_comment",
@@ -594,5 +592,7 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
 
     await session.commit()
     if results:
-        await maybe_enqueue_plaky_reorder_job()
+        tid0 = results[0].get("task_id") if results else None
+        if tid0:
+            await maybe_enqueue_plaky_reorder_after_task(plaky, str(tid0))
     return {"ok": True, "updated": results}

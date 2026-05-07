@@ -27,8 +27,9 @@ def _ollama_http_client() -> httpx.AsyncClient:
     lid = id(loop)
     c = _ollama_by_loop.get(lid)
     if c is None or getattr(c, "is_closed", False):
+        read_timeout = float(getattr(settings, "ollama_read_timeout_seconds", 300.0) or 300.0)
         c = httpx.AsyncClient(
-            timeout=httpx.Timeout(120.0),
+            timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=60.0, pool=60.0),
             limits=httpx.Limits(max_keepalive_connections=24, max_connections=48),
         )
         _ollama_by_loop[lid] = c

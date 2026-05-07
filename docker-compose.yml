@@ -1,5 +1,5 @@
 # Ollama GPU: requires NVIDIA Container Toolkit (Linux/WSL2 with GPU) or Docker Desktop GPU.
-# For CPU-only, keep docker-compose.yml as-is.
+# For CPU-only hosts, keep docker-compose.yml as-is (Ollama runs on CPU).
 #
 # Secrets (PLAKY_API_KEY, GITHUB_PAT, …): put them in `.env` next to this file.
 # Do NOT use `KEY=${KEY}` here for secrets — an empty shell interpolation overrides `env_file`
@@ -33,14 +33,14 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8088,http://127.0.0.1:8088}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      # Optional local agent cache; empty = in-process only (safe for prod). See AGENT_REDIS_URL in .env.example
+      AGENT_REDIS_URL: ${AGENT_REDIS_URL:-}
     volumes:
       - ./boardman:/app/boardman
       - ./boardman.db:/app/boardman.db
       - ./repos.yml:/app/repos.yml:ro
     depends_on:
       - ollama
-      - redis
     networks:
       - deepiri-network
 
@@ -51,7 +51,7 @@ services:
     container_name: deepiri-boardman-worker
     restart: unless-stopped
     entrypoint: []
-    command: ["arq", "boardman.worker.WorkerSettings"]
+    command: ["python", "-m", "boardman.sqlite_worker"]
     env_file:
       - .env
     environment:
@@ -59,22 +59,24 @@ services:
       DATABASE_URL: sqlite+aiosqlite:///./boardman.db
       OLLAMA_BASE_URL: http://ollama:11434
       PLAKY_API_BASE: ${PLAKY_API_BASE:-https://api.plaky.com/v1/public}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
+      # Worker must not use Redis; SQLite queue + in-memory / SQLite rate limits only.
+      AGENT_REDIS_URL: ""
     volumes:
       - ./boardman:/app/boardman
       - ./boardman.db:/app/boardman.db
       - ./repos.yml:/app/repos.yml:ro
       - ./team_assignments.yml:/app/team_assignments.yml:ro
     depends_on:
-      - redis
       - ollama
     networks:
       - deepiri-network
 
+  # Optional local agent cache: `docker compose --profile agent-cache up -d` then set AGENT_REDIS_URL in .env
   redis:
+    profiles: ["agent-cache"]
     image: redis:7-alpine
-    container_name: deepiri-boardman-redis
+    container_name: deepiri-boardman-redis-cache
     restart: unless-stopped
     networks:
       - deepiri-network
@@ -96,9 +98,15 @@ services:
     image: ollama/ollama:latest
     container_name: deepiri-ollama-boardman
     restart: unless-stopped
-    # CPU-safe by default.
-    # For NVIDIA GPU acceleration, add the override file:
-    #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+    # GPU is used when NVIDIA runtime/toolkit is available.
+    # On CPU-only hosts, this still runs in CPU mode.
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     ports:
       - "11434:11434"
     volumes:

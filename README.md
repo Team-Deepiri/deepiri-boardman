@@ -51,8 +51,10 @@ curl http://localhost:8090/api/v1/health
 Use `poetry run boardman …` (or activate `poetry shell` first).
 
 ```bash
-poetry run boardman create-task --title "Task" --description "..." --priority medium --repo my-repo
-poetry run boardman link-pr --pr-url https://github.com/.../pull/123 --task-id XYZ
+poetry run boardman create-task --title "Task" --description "..." --priority "Medium" --github-repo repo --status "In Progress" --type "Feature" --board-id id --group-id id --engineer-id id --auto-assign-team
+poetry run boardman create-task --title "Task" --github-repo "repo1 repo2"  # also supports comma-separated
+poetry run boardman update-task --task-id id --status "Needs QA" --priority "High" --type "Feature" --auto-assign-qa --github-repo "deepiri-platform" --board-id id
+poetry run boardman link-pr --pr-url "https://github.com/.../pull/123" --task-id ID --board-id ID --update-status
 poetry run boardman list --status open
 poetry run boardman sync --repo owner/repo
 poetry run boardman register owner/repo --category ai --table "AI Bugs / What to DO"
@@ -75,13 +77,17 @@ cd boardman-ui && npm install && npm run dev
 ### Full stack (Docker)
 
 ```bash
+./scripts/deploy_preflight.sh
 docker compose up -d --build
 # API http://localhost:8090
 # UI + proxy http://localhost:8088  (nginx → boardman)
 # Ollama http://localhost:11434  (set OLLAMA_BASE_URL=http://ollama:11434 in .env for compose)
+```
 
-# Docker compose uses CPU by default, to enable GPU acceleration use:
-docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+Deployment smoke checks (after the stack is up):
+
+```bash
+bash scripts/deploy_smoke.sh
 ```
 
 ## API Endpoints
@@ -107,6 +113,8 @@ See `.env.example` for all options. Key variables:
 - `GITHUB_PAT` - Optional. For CLI sync command
 - `PLAKY_PR_MERGE_STATUS` - Status to set on PR merge (default: `in_review`)
 - `LLM_PROVIDER`, `LLM_MODEL`, `OLLAMA_BASE_URL`, cloud API keys — see `.env.example`
+
+Deployment runbook: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 Full roadmap: [docs/PLAN.md](docs/PLAN.md).
 
