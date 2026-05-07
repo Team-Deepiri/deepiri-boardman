@@ -64,9 +64,13 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
 
 
 @router.get("/tasks")
-async def list_tasks(status: str = "open", session: AsyncSession = Depends(get_db)):
+async def list_tasks(
+    status: str = "open",
+    plaky_board_id: Optional[str] = None,
+    session: AsyncSession = Depends(get_db),
+):
     plaky = PlakyClient()
-    result = await plaky.get_tasks(status=status)
+    result = await plaky.get_tasks(status=status, board_id=plaky_board_id)
     return result
 
 

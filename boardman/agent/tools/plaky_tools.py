@@ -22,9 +22,12 @@ async def _plaky_list_boards() -> str:
     return json.dumps(raw, default=str)[:12000]
 
 
-async def _plaky_list_tasks(status: str = "open") -> str:
+async def _plaky_list_tasks(status: str = "open", board_id: str = "") -> str:
+    from boardman.agent.tool_context import get_context_plaky_board_id
+
     c = PlakyClient()
-    r = await c.get_tasks(status=status)
+    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    r = await c.get_tasks(status=status, board_id=bid)
     return json.dumps(r, default=str)[:12000]
 
 
@@ -300,7 +303,10 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
         StructuredTool.from_function(
             coroutine=_plaky_list_tasks,
             name="plaky_list_tasks",
-            description="List Plaky tasks. Args: status (open|done|... default open).",
+            description=(
+                "List Plaky tasks. Args: status (open|done|... default open). "
+                "Optional board_id (or Current Plaky placement) enables accurate listing/filtering on v1/public."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=_plaky_get_task,
