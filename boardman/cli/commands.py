@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from html import escape
 from typing import List, Optional
 
 import httpx
@@ -27,6 +28,7 @@ from boardman.services.task_mutations import (
 from boardman.repos_config import list_registered_repos, list_workspace_repos, upsert_repo
 from boardman.services.direction_init import init_direction_file
 from boardman.services.scan_handler import run_repo_scan
+from boardman.assignment.qa_picker import ensure_github_owner_repo
 from boardman.settings import settings
 
 app = typer.Typer(help="deepiri-boardman CLI")
@@ -323,12 +325,27 @@ def update_task_cmd(
 
 @app.command()
 def sync(
-    repo: str = typer.Option(..., prompt=True, help="GitHub repo (owner/repo)"),
+    repo: str = typer.Option(
+        ...,
+        prompt=True,
+        help="GitHub repo name",
+    ),
+    board_id: str = typer.Option(
+        ...,
+        "--board-id",
+        help="Plaky board id",
+    ),
+    group_id: str = typer.Option(
+        ...,
+        "--group-id",
+        help="Plaky group id",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be synced without making changes"),
 ):
     if not settings.github_pat:
         console.print("[red]Error: GITHUB_PAT not configured[/red]")
         raise typer.Exit(1)
+    repo = ensure_github_owner_repo(repo)
 
     async def run():
         async with httpx.AsyncClient() as client:
@@ -343,16 +360,29 @@ def sync(
 
             plaky = PlakyClient()
             for issue in issues:
-                title = f"[{repo}] {issue['title']}"
-                body = f"{issue.get('body', '')}\n\n{issue['html_url']}"
+                title = f"{repo.split('/')[-1]} Issue: {issue['title']}"
+                issue_url = str(issue.get("html_url") or "").strip()
+                issue_number = issue.get("number")
+                issue_body = str(issue.get("body") or "").strip()
+                if settings.plaky_pr_comment_links_as_html and issue_url:
+                    label = f"{repo} issue #{issue_number}" if issue_number is not None else issue_url
+                    issue_link = f'<a href="{escape(issue_url, quote=True)}">{escape(label)}</a>'
+                else:
+                    issue_link = issue_url
+                body = f"{issue_body}\n\nIssue: {issue_link}" if issue_link else issue_body
                 console.print(f"  - #{issue['number']}: {issue['title']}")
                 if not dry_run:
                     result = await create_task_internal(
                         CreateTaskInput(
                             title=title,
                             description=body,
-                            priority="medium",
                             github_repos=[repo],
+                            task_type="Issue",
+                            status="Available",
+                            priority="High",
+                            plaky_board_id=board_id,
+                            plaky_group_id=group_id,
+                            auto_assign_team=False
                         )
                     )
                     if result.get("ok"):
