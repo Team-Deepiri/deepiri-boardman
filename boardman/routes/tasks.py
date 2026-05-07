@@ -1,16 +1,21 @@
-from typing import Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
-from sqlalchemy import select
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from boardman.assignment.config import load_team_assignments
-from boardman.assignment.qa_picker import build_assignment_field_map
 from boardman.database.session import get_db
-from boardman.database.models import IssueTaskMap
 from boardman.plaky.client import PlakyClient
-from boardman.plaky.placement import plaky_placement_context
+from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
+from boardman.settings import settings
+from boardman.services.task_mutations import (
+    CreateSubtaskInput,
+    CreateTaskInput,
+    UpdateTaskInput,
+    create_subtask_internal,
+    create_task_internal,
+    update_task_internal,
+)
 
 
 router = APIRouter()
@@ -19,48 +24,116 @@ router = APIRouter()
 class CreateTaskRequest(BaseModel):
     title: str
     description: str = ""
-    priority: str = "medium"
+    priority: str = "Medium"
+    status: str = "In Progress"
+    task_type: str = Field(
+        default="Feature",
+        validation_alias=AliasChoices("type", "task_type"),
+    )
+    github_repos: Optional[List[str]] = None  # owner/repo strings; deduped
+    # Older clients/scripts send a single slug here; prefer github_repos. Same effect as filters.repo.
     repo: Optional[str] = None
     plaky_board_id: Optional[str] = None
     plaky_group_id: Optional[str] = None
     engineer_plaky_id: Optional[str] = None
     qa_plaky_id: Optional[str] = None
+    # When True (default), empty qa_plaky_id is filled from team_assignments.yml (repo roster).
+    # Engineer/contributor is never roster-filled; set engineer_plaky_id to assign dev.
+    # Explicit qa_plaky_id always wins over the roster pick.
     auto_assign_team: bool = True
+    filters: Optional[dict] = None
+
+
+def _merged_create_task_filters(req: CreateTaskRequest) -> Optional[dict[str, Any]]:
+    """Merge legacy top-level ``repo`` into ``filters.repo`` without overriding an explicit filters entry."""
+    merged: dict[str, Any] = dict(req.filters) if req.filters else {}
+    top_repo = (req.repo or "").strip()
+    existing = str(merged.get("repo") or "").strip()
+    if top_repo and not existing:
+        merged["repo"] = top_repo
+    return merged if merged else None
 
 
 class LinkPRRequest(BaseModel):
-    pr_url: str
-    task_id: str
+    """Link one or more GitHub PRs to the task. Task id is the URL path param `{task_id}`."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    # Backward compatible single URL; combine with pr_urls when both sent.
+    pr_url: Optional[str] = None
+    pr_urls: Optional[List[str]] = None
     update_status: bool = False
+    plaky_board_id: Optional[str] = None
+
+
+class UpdateTaskRequest(BaseModel):
+    status: Optional[str] = None
+    task_type: Optional[str] = Field(
+        default=None,
+        validation_alias=AliasChoices("type", "task_type"),
+    )
+    priority: Optional[str] = None
+    qa_plaky_id: Optional[str] = None
+    auto_assign_qa: bool = False
+    github_repo: Optional[str] = None
+    plaky_board_id: Optional[str] = None
+
+
+class CreateSubtaskRequest(BaseModel):
+    title: str
+    description: str = ""
+    priority: str = "Medium"
+    status: str = "In Progress"
+    task_type: str = Field(
+        default="Feature",
+        validation_alias=AliasChoices("type", "task_type"),
+    )
+    github_repos: Optional[List[str]] = None
+    engineer_plaky_id: Optional[str] = None
+    qa_plaky_id: Optional[str] = None
+    auto_assign_qa: bool = True
+    plaky_board_id: Optional[str] = None
+    plaky_group_id: Optional[str] = None
 
 
 @router.post("/tasks")
 async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(get_db)):
-    plaky = PlakyClient()
-    title = f"[{req.repo}] {req.title}" if req.repo else req.title
-    cfg = load_team_assignments()
-    repo_full = (req.repo or "").strip() or "deepiri-org/unknown"
-
-    field_values: dict[str, str] = {}
-    if req.auto_assign_team:
-        field_values = dict(await build_assignment_field_map(repo_full, cfg))
-    if req.engineer_plaky_id and cfg.plaky_field_engineer:
-        field_values[cfg.plaky_field_engineer] = req.engineer_plaky_id.strip()
-    if req.qa_plaky_id and cfg.plaky_field_qa:
-        field_values[cfg.plaky_field_qa] = req.qa_plaky_id.strip()
-
-    async with plaky_placement_context(req.plaky_board_id, req.plaky_group_id):
-        result = await plaky.create_task(
-            title=title,
+    return await create_task_internal(
+        CreateTaskInput(
+            title=req.title,
             description=req.description,
             priority=req.priority,
-            field_values=field_values or None,
+            status=req.status,
+            task_type=req.task_type,
+            github_repos=req.github_repos,
+            plaky_board_id=req.plaky_board_id,
+            plaky_group_id=req.plaky_group_id,
+            engineer_plaky_id=req.engineer_plaky_id,
+            qa_plaky_id=req.qa_plaky_id,
+            auto_assign_team=req.auto_assign_team,
+            filters=_merged_create_task_filters(req),
         )
+    )
 
-    if not result.get("ok"):
-        return result
 
-    return result
+@router.post("/tasks/{task_id}/subtasks")
+async def create_subtask(task_id: str, req: CreateSubtaskRequest, session: AsyncSession = Depends(get_db)):
+    return await create_subtask_internal(
+        CreateSubtaskInput(
+            parent_task_id=task_id,
+            title=req.title,
+            description=req.description,
+            priority=req.priority,
+            status=req.status,
+            task_type=req.task_type,
+            github_repos=req.github_repos,
+            engineer_plaky_id=req.engineer_plaky_id,
+            qa_plaky_id=req.qa_plaky_id,
+            auto_assign_qa=req.auto_assign_qa,
+            plaky_board_id=req.plaky_board_id,
+            plaky_group_id=req.plaky_group_id,
+        )
+    )
 
 
 @router.get("/tasks")
@@ -77,17 +150,40 @@ async def get_task(task_id: str, session: AsyncSession = Depends(get_db)):
     return result
 
 
+@router.patch("/tasks/{task_id}")
+async def update_task(task_id: str, req: UpdateTaskRequest, session: AsyncSession = Depends(get_db)):
+    return await update_task_internal(
+        task_id,
+        UpdateTaskInput(
+            status=req.status,
+            task_type=req.task_type,
+            priority=req.priority,
+            qa_plaky_id=req.qa_plaky_id,
+            auto_assign_qa=req.auto_assign_qa,
+            github_repo=req.github_repo,
+            plaky_board_id=req.plaky_board_id,
+        ),
+    )
+
+
 @router.post("/tasks/{task_id}/link-pr")
 async def link_pr(task_id: str, req: LinkPRRequest, session: AsyncSession = Depends(get_db)):
+    urls = collect_pr_urls(pr_url=req.pr_url, pr_urls=req.pr_urls)
+    if not urls:
+        return {"ok": False, "status": 400, "message": "Provide pr_url and/or pr_urls with at least one PR URL"}
+
     plaky = PlakyClient()
-    comment = f"**PR Linked:** [View PR]({req.pr_url})"
-    result = await plaky.add_comment(task_id, comment)
+    comment = format_pr_link_comment(urls)
+    bid = (req.plaky_board_id or "").strip() or None
+    result = await plaky.add_comment(task_id, comment, board_id=bid)
 
     if not result.get("ok"):
         return result
 
     if req.update_status:
-        from boardman.settings import settings
-        await plaky.update_task_status(task_id, settings.plaky_pr_merge_status)
+        await update_task_internal(
+            task_id,
+            UpdateTaskInput(status=settings.plaky_pr_merge_status),
+        )
 
     return result

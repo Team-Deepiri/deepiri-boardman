@@ -1,4 +1,4 @@
-
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     plaky_qa_item_field_key: str = ""
     # Do not move draft PRs to Needs QA until ready_for_review (if needs_qa status is configured).
     plaky_skip_needs_qa_for_draft: bool = True
-    # After any automated Plaky status change, enqueue arq job to reorder items in default board/group.
+    # After any automated Plaky status change, enqueue SQLite job to reorder items in default board/group.
     plaky_reorder_after_status_change: bool = False
     # Comma-separated substrings (case-insensitive) marking Plaky item status as “done” for reorder heuristics.
     plaky_reorder_done_status_markers: str = "done,complete,closed,resolved,archive,shipped,merged"
@@ -33,15 +33,22 @@ class Settings(BaseSettings):
     plaky_status_completed: str = "completed"
     plaky_pr_tracking_board_id: str = ""
     plaky_pr_tracking_group_id: str = ""
-    # Plaky hierarchy: Item lives under Board + Group (no separate "table" in API)
-    plaky_default_board_id: str = ""
-    plaky_default_group_id: str = ""
+    # When true, GitHub PR link comments use HTML <a href> (Plaky often does not linkify bare URLs).
+    plaky_pr_comment_links_as_html: bool = True
+    # On startup, fetch the default board schema and fill blank `plaky_field_keys` in team_assignments.yml.
+    plaky_auto_sync_team_assignment_field_keys: bool = True
+    # Minimum interval between field-key sync attempts for the same board,
+    # this is mainly for use if the board schema changes and it runs on startup to account for that.
+    plaky_team_assignment_field_sync_cooldown_seconds: float = 60.0
     # Seconds; 0 disables TTL cache for fetch_board_schema_bundle
     plaky_board_schema_cache_ttl_seconds: float = 90.0
 
     github_webhook_secret: str = ""
     github_pat: str | None = None
     github_org: str = "deepiri-org"
+    # Prepended to bare repo slugs (no "owner/") for QA roster + create-task; e.g. Team-Deepiri/foo.
+    # When empty, falls back to github_org. github_org is still used for API org listing and routing.
+    github_bare_repo_owner: str = "Team-Deepiri"
     # Org team for support roster: GET /api/v1/github/support-team/members (names/logins from GitHub)
     github_support_team: str = "Team-Deepiri/support-team"
     # List org teams (GET /orgs/{org}/teams) and parse tier from slug/name (qa-tier-3, t2-qa, …).
@@ -122,17 +129,30 @@ class Settings(BaseSettings):
     # Blend SequenceMatcher title/body score with word-bag cosine in [0, 1] (0 = legacy behavior only).
     pr_linking_cosine_weight: float = 0.35
 
-    # Redis: agent job queue (arq) + optional distributed leaky-bucket limits
-    redis_url: str = ""
-    # When REDIS_URL is set, POST /agent/chat may use async_enqueue=true (requires arq worker)
+    # POST /agent/chat with queue=true writes to SQLite `background_jobs` (requires boardman-worker).
     agent_async_enqueue_enabled: bool = True
+    # Worker loop when no pending jobs (seconds).
+    queue_worker_poll_seconds: float = 0.25
+    # Jobs stuck in `running` longer than this are marked incomplete on worker startup.
+    queue_worker_stale_running_seconds: int = 7200
+
+    # Optional Redis for **API/agent** caching only (local dev or multi-replica). Leave empty in
+    # production and for `boardman-worker` — the worker must not depend on Redis.
+    agent_redis_url: str = ""
 
     # Leaky-bucket rate limit for POST /agent/chat and /agent/scan (per client IP)
     agent_rate_limit_enabled: bool = True
     agent_rate_limit_capacity: float = 16.0
     agent_rate_limit_leak_per_second: float = 0.5
-    # Use Redis for the bucket when true and redis_url is set (multi-instance safe)
-    agent_rate_limit_use_redis: bool = False
+    # When true, store bucket state in SQLite (`agent_rate_limit_buckets`) for multi-instance safety.
+    # Also accepts legacy env AGENT_RATE_LIMIT_USE_REDIS.
+    agent_rate_limit_use_sqlite: bool = Field(
+        default=False,
+        validation_alias=AliasChoices(
+            "AGENT_RATE_LIMIT_USE_SQLITE",
+            "AGENT_RATE_LIMIT_USE_REDIS",
+        ),
+    )
 
 
 settings = Settings()

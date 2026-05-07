@@ -22,7 +22,7 @@ from boardman.plaky.dynamic_qa_status import (
 from boardman.repos_config import get_routing
 from boardman.services.pr_handler import _update_plaky_task_status
 from boardman.services.pr_task_registry import distinct_task_ids_for_pr
-from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_job
+from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
 from boardman.settings import settings
 
 
@@ -79,7 +79,7 @@ async def handle_pull_request_review(
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
-    board_id = routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     task_ids = await _task_ids_for_pr(session, repo_name, pr_number)
     if not task_ids:
@@ -168,7 +168,7 @@ async def handle_pull_request_review(
                 continue
 
         res = await _update_plaky_task_status(
-            plaky, tid, target_status, board_id or "", status_field_key=status_field_key
+            tid, target_status, board_id or "", status_field_key=status_field_key
         )
         log = SyncLog(
             action="pr_review_plaky_status",
@@ -202,7 +202,8 @@ async def handle_pull_request_review(
         }
 
     await session.commit()
-    await maybe_enqueue_plaky_reorder_job()
+    if updated and task_ids:
+        await maybe_enqueue_plaky_reorder_after_task(plaky, task_ids[0])
     return {"ok": True, "updated": updated, "status": target_status}
 
 
@@ -219,7 +220,7 @@ async def handle_issue_comment_on_pr(
     repo_name = payload.repository.name
     pr_number = payload.issue.number
     routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
-    board_id = routing.plaky_board_id if routing and routing.plaky_board_id else settings.plaky_default_board_id
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     task_ids = await _task_ids_for_pr(session, repo_name, pr_number)
     if not task_ids:
@@ -293,7 +294,7 @@ async def handle_issue_comment_on_pr(
     updated: list[dict[str, Any]] = []
     for tid in task_ids:
         res = await _update_plaky_task_status(
-            plaky, tid, in_qa, board_id or "", status_field_key=in_qa_field_key
+            tid, in_qa, board_id or "", status_field_key=in_qa_field_key
         )
         log = SyncLog(
             action="pr_comment_in_qa",
@@ -314,5 +315,6 @@ async def handle_issue_comment_on_pr(
         updated.append({"task_id": tid, "plaky": res})
 
     await session.commit()
-    await maybe_enqueue_plaky_reorder_job()
+    if updated and task_ids:
+        await maybe_enqueue_plaky_reorder_after_task(plaky, task_ids[0])
     return {"ok": True, "updated": updated, "status": in_qa}

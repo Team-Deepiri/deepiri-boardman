@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import boardman.plaky.client
+import boardman.settings as boardman_settings
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -28,7 +30,7 @@ async def test_openapi_has_agent_routes():
 def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
-    assert len(build_all_tools(allow_writes=False)) == 18
+    assert len(build_all_tools(allow_writes=False)) == 17
     assert len(build_all_tools(allow_writes=True)) == 23
 
 
@@ -74,6 +76,60 @@ class TestPlakyClient:
         assert "missing" in result["message"].lower()
 
     @pytest.mark.asyncio
+    async def test_add_comment_prefers_public_item_comments_with_board_id(self, monkeypatch):
+        calls: list[tuple[str, str, str]] = []
+
+        async def stub_public(self, board_id: str, item_id: str, text: str) -> dict:
+            calls.append((board_id, item_id, text))
+            return {"ok": True, "status": 201, "comment": {"ok": True}}
+
+        monkeypatch.setattr(
+            boardman.plaky.client.PlakyClient,
+            "add_item_comment_public",
+            stub_public,
+            raising=True,
+        )
+        from boardman.plaky.client import PlakyClient
+
+        c = PlakyClient(api_key="x", base_url="https://api.plaky.com/v1/public")
+        r = await c.add_comment("6079528", "**PR:** http://example", board_id="218760")
+        assert r["ok"] is True
+        assert r.get("route") == "item_public"
+        assert calls == [("218760", "6079528", "**PR:** http://example")]
+
+    @pytest.mark.asyncio
+    async def test_add_comment_resolve_board_then_item_comment(self, monkeypatch):
+        calls: list[str] = []
+
+        async def stub_public(self, board_id: str, item_id: str, text: str) -> dict:
+            calls.append(board_id)
+            return {"ok": True, "status": 200, "comment": {}}
+
+        async def stub_resolve(self, item_id: str, *, skip_board_ids=None):
+            assert item_id == "99"
+            return "board-found"
+
+        monkeypatch.setattr(
+            boardman.plaky.client.PlakyClient,
+            "add_item_comment_public",
+            stub_public,
+            raising=True,
+        )
+        monkeypatch.setattr(
+            boardman.plaky.client.PlakyClient,
+            "_resolve_board_id_for_item_public",
+            stub_resolve,
+            raising=True,
+        )
+        monkeypatch.setattr(boardman_settings.settings, "plaky_pr_tracking_board_id", "")
+
+        from boardman.plaky.client import PlakyClient
+
+        r = await PlakyClient(api_key="x", base_url="https://api.plaky.com/v1/public").add_comment("99", "hi")
+        assert r["ok"] is True
+        assert calls == ["board-found"]
+
+    @pytest.mark.asyncio
     async def test_update_task_fields_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
         c = PlakyClient(api_key=None)
@@ -103,7 +159,7 @@ class TestPlakyTools:
         from boardman.agent.tools.plaky_tools import build_plaky_tools
 
         tools = build_plaky_tools(allow_writes=False)
-        assert len(tools) == 10
+        assert len(tools) == 9
         tool_names = [t.name for t in tools]
         assert "plaky_list_boards" in tool_names
         assert "plaky_match_board" in tool_names
@@ -113,7 +169,6 @@ class TestPlakyTools:
         assert "plaky_get_task" in tool_names
         assert "plaky_get_board_item" in tool_names
         assert "plaky_list_workspace_users" in tool_names
-        assert "plaky_review_board" in tool_names
         assert "plaky_save_task_preferences" in tool_names
 
     def test_plaky_tools_build_with_writes(self):
@@ -129,136 +184,81 @@ class TestPlakyTools:
         assert "plaky_patch_item_fields" in tool_names
 
     @pytest.mark.asyncio
-    async def test_create_task_rejects_empty_title(self):
-        from boardman.agent.tools.plaky_tools import _plaky_create_task
+    async def test_plaky_update_task_tool_passes_auto_assign_fields(self, monkeypatch):
+        """Agent update tool should mirror CLI UpdateTaskInput (QA roster + placement)."""
 
-        raw = await _plaky_create_task(
-            title="   ",
-            description="x",
-            board_id="b1",
-            group_id="g1",
+        captured: dict = {}
+
+        async def stub(task_id: str, req):
+            captured["task_id"] = task_id
+            captured["req"] = req
+            return {"ok": True}
+
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.update_task_internal",
+            stub,
         )
-        data = json.loads(raw)
-        assert data["ok"] is False
-        assert "title" in data["message"].lower()
+        monkeypatch.setattr(
+            "boardman.agent.tool_context.get_context_plaky_board_id",
+            lambda: "board-from-context",
+        )
+
+        from boardman.agent.tools.plaky_tools import _plaky_update_task
+
+        await _plaky_update_task(
+            "task-99",
+            status="In QA",
+            auto_assign_qa=True,
+            github_repo="bare-repo-name",
+            board_id="",
+        )
+        assert captured["task_id"] == "task-99"
+        inp = captured["req"]
+        assert inp.auto_assign_qa is True
+        assert inp.github_repo == "bare-repo-name"
+        assert inp.plaky_board_id == "board-from-context"
+
+        await _plaky_update_task("task-100", qa_plaky_id="user-qa-1", board_id="explicit-board")
+        inp2 = captured["req"]
+        assert inp2.qa_plaky_id == "user-qa-1"
+        assert inp2.plaky_board_id == "explicit-board"
 
     @pytest.mark.asyncio
-    async def test_create_task_rejects_unknown_schema_key(self, monkeypatch):
-        import boardman.agent.tools.plaky_tools as pt
+    async def test_plaky_create_subtask_tool_uses_internal_mutation_and_context(self, monkeypatch):
+        captured: dict = {}
 
-        async def fake_schema(_board_id: str):
-            return {
-                "ok": True,
-                "normalized": {
-                    "fields": [
-                        {"name": "Status", "key": "status", "options": ["Todo", "Done"]},
-                    ]
-                },
-            }
+        async def stub(req):
+            captured["req"] = req
+            return {"ok": True, "subtask": {"id": "sub-1"}}
 
-        async def fake_create_task(self, **kwargs):
-            return {"ok": True, "task": {"id": "t1"}}
-
-        monkeypatch.setattr(pt, "fetch_board_schema_bundle", fake_schema)
-        monkeypatch.setattr(pt.PlakyClient, "create_task", fake_create_task)
-
-        raw = await pt._plaky_create_task(
-            title="Ship feature",
-            description="desc",
-            board_id="b1",
-            group_id="g1",
-            field_values_json='{"unknown_field":"x"}',
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.create_subtask_internal",
+            stub,
         )
-        data = json.loads(raw)
-        assert data["ok"] is False
-        assert "invalid" in data["message"].lower()
-
-    @pytest.mark.asyncio
-    async def test_update_task_passes_through_legacy_fields_and_trims_title(self, monkeypatch):
-        """Legacy /tasks PATCH is not validated against board schema (may differ from v1/public items)."""
-        import boardman.agent.tools.plaky_tools as pt
-
-        got: dict = {}
-
-        async def fake_update(self, task_id, **kwargs):
-            got.update(kwargs)
-            return {"ok": True, "task": {"id": task_id}}
-
-        monkeypatch.setattr(pt.PlakyClient, "update_task_fields", fake_update)
-
-        raw = await pt._plaky_update_task(
-            task_id="123",
-            status="not-from-schema",
-            title="  Trim me  ",
+        monkeypatch.setattr(
+            "boardman.agent.tool_context.get_context_plaky_board_id",
+            lambda: "board-from-context",
         )
-        data = json.loads(raw)
-        assert data.get("ok") is True
-        assert got.get("status") == "not-from-schema"
-        assert got.get("title") == "Trim me"
-
-    @pytest.mark.asyncio
-    async def test_patch_item_fields_rejects_invalid_option_value(self, monkeypatch):
-        import boardman.agent.tools.plaky_tools as pt
-
-        async def fake_schema(_board_id: str):
-            return {
-                "ok": True,
-                "normalized": {
-                    "fields": [
-                        {"name": "Status", "key": "fld_status", "options": [{"name": "Open"}, {"name": "Done"}]},
-                    ]
-                },
-            }
-
-        async def fake_patch(self, *args, **kwargs):
-            raise AssertionError("patch should not run when validation fails")
-
-        monkeypatch.setattr(pt, "fetch_board_schema_bundle", fake_schema)
-        monkeypatch.setattr(pt.PlakyClient, "patch_item_field_values", fake_patch)
-
-        raw = await pt._plaky_patch_item_fields(
-            "b1",
-            "item1",
-            '{"fld_status": "NotAnOption"}',
+        monkeypatch.setattr(
+            "boardman.agent.tool_context.get_context_plaky_group_id",
+            lambda: "group-from-context",
         )
-        data = json.loads(raw)
-        assert data["ok"] is False
-        assert "errors" in data
-        assert any("not in allowed options" in e.lower() for e in data["errors"])
 
-    @pytest.mark.asyncio
-    async def test_plaky_review_board_returns_diagnosis(self, monkeypatch):
-        import boardman.agent.tools.plaky_tools as pt
+        from boardman.agent.tools.plaky_tools import _plaky_create_subtask
 
-        async def fake_list_board_items(self, board_id: str, max_pages: int = 1):
-            return {
-                "ok": True,
-                "items": [
-                    {
-                        "id": "1",
-                        "name": "Fix login bug",
-                        "description": "No done criteria",
-                        "status": "open",
-                        "updatedAt": "2024-01-01T00:00:00Z",
-                        "groupId": "g1",
-                    },
-                    {
-                        "id": "2",
-                        "name": "Fix login bug",
-                        "description": "Acceptance: user can login",
-                        "status": "open",
-                        "updatedAt": "2024-02-01T00:00:00Z",
-                        "groupId": "g1",
-                    },
-                ],
-            }
+        await _plaky_create_subtask("task-1", "Investigate logs", "Check API traces")
+        req = captured["req"]
+        assert req.parent_task_id == "task-1"
+        assert req.title == "Investigate logs"
+        assert req.description == "Check API traces"
+        assert req.plaky_board_id == "board-from-context"
+        assert req.plaky_group_id == "group-from-context"
 
-        monkeypatch.setattr(pt.PlakyClient, "list_board_items", fake_list_board_items)
-        raw = await pt._plaky_review_board(board_id="b1", group_id="g1", max_items=50)
-        data = json.loads(raw)
-        assert data["ok"] is True
-        assert data["duplicate_cluster_count"] >= 1
-        assert data["missing_acceptance_count"] >= 1
+        await _plaky_create_subtask("task-2", "Write tests", board_id="explicit-board", group_id="explicit-group")
+        req2 = captured["req"]
+        assert req2.parent_task_id == "task-2"
+        assert req2.plaky_board_id == "explicit-board"
+        assert req2.plaky_group_id == "explicit-group"
 
 
 class TestGitHubTools:
@@ -337,7 +337,7 @@ class TestToolBuilding:
         from boardman.agent.tools import build_all_tools
 
         tools = build_all_tools(allow_writes=False)
-        assert len(tools) == 18
+        assert len(tools) == 17
 
     def test_build_all_tools_writes(self):
         from boardman.agent.tools import build_all_tools

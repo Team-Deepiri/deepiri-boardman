@@ -73,20 +73,28 @@ def _is_meaningful(r: RepoRouting) -> bool:
     )
 
 
+def team_assignment_field_sync_board_id() -> str:
+    """Board id from repos.yml `defaults.plaky_board_id` (startup team_assignments field-key sync)."""
+    r = _defaults_routing()
+    if r and (r.plaky_board_id or "").strip():
+        return r.plaky_board_id.strip()
+    return ""
+
+
 def _defaults_routing() -> Optional[RepoRouting]:
     raw = _load_raw()
     d = raw.get("defaults")
     if isinstance(d, dict):
         cat = str(d.get("category", "") or settings.default_repo_category or "")
         table = str(d.get("plaky_table", "") or settings.default_plaky_table or "")
-        bid = str(d.get("plaky_board_id", "") or settings.plaky_default_board_id or "")
-        gid = str(d.get("plaky_group_id", "") or settings.plaky_default_group_id or "")
+        bid = str(d.get("plaky_board_id", "") or "")
+        gid = str(d.get("plaky_group_id", "") or "")
         desc = str(d.get("description", "") or "")
     else:
         cat = str(settings.default_repo_category or "")
         table = str(settings.default_plaky_table or "")
-        bid = str(settings.plaky_default_board_id or "")
-        gid = str(settings.plaky_default_group_id or "")
+        bid = ""
+        gid = ""
         desc = ""
     if not cat and not table and not desc and not bid and not gid:
         return None

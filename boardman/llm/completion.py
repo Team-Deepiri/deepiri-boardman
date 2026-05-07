@@ -27,8 +27,9 @@ def _ollama_http_client() -> httpx.AsyncClient:
     lid = id(loop)
     c = _ollama_by_loop.get(lid)
     if c is None or getattr(c, "is_closed", False):
+        read_timeout = float(getattr(settings, "ollama_read_timeout_seconds", 300.0) or 300.0)
         c = httpx.AsyncClient(
-            timeout=httpx.Timeout(300.0),
+            timeout=httpx.Timeout(connect=10.0, read=read_timeout, write=60.0, pool=60.0),
             limits=httpx.Limits(max_keepalive_connections=24, max_connections=48),
         )
         _ollama_by_loop[lid] = c
@@ -244,57 +245,14 @@ async def _gemini_generate(
 def parse_json_tasks(text: str) -> Any:
     """Best-effort parse of JSON array from LLM output."""
     text = text.strip()
-    if not text:
-        raise ValueError("Model did not return valid JSON array")
     try:
-        parsed = json.loads(text)
-        if isinstance(parsed, list):
-            return parsed
+        return json.loads(text)
     except json.JSONDecodeError:
         pass
-
-    # Common model shape: fenced JSON blocks.
-    for fence in re.findall(r"```(?:json)?\s*([\s\S]*?)```", text, flags=re.IGNORECASE):
-        candidate = fence.strip()
-        if not candidate:
-            continue
+    m = re.search(r"\[[\s\S]*\]", text)
+    if m:
         try:
-            parsed = json.loads(candidate)
-            if isinstance(parsed, list):
-                return parsed
+            return json.loads(m.group(0))
         except json.JSONDecodeError:
-            continue
-
-    # Fall back to first balanced top-level array in the text.
-    start = text.find("[")
-    while start != -1:
-        depth = 0
-        in_str = False
-        esc = False
-        for i in range(start, len(text)):
-            ch = text[i]
-            if in_str:
-                if esc:
-                    esc = False
-                elif ch == "\\":
-                    esc = True
-                elif ch == '"':
-                    in_str = False
-                continue
-            if ch == '"':
-                in_str = True
-            elif ch == "[":
-                depth += 1
-            elif ch == "]":
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start : i + 1]
-                    try:
-                        parsed = json.loads(candidate)
-                        if isinstance(parsed, list):
-                            return parsed
-                    except json.JSONDecodeError:
-                        break
-        start = text.find("[", start + 1)
-
+            pass
     raise ValueError("Model did not return valid JSON array")

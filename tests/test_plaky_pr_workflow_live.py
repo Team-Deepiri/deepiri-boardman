@@ -9,8 +9,9 @@ Optional env:
   PLAKY_QA_ITEM_FIELD_KEY — optional; otherwise the QA assignee column is discovered from the board schema.
   PLAKY_LIVE_QA_APPROVED_OPTION_ID — optional override for the approve→verified status option UUID in the review test.
 
-Requires PLAKY_API_KEY and default board/group (or first group). Status targets for reviews and IN QA are resolved
-from the live board schema when env overrides are empty (see boardman.plaky.dynamic_qa_status).
+Requires PLAKY_API_KEY. All writes use Boardman Test Board + the configured test group (see tests/plaky_test_board.py);
+optional overrides: PLAKY_BOARDMAN_TEST_BOARD_ID, PLAKY_BOARDMAN_TEST_GROUP_ID.
+Status targets for reviews and IN QA are resolved from the live board schema when env overrides are empty (see boardman.plaky.dynamic_qa_status).
 """
 
 from __future__ import annotations
@@ -22,6 +23,7 @@ from typing import Any
 
 import httpx
 import pytest
+from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -42,6 +44,9 @@ from boardman.repos_config import RepoRouting
 from boardman.services.pr_handler import handle_pr_opened, handle_pr_review_comment
 from boardman.services.pr_review_handler import handle_issue_comment_on_pr, handle_pull_request_review
 from boardman.settings import settings
+from boardman.main import create_app
+
+from tests.plaky_test_board import resolve_boardman_test_board_id, resolve_boardman_test_group_id
 
 pytestmark = [pytest.mark.plaky_live, pytest.mark.plaky_pr_workflow_live]
 
@@ -59,13 +64,6 @@ skip_live_writes = pytest.mark.skipif(
     os.environ.get("PLAKY_PR_WORKFLOW_LIVE") != "1",
     reason="Set PLAKY_PR_WORKFLOW_LIVE=1 to run live Plaky write tests.",
 )
-
-
-def _pick_board_id(boards: list) -> str:
-    if settings.plaky_default_board_id.strip():
-        return settings.plaky_default_board_id.strip()
-    assert boards, "list_boards returned no boards"
-    return str(boards[0]["id"])
 
 
 async def _comments_http_contain(task_id: str, needle: str) -> bool:
@@ -119,17 +117,25 @@ async def _live_plaky_user_with_github(plaky: PlakyClient) -> tuple[str, str] | 
     return first_with_gh
 
 
-async def _create_live_task(plaky: PlakyClient, board_id: str, group_id: str, title: str) -> str:
-    cr = await plaky.create_task(
-        title=title,
-        description="boardman live pytest — safe to delete",
-        priority="low",
-        board_id=board_id,
-        group_id=group_id,
-    )
-    assert cr.get("ok") is True, cr.get("message")
+async def _create_live_task(_plaky: PlakyClient, board_id: str, group_id: str, title: str) -> str:
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post(
+            "/api/v1/tasks",
+            json={
+                "title": title,
+                "description": "boardman live pytest - safe to delete",
+                "repo": "deepiri-platform",
+                "plaky_board_id": board_id,
+                "plaky_group_id": group_id,
+                "auto_assign_team": False,
+            },
+        )
+    assert r.status_code == 200, r.text
+    cr = r.json()
+    assert cr.get("ok") is True, cr
     task = cr.get("task") or {}
-    task_id = str(task.get("id") or task.get("taskId") or task.get("itemId") or "").strip()
+    task_id = str(task.get("id") or task.get("taskId") or task.get("itemId") or cr.get("task_id") or "").strip()
     assert task_id, f"could not resolve task id from create_task: {task!r}"
     return task_id
 
@@ -162,16 +168,8 @@ async def test_live_handle_pr_opened_posts_plaky_comment_on_linked_issue_task(
     repo_short = f"plaky-live-{marker}"
 
     c = PlakyClient()
-    br = await c.list_boards()
-    assert br.get("ok") is True, br.get("message")
-    board_id = _pick_board_id(br["boards"])
-    gr = await c.list_groups(board_id)
-    assert gr.get("ok") is True, gr.get("message")
-    groups = gr.get("groups") or []
-    gid = (settings.plaky_default_group_id or "").strip()
-    if not gid:
-        assert groups, "need at least one group or PLAKY_DEFAULT_GROUP_ID"
-        gid = str(groups[0]["id"])
+    board_id = await resolve_boardman_test_board_id(c)
+    gid = await resolve_boardman_test_group_id(c, board_id)
 
     title = f"[boardman pytest PR workflow live {marker}] delete me"
     task_id = await _create_live_task(c, board_id, gid, title)
@@ -244,9 +242,7 @@ async def test_live_issue_comment_by_plaky_assigned_qa_sets_in_qa(
     monkeypatch.setattr(settings, "plaky_status_in_qa", "")
 
     c = PlakyClient()
-    br = await c.list_boards()
-    assert br.get("ok") is True, br.get("message")
-    board_id = _pick_board_id(br["boards"])
+    board_id = await resolve_boardman_test_board_id(c)
 
     pair = await _live_plaky_user_with_github(c)
     if not pair:
@@ -270,10 +266,7 @@ async def test_live_issue_comment_by_plaky_assigned_qa_sets_in_qa(
     repo_short = f"plaky-live-ic-{marker}"
     pr_number = 9100 + (int(marker[:4], 16) % 899)
 
-    gr = await c.list_groups(board_id)
-    assert gr.get("ok") is True, gr.get("message")
-    groups = gr.get("groups") or []
-    gid = (settings.plaky_default_group_id or "").strip() or str(groups[0]["id"])
+    gid = await resolve_boardman_test_group_id(c, board_id)
 
     title = f"[boardman live issue_comment {marker}] delete me"
     task_id = await _create_live_task(c, board_id, gid, title)
@@ -338,9 +331,7 @@ async def test_live_pull_request_review_submitted_approved_on_plaky(
     pr_number = 9200 + (int(marker[:4], 16) % 899)
 
     c = PlakyClient()
-    br = await c.list_boards()
-    assert br.get("ok") is True, br.get("message")
-    board_id = _pick_board_id(br["boards"])
+    board_id = await resolve_boardman_test_board_id(c)
     forced = (os.environ.get("PLAKY_LIVE_QA_APPROVED_OPTION_ID") or "").strip()
     if forced:
         approved_option_id = forced
@@ -354,10 +345,7 @@ async def test_live_pull_request_review_submitted_approved_on_plaky(
             )
         _, approved_option_id = rp
 
-    gr = await c.list_groups(board_id)
-    assert gr.get("ok") is True, gr.get("message")
-    groups = gr.get("groups") or []
-    gid = (settings.plaky_default_group_id or "").strip() or str(groups[0]["id"])
+    gid = await resolve_boardman_test_group_id(c, board_id)
 
     title = f"[boardman live review approved {marker}] delete me"
     task_id = await _create_live_task(c, board_id, gid, title)
@@ -419,9 +407,7 @@ async def test_live_pr_review_comment_by_assigned_qa_sets_in_qa(
     monkeypatch.setattr(settings, "plaky_status_in_qa", "")
 
     c = PlakyClient()
-    br = await c.list_boards()
-    assert br.get("ok") is True, br.get("message")
-    board_id = _pick_board_id(br["boards"])
+    board_id = await resolve_boardman_test_board_id(c)
 
     pair = await _live_plaky_user_with_github(c)
     if not pair:
@@ -445,10 +431,7 @@ async def test_live_pr_review_comment_by_assigned_qa_sets_in_qa(
     repo_short = f"plaky-live-rc-{marker}"
     pr_number = 9300 + (int(marker[:4], 16) % 899)
 
-    gr = await c.list_groups(board_id)
-    assert gr.get("ok") is True, gr.get("message")
-    groups = gr.get("groups") or []
-    gid = (settings.plaky_default_group_id or "").strip() or str(groups[0]["id"])
+    gid = await resolve_boardman_test_group_id(c, board_id)
 
     title = f"[boardman live review_comment {marker}] delete me"
     task_id = await _create_live_task(c, board_id, gid, title)

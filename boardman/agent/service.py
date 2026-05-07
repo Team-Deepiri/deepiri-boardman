@@ -110,11 +110,23 @@ def _format_llm_failure(exc: BaseException) -> str:
                     "Run `docker compose exec ollama ollama list` (or `ollama list` on the host). "
                     "Pull a model if the list is empty. With **LLM_MODEL** unset, Boardman auto-selects from the list."
                 )
-        elif isinstance(exc, (httpx.ConnectError, httpx.TimeoutException, OSError)):
+        elif isinstance(exc, httpx.ReadTimeout):
+            hint = (
+                "\n\nOllama is reachable, but it did not return data before the HTTP read timeout. "
+                "This is common on CPU-only first runs or with large models. "
+                "Try a smaller model (e.g. qwen2.5:3b), keep the model warm, or raise **OLLAMA_READ_TIMEOUT_SECONDS**."
+            )
+        elif isinstance(exc, (httpx.ConnectError, OSError)):
             hint = (
                 f"\n\nCannot reach Ollama at **{settings.ollama_base_url}**. "
                 "If Boardman runs in Docker, set **OLLAMA_BASE_URL=http://ollama:11434** (service name) "
                 "and ensure the **ollama** container is running."
+            )
+        elif isinstance(exc, httpx.TimeoutException):
+            hint = (
+                "\n\nThe request to Ollama timed out. "
+                "If this is a slow local model, increase **OLLAMA_READ_TIMEOUT_SECONDS** "
+                "or use a smaller **LLM_MODEL**."
             )
     except Exception:
         pass
