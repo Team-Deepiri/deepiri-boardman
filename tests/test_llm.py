@@ -74,6 +74,10 @@ async def test_chat_complete_ollama_parses_message(monkeypatch):
     import boardman.settings as bs
 
     monkeypatch.setattr(bs.settings, "ollama_base_url", "http://127.0.0.1:11434")
+    monkeypatch.setattr(
+        "boardman.llm.completion.effective_ollama_model",
+        lambda request_model: (request_model or "llama3:8b"),
+    )
 
     out = await chat_complete([{"role": "user", "content": "hi"}], provider="ollama", model="llama3:8b")
     assert out == "hello from model"
@@ -85,6 +89,10 @@ async def test_chat_complete_ollama_legacy_response_field(monkeypatch):
     import boardman.settings as bs
 
     monkeypatch.setattr(bs.settings, "ollama_base_url", "http://127.0.0.1:11434")
+    monkeypatch.setattr(
+        "boardman.llm.completion.effective_ollama_model",
+        lambda request_model: request_model or "m",
+    )
 
     out = await chat_complete([{"role": "user", "content": "hi"}], provider="ollama", model="m")
     assert out == "legacy"

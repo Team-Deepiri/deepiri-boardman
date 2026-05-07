@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Tuple
 
@@ -40,6 +41,9 @@ TEXT_EXTS = frozenset(
         ".jsx",
     }
 )
+_TODO_RE = re.compile(r"\bTODO\b")
+_FIXME_RE = re.compile(r"\bFIXME\b")
+
 MANIFEST_NAMES = (
     "pyproject.toml",
     "package.json",
@@ -62,12 +66,13 @@ def _iter_repo_files(root: Path) -> Iterator[Tuple[Path, str]]:
             yield p, rel
 
 
-def _safe_read_excerpt(p: Path, limit: int = 4000) -> str:
+def _read_file_once(p: Path, max_limit: int) -> str:
+    """Read at most ``max_limit`` chars in one syscall; reuse slices for smaller excerpts."""
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return ""
-    return text[:limit]
+    return text[:max_limit]
 
 
 def _is_textish(path: Path) -> bool:
@@ -109,22 +114,24 @@ def _scan_local_repo(path: str, max_files: int = 40) -> str:
             or "/docs/" in rel_low
             or rel_low.endswith(".md")
         )
-        if is_doc and len(docs) < max(1, int(max_files)):
-            excerpt = _safe_read_excerpt(p, limit=4000)
-            if excerpt:
-                docs.append({"path": rel, "excerpt": excerpt})
+        is_manifest = rel_low in manifest_paths and len(manifests) < 20
+        is_todo_sample = _is_textish(p) and scanned_text_files < 220
 
-        if rel_low in manifest_paths and len(manifests) < 20:
-            excerpt = _safe_read_excerpt(p, limit=2000)
-            if excerpt:
-                manifests.append({"path": rel, "excerpt": excerpt})
-
-        if _is_textish(p) and scanned_text_files < 220:
-            excerpt = _safe_read_excerpt(p, limit=6000)
-            if excerpt:
+        if is_doc or is_manifest or is_todo_sample:
+            need = 6000 if is_todo_sample else max(4000 if is_doc else 0, 2000 if is_manifest else 0)
+            if need <= 0:
+                need = 4000
+            raw = _read_file_once(p, need)
+            if not raw:
+                continue
+            if is_doc and len(docs) < max(1, int(max_files)):
+                docs.append({"path": rel, "excerpt": raw[:4000]})
+            if is_manifest:
+                manifests.append({"path": rel, "excerpt": raw[:2000]})
+            if is_todo_sample:
                 scanned_text_files += 1
-                todo_lines += excerpt.upper().count("TODO")
-                fixme_lines += excerpt.upper().count("FIXME")
+                todo_lines += len(_TODO_RE.findall(raw))
+                fixme_lines += len(_FIXME_RE.findall(raw))
 
     docs = sorted({d["path"]: d for d in docs}.values(), key=lambda x: x["path"])
     manifests = sorted({m["path"]: m for m in manifests}.values(), key=lambda x: x["path"])
@@ -132,13 +139,6 @@ def _scan_local_repo(path: str, max_files: int = 40) -> str:
 
     has_direction = any(d["path"].lower().endswith("direction.md") for d in docs)
     has_readme = any(d["path"].lower().endswith("readme.md") for d in docs)
-    findings: List[str] = []
-    if not has_direction:
-        findings.append("DIRECTION.md missing from scanned docs")
-    if not has_readme:
-        findings.append("README.md missing from scanned docs")
-    if todo_lines == 0 and fixme_lines == 0:
-        findings.append("No TODO/FIXME markers detected in sampled text files")
 
     out: Dict[str, Any] = {
         "ok": True,
@@ -159,7 +159,6 @@ def _scan_local_repo(path: str, max_files: int = 40) -> str:
             "fixme_lines": fixme_lines,
             "text_files_sampled": scanned_text_files,
         },
-        "findings": findings,
         "files": docs,
     }
     return json.dumps(out, indent=2)[:18000]

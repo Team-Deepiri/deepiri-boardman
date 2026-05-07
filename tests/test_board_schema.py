@@ -3,6 +3,7 @@ from boardman.plaky.board_schema import (
     looks_like_placeholder_plaky_field_key,
     normalize_board_payload,
     validate_field_values_against_board_schema,
+    validate_field_values_detailed,
 )
 
 
@@ -82,3 +83,25 @@ def test_validate_field_values_ok_when_keys_match():
         )
         is None
     )
+
+
+def test_validate_field_values_detailed_rejects_bad_option():
+    cleaned, errors, _ = validate_field_values_detailed(
+        {"fld_status": "nope"},
+        {"fields": [{"name": "Status", "key": "fld_status", "options": [{"name": "Open"}, {"name": "Done"}]}]},
+        options_check=True,
+        board_id="bid",
+    )
+    assert cleaned == {}
+    assert errors and "not in allowed options" in errors[0].lower()
+
+
+def test_validate_field_values_detailed_normalizes_option_case():
+    cleaned, errors, _ = validate_field_values_detailed(
+        {"fld_status": "open"},
+        {"fields": [{"name": "Status", "key": "fld_status", "options": [{"name": "Open"}, {"name": "Done"}]}]},
+        options_check=True,
+        board_id="bid",
+    )
+    assert not errors
+    assert cleaned.get("fld_status") == "Open"

@@ -34,6 +34,9 @@ def test_organize_detection_and_confirm_token():
     assert not looks_like_board_organize_request("what is this repo about?")
     assert has_confirm_token("yes, apply now")
     assert has_confirm_token("confirm")
+    assert has_confirm_token("go ahead")
+    assert has_confirm_token("approved")
+    assert has_confirm_token("yes please apply")
     assert not has_confirm_token("preview only")
 
 

@@ -111,17 +111,7 @@ def _routing_for_full_name(full_name: str, yaml_map: Dict[str, Any], org: str) -
 
 def get_routing(full_name: str, short_name: str, org: str) -> Optional[RepoRouting]:
     """Look up routing by full_name, then org/short_name; then org default."""
-    raw = _load_raw()
-    repos: Dict[str, Any] = raw.get("repos") or {}
-    entry = repos.get(full_name) or repos.get(f"{org}/{short_name}")
-    if entry and isinstance(entry, dict):
-        r = _parse_entry(entry)
-        if r and _is_meaningful(r):
-            return r
-    owner = full_name.split("/")[0] if "/" in full_name else ""
-    if owner == org:
-        return _defaults_routing()
-    return None
+    return get_routing_with_source(full_name, short_name, org)[0]
 
 
 def get_routing_with_source(full_name: str, short_name: str, org: str) -> tuple[Optional[RepoRouting], str]:

@@ -65,7 +65,6 @@ Tasks are **items** under a **board** (project) and **group** (section — there
 - **Forbidden:** inventing field keys (`person-1`, `status-2`, etc.). Keys must match **key=`** lines from schema or **plaky_board_schema** JSON. The server rejects unknown keys.
 - **"Organize the table/group":** Plaky has **boards → groups → items**. There is no generic "reorganize" tool unless you have a specific API action; list what you can do (reorder via UI, or patch fields) or say it is not supported.
 - **User asked you to execute:** do it (if writes allowed); do not end with "Would you like me to proceed?" after claiming you understood.
-- **Execute-immediately heuristic:** When the user's message already contains the key inputs (board name, title, description, assignee name), go straight to tool calls — resolve ids, fetch schema, and create/update. Do **not** paraphrase back what they said, ask for confirmation, or pad with clarifying questions. Missing optional fields (priority, status, custom columns) default to board defaults or "medium" — mention what you defaulted *after* creating, not before.
 
 ---
 
@@ -148,8 +147,8 @@ TASK_CREATION_WORKFLOW = """
 
 When the user wants to **create** or repeatedly file similar Plaky items:
 
-**Fast path — user already provided enough info:**
-If the user's message contains a board name (or placement is set), a title, and optionally a description/assignee, execute immediately — resolve ids via tools, fetch schema, and call **plaky_create_task** without asking further questions. Report what you created (and any defaults you applied) *after* the task exists. Only ask a clarifying question if something is genuinely ambiguous or conflicts with the board schema.
+**Fast path — user already provided enough info (execute immediately):**
+When the message already has what you need (board name or placement set, title, and optionally description/assignee), go straight to tool calls — resolve ids, fetch **plaky_board_schema**, and **plaky_create_task** / update without paraphrasing the user, without "Would you like me to proceed?", and without extra clarifying questions. Defaults for optional fields (priority, status, custom columns) use board defaults or **medium**; say what you defaulted *after* the write succeeds. Only ask if something is genuinely ambiguous or conflicts with the schema.
 
 **Full path — details are missing or user is exploring:**
 

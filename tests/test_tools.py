@@ -28,8 +28,8 @@ async def test_openapi_has_agent_routes():
 def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
-    assert len(build_all_tools(allow_writes=False)) == 17
-    assert len(build_all_tools(allow_writes=True)) == 22
+    assert len(build_all_tools(allow_writes=False)) == 18
+    assert len(build_all_tools(allow_writes=True)) == 23
 
 
 @pytest.fixture
@@ -174,32 +174,57 @@ class TestPlakyTools:
         assert "invalid" in data["message"].lower()
 
     @pytest.mark.asyncio
-    async def test_update_task_rejects_invalid_status_option(self, monkeypatch):
+    async def test_update_task_passes_through_legacy_fields_and_trims_title(self, monkeypatch):
+        """Legacy /tasks PATCH is not validated against board schema (may differ from v1/public items)."""
         import boardman.agent.tools.plaky_tools as pt
-        import boardman.agent.tool_context as tc
+
+        got: dict = {}
+
+        async def fake_update(self, task_id, **kwargs):
+            got.update(kwargs)
+            return {"ok": True, "task": {"id": task_id}}
+
+        monkeypatch.setattr(pt.PlakyClient, "update_task_fields", fake_update)
+
+        raw = await pt._plaky_update_task(
+            task_id="123",
+            status="not-from-schema",
+            title="  Trim me  ",
+        )
+        data = json.loads(raw)
+        assert data.get("ok") is True
+        assert got.get("status") == "not-from-schema"
+        assert got.get("title") == "Trim me"
+
+    @pytest.mark.asyncio
+    async def test_patch_item_fields_rejects_invalid_option_value(self, monkeypatch):
+        import boardman.agent.tools.plaky_tools as pt
 
         async def fake_schema(_board_id: str):
             return {
                 "ok": True,
                 "normalized": {
                     "fields": [
-                        {"name": "Status", "key": "status", "options": ["To Do", "Done"]},
-                        {"name": "Priority", "key": "priority", "options": ["Low", "Medium", "High"]},
+                        {"name": "Status", "key": "fld_status", "options": [{"name": "Open"}, {"name": "Done"}]},
                     ]
                 },
             }
 
-        monkeypatch.setattr(pt, "fetch_board_schema_bundle", fake_schema)
-        monkeypatch.setattr(tc, "get_context_plaky_board_id", lambda: "b1")
+        async def fake_patch(self, *args, **kwargs):
+            raise AssertionError("patch should not run when validation fails")
 
-        raw = await pt._plaky_update_task(
-            task_id="123",
-            status="InvalidStatus",
-            priority="high",
+        monkeypatch.setattr(pt, "fetch_board_schema_bundle", fake_schema)
+        monkeypatch.setattr(pt.PlakyClient, "patch_item_field_values", fake_patch)
+
+        raw = await pt._plaky_patch_item_fields(
+            "b1",
+            "item1",
+            '{"fld_status": "NotAnOption"}',
         )
         data = json.loads(raw)
         assert data["ok"] is False
-        assert "status/priority" in data["message"].lower()
+        assert "errors" in data
+        assert any("not in allowed options" in e.lower() for e in data["errors"])
 
     @pytest.mark.asyncio
     async def test_plaky_review_board_returns_diagnosis(self, monkeypatch):
@@ -312,13 +337,13 @@ class TestToolBuilding:
         from boardman.agent.tools import build_all_tools
 
         tools = build_all_tools(allow_writes=False)
-        assert len(tools) == 17
+        assert len(tools) == 18
 
     def test_build_all_tools_writes(self):
         from boardman.agent.tools import build_all_tools
 
         tools = build_all_tools(allow_writes=True)
-        assert len(tools) == 22
+        assert len(tools) == 23
 
 
 class TestRepoScanTool:
@@ -339,4 +364,3 @@ class TestRepoScanTool:
         assert any(f["path"] == "README.md" for f in payload["docs"]["files"])
         assert payload["todo_summary"]["todo_lines"] >= 1
         assert payload["todo_summary"]["fixme_lines"] >= 1
-        assert len(tools) == 22

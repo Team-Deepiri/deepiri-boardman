@@ -23,6 +23,7 @@ from boardman.llm.completion import chat_complete, parse_json_tasks
 from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
+from boardman.agent.task_draft import normalize_task_title
 from boardman.repos_config import get_routing_with_source
 from boardman.settings import settings
 
@@ -49,8 +50,9 @@ def _normalize_scan_tasks(raw_tasks: Any) -> tuple[List[Dict[str, Any]], List[st
         if not isinstance(item, dict):
             warnings.append(f"Skipped non-object item at index {i}.")
             continue
-        title = str(item.get("title") or "").strip()
-        if not title:
+        title_raw = str(item.get("title") or "").strip()
+        title, title_err = normalize_task_title(title_raw, mode="truncate")
+        if title_err:
             warnings.append(f"Skipped item {i} with empty title.")
             continue
         key = title.casefold()

@@ -81,6 +81,132 @@ def looks_like_placeholder_plaky_field_key(key: str) -> bool:
     return bool(k) and bool(_PLACEHOLDER_FIELD_KEY.match(k))
 
 
+def _field_option_strings(field: Dict[str, Any]) -> List[str]:
+    """Option display strings for a normalized field (dict options use _opt_label)."""
+    opts = field.get("options")
+    if not isinstance(opts, list):
+        return []
+    out: List[str] = []
+    for x in opts:
+        if isinstance(x, dict):
+            lab = _opt_label(x)
+            if lab:
+                out.append(lab)
+        elif str(x).strip():
+            out.append(str(x).strip())
+    return out
+
+
+def match_field_option_value(options: List[str], value: Any) -> tuple[Any, Optional[str]]:
+    """
+    Match a user/model value to an allowed option (case-insensitive).
+    Non-string values pass through without matching when options is non-empty (caller may coerce).
+    """
+    if not options or not isinstance(value, str):
+        return value if value is None or isinstance(value, str) else str(value), None
+    v = value.strip()
+    if not v:
+        return "", None
+    by_casefold = {str(opt).strip().casefold(): str(opt).strip() for opt in options if str(opt).strip()}
+    hit = by_casefold.get(v.casefold())
+    if hit is not None:
+        return hit, None
+    return None, f"value {value!r} not in allowed options: {options[:20]}"
+
+
+def validate_field_values_detailed(
+    field_values: Dict[str, Any],
+    normalized: Optional[Dict[str, Any]],
+    *,
+    options_check: bool = False,
+    board_id: str = "",
+    schema_fetch_ok: Optional[bool] = None,
+    schema_fetch_message: str = "",
+) -> tuple[Dict[str, Any], List[str], List[str]]:
+    """
+    Validate field keys (and optionally enum/select values) against normalized board schema.
+
+    Returns ``(cleaned_values, errors, warnings)``. On any error, ``cleaned_values`` is empty.
+    """
+    warnings: List[str] = []
+    if not field_values:
+        return {}, [], []
+
+    bid = (board_id or "").strip()
+    fields: List[Any] = []
+    if isinstance(normalized, dict):
+        raw = normalized.get("fields")
+        if isinstance(raw, list):
+            fields = raw
+
+    allowed: set[str] = set()
+    by_key: Dict[str, Dict[str, Any]] = {}
+    for f in fields:
+        if not isinstance(f, dict):
+            continue
+        k = str(f.get("key") or "").strip()
+        if k:
+            allowed.add(k)
+            by_key[k] = f
+
+    errors: List[str] = []
+
+    bad_ph = [k for k in field_values if looks_like_placeholder_plaky_field_key(str(k))]
+    if bad_ph:
+        errors.append(
+            "Refused: placeholder-like field keys "
+            f"{bad_ph!r}. Call plaky_board_schema(board_id) and use real keys from the schema (key=`...`). "
+            "Do not invent person-1 / status-2 style ids."
+        )
+
+    if allowed:
+        unknown = [str(k) for k in field_values if str(k).strip() not in allowed]
+        if unknown:
+            errors.append(
+                "Refused: field keys not on this board schema: "
+                f"{unknown!r}. Allowed keys: {sorted(allowed)!r}. "
+                "Call plaky_board_schema(board_id), then retry with only those keys."
+            )
+
+    if errors:
+        return {}, errors, warnings
+
+    if schema_fetch_ok is not None and schema_fetch_ok is not True:
+        warnings.append(f"schema bundle returned warning: {schema_fetch_message or 'unknown'}")
+
+    if not by_key:
+        if field_values:
+            if not fields:
+                warnings.append("board schema had no field definitions; skipped key/value validation")
+            else:
+                warnings.append("board schema had no field keys; skipped key/value validation")
+        return dict(field_values), [], warnings
+
+    cleaned: Dict[str, Any] = {}
+    for k, v in field_values.items():
+        ks = str(k).strip()
+        if not ks or ks not in by_key:
+            continue
+        field = by_key[ks]
+        if options_check:
+            opt_strs = _field_option_strings(field)
+            if opt_strs:
+                matched, err = match_field_option_value(opt_strs, v)
+                if err:
+                    errors.append(f"{ks}: {err}")
+                    continue
+                cleaned[ks] = matched
+            else:
+                cleaned[ks] = v
+        else:
+            cleaned[ks] = v
+
+    if errors:
+        return {}, errors, warnings
+
+    return cleaned, [], warnings
+
+
 def validate_field_values_against_board_schema(
     field_values: Dict[str, Any],
     normalized: Optional[Dict[str, Any]],
@@ -91,38 +217,10 @@ def validate_field_values_against_board_schema(
     When the board schema lists non-empty field keys, every key in field_values must match.
     Placeholder-style keys are always rejected.
     """
-    if not field_values:
-        return None
-    fields: List[Any] = []
-    if isinstance(normalized, dict):
-        raw = normalized.get("fields")
-        if isinstance(raw, list):
-            fields = raw
-    allowed: set[str] = set()
-    for f in fields:
-        if not isinstance(f, dict):
-            continue
-        k = str(f.get("key") or "").strip()
-        if k:
-            allowed.add(k)
-
-    bad_ph = [k for k in field_values if looks_like_placeholder_plaky_field_key(str(k))]
-    if bad_ph:
-        return (
-            "Refused: placeholder-like field keys "
-            f"{bad_ph!r}. Call plaky_board_schema(board_id) and use real keys from the schema (key=`...`). "
-            "Do not invent person-1 / status-2 style ids."
-        )
-
-    if allowed:
-        unknown = [str(k) for k in field_values if str(k).strip() not in allowed]
-        if unknown:
-            return (
-                "Refused: field keys not on this board schema: "
-                f"{unknown!r}. Allowed keys: {sorted(allowed)!r}. "
-                "Call plaky_board_schema(board_id), then retry with only those keys."
-            )
-    return None
+    _, errors, _ = validate_field_values_detailed(
+        field_values, normalized, options_check=False, board_id=""
+    )
+    return errors[0] if errors else None
 
 
 def normalize_board_payload(board_raw: Optional[Dict[str, Any]], groups: List[Dict[str, Any]]) -> Dict[str, Any]:

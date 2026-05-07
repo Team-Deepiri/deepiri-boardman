@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from collections.abc import AsyncIterator
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage
 
@@ -67,6 +68,20 @@ def _summarize_tool_text(content: Any) -> str:
     return txt[:500] if txt else ""
 
 
+def _normalize_trace_args(args: Any) -> Any:
+    """Coerce Ollama-style JSON string arguments into a dict when possible."""
+    if isinstance(args, dict):
+        return args
+    if isinstance(args, str) and args.strip():
+        try:
+            parsed = json.loads(args)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    return args
+
+
 def _extract_tool_trace(messages: List[AnyMessage]) -> List[Dict[str, Any]]:
     traces: List[Dict[str, Any]] = []
     index_by_id: Dict[str, int] = {}
@@ -82,6 +97,7 @@ def _extract_tool_trace(messages: List[AnyMessage]) -> List[Dict[str, Any]]:
                 args = t.get("args")
                 if args is None:
                     args = (t.get("function") or {}).get("arguments")
+                args = _normalize_trace_args(args)
                 row = {
                     "tool_name": name,
                     "tool_call_id": tid or None,
@@ -146,10 +162,10 @@ async def run_tool_agent(
     )
     result_messages = result.get("messages", [])
     out = _final_ai_text(result_messages)
-    trace = _extract_tool_trace(result_messages)
     logger.info("LangChain agent finished (output length=%d)", len(out))
     text = out or "(No assistant text returned.)"
     if return_trace:
+        trace = _extract_tool_trace(result_messages)
         return text, trace
     return text
 
@@ -160,8 +176,13 @@ async def iter_tool_agent(
     chat_history: list[BaseMessage],
     allow_writes: bool,
     system_extra: str = "",
+    trace_out: Optional[List[Dict[str, Any]]] = None,
 ) -> AsyncIterator[str]:
-    """Stream assistant tokens from the tool-calling agent."""
+    """Stream assistant tokens from the tool-calling agent.
+
+    If ``trace_out`` is a list, it is replaced with :func:`_extract_tool_trace` output
+    when the graph finishes (from the final ``on_chain_end`` payload when available).
+    """
     from langchain.agents import create_agent
 
     llm = get_chat_model()
@@ -182,6 +203,13 @@ async def iter_tool_agent(
         config={"recursion_limit": _recursion_limit()},
     ):
         kind = event.get("event")
+        if trace_out is not None and kind == "on_chain_end":
+            data = event.get("data") or {}
+            out = data.get("output")
+            if isinstance(out, dict):
+                msgs = out.get("messages")
+                if isinstance(msgs, list) and msgs:
+                    trace_out[:] = _extract_tool_trace(msgs)[:120]
         if kind == "on_chat_model_stream":
             content = event.get("data", {}).get("chunk", {}).content
             if content:

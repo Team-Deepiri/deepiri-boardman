@@ -8,7 +8,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -27,6 +27,28 @@ from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
+
+_TOOL_CALLS_JSON_MAX_BYTES = 64000
+
+
+def _runtime_error_trace(exc: BaseException) -> str:
+    return json.dumps(
+        [{"tool_name": "agent_runtime", "status": "error", "result_summary": str(exc)[:500]}],
+        default=str,
+    )
+
+
+def _serialize_tool_calls_json(traces: list[dict[str, Any]]) -> Optional[str]:
+    """Serialize tool traces; drop oldest rows until JSON fits ``_TOOL_CALLS_JSON_MAX_BYTES``."""
+    if not traces:
+        return None
+    rows = list(traces)
+    while rows:
+        s = json.dumps(rows, default=str)
+        if len(s) <= _TOOL_CALLS_JSON_MAX_BYTES:
+            return s
+        rows.pop(0)
+    return json.dumps(traces[-1:], default=str)
 
 
 def _is_ollama_model_missing_error(exc: BaseException) -> bool:
@@ -216,7 +238,8 @@ async def run_agent_chat(
         effective_allow_writes = False
         preview_notice = (
             "I detected a board-organization/bulk-change request. I ran in preview mode (read-only) first.\n\n"
-            "Reply with **confirm** (or **yes, apply**) in your next message to enable write tools for apply.\n"
+            "You can use **plaky_review_board** in this pass to summarize duplicates, stale items, and missing acceptance criteria.\n\n"
+            "Reply with **confirm**, **go ahead**, **approve**, or **yes, apply** in your next message to enable write tools for apply.\n"
         )
     if use_lc:
         try:
@@ -249,8 +272,7 @@ async def run_agent_chat(
                 )
                 if isinstance(tool_out, tuple):
                     reply, traces = tool_out
-                    if traces:
-                        assistant_tool_calls_json = json.dumps(traces, default=str)[:64000]
+                    assistant_tool_calls_json = _serialize_tool_calls_json(traces)
                 else:
                     reply = str(tool_out)
                 if preview_notice:
@@ -259,14 +281,10 @@ async def run_agent_chat(
             if _is_ollama_model_missing_error(e):
                 logger.warning("LangChain tool agent failed (Ollama model missing): %s", e)
                 reply = _ollama_model_missing_user_reply()
-                assistant_tool_calls_json = json.dumps(
-                    [{"tool_name": "agent_runtime", "status": "error", "result_summary": str(e)[:500]}]
-                )
+                assistant_tool_calls_json = _runtime_error_trace(e)
             else:
                 logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
-                assistant_tool_calls_json = json.dumps(
-                    [{"tool_name": "agent_runtime", "status": "error", "result_summary": str(e)[:500]}]
-                )
+                assistant_tool_calls_json = _runtime_error_trace(e)
                 reply = await _safe_plain_chat(
                     message=message,
                     repo=repo,
@@ -364,14 +382,30 @@ async def iter_agent_chat_sse(
 
     parts: list[str] = []
     use_lc = bool(settings.agent_langchain_tools and use_tools)
+    effective_allow_writes = allow_writes
+    preview_notice = ""
+    if (
+        use_lc
+        and allow_writes
+        and settings.agent_require_confirm_bulk
+        and looks_like_board_organize_request(message)
+        and not has_confirm_token(message)
+    ):
+        effective_allow_writes = False
+        preview_notice = (
+            "I detected a board-organization/bulk-change request. I ran in preview mode (read-only) first.\n\n"
+            "You can use **plaky_review_board** in this pass to summarize duplicates, stale items, and missing acceptance criteria.\n\n"
+            "Reply with **confirm**, **go ahead**, **approve**, or **yes, apply** in your next message to enable write tools for apply.\n"
+        )
 
+    trace_buf: list[dict[str, Any]] = []
     try:
         if use_lc:
             logger.info("Agent chat stream: LangChain tool path (session_id=%s)", sid)
             lc_hist = db_messages_to_langchain(history_msgs)
             extra = (
                 f"\n\n## Tool policy\nPlaky **write** tools (create/update/comment/subtask) are "
-                f"**{'ENABLED' if allow_writes else 'OFF'}**. "
+                f"**{'ENABLED' if effective_allow_writes else 'OFF'}**. "
                 "If OFF, use only list/get and GitHub/repo read tools; tell the user to pass allow_writes to enable mutations.\n"
                 "If ON: you **must** run **plaky_board_schema** (and **plaky_list_workspace_users** for assignees) before "
                 "**plaky_create_task** / **plaky_patch_item_fields** when field keys are not already explicit in context; "
@@ -385,8 +419,9 @@ async def iter_agent_chat_sse(
                 async for chunk in iter_tool_agent(
                     message,
                     chat_history=lc_hist,
-                    allow_writes=allow_writes,
+                    allow_writes=effective_allow_writes,
                     system_extra=extra,
+                    trace_out=trace_buf,
                 ):
                     if not chunk:
                         continue
@@ -408,8 +443,20 @@ async def iter_agent_chat_sse(
                 yield _sse_event({"type": "token", "text": chunk})
 
         reply = "".join(parts)
+        if preview_notice:
+            reply = preview_notice + "\n" + reply
+        assistant_tool_calls_json: Optional[str] = None
+        if use_lc and trace_buf:
+            assistant_tool_calls_json = _serialize_tool_calls_json(trace_buf)
         session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
-        session.add(AgentMessage(session_pk=ag.id, role="assistant", content=reply))
+        session.add(
+            AgentMessage(
+                session_pk=ag.id,
+                role="assistant",
+                content=reply,
+                tool_calls_json=assistant_tool_calls_json,
+            )
+        )
         await session.flush()
         yield _sse_event({"type": "done"})
 

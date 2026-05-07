@@ -7,122 +7,10 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import StructuredTool
 
-from boardman.plaky.board_schema import (
-    fetch_board_schema_bundle,
-    validate_field_values_against_board_schema,
-)
+from boardman.agent.task_draft import normalize_task_title
+from boardman.plaky.board_schema import fetch_board_schema_bundle, validate_field_values_detailed
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.name_match import rank_plaky_rows
-
-
-def _normalize_task_title(raw: str) -> tuple[str, Optional[str]]:
-    t = (raw or "").strip()
-    if not t:
-        return "", "title must be non-empty"
-    if len(t) > 160:
-        return "", "title must be <= 160 characters"
-    return t, None
-
-
-def _match_option_value(options: List[str], value: Any) -> tuple[Optional[str], Optional[str]]:
-    if not options or not isinstance(value, str):
-        return value if value is None or isinstance(value, str) else str(value), None
-    v = value.strip()
-    if not v:
-        return "", None
-    by_casefold = {str(opt).strip().casefold(): str(opt).strip() for opt in options if str(opt).strip()}
-    hit = by_casefold.get(v.casefold())
-    if hit is not None:
-        return hit, None
-    return None, f"value {value!r} not in allowed options: {options[:20]}"
-
-
-async def _validate_field_values_against_schema(
-    board_id: str,
-    values: Dict[str, Any],
-) -> tuple[Dict[str, Any], List[str], List[str]]:
-    bid = (board_id or "").strip()
-    if not bid or not values:
-        return values, [], []
-    bundle = await fetch_board_schema_bundle(bid)
-    normalized = bundle.get("normalized") or {}
-    fields = normalized.get("fields") if isinstance(normalized, dict) else []
-    if not isinstance(fields, list) or not fields:
-        return values, [], ["board schema had no field definitions; skipped key/value validation"]
-
-    by_key: Dict[str, Dict[str, Any]] = {}
-    for f in fields:
-        if not isinstance(f, dict):
-            continue
-        key = str(f.get("key") or "").strip()
-        if key:
-            by_key[key] = f
-
-    if not by_key:
-        return values, [], ["board schema had no field keys; skipped key/value validation"]
-
-    cleaned: Dict[str, Any] = {}
-    errors: List[str] = []
-    warnings: List[str] = []
-    for k, v in values.items():
-        ks = str(k).strip()
-        if not ks:
-            continue
-        field = by_key.get(ks)
-        if field is None:
-            errors.append(f"unknown field key {ks!r} for board {bid}")
-            continue
-        opts = field.get("options") if isinstance(field.get("options"), list) else []
-        matched, err = _match_option_value([str(x) for x in opts if str(x).strip()], v)
-        if err:
-            errors.append(f"{ks}: {err}")
-            continue
-        cleaned[ks] = matched
-
-    if bundle.get("ok") is not True:
-        warnings.append(f"schema bundle returned warning: {bundle.get('message') or 'unknown'}")
-    return cleaned, errors, warnings
-
-
-async def _validate_status_priority_with_schema(
-    board_id: str,
-    status: Optional[str],
-    priority: Optional[str],
-) -> tuple[Optional[str], Optional[str], List[str]]:
-    bid = (board_id or "").strip()
-    if not bid:
-        return status, priority, []
-    bundle = await fetch_board_schema_bundle(bid)
-    fields = (bundle.get("normalized") or {}).get("fields") or []
-    if not isinstance(fields, list):
-        return status, priority, []
-    status_opts: List[str] = []
-    priority_opts: List[str] = []
-    for f in fields:
-        if not isinstance(f, dict):
-            continue
-        nm = str(f.get("name") or "").strip().casefold()
-        opts = [str(x).strip() for x in (f.get("options") or []) if str(x).strip()]
-        if nm in {"status", "state"} and opts:
-            status_opts = opts
-        if nm == "priority" and opts:
-            priority_opts = opts
-    errors: List[str] = []
-    new_status = status
-    new_priority = priority
-    if status is not None and status_opts:
-        matched, err = _match_option_value(status_opts, status)
-        if err:
-            errors.append(f"status: {err}")
-        else:
-            new_status = matched
-    if priority is not None and priority_opts:
-        matched, err = _match_option_value(priority_opts, priority)
-        if err:
-            errors.append(f"priority: {err}")
-        else:
-            new_priority = matched
-    return new_status, new_priority, errors
 
 
 async def _plaky_list_boards() -> str:
@@ -371,7 +259,7 @@ async def _plaky_create_task(
     )
 
     c = PlakyClient()
-    title_norm, title_err = _normalize_task_title(title)
+    title_norm, title_err = normalize_task_title(title, mode="error")
     if title_err:
         return json.dumps({"ok": False, "message": f"invalid task title: {title_err}"})
     full = f"[{repo_tag}] {title_norm}" if repo_tag else title_norm
@@ -402,9 +290,15 @@ async def _plaky_create_task(
     fv_errors: List[str] = []
     fv_warnings: List[str] = []
     if validated_fv and effective_board_id:
-        validated_fv, fv_errors, fv_warnings = await _validate_field_values_against_schema(
-            effective_board_id,
+        bundle = await fetch_board_schema_bundle(effective_board_id)
+        normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+        validated_fv, fv_errors, fv_warnings = validate_field_values_detailed(
             validated_fv,
+            normalized,
+            options_check=True,
+            board_id=effective_board_id,
+            schema_fetch_ok=bundle.get("ok"),
+            schema_fetch_message=str(bundle.get("message") or ""),
         )
     if fv_errors:
         return json.dumps(
@@ -446,9 +340,25 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
     if parsed:
         bundle = await fetch_board_schema_bundle(bid)
         normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
-        err = validate_field_values_against_board_schema(parsed, normalized)
-        if err:
-            return json.dumps({"ok": False, "message": err}, default=str)
+        cleaned, errs, warns = validate_field_values_detailed(
+            parsed,
+            normalized,
+            options_check=True,
+            board_id=bid,
+            schema_fetch_ok=bundle.get("ok"),
+            schema_fetch_message=str(bundle.get("message") or ""),
+        )
+        if errs:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "message": "fields_json contains invalid keys/values for board schema",
+                    "errors": errs,
+                    "warnings": warns,
+                },
+                default=str,
+            )
+        parsed = cleaned
     c = PlakyClient()
     r = await c.patch_item_field_values(bid, item_id.strip(), parsed)
     return json.dumps(r, default=str)
@@ -461,34 +371,19 @@ async def _plaky_update_task(
     priority: Optional[str] = None,
     status: Optional[str] = None,
 ) -> str:
-    from boardman.agent.tool_context import get_context_plaky_board_id
-
-    title_err = None
+    """Legacy /tasks PATCH — status/priority are not validated against board schema (may differ from v1/public items)."""
+    title_norm: Optional[str] = None
     if title is not None:
-        _, title_err = _normalize_task_title(title)
-    if title_err:
-        return json.dumps({"ok": False, "message": f"invalid task title: {title_err}"})
-    board_id = get_context_plaky_board_id() or ""
-    status_norm, priority_norm, errors = await _validate_status_priority_with_schema(
-        board_id,
-        status,
-        priority,
-    )
-    if errors:
-        return json.dumps(
-            {
-                "ok": False,
-                "message": "status/priority not valid for current board schema",
-                "errors": errors,
-            }
-        )
+        title_norm, title_err = normalize_task_title(title, mode="error")
+        if title_err:
+            return json.dumps({"ok": False, "message": f"invalid task title: {title_err}"})
     c = PlakyClient()
     r = await c.update_task_fields(
         task_id,
-        title=title,
+        title=title_norm,
         description=description,
-        priority=priority_norm,
-        status=status_norm,
+        priority=priority,
+        status=status,
     )
     return json.dumps(r, default=str)
 

@@ -43,15 +43,25 @@ def is_write_tool(name: str) -> bool:
 
 
 _ORGANIZE_PATTERNS = (
-    r"\borganize\b",
+    r"\b(re)?organi[sz]e\b",
     r"\breorder\b",
     r"\bcleanup\b",
     r"\bclean up\b",
-    r"\bbulk\b",
+    r"\bbulk\s+(update|move|archive|close|delete|merge)\b",
     r"\bmove\b.+\btask",
-    r"\barchive\b",
+    r"\barchive\s+(the|all|every|these|my|our)\b",
 )
-_CONFIRM_PATTERN = re.compile(r"\b(confirm|yes,\s*apply|apply now|approved)\b", re.IGNORECASE)
+_CONFIRM_PATTERN = re.compile(
+    r"\b("
+    r"confirm(ed)?|"
+    r"approve(d)?|"
+    r"apply(\s+(now|changes))?|"
+    r"go\s+ahead|"
+    r"do\s+it|"
+    r"yes,?\s*(apply|go|do\s+it|please)"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def looks_like_board_organize_request(message: str) -> bool:
