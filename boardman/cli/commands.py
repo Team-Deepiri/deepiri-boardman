@@ -220,16 +220,25 @@ def link_pr(
 def list_tasks_cmd(
     status: str = typer.Option("open", "--status", "-s", help="Task status: open, done, etc."),
     format: str = typer.Option("table", "--format", "-f", help="Output format: table, json"),
+    plaky_board_id: Optional[str] = typer.Option(
+        None,
+        "--board-id",
+        help="Board id for listing items in v1/public mode.",
+    ),
 ):
     plaky = PlakyClient()
 
     async def run():
-        result = await plaky.get_tasks(status=status)
+        result = await plaky.get_tasks(status=status, board_id=plaky_board_id)
         if not result.get("ok"):
             console.print(f"[red]Error:[/red] {result.get('message')}")
             return
 
         tasks = result.get("tasks", [])
+        if not tasks:
+            msg = str(result.get("message") or "").strip()
+            if msg:
+                console.print(f"[yellow]{msg}[/yellow]")
         if format == "json":
             import json
             console.print(json.dumps(tasks, indent=2))
@@ -239,10 +248,16 @@ def list_tasks_cmd(
             table.add_column("Title")
             table.add_column("Status")
             for task in tasks:
-                task_id = task.get("id") or task.get("taskId", "N/A")
-                title = task.get("title", "Untitled")
-                task_status = task.get("status", "unknown")
-                table.add_row(task_id, title, task_status)
+                task_id = str(task.get("id") or task.get("itemId") or task.get("taskId") or "N/A")
+                title = str(task.get("title") or task.get("name") or "Untitled")
+                task_status = (
+                    task.get("status")
+                    or task.get("state")
+                    or task.get("workflowStatus")
+                    or task.get("workflow_state")
+                    or "unknown"
+                )
+                table.add_row(task_id, title, str(task_status))
             console.print(table)
 
     asyncio.run(run())
