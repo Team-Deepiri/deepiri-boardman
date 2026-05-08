@@ -48,6 +48,25 @@ def get_chat_model() -> Any:
             temperature=0.2,
         )
 
+    if p in ("openrouter", "or"):
+        from langchain_openai import ChatOpenAI
+
+        default_headers: dict[str, str] = {}
+        referer = (settings.openrouter_referer or "").strip()
+        app_title = (settings.openrouter_app_title or "").strip()
+        if referer:
+            default_headers["HTTP-Referer"] = referer
+        if app_title:
+            default_headers["X-Title"] = app_title
+
+        return ChatOpenAI(
+            model=(settings.llm_model or "").strip() or "anthropic/claude-3.5-sonnet",
+            api_key=settings.openrouter_api_key or None,
+            base_url=settings.openrouter_base_url.rstrip("/"),
+            temperature=0.2,
+            default_headers=default_headers or None,
+        )
+
     if p in ("gemini", "google"):
         from langchain_google_genai import ChatGoogleGenerativeAI
 
