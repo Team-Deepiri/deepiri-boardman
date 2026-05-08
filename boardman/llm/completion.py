@@ -83,6 +83,8 @@ async def chat_complete(
             mdl = mdl or "claude-sonnet-4-20250514"
         elif prov in ("openai", "gpt"):
             mdl = mdl or "gpt-4o-mini"
+        elif prov in ("openrouter", "or"):
+            mdl = mdl or "anthropic/claude-3.5-sonnet"
         elif prov in ("gemini", "google"):
             mdl = mdl or "gemini-2.0-flash"
 
@@ -94,6 +96,8 @@ async def chat_complete(
             return await _anthropic_messages(client, mdl, messages)
         if prov in ("openai", "gpt"):
             return await _openai_chat(client, mdl, messages)
+        if prov in ("openrouter", "or"):
+            return await _openrouter_chat(client, mdl, messages)
         if prov in ("gemini", "google"):
             return await _gemini_generate(client, mdl, messages)
         raise ValueError(f"Unknown LLM_PROVIDER: {prov}")
@@ -199,8 +203,48 @@ async def _anthropic_messages(
 async def _openai_chat(client: httpx.AsyncClient, model: str, messages: List[dict[str, str]]) -> str:
     if not settings.openai_api_key:
         raise ValueError("OPENAI_API_KEY is not set")
-    url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {settings.openai_api_key}", "content-type": "application/json"}
+    return await _openai_compat_chat(
+        client,
+        base_url="https://api.openai.com/v1",
+        api_key=settings.openai_api_key,
+        model=model,
+        messages=messages,
+    )
+
+
+async def _openrouter_chat(client: httpx.AsyncClient, model: str, messages: List[dict[str, str]]) -> str:
+    if not settings.openrouter_api_key:
+        raise ValueError("OPENROUTER_API_KEY is not set")
+    extra_headers: dict[str, str] = {}
+    referer = (settings.openrouter_referer or "").strip()
+    app_title = (settings.openrouter_app_title or "").strip()
+    if referer:
+        extra_headers["HTTP-Referer"] = referer
+    if app_title:
+        extra_headers["X-Title"] = app_title
+    return await _openai_compat_chat(
+        client,
+        base_url=settings.openrouter_base_url,
+        api_key=settings.openrouter_api_key,
+        model=model,
+        messages=messages,
+        extra_headers=extra_headers,
+    )
+
+
+async def _openai_compat_chat(
+    client: httpx.AsyncClient,
+    *,
+    base_url: str,
+    api_key: str,
+    model: str,
+    messages: List[dict[str, str]],
+    extra_headers: Optional[dict[str, str]] = None,
+) -> str:
+    url = f"{base_url.rstrip('/')}/chat/completions"
+    headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     body = {"model": model, "messages": messages}
     r = await client.post(url, headers=headers, json=body)
     r.raise_for_status()

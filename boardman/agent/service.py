@@ -9,6 +9,7 @@ import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
 from typing import Any
+from typing import Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,50 +29,160 @@ from boardman.settings import settings
 logger = logging.getLogger(__name__)
 
 
-def _is_ollama_model_missing_error(exc: BaseException) -> bool:
-    """True when Ollama has no matching model (LangChain ResponseError or HTTP 404 on /api/chat)."""
+ErrorCategory = Literal[
+    "model_missing",
+    "auth",
+    "rate_limited",
+    "timeout",
+    "connectivity",
+    "bad_request",
+    "upstream_http",
+    "unknown",
+]
+
+
+def _normalize_provider(provider: str | None) -> str:
+    p = (provider or settings.llm_provider or "ollama").strip().lower()
+    aliases = {
+        "gpt": "openai",
+        "google": "gemini",
+        "claude": "anthropic",
+        "or": "openrouter",
+    }
+    return aliases.get(p, p)
+
+
+def _default_model_for_provider(provider: str) -> str:
+    if provider == "anthropic":
+        return "claude-sonnet-4-20250514"
+    if provider == "openai":
+        return "gpt-4o-mini"
+    if provider == "openrouter":
+        return "anthropic/claude-3.5-sonnet"
+    if provider == "gemini":
+        return "gemini-2.0-flash"
+    if provider == "ollama":
+        explicit = (settings.llm_model or "").strip()
+        if explicit:
+            return explicit
+        try:
+            from boardman.llm.ollama_autodetect import effective_ollama_model
+
+            return effective_ollama_model(None)
+        except Exception:
+            return "auto-selected from Ollama"
+    return (settings.llm_model or "").strip() or "unspecified"
+
+
+def _resolve_llm_context(provider: str | None, model: str | None, *, use_tools: bool) -> tuple[str, str]:
+    prov = _normalize_provider(provider)
+    mdl = (model or "").strip() or (settings.llm_model or "").strip() or _default_model_for_provider(prov)
+    return prov, mdl
+
+
+def _classify_llm_error(exc: BaseException, *, provider: str) -> ErrorCategory:
     try:
         import httpx
 
-        if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 404:
-            return True
+        if isinstance(exc, httpx.HTTPStatusError):
+            st = exc.response.status_code
+            low = ((exc.response.text or "") + " " + str(exc)).lower()
+            if st == 404 and (provider != "ollama" or ("model" in low or "/api/chat" in low)):
+                return "model_missing"
+            if st in (401, 403):
+                return "auth"
+            if st == 429:
+                return "rate_limited"
+            if st == 400:
+                return "bad_request"
+            return "upstream_http"
+        if isinstance(exc, httpx.ReadTimeout | httpx.TimeoutException):
+            return "timeout"
+        if isinstance(exc, (httpx.ConnectError, OSError)):
+            return "connectivity"
     except Exception:
         pass
-    mod = getattr(type(exc), "__module__", "") or ""
+
+    mod = (getattr(type(exc), "__module__", "") or "").lower()
     if type(exc).__name__ == "ResponseError" and "ollama" in mod:
-        return True
+        low = str(exc).lower()
+        if "not found" in low or "model" in low:
+            return "model_missing"
+        return "upstream_http"
+
     low = str(exc).lower()
-    return "not found" in low and "model" in low
+    if "not found" in low and "model" in low:
+        return "model_missing"
+    return "unknown"
 
 
-def _ollama_model_label_for_errors() -> str:
-    explicit = (settings.llm_model or "").strip()
-    if explicit:
-        return explicit
-    try:
-        from boardman.llm.ollama_autodetect import effective_ollama_model
+def _provider_hint(provider: str, category: ErrorCategory, model: str) -> str:
+    if provider == "ollama":
+        if category == "model_missing":
+            return (
+                "Run `docker compose exec ollama ollama list` (or `ollama list`) and pull a valid tag, "
+                f"for example: `docker compose exec ollama ollama pull {model}`. "
+                "If **LLM_MODEL** is unset, Boardman auto-selects from `/api/tags`."
+            )
+        if category == "connectivity":
+            return (
+                f"Cannot reach Ollama at **{settings.ollama_base_url}**. "
+                "If using Docker, set **OLLAMA_BASE_URL=http://ollama:11434** in container env."
+            )
+        if category == "timeout":
+            return (
+                "Ollama timed out. Try a smaller model, keep model warm, or raise "
+                "**OLLAMA_READ_TIMEOUT_SECONDS**."
+            )
+        return "Check **OLLAMA_BASE_URL** and confirm Ollama is running."
 
-        return effective_ollama_model(None)
-    except Exception:
-        return "auto-selected from Ollama"
+    if provider == "openrouter":
+        if category == "auth":
+            return "Verify **OPENROUTER_API_KEY** is set and valid."
+        if category == "model_missing":
+            return (
+                "Use provider-prefixed model IDs (for example `anthropic/claude-3.5-sonnet`) and verify "
+                "the model is available for your OpenRouter account."
+            )
+        if category == "rate_limited":
+            return "OpenRouter rate-limited the request. Retry later or switch to another available model."
+        return "Check **OPENROUTER_API_KEY**, **OPENROUTER_BASE_URL**, and model availability."
+
+    if provider == "openai":
+        if category == "auth":
+            return "Verify **OPENAI_API_KEY** and account permissions."
+        if category == "model_missing":
+            return "Confirm the OpenAI model ID is valid and enabled for your account."
+        if category == "rate_limited":
+            return "OpenAI rate-limited the request. Retry later or lower request volume."
+        return "Check **OPENAI_API_KEY** and model access permissions."
+
+    if provider == "anthropic":
+        if category == "auth":
+            return "Verify **ANTHROPIC_API_KEY** is set and valid."
+        if category == "model_missing":
+            return "Confirm the Anthropic model ID is valid for your account."
+        if category == "rate_limited":
+            return "Anthropic rate-limited the request. Retry later."
+        return "Check **ANTHROPIC_API_KEY** and model availability."
+
+    if provider == "gemini":
+        if category == "auth":
+            return "Verify **GEMINI_API_KEY** is set and valid."
+        if category == "model_missing":
+            return "Confirm the Gemini model name is valid and available for your project."
+        if category == "rate_limited":
+            return "Gemini rate-limited the request. Retry later."
+        return "Check **GEMINI_API_KEY** and model availability."
+
+    return "Check LLM provider configuration and credentials."
 
 
-def _ollama_model_missing_user_reply() -> str:
-    m = _ollama_model_label_for_errors()
-    return (
-        "Ollama rejected the model **`"
-        + m
-        + "`** (missing or wrong tag).\n\n"
-        "**Fix:** `docker compose exec ollama ollama list` then either pull that tag "
-        f"(`docker compose exec ollama ollama pull {m}`) or pull any model you want; "
-        "with **LLM_MODEL** unset, Boardman picks one from `/api/tags` automatically.\n"
-    )
-
-
-def _format_llm_failure(exc: BaseException) -> str:
-    """User-visible message when Ollama / LLM HTTP fails (avoids opaque HTTP 500 in the UI)."""
+def _format_llm_failure(exc: BaseException, *, provider: str, model: str) -> str:
+    """User-visible provider-aware message for LLM failures."""
+    category = _classify_llm_error(exc, provider=provider)
     base = (str(exc) or type(exc).__name__).strip()
-    hint = ""
+    hint = _provider_hint(provider, category, model)
     try:
         import httpx
 
@@ -81,36 +192,14 @@ def _format_llm_failure(exc: BaseException) -> str:
             base = f"HTTP {st} from the model API"
             if snippet:
                 base += f": {snippet}"
-            if st == 404:
-                hint = (
-                    "\n\nThat model is not available in Ollama. "
-                    "Run `docker compose exec ollama ollama list` (or `ollama list` on the host). "
-                    "Pull a model if the list is empty. With **LLM_MODEL** unset, Boardman auto-selects from the list."
-                )
-        elif isinstance(exc, httpx.ReadTimeout):
-            hint = (
-                "\n\nOllama is reachable, but it did not return data before the HTTP read timeout. "
-                "This is common on CPU-only first runs or with large models. "
-                "Try a smaller model (e.g. qwen2.5:3b), keep the model warm, or raise **OLLAMA_READ_TIMEOUT_SECONDS**."
-            )
-        elif isinstance(exc, (httpx.ConnectError, OSError)):
-            hint = (
-                f"\n\nCannot reach Ollama at **{settings.ollama_base_url}**. "
-                "If Boardman runs in Docker, set **OLLAMA_BASE_URL=http://ollama:11434** (service name) "
-                "and ensure the **ollama** container is running."
-            )
-        elif isinstance(exc, httpx.TimeoutException):
-            hint = (
-                "\n\nThe request to Ollama timed out. "
-                "If this is a slow local model, increase **OLLAMA_READ_TIMEOUT_SECONDS** "
-                "or use a smaller **LLM_MODEL**."
-            )
     except Exception:
         pass
     return (
         "I could not get a reply from the language model.\n\n"
-        f"**What went wrong:** {base}{hint}\n\n"
-        "Check **OLLAMA_BASE_URL** and that Ollama is running (optional **LLM_MODEL** overrides auto-pick)."
+        f"**Provider:** `{provider}`\n"
+        f"**Model:** `{model}`\n"
+        f"**What went wrong:** {base}\n\n"
+        f"**Fix:** {hint}"
     )
 
 
@@ -129,6 +218,8 @@ async def _safe_plain_chat(
     plaky_suffix: str,
     provider: str | None,
     model: str | None,
+    resolved_provider: str,
+    resolved_model: str,
     extra_system_suffix: str = "",
 ) -> str:
     try:
@@ -142,7 +233,7 @@ async def _safe_plain_chat(
         return await chat_complete(llm_messages, provider=provider, model=model)
     except Exception as e:
         logger.exception("Plain chat (Ollama/direct LLM) failed")
-        return _format_llm_failure(e)
+        return _format_llm_failure(e, provider=resolved_provider, model=resolved_model)
 
 
 async def _plaky_system_suffix(
@@ -205,6 +296,7 @@ async def run_agent_chat(
     )
 
     reply: str
+    resolved_provider, resolved_model = _resolve_llm_context(provider, model, use_tools=use_tools)
     use_lc = bool(settings.agent_langchain_tools and use_tools)
     if use_lc:
         try:
@@ -235,20 +327,18 @@ async def run_agent_chat(
                     system_extra=extra,
                 )
         except Exception as e:
-            if _is_ollama_model_missing_error(e):
-                logger.warning("LangChain tool agent failed (Ollama model missing): %s", e)
-                reply = _ollama_model_missing_user_reply()
-            else:
-                logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
-                reply = await _safe_plain_chat(
-                    message=message,
-                    repo=repo,
-                    history_msgs=history_msgs,
-                    plaky_suffix=plaky_suffix,
-                    provider=provider,
-                    model=model,
-                    extra_system_suffix=draft_md + intake_extra,
-                )
+            logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
+            reply = await _safe_plain_chat(
+                message=message,
+                repo=repo,
+                history_msgs=history_msgs,
+                plaky_suffix=plaky_suffix,
+                provider=provider,
+                model=model,
+                resolved_provider=resolved_provider,
+                resolved_model=resolved_model,
+                extra_system_suffix=draft_md + intake_extra,
+            )
     else:
         logger.info(
             "Agent chat: plain LLM path (single completion; session_id=%s use_tools=%s)",
@@ -262,6 +352,8 @@ async def run_agent_chat(
             plaky_suffix=plaky_suffix,
             provider=provider,
             model=model,
+            resolved_provider=resolved_provider,
+            resolved_model=resolved_model,
             extra_system_suffix=draft_md + intake_extra,
         )
 
@@ -329,6 +421,7 @@ async def iter_agent_chat_sse(
     yield _sse_event({"type": "session", "session_id": sid})
 
     parts: list[str] = []
+    resolved_provider, resolved_model = _resolve_llm_context(provider, model, use_tools=use_tools)
     use_lc = bool(settings.agent_langchain_tools and use_tools)
 
     try:
@@ -381,7 +474,7 @@ async def iter_agent_chat_sse(
 
     except Exception as e:
         logger.exception("Agent chat stream failed")
-        err = _format_llm_failure(e) if not _is_ollama_model_missing_error(e) else _ollama_model_missing_user_reply()
+        err = _format_llm_failure(e, provider=resolved_provider, model=resolved_model)
         yield _sse_event({"type": "error", "message": err})
 
 
