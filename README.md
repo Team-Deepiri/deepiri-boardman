@@ -103,7 +103,7 @@ bash scripts/deploy_smoke.sh
 - `GET /api/v1/agent/sessions/{id}/history` - Session transcript
 - `DELETE /api/v1/agent/sessions/{id}` - Drop session
 - `POST /api/v1/agent/scan` - `{ "repo": "owner/name", "dry_run": false, ... }`
-- `POST /api/v1/agent/init-direction` - `{ "repo": "owner/name", "branch?": "main", "force?": false }`
+- `POST /api/v1/agent/init-direction` - opens a PR for `DIRECTION.md` using signed-in `gh` user (`{ "repo": "owner/name", "branch?": "main", "force?": false }`)
 
 ## Configuration
 
@@ -112,6 +112,7 @@ See `.env.example` for all options. Key variables:
 - `PLAKY_API_KEY` - Required. Your Plaky API key
 - `GITHUB_WEBHOOK_SECRET` - Optional. For HMAC verification
 - `GITHUB_PAT` - Optional. For CLI sync command
+- `gh` CLI auth - Required for `boardman init` and `/api/v1/agent/init-direction` (must be signed in with repo write access)
 - `PLAKY_PR_MERGE_STATUS` - Status to set on PR merge (default: `in_review`)
 - `LLM_PROVIDER`, `LLM_MODEL`, `OLLAMA_BASE_URL`, cloud API keys — see `.env.example`
 
