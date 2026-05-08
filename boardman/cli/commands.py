@@ -554,22 +554,19 @@ app.add_typer(agent_app, name="agent")
 
 @app.command("init")
 def init_direction(
-    repo: str = typer.Argument(..., help="owner/repo"),
-    branch: Optional[str] = typer.Option(None, "--branch"),
-    force: bool = typer.Option(False, "--force", help="Overwrite existing DIRECTION.md"),
+    repo: str = typer.Argument(..., help="repo"),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing DIRECTION.md")
 ):
-    parts = repo.split("/")
-    if len(parts) != 2:
-        console.print("[red]repo must be owner/name[/red]")
-        raise typer.Exit(1)
-
     async def run():
-        r = await init_direction_file(parts[0], parts[1], branch=branch, force=force)
+        r = await init_direction_file("Team-Deepiri", repo, force=force)
         if r.get("ok"):
             if r.get("skipped"):
                 console.print(f"[yellow]Skipped:[/yellow] {r.get('message')} {r.get('url', '')}")
             else:
-                console.print(f"[green]DIRECTION.md created[/green] branch={r.get('branch')} url={r.get('url')}")
+                console.print(
+                    f"[green]PR created for DIRECTION.md[/green] "
+                    f"base={r.get('branch')} head={r.get('pr_branch')} url={r.get('url')}"
+                )
         else:
             console.print(f"[red]{r.get('message')}[/red]")
             raise typer.Exit(1)
