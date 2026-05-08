@@ -554,11 +554,24 @@ app.add_typer(agent_app, name="agent")
 
 @app.command("init")
 def init_direction(
-    repo: str = typer.Argument(..., help="repo"),
+    repo: str = typer.Argument(
+        ...,
+        help="repo name (deepiri-demo) or full slug (owner/deepiri-demo)",
+    ),
     force: bool = typer.Option(False, "--force", help="Overwrite existing DIRECTION.md")
 ):
     async def run():
-        r = await init_direction_file("Team-Deepiri", repo, force=force)
+        default_owner = "Team-Deepiri"
+        parts = (repo or "").strip().split("/")
+        if len(parts) == 1 and parts[0]:
+            owner, name = default_owner, parts[0]
+        elif len(parts) == 2:
+            owner, name = parts[0], parts[1]
+        else:
+            console.print("[red]repo must be owner/name or bare repo name[/red]")
+            raise typer.Exit(1)
+
+        r = await init_direction_file(owner, name, force=force)
         if r.get("ok"):
             if r.get("skipped"):
                 console.print(f"[yellow]Skipped:[/yellow] {r.get('message')} {r.get('url', '')}")
