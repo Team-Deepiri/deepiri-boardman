@@ -6,6 +6,7 @@ from boardman.plaky.board_schema import (
     plaky_repo_field_value_format,
     resolve_repo_tag_field_values_from_schema,
     validate_field_values_against_board_schema,
+    validate_field_values_detailed,
 )
 
 
@@ -178,3 +179,83 @@ def test_validate_field_values_ok_when_keys_match():
         )
         is None
     )
+
+
+def _priority_schema():
+    return {
+        "fields": [
+            {
+                "name": "Priority",
+                "key": "priority-key",
+                "options": ["High", "Medium", "Low"],
+            }
+        ]
+    }
+
+
+def test_validate_field_values_detailed_rejects_bad_option():
+    cleaned, errors, warnings = validate_field_values_detailed(
+        {"priority-key": "urgent"},
+        _priority_schema(),
+        options_check=True,
+    )
+    assert cleaned == {}
+    assert errors and len(errors) == 1
+    assert "priority-key" in errors[0]
+    assert "urgent" in errors[0]
+    assert "High" in errors[0] and "Medium" in errors[0] and "Low" in errors[0]
+    assert warnings == []
+
+
+def test_validate_field_values_detailed_normalizes_option_case():
+    cleaned, errors, warnings = validate_field_values_detailed(
+        {"priority-key": "high"},
+        _priority_schema(),
+        options_check=True,
+    )
+    assert cleaned == {"priority-key": "High"}
+    assert errors == []
+    assert warnings == []
+
+
+def test_validate_field_values_detailed_passes_keys_when_no_options():
+    schema = {
+        "fields": [
+            {"name": "Notes", "key": "notes-key"},
+            {"name": "Priority", "key": "priority-key", "options": ["High", "Low"]},
+        ]
+    }
+    cleaned, errors, warnings = validate_field_values_detailed(
+        {"notes-key": "free text", "priority-key": "low"},
+        schema,
+        options_check=True,
+    )
+    assert cleaned == {"notes-key": "free text", "priority-key": "Low"}
+    assert errors == []
+    assert warnings == []
+
+
+def test_validate_field_values_detailed_warns_when_schema_fetch_failed():
+    cleaned, errors, warnings = validate_field_values_detailed(
+        {"priority-key": "High"},
+        _priority_schema(),
+        options_check=True,
+        schema_fetch_ok=False,
+        schema_fetch_message="upstream 502",
+    )
+    assert cleaned == {"priority-key": "High"}
+    assert errors == []
+    assert warnings and "schema bundle returned warning" in warnings[0]
+    assert "upstream 502" in warnings[0]
+
+
+def test_validate_field_values_detailed_rejects_unknown_key():
+    cleaned, errors, warnings = validate_field_values_detailed(
+        {"made-up": "x"},
+        _priority_schema(),
+        options_check=True,
+    )
+    assert cleaned == {}
+    assert errors and "made-up" in errors[0]
+    assert "priority-key" in errors[0]
+    assert warnings == []

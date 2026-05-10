@@ -30,8 +30,8 @@ async def test_openapi_has_agent_routes():
 def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
-    assert len(build_all_tools(allow_writes=False)) == 17
-    assert len(build_all_tools(allow_writes=True)) == 23
+    assert len(build_all_tools(allow_writes=False)) == 18
+    assert len(build_all_tools(allow_writes=True)) == 24
 
 
 @pytest.fixture
@@ -159,7 +159,7 @@ class TestPlakyTools:
         from boardman.agent.tools.plaky_tools import build_plaky_tools
 
         tools = build_plaky_tools(allow_writes=False)
-        assert len(tools) == 9
+        assert len(tools) == 10
         tool_names = [t.name for t in tools]
         assert "plaky_list_boards" in tool_names
         assert "plaky_match_board" in tool_names
@@ -170,12 +170,13 @@ class TestPlakyTools:
         assert "plaky_get_board_item" in tool_names
         assert "plaky_list_workspace_users" in tool_names
         assert "plaky_save_task_preferences" in tool_names
+        assert "plaky_review_board" in tool_names
 
     def test_plaky_tools_build_with_writes(self):
         from boardman.agent.tools.plaky_tools import build_plaky_tools
 
         tools = build_plaky_tools(allow_writes=True)
-        assert len(tools) == 15
+        assert len(tools) == 16
         tool_names = [t.name for t in tools]
         assert "plaky_create_task" in tool_names
         assert "plaky_update_task" in tool_names
@@ -260,6 +261,173 @@ class TestPlakyTools:
         assert req2.plaky_board_id == "explicit-board"
         assert req2.plaky_group_id == "explicit-group"
 
+    @pytest.mark.asyncio
+    async def test_create_task_rejects_unknown_schema_key(self, monkeypatch):
+        """plaky_create_task must reject field_values whose keys are not on the board schema."""
+
+        async def fake_bundle(board_id: str):
+            return {
+                "ok": True,
+                "message": "",
+                "normalized": {
+                    "fields": [
+                        {"name": "Priority", "key": "priority-key", "options": ["High", "Low"]}
+                    ]
+                },
+            }
+
+        called = {"create": 0}
+
+        async def stub_create(req):
+            called["create"] += 1
+            return {"ok": True}
+
+        class _StubCfg:
+            plaky_field_repo = ""
+            plaky_field_github_repos = ""
+
+        monkeypatch.setattr("boardman.agent.tools.plaky_tools.fetch_board_schema_bundle", fake_bundle)
+        monkeypatch.setattr("boardman.agent.tools.plaky_tools.create_task_internal", stub_create)
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.load_team_assignments", lambda: _StubCfg()
+        )
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.infer_plaky_field_keys_from_normalized",
+            lambda normalized: {},
+        )
+        monkeypatch.setattr(
+            "boardman.agent.tool_context.get_context_plaky_board_id", lambda: "board-x"
+        )
+        monkeypatch.setattr(
+            "boardman.agent.tool_context.get_context_plaky_group_id", lambda: ""
+        )
+        monkeypatch.setattr(
+            "boardman.agent.tool_context.get_tool_db_session", lambda: None
+        )
+        monkeypatch.setattr(
+            "boardman.agent.tool_context.get_agent_session_pk", lambda: None
+        )
+
+        from boardman.agent.tools.plaky_tools import _plaky_create_task
+
+        raw = await _plaky_create_task(
+            title="t",
+            description="d",
+            field_values_json='{"made-up": "x"}',
+        )
+        out = json.loads(raw)
+        assert out["ok"] is False
+        assert "made-up" in (out.get("errors") or [""])[0]
+        assert "priority-key" in (out.get("errors") or [""])[0]
+        assert called["create"] == 0
+
+    @pytest.mark.asyncio
+    async def test_patch_item_fields_rejects_invalid_option_value(self, monkeypatch):
+        """plaky_patch_item_fields must reject an option value that is not in the allowed set."""
+
+        async def fake_bundle(board_id: str):
+            return {
+                "ok": True,
+                "message": "",
+                "normalized": {
+                    "fields": [
+                        {
+                            "name": "Priority",
+                            "key": "priority-key",
+                            "options": ["High", "Medium", "Low"],
+                        }
+                    ]
+                },
+            }
+
+        called = {"patch": 0}
+
+        async def fake_patch(self, board_id, item_id, fields):
+            called["patch"] += 1
+            return {"ok": True}
+
+        class _StubCfg:
+            plaky_field_repo = ""
+            plaky_field_github_repos = ""
+
+        monkeypatch.setattr("boardman.agent.tools.plaky_tools.fetch_board_schema_bundle", fake_bundle)
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.load_team_assignments", lambda: _StubCfg()
+        )
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.infer_plaky_field_keys_from_normalized",
+            lambda normalized: {},
+        )
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.PlakyClient.patch_item_field_values",
+            fake_patch,
+        )
+
+        from boardman.agent.tools.plaky_tools import _plaky_patch_item_fields
+
+        raw = await _plaky_patch_item_fields(
+            "board-x", "item-1", '{"priority-key": "urgent"}'
+        )
+        out = json.loads(raw)
+        assert out["ok"] is False
+        errors_text = " ".join(out.get("errors") or [])
+        assert "priority-key" in errors_text
+        assert "urgent" in errors_text
+        assert "High" in errors_text and "Medium" in errors_text and "Low" in errors_text
+        assert called["patch"] == 0
+
+    @pytest.mark.asyncio
+    async def test_plaky_review_board_returns_diagnosis(self, monkeypatch):
+        """plaky_review_board summarizes duplicates + missing acceptance criteria."""
+
+        async def fake_list_items(self, board_id, *, max_pages=15):
+            return {
+                "ok": True,
+                "items": [
+                    {
+                        "id": "i1",
+                        "name": "Refactor agent runner",
+                        "description": "Touch up the runner.",
+                    },
+                    {
+                        "id": "i2",
+                        "name": "Refactor agent runner",
+                        "description": "Acceptance: tool traces preserved.",
+                    },
+                    {
+                        "id": "i3",
+                        "name": "Add OpenRouter provider",
+                        "description": "Wire the new provider.",
+                    },
+                ],
+            }
+
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.PlakyClient.list_board_items",
+            fake_list_items,
+        )
+        monkeypatch.setattr(
+            "boardman.agent.tool_context.get_context_plaky_board_id", lambda: ""
+        )
+        monkeypatch.setattr(
+            "boardman.agent.tool_context.get_context_plaky_group_id", lambda: ""
+        )
+
+        from boardman.agent.tools.plaky_tools import _plaky_review_board
+
+        raw = await _plaky_review_board(board_id="board-x")
+        out = json.loads(raw)
+        assert out["ok"] is True
+        assert out["board_id"] == "board-x"
+        assert out["items_scanned"] == 3
+        assert out["duplicate_cluster_count"] == 1
+        clusters = out.get("duplicate_clusters") or []
+        assert clusters and clusters[0]["title_key"] == "refactor agent runner"
+        assert out["missing_acceptance_count"] >= 2
+        assert any(
+            "duplicate" in s.lower() for s in (out.get("recommended_actions") or [])
+        )
+
 
 class TestGitHubTools:
     def test_build_github_tools_count(self):
@@ -337,13 +505,13 @@ class TestToolBuilding:
         from boardman.agent.tools import build_all_tools
 
         tools = build_all_tools(allow_writes=False)
-        assert len(tools) == 17
+        assert len(tools) == 18
 
     def test_build_all_tools_writes(self):
         from boardman.agent.tools import build_all_tools
 
         tools = build_all_tools(allow_writes=True)
-        assert len(tools) == 23
+        assert len(tools) == 24
 
 
 class TestRepoScanTool:
