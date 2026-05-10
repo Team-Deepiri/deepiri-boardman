@@ -1,5 +1,6 @@
 
 import pytest
+import httpx
 from httpx import ASGITransport, AsyncClient
 from boardman.main import create_app
 from boardman.database.session import get_db
@@ -88,7 +89,7 @@ async def test_agent_chat_stream_bulk_preview_downgrades_writes(monkeypatch, mem
 
     monkeypatch.setattr(agent_svc, "iter_tool_agent", fake_iter_tool_agent)
 
-    async def override_get_db():
+    async def override_get_db() -> AsyncIterator[AsyncSession]:
         async with memory_db() as session:
             try:
                 yield session
@@ -112,3 +113,59 @@ async def test_agent_chat_stream_bulk_preview_downgrades_writes(monkeypatch, mem
         )
         assert response.status_code == 200
         assert captured and captured[0] is False
+
+
+@pytest.mark.asyncio
+async def test_agent_chat_stream_error_payload_is_provider_specific(monkeypatch, memory_db):
+    import boardman.agent.service as agent_svc
+    import boardman.settings as bs
+
+    monkeypatch.setattr(bs.settings, "agent_langchain_tools", True)
+
+    async def fake_iter_tool_agent(*args, **kwargs):
+        req = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+        resp = httpx.Response(
+            401,
+            request=req,
+            text='{"error":{"message":"Invalid API key"}}',
+        )
+        raise httpx.HTTPStatusError("upstream 401", request=req, response=resp)
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(agent_svc, "iter_tool_agent", fake_iter_tool_agent)
+
+    async def override_get_db() -> AsyncIterator[AsyncSession]:
+        async with memory_db() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    app = create_app()
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/agent/chat/stream",
+            json={
+                "message": "hello tools",
+                "use_tools": True,
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+            },
+        )
+        assert response.status_code == 200
+        events = []
+        async for line in response.aiter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+
+        err_events = [e for e in events if e.get("type") == "error"]
+        assert err_events
+        msg = err_events[0].get("message", "")
+        assert "**Provider:** `openai`" in msg
+        assert "**Model:** `gpt-4o-mini`" in msg
+        assert "OPENAI_API_KEY" in msg

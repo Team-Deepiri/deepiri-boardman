@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -43,7 +44,9 @@ class TestParseJsonTasks:
         assert out == [{"title": "x"}]
 
 
-def _install_fake_httpx_client(monkeypatch, post_json_response: dict):
+def _install_fake_httpx_client(
+    monkeypatch, post_json_response: dict, capture: dict[str, Any] | None = None
+):
     """Patch httpx.AsyncClient used by boardman.llm.completion."""
 
     class FakeClient:
@@ -57,6 +60,10 @@ def _install_fake_httpx_client(monkeypatch, post_json_response: dict):
             return None
 
         async def post(self, url, json=None, headers=None):
+            if capture is not None:
+                capture["url"] = url
+                capture["json"] = json
+                capture["headers"] = headers or {}
             r = MagicMock()
             r.raise_for_status = MagicMock()
             r.json = MagicMock(return_value=post_json_response)
@@ -74,10 +81,7 @@ async def test_chat_complete_ollama_parses_message(monkeypatch):
     import boardman.settings as bs
 
     monkeypatch.setattr(bs.settings, "ollama_base_url", "http://127.0.0.1:11434")
-    monkeypatch.setattr(
-        "boardman.llm.completion.effective_ollama_model",
-        lambda request_model: (request_model or "llama3:8b"),
-    )
+    monkeypatch.setattr("boardman.llm.completion.effective_ollama_model", lambda model: model or "llama3:8b")
 
     out = await chat_complete([{"role": "user", "content": "hi"}], provider="ollama", model="llama3:8b")
     assert out == "hello from model"
@@ -89,10 +93,7 @@ async def test_chat_complete_ollama_legacy_response_field(monkeypatch):
     import boardman.settings as bs
 
     monkeypatch.setattr(bs.settings, "ollama_base_url", "http://127.0.0.1:11434")
-    monkeypatch.setattr(
-        "boardman.llm.completion.effective_ollama_model",
-        lambda request_model: request_model or "m",
-    )
+    monkeypatch.setattr("boardman.llm.completion.effective_ollama_model", lambda model: model or "m")
 
     out = await chat_complete([{"role": "user", "content": "hi"}], provider="ollama", model="m")
     assert out == "legacy"
@@ -129,6 +130,74 @@ async def test_chat_complete_gemini_requires_api_key(monkeypatch):
     monkeypatch.setattr(bs.settings, "gemini_api_key", "")
     with pytest.raises(ValueError, match="GEMINI_API_KEY"):
         await chat_complete([{"role": "user", "content": "x"}], provider="gemini", model="gemini-2.0-flash")
+
+
+@pytest.mark.asyncio
+async def test_chat_complete_openrouter_requires_api_key(monkeypatch):
+    import boardman.settings as bs
+
+    monkeypatch.setattr(bs.settings, "openrouter_api_key", "")
+    with pytest.raises(ValueError, match="OPENROUTER_API_KEY"):
+        await chat_complete(
+            [{"role": "user", "content": "x"}],
+            provider="openrouter",
+            model="anthropic/claude-3.5-sonnet",
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("provider", ["openrouter", "or"])
+async def test_chat_complete_openrouter_routes_to_base_url_with_headers(monkeypatch, provider):
+    capture: dict[str, Any] = {}
+    _install_fake_httpx_client(
+        monkeypatch,
+        {"choices": [{"message": {"content": "ok"}}]},
+        capture=capture,
+    )
+    import boardman.settings as bs
+
+    monkeypatch.setattr(bs.settings, "openrouter_api_key", "or-key")
+    monkeypatch.setattr(bs.settings, "openrouter_base_url", "https://openrouter.ai/api/v1/")
+    monkeypatch.setattr(bs.settings, "openrouter_referer", "https://example.test/app")
+    monkeypatch.setattr(bs.settings, "openrouter_app_title", "Boardman")
+
+    out = await chat_complete(
+        [{"role": "user", "content": "hi"}],
+        provider=provider,
+        model="anthropic/claude-3.5-sonnet",
+    )
+
+    assert out == "ok"
+    assert capture["url"] == "https://openrouter.ai/api/v1/chat/completions"
+    assert capture["headers"]["Authorization"] == "Bearer or-key"
+    assert capture["headers"]["HTTP-Referer"] == "https://example.test/app"
+    assert capture["headers"]["X-Title"] == "Boardman"
+    assert capture["json"]["model"] == "anthropic/claude-3.5-sonnet"
+
+
+@pytest.mark.asyncio
+async def test_chat_complete_openrouter_omits_empty_optional_headers(monkeypatch):
+    capture: dict[str, Any] = {}
+    _install_fake_httpx_client(
+        monkeypatch,
+        {"choices": [{"message": {"content": "ok"}}]},
+        capture=capture,
+    )
+    import boardman.settings as bs
+
+    monkeypatch.setattr(bs.settings, "openrouter_api_key", "or-key")
+    monkeypatch.setattr(bs.settings, "openrouter_base_url", "https://openrouter.ai/api/v1")
+    monkeypatch.setattr(bs.settings, "openrouter_referer", "   ")
+    monkeypatch.setattr(bs.settings, "openrouter_app_title", "")
+
+    await chat_complete(
+        [{"role": "user", "content": "hi"}],
+        provider="openrouter",
+        model="anthropic/claude-3.5-sonnet",
+    )
+
+    assert "HTTP-Referer" not in capture["headers"]
+    assert "X-Title" not in capture["headers"]
 
 
 @pytest.mark.integration

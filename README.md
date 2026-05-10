@@ -113,6 +113,7 @@ See `.env.example` for all options. Key variables:
 - `GITHUB_PAT` - Optional. For CLI sync command
 - `PLAKY_PR_MERGE_STATUS` - Status to set on PR merge (default: `in_review`)
 - `LLM_PROVIDER`, `LLM_MODEL`, `OLLAMA_BASE_URL`, cloud API keys — see `.env.example`
+  - OpenRouter is supported via `LLM_PROVIDER=openrouter`, `OPENROUTER_API_KEY`, and provider-prefixed model IDs like `anthropic/claude-3.5-sonnet`.
 
 Deployment runbook: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
