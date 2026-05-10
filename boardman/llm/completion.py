@@ -287,16 +287,67 @@ async def _gemini_generate(
 
 
 def parse_json_tasks(text: str) -> Any:
-    """Best-effort parse of JSON array from LLM output."""
+    """Best-effort parse of JSON array from LLM output.
+
+    Handles, in order:
+      1. The whole response already being a JSON array.
+      2. JSON arrays inside ```json ... ``` (or ``` ... ```) fenced blocks.
+      3. The first balanced top-level ``[ ... ]`` array embedded in the text,
+         skipping nested arrays inside an outer object so that
+         ``{"tasks": [...]}\\n[...]`` returns the inner ``[...]`` rather than
+         the trailing one.
+    """
     text = text.strip()
+    if not text:
+        raise ValueError("Model did not return valid JSON array")
+
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed
     except json.JSONDecodeError:
         pass
-    m = re.search(r"\[[\s\S]*\]", text)
-    if m:
+
+    for fence in re.findall(r"```(?:json)?\s*([\s\S]*?)```", text, flags=re.IGNORECASE):
+        candidate = fence.strip()
+        if not candidate:
+            continue
         try:
-            return json.loads(m.group(0))
+            parsed = json.loads(candidate)
+            if isinstance(parsed, list):
+                return parsed
         except json.JSONDecodeError:
-            pass
+            continue
+
+    start = text.find("[")
+    while start != -1:
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(text)):
+            ch = text[i]
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+                continue
+            if ch == '"':
+                in_str = True
+            elif ch == "[":
+                depth += 1
+            elif ch == "]":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start : i + 1]
+                    try:
+                        parsed = json.loads(candidate)
+                        if isinstance(parsed, list):
+                            return parsed
+                    except json.JSONDecodeError:
+                        break
+        start = text.find("[", start + 1)
+
     raise ValueError("Model did not return valid JSON array")
