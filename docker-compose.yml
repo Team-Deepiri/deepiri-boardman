@@ -1,5 +1,6 @@
-# Ollama GPU: requires NVIDIA Container Toolkit (Linux/WSL2 with GPU) or Docker Desktop GPU.
-# For CPU-only, remove the `gpus` block from the ollama service.
+# Ollama GPU: on NVIDIA hosts, configure Docker's default runtime with nvidia-ctk.
+# The ollama service advertises all NVIDIA devices, so GPU hosts use GPU automatically.
+# CPU-only hosts use this same file unchanged (Ollama runs on CPU).
 #
 # Secrets (PLAKY_API_KEY, GITHUB_PAT, …): put them in `.env` next to this file.
 # Do NOT use `KEY=${KEY}` here for secrets — an empty shell interpolation overrides `env_file`
@@ -98,15 +99,11 @@ services:
     image: ollama/ollama:latest
     container_name: deepiri-ollama-boardman
     restart: unless-stopped
-    # GPU support - prioritized. Comment out the 'deploy' block below for pure CPU mode
-    # if you encounter 'nvidia-container-cli' errors in WSL/Linux.
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    # Single-file CPU/GPU behavior:
+    # - CPU-only hosts: runs normally on CPU.
+    # - NVIDIA hosts: Docker's nvidia default runtime exposes GPUs to Ollama automatically.
+    # If Docker is not globally configured for nvidia, set OLLAMA_DOCKER_RUNTIME=nvidia in .env.
+    runtime: ${OLLAMA_DOCKER_RUNTIME:-}
     ports:
       - "11434:11434"
     volumes:
@@ -117,6 +114,8 @@ services:
       - OLLAMA_FLASH_ATTENTION=1
       - OLLAMA_CONTEXT_LENGTH=4096
       - OLLAMA_KEEP_ALIVE=30m
+      - NVIDIA_VISIBLE_DEVICES=${NVIDIA_VISIBLE_DEVICES:-all}
+      - NVIDIA_DRIVER_CAPABILITIES=${NVIDIA_DRIVER_CAPABILITIES:-compute,utility}
     networks:
       - deepiri-network
 

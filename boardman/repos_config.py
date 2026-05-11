@@ -160,19 +160,28 @@ def _routing_for_full_name(full_name: str, yaml_map: Dict[str, Any], org: str) -
 
 
 def get_routing(full_name: str, short_name: str, org: str) -> Optional[RepoRouting]:
-    """Resolve routing from repos.yml using full slug, legacy keys, or canonical repo name."""
+    """Look up routing by full_name, then org/short_name; then org default."""
+    return get_routing_with_source(full_name, short_name, org)[0]
+
+
+def get_routing_with_source(full_name: str, short_name: str, org: str) -> tuple[Optional[RepoRouting], str]:
+    """
+    Resolve routing and tell caller if it came from explicit repo config or org defaults.
+    source is one of: explicit | org_default | none
+    """
     raw = _load_raw()
     repos: Dict[str, Any] = raw.get("repos") or {}
-    for key in routing_yaml_candidate_map_keys(full_name, short_name, org):
-        entry = repos.get(key)
-        if isinstance(entry, dict):
-            r = _parse_entry(entry)
-            if r and _is_meaningful(r):
-                return r
+    entry = repos.get(full_name) or repos.get(f"{org}/{short_name}")
+    if entry and isinstance(entry, dict):
+        r = _parse_entry(entry)
+        if r and _is_meaningful(r):
+            return r, "explicit"
     owner = full_name.split("/")[0] if "/" in full_name else ""
     if owner == org:
-        return _defaults_routing()
-    return None
+        d = _defaults_routing()
+        if d and _is_meaningful(d):
+            return d, "org_default"
+    return None, "none"
 
 
 def list_registered_repos() -> Dict[str, RepoRouting]:

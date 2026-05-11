@@ -23,8 +23,67 @@ from boardman.llm.completion import chat_complete, parse_json_tasks
 from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
-from boardman.repos_config import get_routing
+from boardman.agent.task_draft import normalize_task_title
+from boardman.repos_config import get_routing_with_source
 from boardman.settings import settings
+
+
+def _normalize_task_fields(raw: Any) -> Dict[str, Any]:
+    if not isinstance(raw, dict):
+        return {}
+    out: Dict[str, Any] = {}
+    for k, v in raw.items():
+        ks = str(k).strip()
+        if not ks:
+            continue
+        out[ks] = v
+    return out
+
+
+def _normalize_scan_tasks(raw_tasks: Any) -> tuple[List[Dict[str, Any]], List[str]]:
+    warnings: List[str] = []
+    if not isinstance(raw_tasks, list):
+        return [], ["Model output was not a JSON array; no tasks parsed."]
+    out: List[Dict[str, Any]] = []
+    seen_titles: set[str] = set()
+    for i, item in enumerate(raw_tasks):
+        if not isinstance(item, dict):
+            warnings.append(f"Skipped non-object item at index {i}.")
+            continue
+        title_raw = str(item.get("title") or "").strip()
+        title, title_err = normalize_task_title(title_raw, mode="truncate")
+        if title_err:
+            warnings.append(f"Skipped item {i} with empty title.")
+            continue
+        key = title.casefold()
+        if key in seen_titles:
+            warnings.append(f"Skipped duplicate title: {title!r}.")
+            continue
+        seen_titles.add(key)
+
+        desc = str(item.get("description") or "").strip()
+        pri = str(item.get("priority") or "medium").strip().lower()
+        if pri not in ("low", "medium", "high"):
+            warnings.append(f"Normalized invalid priority {pri!r} to 'medium' for title {title!r}.")
+            pri = "medium"
+        fields = _normalize_task_fields(item.get("fields"))
+        evidence = item.get("evidence")
+        assumptions = item.get("assumptions")
+        unknowns = item.get("unknowns")
+        out.append(
+            {
+                "title": title[:160],
+                "description": desc[:8000],
+                "priority": pri,
+                "fields": fields,
+                "evidence": evidence if isinstance(evidence, list) else [],
+                "assumptions": assumptions if isinstance(assumptions, list) else [],
+                "unknowns": unknowns if isinstance(unknowns, list) else [],
+            }
+        )
+    if not out:
+        warnings.append("No valid task objects remained after normalization.")
+    return out[:30], warnings
 
 
 async def fetch_plaky_titles_for_repo(repo_full: str, short: str) -> str:
@@ -69,7 +128,15 @@ EXISTING PLAKY TASKS (likely this repo):
 
 Return ONLY a JSON array of 3-18 objects, no markdown fences:
 [
-  {{"title": "short title", "description": "markdown body", "priority": "low|medium|high", "fields": {{}}}},
+  {{
+    "title": "short title",
+    "description": "markdown body",
+    "priority": "low|medium|high",
+    "fields": {{}},
+    "evidence": ["facts from commits/issues/direction that justify this task"],
+    "assumptions": ["assumption made for planning"],
+    "unknowns": ["missing info to confirm before implementation"]
+  }},
   ...
 ]
 
@@ -79,6 +146,8 @@ Rules:
 - Tasks must be actionable and specific; scale count to initiative size (small fix = few tasks, large goal = more).
 - Do not duplicate items already listed as open issues or existing Plaky lines.
 - Align with DIRECTION.md when present.
+- Every task must have evidence-based reasoning in fields above (no generic backlog filler).
+- If data is missing, use unknowns/assumptions instead of guessing.
 """
 
 
@@ -98,7 +167,7 @@ async def run_repo_scan(
         return {"ok": False, "message": "repo must be owner/name"}
     owner, repo = parts[0], parts[1]
     short = repo
-    routing = get_routing(repo_full, short, settings.github_org)
+    routing, routing_source = get_routing_with_source(repo_full, short, settings.github_org)
 
     prov = (provider or settings.llm_provider or "ollama").lower()
     if prov in ("claude",):
@@ -145,9 +214,10 @@ async def run_repo_scan(
             model=mdl,
             timeout=180.0,
         )
-        tasks = parse_json_tasks(raw)
-        if not isinstance(tasks, list):
-            raise ValueError("Expected JSON array")
+        parsed = parse_json_tasks(raw)
+        tasks, parse_warnings = _normalize_scan_tasks(parsed)
+        if not tasks:
+            raise ValueError("Model returned no valid tasks after normalization")
 
         scan_row.tasks_proposed = json.dumps(tasks)[:65000]
 
@@ -155,19 +225,37 @@ async def run_repo_scan(
         plaky = PlakyClient()
         cat = routing.plaky_table if routing else ""
         routing_note = f"\n\n**Plaky group (label):** `{cat}`\n**Repo:** {repo_full}\n" if cat else f"\n\n**Repo:** {repo_full}\n"
-        bid, gid = effective_plaky_placement(routing)
+        bid, gid = effective_plaky_placement(routing if routing_source == "explicit" else None)
+        routing_warnings: List[str] = []
+        if routing_source == "org_default":
+            routing_warnings.append(
+                "Repo has no explicit repos.yml routing; org default exists but placement was not auto-applied. "
+                "Register repo-specific plaky_board_id/plaky_group_id to avoid ambiguous placement."
+            )
+        elif routing_source == "none":
+            routing_warnings.append(
+                "No routing found for repo; create used fallback behavior without explicit board/group placement."
+            )
         default_assign = await build_assignment_field_map(repo_full)
 
         for item in tasks:
-            if not isinstance(item, dict):
-                continue
             title = str(item.get("title", "Task")).strip()
             desc = str(item.get("description", "")).strip()
             pri = str(item.get("priority", "medium")).lower()
-            if pri not in ("low", "medium", "high"):
-                pri = "medium"
             full_title = f"[{short}] {title}"
-            body = desc + routing_note
+            evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
+            assumptions = item.get("assumptions") if isinstance(item.get("assumptions"), list) else []
+            unknowns = item.get("unknowns") if isinstance(item.get("unknowns"), list) else []
+            evidence_block = ""
+            if evidence:
+                evidence_block += "\n\n**Evidence**\n" + "\n".join(f"- {str(x)[:240]}" for x in evidence[:8])
+            if assumptions:
+                evidence_block += "\n\n**Assumptions**\n" + "\n".join(
+                    f"- {str(x)[:240]}" for x in assumptions[:6]
+                )
+            if unknowns:
+                evidence_block += "\n\n**Unknowns**\n" + "\n".join(f"- {str(x)[:240]}" for x in unknowns[:6])
+            body = (desc + evidence_block + routing_note).strip()
             field_map: Dict[str, Any] = dict(default_assign)
             raw_fields = item.get("fields")
             if isinstance(raw_fields, dict):
@@ -215,6 +303,7 @@ async def run_repo_scan(
             "tasks_created": created if not dry_run else 0,
             "preview": cap,
             "scan_id": scan_row.id,
+            "warnings": parse_warnings + routing_warnings,
         }
     except Exception as e:
         scan_row.error = str(e)[:2000]

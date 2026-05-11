@@ -520,6 +520,149 @@ def validate_field_values_against_board_schema(
     return None
 
 
+def _field_option_strings(field: Dict[str, Any]) -> List[str]:
+    """Display strings for a normalized field's options.
+
+    Returns ``[]`` when the field is not options-bearing (free text, person,
+    item, date, …) or when the bundle did not include option metadata.
+    """
+    out: List[str] = []
+    for opt in _collect_options(field):
+        lab = _opt_label(opt) if isinstance(opt, dict) else str(opt).strip()
+        if lab:
+            out.append(lab)
+    return out
+
+
+def match_field_option_value(options: List[str], value: Any) -> tuple[Any, Optional[str]]:
+    """Case-insensitive option matching.
+
+    Returns ``(canonical_or_passthrough_value, error_or_None)``.
+    Non-string values pass through (Plaky accepts ids/numbers literally).
+    Empty string passes through unchanged. Unknown string values return
+    ``(None, "<reason>")`` so the caller can surface a friendly rejection
+    that lists the allowed options.
+    """
+    if not options or not isinstance(value, str):
+        return (value if isinstance(value, str) or value is None else str(value)), None
+    v = value.strip()
+    if not v:
+        return "", None
+    by_cf = {opt.casefold(): opt for opt in options if opt}
+    hit = by_cf.get(v.casefold())
+    if hit is not None:
+        return hit, None
+    return None, f"value {value!r} not in allowed options: {options[:20]}"
+
+
+def validate_field_values_detailed(
+    field_values: Dict[str, Any],
+    normalized: Optional[Dict[str, Any]],
+    *,
+    options_check: bool = False,
+    board_id: str = "",
+    schema_fetch_ok: Optional[bool] = None,
+    schema_fetch_message: str = "",
+) -> tuple[Dict[str, Any], List[str], List[str]]:
+    """Validate field keys (and optionally option values) against the board schema.
+
+    Returns ``(cleaned_values, errors, warnings)``.
+
+    Semantics:
+      - Empty input -> ``({}, [], [])``.
+      - Placeholder-pattern keys are rejected only when they are not present
+        on this board schema (matches ``validate_field_values_against_board_schema``).
+      - Unknown keys are rejected with a list of allowed keys.
+      - When ``options_check`` is True and a field has options, the value is
+        normalized to the canonical option label or rejected.
+      - On any error, ``cleaned_values`` is empty so callers can do
+        ``if errors: return early`` without leaking partial state.
+      - When ``schema_fetch_ok`` is set and falsey, a warning is appended so
+        the agent can mention that schema validation was best-effort.
+    """
+    del board_id  # accepted for symmetry with PR #10 callers; kept for future use
+    warnings: List[str] = []
+    if not field_values:
+        return {}, [], warnings
+
+    fields: List[Any] = []
+    if isinstance(normalized, dict):
+        raw = normalized.get("fields")
+        if isinstance(raw, list):
+            fields = raw
+
+    allowed: set[str] = set()
+    by_key: Dict[str, Dict[str, Any]] = {}
+    for f in fields:
+        if not isinstance(f, dict):
+            continue
+        k = field_row_item_key(f)
+        if k:
+            allowed.add(k)
+            by_key[k] = f
+
+    errors: List[str] = []
+
+    bad_ph = [
+        k
+        for k in field_values
+        if looks_like_placeholder_plaky_field_key(str(k)) and str(k).strip() not in allowed
+    ]
+    if bad_ph:
+        errors.append(
+            "Refused: placeholder-like field keys "
+            f"{bad_ph!r}. Call plaky_board_schema(board_id) and use real keys from the schema (key=`...`). "
+            "Do not invent person-1 / status-2 style ids."
+        )
+
+    if allowed:
+        unknown = [str(k) for k in field_values if str(k).strip() not in allowed]
+        if unknown:
+            errors.append(
+                "Refused: field keys not on this board schema: "
+                f"{unknown!r}. Allowed keys: {sorted(allowed)!r}. "
+                "Call plaky_board_schema(board_id), then retry with only those keys."
+            )
+
+    if errors:
+        return {}, errors, warnings
+
+    if schema_fetch_ok is not None and not schema_fetch_ok:
+        warnings.append(
+            f"schema bundle returned warning: {schema_fetch_message or 'unknown'}"
+        )
+
+    if not by_key:
+        if not fields:
+            warnings.append("board schema had no field definitions; skipped key/value validation")
+        else:
+            warnings.append("board schema had no field keys; skipped key/value validation")
+        return dict(field_values), [], warnings
+
+    cleaned: Dict[str, Any] = {}
+    for k, v in field_values.items():
+        ks = str(k).strip()
+        if not ks or ks not in by_key:
+            continue
+        field = by_key[ks]
+        if options_check:
+            opt_strs = _field_option_strings(field)
+            if opt_strs:
+                matched, err = match_field_option_value(opt_strs, v)
+                if err:
+                    errors.append(f"{ks}: {err}")
+                    continue
+                cleaned[ks] = matched
+            else:
+                cleaned[ks] = v
+        else:
+            cleaned[ks] = v
+
+    if errors:
+        return {}, errors, warnings
+    return cleaned, [], warnings
+
+
 def _deep_find_field_lists(obj: Any, *, depth: int = 0, max_depth: int = 6) -> List[List[Any]]:
     """Nested board JSON sometimes nests field definition lists under settings/meta blocks."""
     if depth > max_depth or not isinstance(obj, dict):

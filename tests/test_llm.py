@@ -33,6 +33,16 @@ class TestParseJsonTasks:
         with pytest.raises(ValueError, match="valid JSON"):
             parse_json_tasks("not json at all")
 
+    def test_json_fence_array(self):
+        raw = '```json\n[{"title":"t1","priority":"high"}]\n```'
+        out = parse_json_tasks(raw)
+        assert out == [{"title": "t1", "priority": "high"}]
+
+    def test_ignores_top_level_non_list(self):
+        raw = '{"tasks":[{"title":"x"}]}\nAnd list:\n[{"title":"real"}]'
+        out = parse_json_tasks(raw)
+        assert out == [{"title": "x"}]
+
 
 def _install_fake_httpx_client(
     monkeypatch, post_json_response: dict, capture: dict[str, Any] | None = None
