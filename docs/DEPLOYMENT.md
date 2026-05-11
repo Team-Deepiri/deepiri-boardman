@@ -15,13 +15,14 @@ service credentials, GitHub webhooks, Plaky keys, worker setup, and smoke tests.
 
 ## Services
 
-The Compose stack runs five services:
+The default Compose stack runs four services:
 
 - `boardman`: FastAPI API and GitHub webhook receiver on port `8090`.
-- `boardman-worker`: arq background worker for queued agent/reorder jobs.
-- `redis`: private Redis for arq and optional rate limiting.
+- `boardman-worker`: SQLite background worker for queued agent/reorder jobs.
 - `boardman-nginx`: static UI plus `/api` reverse proxy on port `8088`.
 - `ollama`: local LLM sidecar on port `11434` inside the Compose network.
+
+`redis` is optional behind the `agent-cache` profile and is only needed when `AGENT_REDIS_URL` is configured.
 
 Do not confuse `boardman-worker` with the Cloudflare Worker in `worker/`. The Cloudflare Worker
 is an optional QA assignment proxy/fallback and is deployed with Wrangler, not Docker Compose.
@@ -146,7 +147,7 @@ Expected:
 - `boardman` health returns HTTP 200.
 - `boardman-nginx` proxies `/api` to `boardman`.
 - Ollama lists at least one pulled model.
-- Redis is not exposed publicly.
+- Redis remains disabled unless `--profile agent-cache` is explicitly enabled; if enabled, keep it private.
 - Logs say the Plaky API key is present and identify the Ollama base URL.
 - Webhook `ping` returns HTTP 200 with `pong`.
 
@@ -186,8 +187,8 @@ Record the smoke test result in the Plaky task or deployment notes.
 
 ## Cloudflare Worker Optional Path
 
-The `worker/` package is a Cloudflare Worker for QA assignment. It is separate from the Compose
-`boardman-worker`.
+The `worker/` package is a Cloudflare Worker for QA assignment only. It is separate from the Compose
+`boardman-worker` and is not the main Boardman backend deployment.
 
 Required Worker secrets/vars:
 
@@ -196,11 +197,13 @@ Required Worker secrets/vars:
 - `ROUTE_SECRET`: bearer token callers use when calling the Worker.
 - `QA_TEAM_JSON`: optional fallback data if the Worker is not proxying to Boardman.
 
+The Worker should only expose `/health` and `/assign-qa`.
+
 Deploy only after the Boardman API is reachable:
 
 ```bash
 cd worker
-npm install
+npm ci
 npm run deploy
 ```
 

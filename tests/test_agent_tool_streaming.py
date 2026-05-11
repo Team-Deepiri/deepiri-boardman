@@ -2,12 +2,12 @@
 import pytest
 import httpx
 from httpx import ASGITransport, AsyncClient
-from boardman.main import create_app
-from boardman.database.session import get_db
 from boardman.database.models import Base
+from boardman.database.session import get_db
+from boardman.main import create_app
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 import json
-from typing import AsyncIterator, Any, List
+from typing import AsyncIterator
 
 @pytest.fixture
 async def memory_db():
@@ -43,6 +43,10 @@ async def test_agent_chat_stream_with_tools_mocked(monkeypatch, memory_db):
 
     app = create_app()
     app.dependency_overrides[get_db] = override_get_db
+    # Stream endpoint opens DB sessions via routes.agent.async_session.
+    import boardman.routes.agent as agent_routes
+
+    monkeypatch.setattr(agent_routes, "async_session", memory_db)
     
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:

@@ -65,13 +65,18 @@ check_running_services() {
     return
   fi
   pass "compose has running services"
-  for services in boardman boardman-worker redis boardman-nginx ollama; do
+  for services in boardman boardman-worker boardman-nginx ollama; do
     if printf '%s\n' "$running" | grep -qx "$services"; then
       pass "service running: ${services}"
     else
       fail "service not running: ${services}"
     fi
   done
+  if printf '%s\n' "$running" | grep -qx "redis"; then
+    pass "optional service running: redis"
+  else
+    warn "optional redis service not running; expected unless --profile agent-cache is enabled"
+  fi
 }
 
 check_webhook_ping() {

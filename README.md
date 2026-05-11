@@ -78,11 +78,23 @@ cd boardman-ui && npm install && npm run dev
 
 ```bash
 ./scripts/deploy_preflight.sh
-docker compose up --build
+docker compose up -d --build
 # API http://localhost:8090
 # UI + proxy http://localhost:8088  (nginx → boardman)
 # Ollama http://localhost:11434  (set OLLAMA_BASE_URL=http://ollama:11434 in .env for compose)
 ```
+
+For NVIDIA GPU hosts, configure Docker's default runtime once:
+
+```bash
+sudo nvidia-ctk runtime configure --runtime=docker --set-as-default
+sudo systemctl restart docker
+```
+
+Boardman still uses the same `docker compose up -d --build` command. CPU-only hosts leave
+`OLLAMA_DOCKER_RUNTIME` unset; NVIDIA hosts use the default runtime path above, and Ollama sees
+`NVIDIA_VISIBLE_DEVICES=all`. If you cannot set Docker's default runtime, set
+`OLLAMA_DOCKER_RUNTIME=nvidia` in `.env` for this service only.
 
 Deployment smoke checks (after the stack is up):
 
