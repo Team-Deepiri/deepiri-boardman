@@ -47,6 +47,37 @@ check_env_key() {
   pass ".env has ${key} set"
 }
 
+has_nvidia_gpu() {
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v lspci >/dev/null 2>&1 && lspci 2>/dev/null | grep -qi nvidia; then
+    return 0
+  fi
+  return 1
+}
+
+check_ollama_gpu_runtime() {
+  local docker_runtime runtime_override
+
+  if ! has_nvidia_gpu; then
+    pass "no NVIDIA GPU detected; Ollama will run on CPU"
+    return
+  fi
+
+  pass "NVIDIA GPU detected on host"
+  runtime_override="$(env_value OLLAMA_DOCKER_RUNTIME)"
+  docker_runtime="$(docker info --format '{{.DefaultRuntime}}' 2>/dev/null || true)"
+
+  if [[ "$docker_runtime" == "nvidia" ]]; then
+    pass "Docker default runtime is nvidia; Ollama will use GPU by default"
+  elif [[ "$runtime_override" == "nvidia" ]]; then
+    pass ".env sets OLLAMA_DOCKER_RUNTIME=nvidia for the Ollama service"
+  else
+    warn "NVIDIA GPU detected but Docker default runtime is not nvidia; run nvidia-ctk --set-as-default or set OLLAMA_DOCKER_RUNTIME=nvidia"
+  fi
+}
+
 printf 'Boardman deployment preflight\n'
 printf 'Repo: %s\n\n' "$ROOT"
 
@@ -103,6 +134,8 @@ if docker compose version >/dev/null 2>&1; then
 else
   fail "docker compose plugin is not installed"
 fi
+
+check_ollama_gpu_runtime
 
 compose_config=""
 if compose_config="$(docker compose config 2>/dev/null)"; then
