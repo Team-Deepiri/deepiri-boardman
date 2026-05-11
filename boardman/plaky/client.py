@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import AbstractSet, Any, Dict, List, Optional, Set
 
@@ -29,7 +30,7 @@ async def _request_with_rate_limit_retry(
 
         retry_after = response.headers.get("Retry-After")
         wait_seconds = int(retry_after) if retry_after and retry_after.isdigit() else 2
-        time.sleep(wait_seconds)
+        await asyncio.sleep(wait_seconds)
 
     return response
 
