@@ -26,6 +26,9 @@ venv/
 ENV/
 env/
 
+# Node
+node_modules/
+
 # IDEs
 .idea/
 .vscode/
@@ -42,6 +45,8 @@ env/
 *.sqlite
 *.sqlite3
 boardman.db
+*.db-wal
+*.db-shm
 
 # Logs
 *.log

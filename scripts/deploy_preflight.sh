@@ -107,6 +107,11 @@ if [[ -f .env ]]; then
   else
     pass ".env has WORKER_INTERNAL_SECRET set"
   fi
+  if [[ -z "$(env_value ROUTE_SECRET)" ]]; then
+    warn ".env missing ROUTE_SECRET; Cloudflare Worker /assign-qa route will not be secured"
+  else
+    pass ".env has ROUTE_SECRET set"
+  fi
 fi
 
 if [[ -d boardman.db ]]; then
@@ -141,13 +146,18 @@ compose_config=""
 if compose_config="$(docker compose config 2>/dev/null)"; then
   pass "docker compose config renders"
   services="$(printf '%s\n' "$compose_config" | docker compose config --services 2>/dev/null)"
-  for service in boardman boardman-worker boardman-nginx redis ollama; do
+  for service in boardman boardman-worker boardman-nginx ollama; do
     if printf '%s\n' "$services" | grep -qx "$service"; then
       pass "compose service ${service} is present"
     else
       fail "compose service ${service} is missing"
     fi
   done
+  if printf '%s\n' "$services" | grep -qx "redis"; then
+    pass "optional compose service redis is present"
+  else
+    warn "optional redis service is profile-gated; enable with --profile agent-cache only if AGENT_REDIS_URL is set"
+  fi
   if printf '%s\n' "$compose_config" | grep -Eq 'published: "?11434"?'; then
     warn "compose publishes Ollama port 11434; keep it firewalled/private on VPS"
   fi
