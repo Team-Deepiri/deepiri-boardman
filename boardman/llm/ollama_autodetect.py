@@ -169,10 +169,10 @@ def effective_ollama_model(request_model: Optional[str] = None) -> str:
     """API/scan `model` override, else settings.llm_model if set, else auto from /api/tags."""
     from boardman.settings import settings
 
-    # If request_model is present, it's a specific override.
-    # If not, we look at settings.llm_model.
-    
+    # Request-level overrides should be honored as-is. This avoids an
+    # unnecessary /api/tags lookup and lets callers intentionally probe
+    # specific model tags (404 handling happens on /api/chat).
     if request_model:
-        return resolve_ollama_model(settings.ollama_base_url, request_model)
-    
+        return request_model.strip()
+
     return resolve_ollama_model(settings.ollama_base_url, settings.llm_model)

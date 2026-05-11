@@ -3,6 +3,7 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from boardman.database.session import init_db
 from boardman.main import create_app
 
 
@@ -21,6 +22,8 @@ async def test_agent_chat_plain_llm_path(monkeypatch):
 
     monkeypatch.setattr(agent_svc, "chat_complete", fake_chat_complete)
 
+    # httpx ASGI transport doesn't run app lifespan; ensure DB tables exist.
+    await init_db()
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
