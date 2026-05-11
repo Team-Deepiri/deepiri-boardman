@@ -36,6 +36,10 @@ node_modules/
 *.swo
 *~
 
+# Cursor
+.cursor/
+.cursorrules
+
 # Environment
 .env
 .env.local

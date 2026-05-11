@@ -33,18 +33,48 @@ async def fetch_org_repository_full_names(
         return []
 
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-    url: Optional[str] = f"https://api.github.com/orgs/{org}/repos?per_page=100&type=all"
-    names: List[str] = []
 
-    while url:
-        r = await client.get(url, headers=headers)
-        r.raise_for_status()
-        for repo in r.json():
-            if skip_archived and repo.get("archived"):
-                continue
-            fn = repo.get("full_name")
-            if fn:
-                names.append(str(fn))
-        url = _parse_next_url(r.headers.get("Link"))
+    async def _fetch_all(start_url: str) -> List[str]:
+        url: Optional[str] = start_url
+        out: List[str] = []
+        while url:
+            r = await client.get(url, headers=headers)
+            r.raise_for_status()
+            for repo in r.json():
+                if skip_archived and repo.get("archived"):
+                    continue
+                fn = repo.get("full_name")
+                if fn:
+                    out.append(str(fn))
+            url = _parse_next_url(r.headers.get("Link"))
+        return out
+
+    org_url = f"https://api.github.com/orgs/{org}/repos?per_page=100&type=all"
+    try:
+        names = await _fetch_all(org_url)
+    except httpx.HTTPStatusError as exc:
+        # Some installations configure a GitHub owner that is a user account, not an org.
+        # In that case /orgs/{owner}/repos returns 404 while /users/{owner}/repos works.
+        if exc.response.status_code != 404:
+            raise
+        user_url = f"https://api.github.com/users/{org}/repos?per_page=100&type=all"
+        try:
+            names = await _fetch_all(user_url)
+        except httpx.HTTPStatusError as user_exc:
+            if user_exc.response.status_code != 404:
+                raise
+            # Final fallback: discover orgs visible to this PAT and try each.
+            orgs_resp = await client.get("https://api.github.com/user/orgs?per_page=100", headers=headers)
+            orgs_resp.raise_for_status()
+            discovered = [str(o.get("login", "")).strip() for o in (orgs_resp.json() or []) if o.get("login")]
+            names = []
+            for candidate in discovered:
+                candidate_url = f"https://api.github.com/orgs/{candidate}/repos?per_page=100&type=all"
+                try:
+                    names = await _fetch_all(candidate_url)
+                except httpx.HTTPStatusError:
+                    continue
+                if names:
+                    break
 
     return sorted(set(names))

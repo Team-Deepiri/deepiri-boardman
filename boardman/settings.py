@@ -89,6 +89,10 @@ class Settings(BaseSettings):
     # Optional cap on generated tokens (Ollama options.num_predict). Unset = server default (often slow for long replies).
     ollama_num_predict: int | None = None
     openai_api_key: str = ""
+    openrouter_api_key: str = ""
+    openrouter_base_url: str = "https://openrouter.ai/api/v1"
+    openrouter_referer: str = ""
+    openrouter_app_title: str = ""
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
 
