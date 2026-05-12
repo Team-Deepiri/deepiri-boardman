@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from deepiri_ollama.runtime import check
+
 import subprocess
 import time
 from typing import Optional
@@ -47,16 +49,10 @@ def is_gpu_available() -> bool:
 
 
 def list_ollama_model_names(base_url: str, *, timeout: float = 5.0) -> list[str]:
-    url = f"{base_url.rstrip('/')}/api/tags"
-    r = httpx.get(url, timeout=timeout)
-    r.raise_for_status()
-    data = r.json()
-    out: list[str] = []
-    for m in data.get("models") or []:
-        n = m.get("name") or m.get("model")
-        if n:
-            out.append(str(n))
-    return out
+    status = check(base_url=base_url)
+    if not status["ok"]:
+        return []
+    return status.get("models", [])
 
 
 def pick_preferred_ollama_model(names: list[str], prefer_small: bool = False) -> str:
