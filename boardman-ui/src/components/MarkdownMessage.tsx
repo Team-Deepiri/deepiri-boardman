@@ -1,7 +1,8 @@
-import { useDeferredValue } from "react";
+import { useDeferredValue, useMemo } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
+import { normalizeAssistantMarkdown } from "../lib/normalizeAssistantMarkdown";
 
 type MarkdownMessageProps = {
   content: string;
@@ -38,8 +39,9 @@ const markdownComponents: Components = {
 };
 
 export function MarkdownMessage({ content, className, isStreaming = false }: MarkdownMessageProps) {
-  const deferredContent = useDeferredValue(content);
-  const displayContent = isStreaming ? deferredContent : content;
+  const normalizedContent = useMemo(() => normalizeAssistantMarkdown(content), [content]);
+  const deferredContent = useDeferredValue(normalizedContent);
+  const displayContent = isStreaming ? deferredContent : normalizedContent;
   const rootClassName = className ? `markdown-body ${className}` : "markdown-body";
 
   return (

@@ -642,6 +642,10 @@ body {
   margin-bottom: 0;
 }
 
+.markdown-body strong {
+  font-weight: 600;
+}
+
 .markdown-body p {
   margin: 0.55rem 0;
 }

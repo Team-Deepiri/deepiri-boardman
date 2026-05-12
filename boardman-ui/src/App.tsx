@@ -794,7 +794,7 @@ export default function App() {
                         {msg.role === "assistant" ? (
                           <MarkdownMessage
                             content={msg.content}
-                            isStreaming={loading && i === messages.length - 1}
+                            isStreaming={loading && i === messages.length - 1 && msg.role === "assistant"}
                           />
                         ) : (
                           msg.content
@@ -887,7 +887,7 @@ export default function App() {
                       {msg.role === "assistant" ? (
                         <MarkdownMessage
                           content={msg.content}
-                          isStreaming={loading && i === messages.length - 1}
+                          isStreaming={loading && i === messages.length - 1 && msg.role === "assistant"}
                         />
                       ) : (
                         msg.content
