@@ -377,14 +377,15 @@ print_model_recommendations() {
   printf "%-26s %-10s %-18s %s\n" "MODEL" "~SIZE" "FIT" "NOTES"
   printf "%-26s %-10s %-18s %s\n" "-------------------------" "----------" "------------------" "-----"
 
-  declare -A seen=()
+  # macOS ships bash 3.2 (no associative arrays), so dedupe with a delimiter string.
+  local seen_models="|"
   local line model_name size_note desc cat word mark
   for line in "${MODEL_LIST[@]}"; do
     IFS='|' read -r model_name size_note desc <<< "$line"
-    if [[ -n "${seen[$model_name]:-}" ]]; then
+    if [[ "$seen_models" == *"|$model_name|"* ]]; then
       continue
     fi
-    seen[$model_name]=1
+    seen_models="${seen_models}${model_name}|"
     cat="$(categorize_model "$model_name" "$SYSTEM_RAM_GB" "$GPU_VRAM_GB")"
     word="$(rating_word "$cat")"
     mark=""
