@@ -67,6 +67,16 @@ class InitDirectionRequest(BaseModel):
     force: bool = False
 
 
+class InitDirectionResponse(BaseModel):
+    ok: bool
+    message: str | None = None
+    skipped: bool | None = None
+    url: str | None = None
+    branch: str | None = None
+    pr_branch: str | None = None
+    actor: str | None = None
+
+
 @router.post("/agent/chat")
 async def agent_chat(
     body: AgentChatRequest,
@@ -186,10 +196,15 @@ async def agent_scan(
     return result
 
 
-@router.post("/agent/init-direction")
+@router.post("/agent/init-direction", response_model=InitDirectionResponse)
 async def api_init_direction(body: InitDirectionRequest) -> dict:
+    """
+    Initialize DIRECTION.md by opening a PR from a temporary branch.
+    Requires a signed-in `gh` user with push access to the target repo.
+    """
     parts = body.repo.split("/")
     if len(parts) != 2:
         return {"ok": False, "message": "repo must be owner/name"}
     owner, name = parts[0], parts[1]
-    return await init_direction_file(owner, name, branch=body.branch, force=body.force)
+    # `init_direction_file` currently chooses the PR base/branch itself.
+    return await init_direction_file(owner, name, force=body.force)

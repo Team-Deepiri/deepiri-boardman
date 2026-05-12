@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from html import escape
 from typing import List, Optional
 
 import httpx
@@ -24,9 +25,15 @@ from boardman.services.task_mutations import (
     create_task_internal,
     update_task_internal,
 )
-from boardman.repos_config import list_registered_repos, list_workspace_repos, upsert_repo
+from boardman.repos_config import (
+    list_registered_repos,
+    list_workspace_repos,
+    repos_yaml_canonical_repo_key,
+    upsert_repo,
+)
 from boardman.services.direction_init import init_direction_file
 from boardman.services.scan_handler import run_repo_scan
+from boardman.assignment.qa_picker import ensure_github_owner_repo
 from boardman.settings import settings
 
 app = typer.Typer(help="deepiri-boardman CLI")
@@ -220,16 +227,25 @@ def link_pr(
 def list_tasks_cmd(
     status: str = typer.Option("open", "--status", "-s", help="Task status: open, done, etc."),
     format: str = typer.Option("table", "--format", "-f", help="Output format: table, json"),
+    plaky_board_id: Optional[str] = typer.Option(
+        None,
+        "--board-id",
+        help="Board id for listing items in v1/public mode.",
+    ),
 ):
     plaky = PlakyClient()
 
     async def run():
-        result = await plaky.get_tasks(status=status)
+        result = await plaky.get_tasks(status=status, board_id=plaky_board_id)
         if not result.get("ok"):
             console.print(f"[red]Error:[/red] {result.get('message')}")
             return
 
         tasks = result.get("tasks", [])
+        if not tasks:
+            msg = str(result.get("message") or "").strip()
+            if msg:
+                console.print(f"[yellow]{msg}[/yellow]")
         if format == "json":
             import json
             console.print(json.dumps(tasks, indent=2))
@@ -239,10 +255,16 @@ def list_tasks_cmd(
             table.add_column("Title")
             table.add_column("Status")
             for task in tasks:
-                task_id = task.get("id") or task.get("taskId", "N/A")
-                title = task.get("title", "Untitled")
-                task_status = task.get("status", "unknown")
-                table.add_row(task_id, title, task_status)
+                task_id = str(task.get("id") or task.get("itemId") or task.get("taskId") or "N/A")
+                title = str(task.get("title") or task.get("name") or "Untitled")
+                task_status = (
+                    task.get("status")
+                    or task.get("state")
+                    or task.get("workflowStatus")
+                    or task.get("workflow_state")
+                    or "unknown"
+                )
+                table.add_row(task_id, title, str(task_status))
             console.print(table)
 
     asyncio.run(run())
@@ -308,12 +330,27 @@ def update_task_cmd(
 
 @app.command()
 def sync(
-    repo: str = typer.Option(..., prompt=True, help="GitHub repo (owner/repo)"),
+    repo: str = typer.Option(
+        ...,
+        prompt=True,
+        help="GitHub repo name",
+    ),
+    board_id: str = typer.Option(
+        ...,
+        "--board-id",
+        help="Plaky board id",
+    ),
+    group_id: str = typer.Option(
+        ...,
+        "--group-id",
+        help="Plaky group id",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be synced without making changes"),
 ):
     if not settings.github_pat:
         console.print("[red]Error: GITHUB_PAT not configured[/red]")
         raise typer.Exit(1)
+    repo = ensure_github_owner_repo(repo)
 
     async def run():
         async with httpx.AsyncClient() as client:
@@ -328,16 +365,29 @@ def sync(
 
             plaky = PlakyClient()
             for issue in issues:
-                title = f"[{repo}] {issue['title']}"
-                body = f"{issue.get('body', '')}\n\n{issue['html_url']}"
+                title = f"{repo.split('/')[-1]} Issue: {issue['title']}"
+                issue_url = str(issue.get("html_url") or "").strip()
+                issue_number = issue.get("number")
+                issue_body = str(issue.get("body") or "").strip()
+                if settings.plaky_pr_comment_links_as_html and issue_url:
+                    label = f"{repo} issue #{issue_number}" if issue_number is not None else issue_url
+                    issue_link = f'<a href="{escape(issue_url, quote=True)}">{escape(label)}</a>'
+                else:
+                    issue_link = issue_url
+                body = f"{issue_body}\n\nIssue: {issue_link}" if issue_link else issue_body
                 console.print(f"  - #{issue['number']}: {issue['title']}")
                 if not dry_run:
                     result = await create_task_internal(
                         CreateTaskInput(
                             title=title,
                             description=body,
-                            priority="medium",
                             github_repos=[repo],
+                            task_type="Issue",
+                            status="Available",
+                            priority="High",
+                            plaky_board_id=board_id,
+                            plaky_group_id=group_id,
+                            auto_assign_team=False
                         )
                     )
                     if result.get("ok"):
@@ -350,13 +400,22 @@ def sync(
 
 @app.command("register")
 def register_repo(
-    repo: str = typer.Argument(..., help="GitHub repo owner/name"),
+    repo: str = typer.Argument(
+        ...,
+        help="Repository name or owner/repo; YAML key is repo name only. Bare names prepend "
+        "GITHUB_BARE_REPO_OWNER for GitHub as owner/repo elsewhere in the toolchain.",
+    ),
     category: str = typer.Option(..., "--category", "-c", help="ai|ml|backend|frontend|infrastructure"),
     plaky_table: str = typer.Option(..., "--table", "-t", help="Plaky table name"),
     description: str = typer.Option("", "--description", "-d"),
 ):
+    canon = repos_yaml_canonical_repo_key(repo)
+    full_slug = ensure_github_owner_repo(repo)
     upsert_repo(repo, category, plaky_table, description)
-    console.print(f"[green]Registered[/green] {repo} → {plaky_table}")
+    extra = ""
+    if full_slug.strip() != canon.strip():
+        extra = f" [dim]({full_slug})[/dim]"
+    console.print(f"[green]Registered[/green] {canon}{extra} → {plaky_table}")
 
 
 @app.command("scan")
@@ -495,22 +554,32 @@ app.add_typer(agent_app, name="agent")
 
 @app.command("init")
 def init_direction(
-    repo: str = typer.Argument(..., help="owner/repo"),
-    branch: Optional[str] = typer.Option(None, "--branch"),
-    force: bool = typer.Option(False, "--force", help="Overwrite existing DIRECTION.md"),
+    repo: str = typer.Argument(
+        ...,
+        help="repo name (deepiri-demo) or full slug (owner/deepiri-demo)",
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing DIRECTION.md")
 ):
-    parts = repo.split("/")
-    if len(parts) != 2:
-        console.print("[red]repo must be owner/name[/red]")
-        raise typer.Exit(1)
-
     async def run():
-        r = await init_direction_file(parts[0], parts[1], branch=branch, force=force)
+        default_owner = "Team-Deepiri"
+        parts = (repo or "").strip().split("/")
+        if len(parts) == 1 and parts[0]:
+            owner, name = default_owner, parts[0]
+        elif len(parts) == 2:
+            owner, name = parts[0], parts[1]
+        else:
+            console.print("[red]repo must be owner/name or bare repo name[/red]")
+            raise typer.Exit(1)
+
+        r = await init_direction_file(owner, name, force=force)
         if r.get("ok"):
             if r.get("skipped"):
                 console.print(f"[yellow]Skipped:[/yellow] {r.get('message')} {r.get('url', '')}")
             else:
-                console.print(f"[green]DIRECTION.md created[/green] branch={r.get('branch')} url={r.get('url')}")
+                console.print(
+                    f"[green]PR created for DIRECTION.md[/green] "
+                    f"base={r.get('branch')} head={r.get('pr_branch')} url={r.get('url')}"
+                )
         else:
             console.print(f"[red]{r.get('message')}[/red]")
             raise typer.Exit(1)

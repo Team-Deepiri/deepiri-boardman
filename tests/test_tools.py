@@ -597,6 +597,25 @@ class TestRepoConfig:
         routing = get_routing("unknown/repo", "repo", "unknown-org")
         assert routing is None
 
+    def test_get_routing_short_yaml_key(self, tmp_path, monkeypatch):
+        from boardman.repos_config import get_routing, reload_repos_config, repos_yaml_canonical_repo_key
+        from boardman.settings import settings
+
+        yml = tmp_path / "repos.yml"
+        yml.write_text(
+            "repos:\n  myrepo:\n    category: backend\n    plaky_table: SomeTable\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(settings, "repos_yml_path", str(yml))
+        monkeypatch.setattr(settings, "github_org", "deepiri-org")
+        monkeypatch.setattr(settings, "github_bare_repo_owner", "Team-Deepiri")
+        reload_repos_config()
+
+        r = get_routing("Team-Deepiri/myrepo", "myrepo", "deepiri-org")
+        assert r is not None
+        assert r.plaky_table == "SomeTable"
+        assert repos_yaml_canonical_repo_key("Team-Deepiri/myrepo") == "myrepo"
+
 
 class TestToolBuilding:
     def test_build_all_tools_readonly(self):
