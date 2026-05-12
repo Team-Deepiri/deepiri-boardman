@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -77,7 +77,30 @@ class InitDirectionResponse(BaseModel):
     actor: str | None = None
 
 
-@router.post("/agent/chat")
+class AgentChatResponse(BaseModel):
+    ok: bool = True
+    reply: str = Field(..., description="Assistant reply as GitHub-flavored markdown (plain text, not HTML).")
+    session_id: str
+    content_format: Literal["markdown"] = "markdown"
+
+
+class AgentHistoryMessage(BaseModel):
+    role: str
+    content: str = Field(..., description="Message body; assistant rows are GitHub-flavored markdown.")
+    created_at: str | None = None
+    content_format: Literal["markdown", "plain"] = Field(
+        ...,
+        description="How clients should render content: markdown for assistant, plain for user.",
+    )
+
+
+class AgentHistoryResponse(BaseModel):
+    ok: bool = True
+    session_id: str
+    messages: list[AgentHistoryMessage]
+
+
+@router.post("/agent/chat", response_model=AgentChatResponse)
 async def agent_chat(
     body: AgentChatRequest,
     request: Request,
@@ -105,7 +128,7 @@ async def agent_chat(
             plaky_board_id=context_board_id(),
             plaky_group_id=context_group_id(),
         )
-    return {"ok": True, "reply": reply, "session_id": sid}
+    return AgentChatResponse(reply=reply, session_id=sid)
 
 
 @router.post("/agent/chat/stream")
@@ -167,10 +190,10 @@ async def agent_job_status(job_id: str) -> dict[str, Any]:
     return out
 
 
-@router.get("/agent/sessions/{session_id}/history")
-async def agent_history(session_id: str, session: AsyncSession = Depends(get_db)) -> dict:
+@router.get("/agent/sessions/{session_id}/history", response_model=AgentHistoryResponse)
+async def agent_history(session_id: str, session: AsyncSession = Depends(get_db)) -> AgentHistoryResponse:
     hist = await get_session_history(session, session_id)
-    return {"ok": True, "session_id": session_id, "messages": hist}
+    return AgentHistoryResponse(session_id=session_id, messages=hist)
 
 
 @router.delete("/agent/sessions/{session_id}")

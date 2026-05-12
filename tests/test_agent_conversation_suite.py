@@ -142,6 +142,7 @@ async def test_http_agent_chat_two_turns_session_and_history(
             b1 = r1.json()
             assert b1["ok"] is True
             assert b1["reply"] == "alpha"
+            assert b1["content_format"] == "markdown"
             sid = b1["session_id"]
 
             r2 = await client.post(
@@ -157,6 +158,7 @@ async def test_http_agent_chat_two_turns_session_and_history(
             assert r2.status_code == 200, r2.text
             b2 = r2.json()
             assert b2["reply"] == "beta"
+            assert b2["content_format"] == "markdown"
             assert b2["session_id"] == sid
 
             rh = await client.get(f"/api/v1/agent/sessions/{sid}/history")
@@ -165,6 +167,11 @@ async def test_http_agent_chat_two_turns_session_and_history(
             roles = [m["role"] for m in hist]
             assert roles.count("user") == 2
             assert roles.count("assistant") == 2
+            for m in hist:
+                if m["role"] == "assistant":
+                    assert m["content_format"] == "markdown"
+                else:
+                    assert m["content_format"] == "plain"
     finally:
         app.dependency_overrides.clear()
         await engine.dispose()
