@@ -36,6 +36,8 @@ body {
   display: flex;
   flex-direction: column;
   gap: 1.25rem;
+  overflow-y: auto;
+  height: 100dvh;
 }
 
 .sidebar__brand {
@@ -454,6 +456,7 @@ body {
   flex-direction: column;
   min-width: 0;
   padding: 1.25rem 1.5rem 1.5rem;
+  height: 100dvh;
 }
 
 .main__header {
@@ -494,7 +497,7 @@ body {
   flex: 1;
   overflow-y: auto;
   min-height: 320px;
-  max-height: calc(100vh - 220px);
+  /* max-height: calc(100vh - 220px); */
   padding: 1rem 1.25rem;
   scroll-behavior: smooth;
 }
@@ -832,7 +835,7 @@ body {
 .composer__send {
   flex-shrink: 0;
   width: 44px;
-  height: 44px;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -895,6 +898,10 @@ body {
 .fab__icon {
   width: 24px;
   height: 24px;
+}
+
+.app:has(.chat-scroll) .fab {
+  display: none;
 }
 
 .drawer {
@@ -1050,7 +1057,7 @@ body {
 .drawer__send {
   flex-shrink: 0;
   width: 38px;
-  height: 38px;
+  height: 49px;
   display: flex;
   align-items: center;
   justify-content: center;
