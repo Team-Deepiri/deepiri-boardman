@@ -20,7 +20,7 @@ Automatically syncs GitHub issues and pull requests to Plaky tasks:
 - **AI scan** (`boardman scan`, `POST /api/v1/agent/scan`) — `DIRECTION.md` + GitHub + LLM → Plaky tasks
 - **Agent chat** — LangChain tool-calling agent (Plaky + GitHub + local repo tools) with **`allow_writes`** guardrail; falls back to plain chat if tools fail
 - **`boardman-ui`** — Vite/React chat + floating messages panel (Cyrex-style); dev proxy or nginx in Docker
-- **Docker Compose** — `boardman` API, **nginx** (static UI + `/api` → API), **Ollama** sidecar
+- **Docker Compose** — production cloud stack without Ollama; local/dev stack can include an Ollama sidecar
 - Docker deployment ready
 
 ## Quick Start
@@ -75,7 +75,22 @@ cd boardman-ui && npm install && npm run dev
 # API on :8090, UI on :5176 (proxies /api → boardman)
 ```
 
-### Full stack (Docker)
+### Production stack (Docker, no Ollama)
+
+Cloud production should not run local Ollama/model inference:
+
+```bash
+cp .env.production.example .env
+BOARDMAN_COMPOSE_FILE=docker-compose.prod.yml bash scripts/deploy_preflight.sh
+docker compose -f docker-compose.prod.yml up -d --build
+# API http://localhost:8090
+# UI + proxy http://localhost:8088  (nginx -> boardman)
+BOARDMAN_COMPOSE_FILE=docker-compose.prod.yml bash scripts/deploy_smoke.sh
+```
+
+Use an approved hosted LLM provider only if LLM-dependent features are required in production.
+
+### Local/dev full stack (Docker with Ollama)
 
 ```bash
 ./scripts/deploy_preflight.sh

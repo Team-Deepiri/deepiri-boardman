@@ -3,6 +3,7 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
+COMPOSE_FILE_PATH="${BOARDMAN_COMPOSE_FILE:-docker-compose.yml}"
 
 failures=0
 warnings=0
@@ -30,6 +31,10 @@ env_value() {
       exit
     }
   ' .env 2>/dev/null
+}
+
+compose() {
+  docker compose -f "$COMPOSE_FILE_PATH" "$@"
 }
 
 check_env_key() {
@@ -81,10 +86,10 @@ check_ollama_gpu_runtime() {
 printf 'Boardman deployment preflight\n'
 printf 'Repo: %s\n\n' "$ROOT"
 
-if [[ -f docker-compose.yml && -f .env.example ]]; then
+if [[ -f "$COMPOSE_FILE_PATH" && -f .env.example ]]; then
   pass "running from repo root"
 else
-  fail "run this script from the deepiri-boardman repo root"
+  fail "run this script from the deepiri-boardman repo root with a valid compose file"
 fi
 
 if [[ -f .env ]]; then
@@ -140,19 +145,26 @@ else
   fail "docker compose plugin is not installed"
 fi
 
-check_ollama_gpu_runtime
-
 compose_config=""
-if compose_config="$(docker compose config 2>/dev/null)"; then
-  pass "docker compose config renders"
-  services="$(printf '%s\n' "$compose_config" | docker compose config --services 2>/dev/null)"
-  for service in boardman boardman-worker boardman-nginx ollama; do
+if compose_config="$(compose config 2>/dev/null)"; then
+  pass "docker compose config renders (${COMPOSE_FILE_PATH})"
+  services="$(compose config --services 2>/dev/null)"
+  for service in boardman boardman-worker boardman-nginx; do
     if printf '%s\n' "$services" | grep -qx "$service"; then
       pass "compose service ${service} is present"
     else
       fail "compose service ${service} is missing"
     fi
   done
+  if printf '%s\n' "$services" | grep -qx "ollama"; then
+    pass "compose service ollama is present for local/dev LLM"
+    check_ollama_gpu_runtime
+  else
+    pass "compose omits ollama for cloud production"
+    if printf '%s\n' "$compose_config" | grep -Eq 'LLM_PROVIDER: "?ollama"?'; then
+      fail "production compose omits ollama but renders LLM_PROVIDER=ollama; use a hosted provider or disable LLM-dependent features"
+    fi
+  fi
   if printf '%s\n' "$services" | grep -qx "redis"; then
     pass "optional compose service redis is present"
   else
