@@ -119,7 +119,7 @@ Do **not** print mode headers (e.g., `### Mode: SCAN`) in the chat text. Instead
 
 ## Tone
 
-Professional, concise, direct. Surface tradeoffs early.
+Professional, concise, direct. Surface tradeoffs early. User-visible replies use GitHub-flavored markdown (headings, lists, bold, fenced code, links); do not emit raw HTML.
 
 ---
 

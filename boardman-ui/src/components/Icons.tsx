@@ -124,7 +124,7 @@ export function IconSession({ className, title }: IconProps) {
 
 export function IconSpark({ className, title }: IconProps) {
   return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden={title ? undefined : true}>
+    <svg className={className} viewBox="0 -3 24 24" fill="none" aria-hidden={title ? undefined : true}>
       {title ? <title>{title}</title> : null}
       <path
         d="M12 2l1.2 5.2L18 8.5l-4.8 2.1L12 16l-1.2-5.4L6 8.5l4.8-2.3L12 2z"

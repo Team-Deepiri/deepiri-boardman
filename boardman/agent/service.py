@@ -604,6 +604,7 @@ async def get_session_history(session: AsyncSession, session_id: str) -> list[di
                 "role": m.role,
                 "content": m.content,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
+                "content_format": "markdown" if m.role == "assistant" else "plain",
             }
         )
     return out
