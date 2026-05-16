@@ -106,6 +106,18 @@ async function sendChatStream(
       else if (j.type === "error") throw new Error(j.message || "stream error");
     }
   }
+  // Last SSE frame may arrive without a trailing newline — parse remainder.
+  const tail = buf.replace(/\r$/, "").trimEnd();
+  if (tail.startsWith("data: ")) {
+    try {
+      const j = JSON.parse(tail.slice(6)) as StreamSsePayload;
+      if (j.type === "session") onSession(j.session_id);
+      else if (j.type === "token") onToken(j.text);
+      else if (j.type === "error") throw new Error(j.message || "stream error");
+    } catch {
+      /* ignore truncated trailing JSON */
+    }
+  }
 }
 
 function EmptyState() {

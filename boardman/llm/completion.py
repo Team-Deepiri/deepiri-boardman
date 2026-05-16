@@ -103,15 +103,27 @@ async def chat_complete(
         raise ValueError(f"Unknown LLM_PROVIDER: {prov}")
 
 
+def _ollama_request_options() -> dict[str, Any]:
+    """Ollama /api/chat options: num_predict (cap) and num_ctx (avoid truncating long prompts)."""
+    opts: dict[str, Any] = {}
+    n = settings.ollama_num_predict
+    if n is not None and int(n) > 0:
+        opts["num_predict"] = int(n)
+    nctx = int(settings.ollama_num_ctx)
+    if nctx > 0:
+        opts["num_ctx"] = nctx
+    return opts
+
+
 async def _ollama_chat(client: httpx.AsyncClient, model: str, messages: List[dict[str, str]]) -> str:
     url = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
     body: dict[str, Any] = {"model": model, "messages": messages, "stream": False}
     ka = (settings.ollama_keep_alive or "").strip()
     if ka:
         body["keep_alive"] = ka
-    n = settings.ollama_num_predict
-    if n is not None and int(n) > 0:
-        body["options"] = {"num_predict": int(n)}
+    o = _ollama_request_options()
+    if o:
+        body["options"] = o
     r = await client.post(url, json=body)
     r.raise_for_status()
     data = r.json()
@@ -128,9 +140,9 @@ async def _ollama_chat_stream(
     ka = (settings.ollama_keep_alive or "").strip()
     if ka:
         body["keep_alive"] = ka
-    n = settings.ollama_num_predict
-    if n is not None and int(n) > 0:
-        body["options"] = {"num_predict": int(n)}
+    o = _ollama_request_options()
+    if o:
+        body["options"] = o
     async with client.stream("POST", url, json=body) as resp:
         resp.raise_for_status()
         async for line in resp.aiter_lines():

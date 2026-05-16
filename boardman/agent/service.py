@@ -17,7 +17,12 @@ from sqlalchemy.orm import selectinload
 
 from boardman.agent.memory_store import db_messages_to_langchain
 from boardman.agent.plaky_prompt_extra import plaky_placement_markdown
-from boardman.agent.prompts import BOARD_MANAGER_SYSTEM, TASK_CREATION_WORKFLOW
+from boardman.agent.prompts import (
+    AGENT_TOOL_FINAL_REPLY_HINT,
+    BOARD_MANAGER_SYSTEM,
+    PLAIN_CHAT_TOOLS_DISABLED_RUNTIME,
+    TASK_CREATION_WORKFLOW,
+)
 from boardman.agent.runner import iter_tool_agent, run_tool_agent
 from boardman.agent.task_draft import format_task_draft_for_prompt, load_task_draft
 from boardman.agent.tool_context import agent_tool_context
@@ -210,6 +215,14 @@ async def _load_draft_markdown(session: AsyncSession, agent_session_pk: int | No
     return format_task_draft_for_prompt(draft)
 
 
+def _plain_chat_extra_suffix(draft_md: str, intake_extra: str, *, use_tools: bool) -> str:
+    """Append runtime override when multi-step tools are off so the model does not fake tool JSON."""
+    base = draft_md + intake_extra
+    if settings.agent_langchain_tools and use_tools:
+        return base
+    return base + PLAIN_CHAT_TOOLS_DISABLED_RUNTIME
+
+
 async def _safe_plain_chat(
     *,
     message: str,
@@ -318,13 +331,14 @@ async def run_agent_chat(
             if repo:
                 extra += f"\n## Repo context\n`{repo}`"
             extra += plaky_suffix
-            extra += draft_md + intake_extra
+            extra += draft_md + intake_extra + AGENT_TOOL_FINAL_REPLY_HINT
             async with agent_tool_context(session, ag.id, plaky_board_id, plaky_group_id):
                 reply = await run_tool_agent(
                     message,
                     chat_history=lc_hist,
                     allow_writes=allow_writes,
                     system_extra=extra,
+                    request_model=model,
                 )
         except Exception as e:
             logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
@@ -337,7 +351,9 @@ async def run_agent_chat(
                 model=model,
                 resolved_provider=resolved_provider,
                 resolved_model=resolved_model,
-                extra_system_suffix=draft_md + intake_extra,
+                extra_system_suffix=_plain_chat_extra_suffix(
+                    draft_md, intake_extra, use_tools=False
+                ),
             )
     else:
         logger.info(
@@ -354,7 +370,9 @@ async def run_agent_chat(
             model=model,
             resolved_provider=resolved_provider,
             resolved_model=resolved_model,
-            extra_system_suffix=draft_md + intake_extra,
+            extra_system_suffix=_plain_chat_extra_suffix(
+                draft_md, intake_extra, use_tools=use_tools
+            ),
         )
 
     session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
@@ -439,13 +457,14 @@ async def iter_agent_chat_sse(
             if repo:
                 extra += f"\n## Repo context\n`{repo}`"
             extra += plaky_suffix
-            extra += draft_md + intake_extra
+            extra += draft_md + intake_extra + AGENT_TOOL_FINAL_REPLY_HINT
             async with agent_tool_context(session, ag.id, plaky_board_id, plaky_group_id):
                 async for chunk in iter_tool_agent(
                     message,
                     chat_history=lc_hist,
                     allow_writes=allow_writes,
                     system_extra=extra,
+                    request_model=model,
                 ):
                     if not chunk:
                         continue
@@ -458,7 +477,9 @@ async def iter_agent_chat_sse(
                 repo,
                 history_msgs,
                 plaky_suffix,
-                extra_system_suffix=draft_md + intake_extra,
+                extra_system_suffix=_plain_chat_extra_suffix(
+                    draft_md, intake_extra, use_tools=use_tools
+                ),
             )
             async for chunk in chat_complete_stream(llm_messages, provider=provider, model=model):
                 if not chunk:

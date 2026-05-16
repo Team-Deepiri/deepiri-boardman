@@ -1,10 +1,12 @@
 """
-PR ↔ Plaky task linking: candidate generation, deterministic scoring, optional LLM rerank.
+PR ↔ Plaky task linking: candidate generation and deterministic scoring.
 
 Stages:
   A) Recall-focused candidate generation (DB mappings + board items).
   B) Precision-focused composite score + negative signals.
-  C) Optional LLM rerank among top-K when score is in the medium band.
+  C) Optional LLM rerank among top-K when score is in the medium band — **off by default**
+     (`PR_LINKING_LLM_ENABLED=false`). Product policy is **heuristic-first**; enable LLM rerank
+     only when you explicitly want model inference in the gray zone.
 
 Designed for pull_request.opened when no Fixes/Closes issue keywords are present.
 """

@@ -5,8 +5,9 @@ No hardcoded Plaky labels: we score status option names against intent hints (e.
 "QA Verified", request changes → "QA Rejected"). Optional env/settings still override when set.
 
 Also: discover QA assignee field key from schema, and resolve GitHub actor → Plaky workspace user id
-via exact linked GitHub handle on the Plaky user row when present, then the same fuzzy
-``best_plaky_match_for_github`` pipeline used by assignment / sync (email, name, login heuristics).
+via exact linked GitHub handle on the Plaky user row when present, then the same **heuristic**
+``best_plaky_match_for_github`` pipeline used by assignment / sync (email, name, login scoring;
+optional LLM gray zone is off unless ``ASSIGNMENT_IDENTITY_LLM_ENABLED`` is set).
 """
 
 from __future__ import annotations

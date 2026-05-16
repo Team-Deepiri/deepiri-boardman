@@ -8,8 +8,12 @@ from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.settings import settings
 
 
-def get_chat_model() -> Any:
-    """Return a LangChain BaseChatModel for the configured provider."""
+def get_chat_model(*, request_model: str | None = None) -> Any:
+    """Return a LangChain BaseChatModel for the configured provider.
+
+    ``request_model``: optional per-request Ollama tag (e.g. UI dropdown); passed to
+    ``effective_ollama_model`` so the tool agent uses the same model as plain chat.
+    """
     p = (settings.llm_provider or "ollama").lower()
     if p in ("claude",):
         p = "anthropic"
@@ -18,8 +22,9 @@ def get_chat_model() -> Any:
         from langchain_ollama import ChatOllama
 
         ka = (settings.ollama_keep_alive or "").strip()
+        rm = (request_model or "").strip() or None
         kw: dict[str, Any] = {
-            "model": effective_ollama_model(None),
+            "model": effective_ollama_model(rm),
             "base_url": settings.ollama_base_url.rstrip("/"),
             "temperature": 0.2,
         }
@@ -28,6 +33,9 @@ def get_chat_model() -> Any:
         np = settings.ollama_num_predict
         if np is not None and int(np) > 0:
             kw["num_predict"] = int(np)
+        nctx = int(settings.ollama_num_ctx)
+        if nctx > 0:
+            kw["num_ctx"] = nctx
         return ChatOllama(**kw)
 
     if p == "anthropic":

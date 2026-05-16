@@ -2,8 +2,9 @@
 Link GitHub roster rows → Plaky workspace users when emails or names differ.
 
 Design:
-- Strong structural signals (email / login / name similarity) — no hardcoded name lists.
-- Optional LLM (Ollama, etc.) for gray-zone same-person judgment (see settings + llm_identity_match).
+- **Heuristic-first:** strong structural signals (email / login / name similarity) — no hardcoded name lists.
+- **Optional LLM** gray-zone pass (`ASSIGNMENT_IDENTITY_LLM_ENABLED`) — **off by default**; enable only if
+  you explicitly want model inference beyond `best_plaky_match_for_github` scores.
 - Conservative tie-breaking in best_plaky_match_for_github (ambiguity margin + runner-up gap).
 """
 

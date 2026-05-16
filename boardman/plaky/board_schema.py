@@ -43,6 +43,30 @@ def _opt_label(o: Any) -> str:
 def _collect_options(field: Dict[str, Any]) -> List[Dict[str, Any]]:
     seen_labels: set[str] = set()
     options: List[Dict[str, Any]] = []
+    # Plaky v1/public board field rows: STATUS / select values are under configuration.values
+    # (each entry uses `key` for the stored item value and `title` for the UI label).
+    conf = field.get("configuration")
+    if isinstance(conf, dict):
+        block = conf.get("values")
+        if isinstance(block, list):
+            for o in block:
+                if not isinstance(o, dict):
+                    continue
+                key_raw = o.get("key")
+                if key_raw is None:
+                    continue
+                key_s = str(key_raw).strip()
+                title = str(o.get("title") or o.get("name") or "").strip()
+                display = title or key_s
+                if not display or display in seen_labels:
+                    continue
+                seen_labels.add(display)
+                entry = dict(o, name=title or key_s)
+                entry.setdefault("id", key_s)
+                entry.setdefault("optionId", key_s)
+                options.append(entry)
+            if options:
+                return options
     for key in (
         "options",
         "choices",
@@ -72,6 +96,20 @@ def _collect_options(field: Dict[str, Any]) -> List[Dict[str, Any]]:
         if options:
             break
     return options
+
+
+def _field_option_dicts(f: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Option rows for schema resolution: prefer `options`, else Plaky `configuration.values`, etc."""
+    raw = f.get("options") or []
+    if isinstance(raw, list) and raw:
+        return [x for x in raw if isinstance(x, dict)]
+    collected = _collect_options(f)
+    nested = f.get("field")
+    if isinstance(nested, dict):
+        alt = _collect_options(nested)
+        if len(alt) > len(collected):
+            collected = alt
+    return [x for x in collected if isinstance(x, dict)]
 
 
 def plaky_field_row_label(f: Dict[str, Any]) -> str:
@@ -291,6 +329,161 @@ def _field_type_upper(f: Dict[str, Any]) -> str:
 
 def field_is_plaky_tag_column(f: Dict[str, Any]) -> bool:
     return "TAG" in _field_type_upper(f)
+
+
+def _status_option_label_matches_query(opt_label: str, query_cf: str) -> bool:
+    lab = (opt_label or "").strip().casefold().replace("_", " ").replace("-", " ")
+    if not query_cf or query_cf in ("all", "any", "*"):
+        return True
+    if not lab:
+        return False
+    if lab == query_cf:
+        return True
+    # "in progress" must not match "Revisions In Progress" (substring / loose word bag both hit).
+    if query_cf == "in progress":
+        return False
+    if query_cf in lab:
+        return True
+    q_words = [w for w in query_cf.split() if len(w) > 1]
+    if not q_words:
+        return False
+    lab_tokens = lab.split()
+    for start in range(len(lab_tokens)):
+        j = 0
+        for i in range(start, len(lab_tokens)):
+            if j < len(q_words) and lab_tokens[i] == q_words[j]:
+                j += 1
+                if j == len(q_words):
+                    return True
+    return False
+
+
+def resolve_status_field_option_values(
+    normalized: Optional[Dict[str, Any]],
+    status_query: str,
+) -> tuple[Optional[str], set[str]]:
+    """
+    Map a natural-language status filter to ``(status_field_key, accepted_value_strings)``.
+
+    Plaky list payloads usually store status as an **option id** (or nested object), not the UI
+    string ``In Progress``, so substring search on ``json.dumps(item)`` misses rows. This helper
+    reads the board schema option list and collects ids + labels for every option whose display
+    name matches ``status_query`` (case-insensitive, ``_``/``-`` normalized to spaces).
+
+    When the returned set is empty, callers should fall back to loose JSON substring matching.
+    """
+    if not isinstance(normalized, dict):
+        return None, set()
+    raw_fields = normalized.get("fields")
+    if not isinstance(raw_fields, list):
+        return None, set()
+    q = (status_query or "").strip().casefold().replace("_", " ").replace("-", " ")
+    if not q or q in ("all", "any", "*"):
+        return None, set()
+
+    candidates: List[Dict[str, Any]] = []
+    for f in raw_fields:
+        if not isinstance(f, dict):
+            continue
+        label = plaky_field_row_label(f)
+        ft = _field_type_upper(f)
+        is_statusish = "STATUS" in ft or (label == "status") or (label == "state") or (
+            "status" in label and "assign" not in label and "person" not in label
+        ) or ("state" in label and "estate" not in label and "restate" not in label)
+        if not is_statusish:
+            continue
+        options = _field_option_dicts(f)
+        if not options:
+            continue
+        candidates.append(f)
+    # Prefer native STATUS columns over generic selects named "… status …".
+    candidates.sort(key=lambda f: (0 if "STATUS" in _field_type_upper(f) else 1, plaky_field_row_label(f)))
+
+    best_key: Optional[str] = None
+    accepted: set[str] = set()
+    for f in candidates:
+        key = field_row_item_key(f)
+        if not key:
+            continue
+        options = _field_option_dicts(f)
+        matched_any = False
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            opt_name = str(opt.get("name") or "").strip()
+            if not _status_option_label_matches_query(opt_name, q):
+                continue
+            matched_any = True
+            pv = _option_primary_patch_value(opt)
+            if pv is not None:
+                accepted.add(str(pv).strip())
+            for k in ("id", "optionId", "value", "_id"):
+                raw = opt.get(k)
+                if raw is not None and str(raw).strip():
+                    accepted.add(str(raw).strip())
+            if opt_name:
+                accepted.add(opt_name.strip().casefold())
+        if matched_any:
+            best_key = key
+            break
+
+    if best_key and accepted:
+        return best_key, accepted
+
+    # Fallback: Plaky column names vary ("State", "Workflow", …). Any field whose *option labels*
+    # match the query can drive filtering; deprioritize obvious non-status columns.
+    best_score = -999
+    best_key2: Optional[str] = None
+    accepted2: set[str] = set()
+    for f in raw_fields:
+        if not isinstance(f, dict):
+            continue
+        key = field_row_item_key(f)
+        if not key:
+            continue
+        options = _field_option_dicts(f)
+        if not options:
+            continue
+        matched_opts: List[Dict[str, Any]] = []
+        for opt in options:
+            if not isinstance(opt, dict):
+                continue
+            if _status_option_label_matches_query(str(opt.get("name") or ""), q):
+                matched_opts.append(opt)
+        if not matched_opts:
+            continue
+        label = plaky_field_row_label(f)
+        ft = _field_type_upper(f)
+        score = 0
+        if "STATUS" in ft:
+            score += 8
+        if "status" in label:
+            score += 5
+        if label == "state" or ("state" in label and "estate" not in label):
+            score += 4
+        if any(w in label for w in ("workflow", "sprint", "stage", "column")):
+            score += 2
+        if any(w in label for w in ("priority", "type", "tag", "label", "repo", "github")):
+            score -= 6
+        if score > best_score:
+            best_score = score
+            best_key2 = key
+            accepted2 = set()
+            for opt in matched_opts:
+                pv = _option_primary_patch_value(opt)
+                if pv is not None:
+                    accepted2.add(str(pv).strip())
+                for kk in ("id", "optionId", "value", "_id"):
+                    raw = opt.get(kk)
+                    if raw is not None and str(raw).strip():
+                        accepted2.add(str(raw).strip())
+                on = str(opt.get("name") or "").strip()
+                if on:
+                    accepted2.add(on.casefold())
+    if best_key2 and accepted2:
+        return best_key2, accepted2
+
+    return None, set()
 
 
 def plaky_repo_field_value_format(

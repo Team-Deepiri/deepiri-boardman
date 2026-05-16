@@ -30,5 +30,15 @@ def plaky_placement_markdown(board_id: Optional[str], group_id: Optional[str]) -
             "- **group_id**: not set — use **plaky_match_group** with the board_id above, "
             "or pick a group from the board schema block."
         )
+    if bid and gid:
+        lines.extend(
+            [
+                "",
+                "**Listing tasks in this session:** call **plaky_list_tasks** with the desired `status` filter only. "
+                "Boardman scopes that call to the board/group above — you do **not** need `plaky_list_boards` "
+                "and must **not** ask the user which board to use.",
+                "",
+            ]
+        )
     lines.append("")
     return "\n".join(lines)

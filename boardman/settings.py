@@ -88,6 +88,9 @@ class Settings(BaseSettings):
     ollama_keep_alive: str = "30m"
     # Optional cap on generated tokens (Ollama options.num_predict). Unset = server default (often slow for long replies).
     ollama_num_predict: int | None = None
+    # Context window passed to Ollama (ChatOllama num_ctx). Default 8192 avoids truncating long agent+tool prompts
+    # at the runner default (often 4096), which breaks tool calling. Set to 0 to omit and use the server default.
+    ollama_num_ctx: int = Field(default=8192, ge=0)
     openai_api_key: str = ""
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -103,7 +106,7 @@ class Settings(BaseSettings):
     agent_recursion_limit: int = 22
     # When True, LangChain AgentExecutor prints step traces (noisy; dev only)
     agent_langchain_verbose: bool = False
-    prompt_version: str = "2026-04-09"
+    prompt_version: str = "2026-05-11"
 
     cors_origins: str = (
         "http://localhost:5176,http://127.0.0.1:5176,"

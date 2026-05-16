@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import StructuredTool
 
+from boardman.agent.tool_context import get_context_plaky_board_id, get_context_plaky_group_id
 from boardman.assignment.config import infer_plaky_field_keys_from_normalized, load_team_assignments
 from boardman.assignment.qa_picker import build_repo_field_map, normalize_github_repo_inputs
 from boardman.services.task_mutations import (
@@ -19,8 +20,10 @@ from boardman.services.task_mutations import (
 )
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
+    field_row_item_key,
     plaky_repo_field_value_format,
     resolve_repo_tag_field_values_from_schema,
+    resolve_status_field_option_values,
     validate_field_values_against_board_schema,
 )
 from boardman.plaky.client import PlakyClient
@@ -35,8 +38,248 @@ async def _plaky_list_boards() -> str:
     return json.dumps(raw, default=str)[:12000]
 
 
+def _item_group_id(row: Dict[str, Any]) -> str:
+    g = row.get("group")
+    if isinstance(g, dict):
+        gid_sub = str(g.get("id") or "").strip()
+    elif g is None or g == "":
+        gid_sub = ""
+    else:
+        gid_sub = str(g).strip()
+    return str(
+        row.get("groupId")
+        or row.get("group_id")
+        or row.get("boardGroupId")
+        or row.get("sectionId")
+        or gid_sub
+        or ""
+    ).strip()
+
+
+def _item_matches_status_filter(row: Dict[str, Any], status: str) -> bool:
+    """Loose match: status token must appear somewhere in the item JSON (labels, ids, keys)."""
+    sq = (status or "open").strip().lower().replace("-", " ").replace("_", " ")
+    if sq in ("", "all", "any", "*"):
+        return True
+    blob = json.dumps(row, default=str).lower()
+    compact = sq.replace(" ", "")
+    return sq in blob or compact in blob.replace(" ", "")
+
+
+def _flatten_field_values(val: Any) -> set[str]:
+    """String forms Plaky might use for a status/select cell (id, label, nested object)."""
+    out: set[str] = set()
+    if val is None:
+        return out
+    if isinstance(val, bool):
+        return out
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and val.is_integer():
+            out.add(str(int(val)))
+        else:
+            out.add(str(val))
+        return out
+    if isinstance(val, str):
+        s = val.strip()
+        if s:
+            out.add(s)
+        return out
+    if isinstance(val, dict):
+        for k in (
+            "id",
+            "value",
+            "optionId",
+            "option_id",
+            "selectedOptionId",
+            "selectedValue",
+            "name",
+            "label",
+            "title",
+        ):
+            if k in val:
+                out |= _flatten_field_values(val.get(k))
+        raw_ids = val.get("selectedOptionIds")
+        if isinstance(raw_ids, list):
+            out |= _flatten_field_values(raw_ids)
+        return out
+    if isinstance(val, list):
+        for x in val:
+            out |= _flatten_field_values(x)
+    return out
+
+
+def _item_status_values_for_field(item: Dict[str, Any], field_key: str) -> set[str]:
+    found: set[str] = set()
+    flds = item.get("fields")
+    if isinstance(flds, dict) and field_key in flds:
+        found |= _flatten_field_values(flds.get(field_key))
+    elif isinstance(flds, list):
+        for row in flds:
+            if not isinstance(row, dict):
+                continue
+            k = (
+                str(row.get("key") or row.get("fieldKey") or row.get("itemFieldKey") or "").strip()
+                or field_row_item_key(row)
+            )
+            if k != field_key:
+                continue
+            found |= _flatten_field_values(row.get("value"))
+            found |= _flatten_field_values(row.get("fieldValue"))
+            found |= _flatten_field_values(row.get("values"))
+    for group_key in ("itemFields", "boardItemFields", "item_fields", "customFields", "board_fields"):
+        block = item.get(group_key)
+        if not isinstance(block, list):
+            continue
+        for row in block:
+            if not isinstance(row, dict):
+                continue
+            k = (
+                str(row.get("fieldKey") or row.get("itemFieldKey") or row.get("key") or "").strip()
+                or field_row_item_key(row)
+            )
+            if k != field_key:
+                continue
+            found |= _flatten_field_values(row.get("value"))
+            found |= _flatten_field_values(row.get("fieldValue"))
+            found |= _flatten_field_values(row.get("values"))
+    return found
+
+
+def _item_matches_schema_status(
+    row: Dict[str, Any],
+    field_key: str,
+    accepted: set[str],
+) -> bool:
+    if not accepted:
+        return True
+    raw_vals = _item_status_values_for_field(row, field_key)
+    acc_cf = {a.strip().casefold() for a in accepted if (a or "").strip()}
+    acc_plain = {a.strip() for a in accepted if (a or "").strip()}
+    for v in raw_vals:
+        vs = str(v).strip()
+        if not vs:
+            continue
+        if vs in acc_plain or vs.casefold() in acc_cf:
+            return True
+    blob = json.dumps(row, default=str)
+    for a in accepted:
+        if len(str(a)) >= 4 and str(a) in blob:
+            return True
+    return False
+
+
+def _item_matches_status_accepted_loose(
+    row: Dict[str, Any],
+    field_key: Optional[str],
+    accepted: set[str],
+) -> bool:
+    """
+    True if the item carries any accepted status option id/label.
+
+    Schema ``field_key`` often mismatches Plaky list payloads (different itemField keys), so we
+    also scan ``fields`` / ``itemFields`` values and substring-match stable option ids on the JSON.
+    """
+    if not accepted:
+        return True
+    if field_key and _item_matches_schema_status(row, field_key, accepted):
+        return True
+    acc_cf = {str(a).strip().casefold() for a in accepted if str(a).strip()}
+    acc_plain = {str(a).strip() for a in accepted if str(a).strip()}
+    fld = row.get("fields")
+    if isinstance(fld, dict):
+        for v in fld.values():
+            for x in _flatten_field_values(v):
+                xs = str(x).strip()
+                if not xs:
+                    continue
+                if xs in acc_plain or xs.casefold() in acc_cf:
+                    return True
+    elif isinstance(fld, list):
+        for item_row in fld:
+            if not isinstance(item_row, dict):
+                continue
+            for vk in ("value", "fieldValue", "values"):
+                for x in _flatten_field_values(item_row.get(vk)):
+                    xs = str(x).strip()
+                    if not xs:
+                        continue
+                    if xs in acc_plain or xs.casefold() in acc_cf:
+                        return True
+    for group_key in ("itemFields", "boardItemFields", "item_fields", "customFields", "board_fields"):
+        block = row.get(group_key)
+        if not isinstance(block, list):
+            continue
+        for item_row in block:
+            if not isinstance(item_row, dict):
+                continue
+            for vk in ("value", "fieldValue", "values"):
+                for x in _flatten_field_values(item_row.get(vk)):
+                    xs = str(x).strip()
+                    if not xs:
+                        continue
+                    if xs in acc_plain or xs.casefold() in acc_cf:
+                        return True
+    blob = json.dumps(row, default=str)
+    for a in accepted:
+        sa = str(a).strip()
+        if len(sa) >= 6 and sa in blob:
+            return True
+    return False
+
+
 async def _plaky_list_tasks(status: str = "open") -> str:
+    """On v1/public, legacy GET /tasks is unavailable — list board items when board context is set."""
     c = PlakyClient()
+    bid = (get_context_plaky_board_id() or "").strip()
+    gid = (get_context_plaky_group_id() or "").strip()
+    if bid and c._public_root():
+        listed = await c.list_board_items(bid, max_pages=12)
+        if not listed.get("ok"):
+            return json.dumps(listed, default=str)[:12000]
+        raw_items = listed.get("items") or []
+        items: List[Dict[str, Any]] = [x for x in raw_items if isinstance(x, dict)]
+        group_relaxed = False
+        if gid:
+            scoped = [x for x in items if _item_group_id(x) == gid]
+            if not scoped and items:
+                scoped = items
+                group_relaxed = True
+            items = scoped
+
+        after_group = list(items)
+        st_low = (status or "").strip().lower()
+        if st_low not in ("all", "any", "*"):
+            bundle = await fetch_board_schema_bundle(bid)
+            norm = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+            fk, accepted = resolve_status_field_option_values(norm, status)
+            if accepted:
+                n0 = len(after_group)
+                filtered = [x for x in after_group if _item_matches_status_accepted_loose(x, fk, accepted)]
+                if filtered:
+                    items = filtered
+                elif n0:
+                    items = [x for x in after_group if _item_matches_status_filter(x, status)]
+                else:
+                    items = []
+            else:
+                items = [x for x in after_group if _item_matches_status_filter(x, status)]
+
+        msg = f"Listed {len(items)} item(s) from board {bid!r}"
+        if gid and not group_relaxed:
+            msg += " (scoped to the selected group)"
+        elif group_relaxed:
+            msg += " (group id did not match any item.groupId — showing all items on this board for the status filter)"
+        out = {
+            "ok": True,
+            "status": 200,
+            "tasks": items,
+            "source": "list_board_items",
+            "board_id": bid,
+            "group_id": gid or None,
+            "status_filter": status,
+            "message": msg,
+        }
+        return json.dumps(out, default=str)[:12000]
     r = await c.get_tasks(status=status)
     return json.dumps(r, default=str)[:12000]
 
@@ -449,7 +692,11 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
         StructuredTool.from_function(
             coroutine=_plaky_list_tasks,
             name="plaky_list_tasks",
-            description="List Plaky tasks. Args: status (open|done|... default open).",
+            description=(
+                "List tasks/items for the current Plaky board (and group when set in chat context). "
+                "Args: `status` — substring filter over item JSON (e.g. open, in_progress, done); "
+                "use `all` to skip status filtering. On v1/public this uses board item listing, not legacy /tasks."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=_plaky_get_task,

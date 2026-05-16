@@ -19,11 +19,19 @@ _log = logging.getLogger(__name__)
 
 
 def _item_group_id(item: dict[str, Any]) -> str:
+    g = item.get("group")
+    if isinstance(g, dict):
+        gid_sub = str(g.get("id") or "").strip()
+    elif g is None or g == "":
+        gid_sub = ""
+    else:
+        gid_sub = str(g).strip()
     return str(
         item.get("groupId")
         or item.get("group_id")
         or item.get("boardGroupId")
         or item.get("sectionId")
+        or gid_sub
         or ""
     ).strip()
 
