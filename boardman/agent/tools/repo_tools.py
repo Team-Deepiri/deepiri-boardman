@@ -3,56 +3,36 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import List
 
 from langchain_core.tools import StructuredTool
 
-DOC_NAMES = frozenset(
-    {
-        "readme.md",
-        "direction.md",
-        "spec.md",
-        "contributing.md",
-        "changelog.md",
-    }
-)
-SKIP_DIRS = frozenset(
-    {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".mypy_cache"}
-)
+from boardman.services.local_scan_context import gather_local_scan_context
+
+_OUTPUT_CAP = 14000
 
 
 def _scan_local_repo(path: str, max_files: int = 40) -> str:
-    root = Path(path).expanduser().resolve()
-    if not root.is_dir():
-        return json.dumps({"ok": False, "message": f"Not a directory: {root}"})
-
-    found: List[dict] = []
-    count = 0
-    for p in root.rglob("*"):
-        if count >= max_files:
-            break
-        if not p.is_file():
-            continue
-        parts = set(p.relative_to(root).parts)
-        if parts & SKIP_DIRS:
-            continue
-        if any(x in SKIP_DIRS for x in p.parts):
-            continue
-        try:
-            rel = str(p.relative_to(root))
-        except ValueError:
-            continue
-        low = p.name.lower()
-        if low in DOC_NAMES or rel.lower().startswith("docs/") or "/docs/" in rel.lower():
-            try:
-                text = p.read_text(encoding="utf-8", errors="replace")[:8000]
-            except OSError:
-                continue
-            found.append({"path": rel, "excerpt": text[:4000]})
-            count += 1
-
-    return json.dumps({"ok": True, "root": str(root), "files": found}, indent=2)[:14000]
+    """Bounded read of DIRECTION.md, README, docs/, markdown — same rules as batch local scan."""
+    bundle = gather_local_scan_context(
+        path,
+        max_doc_files=max_files,
+        excerpt_chars=4000,
+    )
+    if not bundle.get("ok"):
+        return json.dumps(
+            {"ok": False, "message": bundle.get("message", "invalid path")},
+            indent=2,
+        )
+    payload = {
+        "ok": True,
+        "root": bundle.get("root"),
+        "project_name": bundle.get("project_name"),
+        "direction_md": bundle.get("direction_md") or "",
+        "readme_excerpt": bundle.get("readme_excerpt") or "",
+        "top_level": bundle.get("top_level") or [],
+        "files": bundle.get("doc_excerpts") or [],
+    }
+    return json.dumps(payload, indent=2)[:_OUTPUT_CAP]
 
 
 def thoughts_tool() -> StructuredTool:
@@ -72,7 +52,8 @@ def scan_local_repo_tool() -> StructuredTool:
         _scan_local_repo,
         name="scan_local_repo",
         description=(
-            "Read key docs from a local filesystem path (README, DIRECTION.md, docs/, etc.). "
-            "Args: path (absolute or relative), max_files (default 40)."
+            "Read key docs from a local filesystem path (DIRECTION.md, README, docs/, other .md). "
+            "Returns direction_md, readme_excerpt, files (path+excerpt list), top_level. "
+            "Args: path (absolute or ~), max_files (default 40, caps doc entries in files)."
         ),
     )

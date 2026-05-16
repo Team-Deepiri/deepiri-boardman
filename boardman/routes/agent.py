@@ -17,7 +17,7 @@ from boardman.database.session import async_session, get_db
 from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
 from boardman.ratelimit.dependencies import require_agent_rate_limit
 from boardman.services.direction_init import init_direction_file
-from boardman.services.scan_handler import run_repo_scan
+from boardman.services.scan_handler import run_local_path_scan, run_repo_scan
 from boardman.settings import settings
 
 router = APIRouter()
@@ -59,6 +59,44 @@ class ScanRequest(BaseModel):
     dry_run: bool = False
     provider: str | None = None
     model: str | None = None
+    plaky_board_query: str | None = Field(
+        None,
+        description="Fuzzy-match board by name when plaky_board_id is not in repos.yml",
+    )
+    plaky_group_query: str | None = Field(
+        None,
+        description="Fuzzy-match group/section by name when plaky_group_id is missing",
+    )
+
+
+class LocalScanRequest(BaseModel):
+    """
+    Scan a local directory for Plaky task suggestions. Does not call the GitHub API.
+
+    Placement: ``plaky_board_id`` + ``plaky_group_id``, or ``github_repo`` with ``repos.yml``
+    (``plaky_group_id`` or ``plaky_table`` as a group name hint for fuzzy match), or
+    ``plaky_board_query`` / ``plaky_group_query`` to resolve names via the Plaky API
+    (same ranking as agent tool ``plaky_match_*``).
+    """
+
+    path: str = Field(..., description="Absolute or user-expandable path to project root")
+    dry_run: bool = False
+    provider: str | None = None
+    model: str | None = None
+    plaky_board_id: str | None = None
+    plaky_group_id: str | None = None
+    plaky_board_query: str | None = Field(
+        None,
+        description="Fuzzy-match board by name (API list_boards + rank) when board id missing",
+    )
+    plaky_group_query: str | None = Field(
+        None,
+        description="Fuzzy-match group by name when group id missing",
+    )
+    github_repo: str | None = Field(
+        None,
+        description="Optional owner/name for repos.yml routing and QA/repo Plaky fields",
+    )
 
 
 class InitDirectionRequest(BaseModel):
@@ -182,8 +220,31 @@ async def agent_scan(
         dry_run=body.dry_run,
         provider=body.provider,
         model=body.model,
+        plaky_board_query=body.plaky_board_query,
+        plaky_group_query=body.plaky_group_query,
     )
     return result
+
+
+@router.post("/agent/scan-local")
+async def agent_scan_local(
+    body: LocalScanRequest,
+    request: Request,
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    await require_agent_rate_limit(request)
+    return await run_local_path_scan(
+        session,
+        body.path,
+        dry_run=body.dry_run,
+        provider=body.provider,
+        model=body.model,
+        plaky_board_id=body.plaky_board_id,
+        plaky_group_id=body.plaky_group_id,
+        plaky_board_query=body.plaky_board_query,
+        plaky_group_query=body.plaky_group_query,
+        github_repo=body.github_repo,
+    )
 
 
 @router.post("/agent/init-direction")

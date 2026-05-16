@@ -26,7 +26,7 @@ from boardman.services.task_mutations import (
 )
 from boardman.repos_config import list_registered_repos, list_workspace_repos, upsert_repo
 from boardman.services.direction_init import init_direction_file
-from boardman.services.scan_handler import run_repo_scan
+from boardman.services.scan_handler import run_local_path_scan, run_repo_scan
 from boardman.settings import settings
 
 app = typer.Typer(help="deepiri-boardman CLI")
@@ -365,13 +365,90 @@ def scan_repo(
     dry_run: bool = typer.Option(False, "--dry-run"),
     provider: Optional[str] = typer.Option(None, "--provider"),
     model: Optional[str] = typer.Option(None, "--model"),
+    plaky_board_query: Optional[str] = typer.Option(
+        None,
+        "--board-query",
+        help="Fuzzy-match Plaky board name when repos.yml has no plaky_board_id",
+    ),
+    plaky_group_query: Optional[str] = typer.Option(
+        None,
+        "--group-query",
+        help="Fuzzy-match group/section name when plaky_group_id missing",
+    ),
 ):
     async def run():
         async with async_session() as session:
-            result = await run_repo_scan(session, repo, dry_run=dry_run, provider=provider, model=model)
+            result = await run_repo_scan(
+                session,
+                repo,
+                dry_run=dry_run,
+                provider=provider,
+                model=model,
+                plaky_board_query=plaky_board_query,
+                plaky_group_query=plaky_group_query,
+            )
             await session.commit()
         if result.get("ok"):
             console.print(f"[green]OK[/green] parsed={result.get('tasks_parsed')} created={result.get('tasks_created')}")
+            if result.get("preview"):
+                console.print(json.dumps(result["preview"], indent=2))
+        else:
+            console.print(f"[red]{result.get('message', result)}[/red]")
+            raise typer.Exit(1)
+
+    asyncio.run(run())
+
+
+@app.command("scan-local")
+def scan_local(
+    path: str = typer.Argument(..., help="Local project root directory"),
+    dry_run: bool = typer.Option(False, "--dry-run"),
+    provider: Optional[str] = typer.Option(None, "--provider"),
+    model: Optional[str] = typer.Option(None, "--model"),
+    plaky_board_id: Optional[str] = typer.Option(None, "--board-id", help="Plaky board id (required if repos.yml cannot resolve)"),
+    plaky_group_id: Optional[str] = typer.Option(None, "--group-id", help="Plaky group id"),
+    github_repo: Optional[str] = typer.Option(
+        None,
+        "--repo",
+        "-r",
+        help="Optional owner/name for repos.yml placement and assignment fields",
+    ),
+    plaky_board_query: Optional[str] = typer.Option(
+        None,
+        "--board-query",
+        help="Fuzzy-match board name when --board-id omitted",
+    ),
+    plaky_group_query: Optional[str] = typer.Option(
+        None,
+        "--group-query",
+        help="Fuzzy-match group name when --group-id omitted",
+    ),
+):
+    """Suggest (or create) Plaky tasks from local docs only — no GitHub API."""
+
+    async def run():
+        async with async_session() as session:
+            result = await run_local_path_scan(
+                session,
+                path,
+                dry_run=dry_run,
+                provider=provider,
+                model=model,
+                plaky_board_id=plaky_board_id,
+                plaky_group_id=plaky_group_id,
+                plaky_board_query=plaky_board_query,
+                plaky_group_query=plaky_group_query,
+                github_repo=github_repo,
+            )
+            await session.commit()
+        if result.get("ok"):
+            mode = result.get("scan_mode", "")
+            root = result.get("local_root", "")
+            extra = f" mode={mode} root={root}" if mode or root else ""
+            console.print(
+                f"[green]OK[/green] parsed={result.get('tasks_parsed')} "
+                f"created={result.get('tasks_created')}{extra}"
+            )
             if result.get("preview"):
                 console.print(json.dumps(result["preview"], indent=2))
         else:

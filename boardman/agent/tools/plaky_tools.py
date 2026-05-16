@@ -29,6 +29,7 @@ from boardman.plaky.board_schema import (
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.task_tag_vocab import canonical_task_priority, plaky_create_legacy_priority_param
 from boardman.plaky.name_match import rank_plaky_rows
+from boardman.plaky.placement_resolve import match_boards, match_groups
 
 
 async def _plaky_list_boards() -> str:
@@ -299,16 +300,8 @@ async def _plaky_get_board_item(board_id: str, item_id: str) -> str:
 
 async def _plaky_match_board(name_query: str) -> str:
     """List boards from Plaky API and rank by name vs `name_query` (e.g. user's board mention)."""
-    c = PlakyClient()
-    raw = await c.list_boards()
-    boards = raw.get("boards") or []
-    if not isinstance(boards, list):
-        boards = []
-    matches, best = rank_plaky_rows(boards, name_query)
-    return json.dumps(
-        {"list_ok": raw.get("ok"), "message": raw.get("message"), "matches": matches[:25], "best": best},
-        default=str,
-    )[:12000]
+    data = await match_boards(name_query)
+    return json.dumps(data, default=str)[:12000]
 
 
 async def _plaky_board_schema(board_id: str) -> str:
@@ -327,16 +320,8 @@ async def _plaky_board_schema(board_id: str) -> str:
 
 async def _plaky_match_group(board_id: str, name_query: str) -> str:
     """List groups on `board_id` and rank by name vs `name_query`."""
-    c = PlakyClient()
-    raw = await c.list_groups(board_id)
-    groups = raw.get("groups") or []
-    if not isinstance(groups, list):
-        groups = []
-    matches, best = rank_plaky_rows(groups, name_query)
-    return json.dumps(
-        {"list_ok": raw.get("ok"), "message": raw.get("message"), "matches": matches[:25], "best": best},
-        default=str,
-    )[:12000]
+    data = await match_groups(board_id, name_query)
+    return json.dumps(data, default=str)[:12000]
 
 
 async def _plaky_list_workspace_users(name_query: str = "") -> str:

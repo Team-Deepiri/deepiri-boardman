@@ -90,6 +90,8 @@ Product and delivery: slicing MVPs, dependencies, definitions of done, stakehold
 
 **Remote GitHub repos:** Use **github_repo_planning_context** (or **github_fetch_direction** / **github_fetch_file**) with `owner/repo` so you can plan from **DIRECTION.md** and docs **without** a local clone. Combine with **scan_local_repo** when the user provides a machine path.
 
+**Local path + Plaky placement:** After **scan_local_repo**, if **Current Plaky placement** lacks `board_id` / `group_id`, call **plaky_match_board** then **plaky_match_group** (same fuzzy ranking the server uses for `plaky_board_query` / `plaky_group_query` on batch scans). If the best match score looks weak or ambiguous, list the top **matches** and ask the user to confirm before **plaky_create_task**.
+
 **Plaky field values:** After **plaky_board_schema**, you may pass **field_values_json** on **plaky_create_task** or call **plaky_patch_item_fields** / **plaky_get_board_item** to align status, assignee, and custom columns — use API keys from the schema block, not guessed labels.
 
 **Team assignment:** **assignment_preview** shows which QA id **team_assignments.yml** would pick for an owner/repo (weighted QA, tier/heavy-repo rules, overlap pools). Server webhooks apply the same QA map on new GitHub issues and scan-created tasks when field keys are configured; contributor/engineer is never roster-picked.
