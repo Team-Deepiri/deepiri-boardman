@@ -16,9 +16,10 @@ Automatically syncs GitHub issues and pull requests to Plaky tasks:
 - GitHub webhook receiver with HMAC verification
 - SQLite database for issue↔task mapping
 - CLI for manual operations (`boardman`)
-- **`repos.yml`** routing → Plaky table hints on new tasks (webhook + scan)
-- **AI scan** (`boardman scan`, `POST /api/v1/agent/scan`) — `DIRECTION.md` + GitHub + LLM → Plaky tasks
-- **Agent chat** — LangChain tool-calling agent (Plaky + GitHub + local repo tools) with **`allow_writes`** guardrail; falls back to plain chat if tools fail
+- **`repos.yml`** routing → Plaky board/group ids (and `plaky_table` as a group **name hint** for fuzzy matching when group id is missing)
+- **AI scan (GitHub)** (`boardman scan`, `POST /api/v1/agent/scan`) — remote `DIRECTION.md` + commits/issues + LLM → Plaky tasks
+- **AI scan (local path)** (`boardman scan-local`, `POST /api/v1/agent/scan-local`) — reads `DIRECTION.md`, README, and docs from a **local directory** only (no GitHub API for content); optional `--board-query` / `--group-query` (or JSON `plaky_board_query` / `plaky_group_query`) resolve placement via **live Plaky lists + name ranking** (same logic as agent `plaky_match_*`)
+- **Agent chat** — LangChain tool-calling agent (Plaky + GitHub + **`scan_local_repo`**, backed by the same doc gatherer as batch local scan) with **`allow_writes`** guardrail; falls back to plain chat if tools fail
 - **`boardman-ui`** — Vite/React chat + floating messages panel (Cyrex-style); dev proxy or nginx in Docker
 - **Docker Compose** — `boardman` API, **nginx** (static UI + `/api` → API), **Ollama** sidecar
 - Docker deployment ready
@@ -59,6 +60,9 @@ poetry run boardman list --status open
 poetry run boardman sync --repo owner/repo
 poetry run boardman register owner/repo --category ai --table "AI Bugs / What to DO"
 poetry run boardman scan owner/repo --dry-run
+poetry run boardman scan owner/repo --dry-run --board-query "My board" --group-query "Backlog"
+poetry run boardman scan-local /path/to/project --dry-run --board-id ... --group-id ...
+poetry run boardman scan-local /path/to/project --dry-run --board-query "Engineering" --group-query "Ideas"
 poetry run boardman doctor
 poetry run boardman agent chat -m "What should we prioritize?"
 poetry run boardman agent ask -m "List open Plaky tasks"
@@ -101,7 +105,8 @@ bash scripts/deploy_smoke.sh
 - `POST /api/v1/agent/chat` - Agent chat (`message`, `session_id?`, `repo?`, `provider?`, `model?`, **`allow_writes`**)
 - `GET /api/v1/agent/sessions/{id}/history` - Session transcript
 - `DELETE /api/v1/agent/sessions/{id}` - Drop session
-- `POST /api/v1/agent/scan` - `{ "repo": "owner/name", "dry_run": false, ... }`
+- `POST /api/v1/agent/scan` - `{ "repo": "owner/name", "dry_run": false, "plaky_board_query?": "...", "plaky_group_query?": "...", ... }`
+- `POST /api/v1/agent/scan-local` - `{ "path": "/abs/or/~/path", "dry_run": false, "plaky_board_id?": "...", "plaky_group_id?": "...", "plaky_board_query?": "...", "plaky_group_query?": "...", "github_repo?": "owner/name", ... }`
 - `POST /api/v1/agent/init-direction` - `{ "repo": "owner/name", "branch?": "main", "force?": false }`
 
 ## Configuration
