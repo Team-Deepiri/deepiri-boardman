@@ -408,6 +408,8 @@ def _check_compose(compose_path: Path) -> list[ReadinessCheck]:
                 )
             )
 
+    checks.extend(_check_queue_services(services))
+
     if "ollama" in services:
         checks.append(
             ReadinessCheck(
@@ -453,6 +455,54 @@ def _check_compose(compose_path: Path) -> list[ReadinessCheck]:
             )
         )
     return checks
+
+
+def _check_queue_services(services: dict[str, Any]) -> list[ReadinessCheck]:
+    checks: list[ReadinessCheck] = []
+    if "boardman-worker" in services:
+        worker_command = services.get("boardman-worker", {}).get("command", "")
+        worker_command_text = (
+            " ".join(worker_command) if isinstance(worker_command, list) else str(worker_command)
+        )
+        if "boardman.sqlite_worker" in worker_command_text:
+            checks.append(
+                ReadinessCheck(
+                    "queue",
+                    "worker queue backend",
+                    PASS,
+                    "boardman-worker consumes SQLite background_jobs from boardman.db",
+                    "Kafka/Redpanda is not part of the wave-one Boardman compose path.",
+                )
+            )
+        else:
+            checks.append(
+                ReadinessCheck(
+                    "queue",
+                    "worker queue backend",
+                    WARN,
+                    "boardman-worker command is not the expected SQLite worker",
+                    "Confirm the worker queue backend before go-live.",
+                )
+            )
+
+    if any(service in services for service in ("kafka", "redpanda")):
+        return checks + [
+            ReadinessCheck(
+                "queue",
+                "kafka-compatible service",
+                WARN,
+                "Kafka-compatible service is present in compose",
+                "Confirm this is intentional; Boardman wave one does not require Kafka.",
+            )
+        ]
+    return checks + [
+        ReadinessCheck(
+            "queue",
+            "kafka-compatible service",
+            PASS,
+            "no Kafka/Redpanda service in Boardman wave-one compose",
+        )
+    ]
 
 
 def _check_repos_yml(path: Path) -> list[ReadinessCheck]:
