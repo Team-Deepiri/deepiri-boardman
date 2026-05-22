@@ -61,6 +61,7 @@ poetry run boardman sync --repo repo --board-id ID --group-id ID --dry-run #dry-
 poetry run boardman register repo --category ai --table "AI Bugs / What to DO"
 poetry run boardman scan ORG/REPO --dry-run
 poetry run boardman doctor
+poetry run boardman readiness
 poetry run boardman agent chat -m "What should we prioritize?"
 poetry run boardman agent ask -m "List open Plaky tasks"
 poetry run boardman init REPO
@@ -81,6 +82,8 @@ Cloud production should not run local Ollama/model inference:
 
 ```bash
 cp .env.production.example .env
+# Fill .env on the target host, then:
+poetry run boardman readiness
 BOARDMAN_COMPOSE_FILE=docker-compose.prod.yml bash scripts/deploy_preflight.sh
 docker compose -f docker-compose.prod.yml up -d --build
 # API http://localhost:8090
@@ -145,6 +148,8 @@ See `.env.example` for all options. Key variables:
   - OpenRouter is supported via `LLM_PROVIDER=openrouter`, `OPENROUTER_API_KEY`, and provider-prefixed model IDs like `anthropic/claude-3.5-sonnet`.
 
 Deployment runbook: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+Readiness/status handoff: [docs/BOARDMAN_READINESS.md](docs/BOARDMAN_READINESS.md).
 
 Full roadmap: [docs/PLAN.md](docs/PLAN.md).
 
