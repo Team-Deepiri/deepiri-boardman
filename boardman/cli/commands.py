@@ -2,21 +2,31 @@ import asyncio
 import json
 import re
 from html import escape
+from pathlib import Path
 from typing import List, Optional
 
 import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
-
 from sqlalchemy import func, select
 
 from boardman.agent.service import run_agent_chat
-from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
+from boardman.assignment.qa_picker import ensure_github_owner_repo
 from boardman.database.models import AgentSession, ProjectContext, ScanRun
 from boardman.database.session import async_session
 from boardman.plaky.client import PlakyClient
+from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
+from boardman.readiness import build_readiness_report
+from boardman.repos_config import (
+    list_registered_repos,
+    list_workspace_repos,
+    repos_yaml_canonical_repo_key,
+    upsert_repo,
+)
+from boardman.services.direction_init import init_direction_file
 from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
+from boardman.services.scan_handler import run_repo_scan
 from boardman.services.task_mutations import (
     CreateSubtaskInput,
     CreateTaskInput,
@@ -25,15 +35,6 @@ from boardman.services.task_mutations import (
     create_task_internal,
     update_task_internal,
 )
-from boardman.repos_config import (
-    list_registered_repos,
-    list_workspace_repos,
-    repos_yaml_canonical_repo_key,
-    upsert_repo,
-)
-from boardman.services.direction_init import init_direction_file
-from boardman.services.scan_handler import run_repo_scan
-from boardman.assignment.qa_picker import ensure_github_owner_repo
 from boardman.settings import settings
 
 app = typer.Typer(help="deepiri-boardman CLI")
@@ -485,6 +486,84 @@ def doctor():
             console.print("[dim]Fix missing keys in .env for full functionality.[/dim]")
 
     asyncio.run(run())
+
+
+@app.command("readiness")
+def readiness_cmd(
+    env_file: Path = typer.Option(
+        Path(".env"),
+        "--env-file",
+        help="Env file to inspect without printing secret values.",
+    ),
+    compose_file: Path = typer.Option(
+        Path("docker-compose.prod.yml"),
+        "--compose-file",
+        help="Docker Compose file to inspect.",
+    ),
+    repos_file: Path = typer.Option(Path("repos.yml"), "--repos-file", help="Repo routing YAML."),
+    team_assignments_file: Path = typer.Option(
+        Path("team_assignments.yml"),
+        "--team-assignments-file",
+        help="Plaky/team assignment YAML.",
+    ),
+    database_file: Path = typer.Option(
+        Path("boardman.db"),
+        "--database-file",
+        help="SQLite file bind-mounted into Docker.",
+    ),
+    format: str = typer.Option("table", "--format", "-f", help="Output format: table or json."),
+    strict_pending: bool = typer.Option(
+        False,
+        "--strict-pending",
+        help="Exit non-zero when checks are pending, not only when they fail.",
+    ),
+):
+    """Offline production readiness report for the standalone Boardman repo."""
+    report = build_readiness_report(
+        Path.cwd(),
+        env_file=env_file,
+        compose_file=compose_file,
+        repos_file=repos_file,
+        team_assignments_file=team_assignments_file,
+        database_file=database_file,
+    )
+
+    if format == "json":
+        console.print(json.dumps(report.to_dict(), indent=2))
+    elif format == "table":
+        status_style = {
+            "pass": "green",
+            "warn": "yellow",
+            "pending": "magenta",
+            "fail": "red",
+        }
+        console.print(
+            "[bold]Boardman readiness[/bold] "
+            f"pass={report.passed} warn={report.warnings} "
+            f"pending={report.pending} fail={report.failures}"
+        )
+        table = Table(title="Standalone Boardman Deployment Gates")
+        table.add_column("Status", width=9)
+        table.add_column("Area", width=12)
+        table.add_column("Check")
+        table.add_column("Detail")
+        table.add_column("Next")
+        for check in report.checks:
+            style = status_style.get(check.status, "white")
+            table.add_row(
+                f"[{style}]{check.status.upper()}[/{style}]",
+                check.area,
+                check.name,
+                check.detail,
+                check.next_step,
+            )
+        console.print(table)
+    else:
+        console.print("[red]Error:[/red] --format must be table or json")
+        raise typer.Exit(2)
+
+    if report.failures or (strict_pending and report.pending):
+        raise typer.Exit(1)
 
 
 def _agent_chat_async(
