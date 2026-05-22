@@ -46,6 +46,7 @@ Owner area: Boardman standalone repo readiness/deployment.
 Done fully:
 - Standalone repo confirmed: Team-Deepiri/deepiri-boardman.
 - Production shape exists: FastAPI API, boardman-worker, nginx/UI proxy, docker-compose.prod.yml.
+- GitHub auth mode confirmed for wave one: PAT.
 - Preflight and smoke scripts exist for Docker deployment.
 - Readiness command added: poetry run boardman readiness.
 - Production env template now tracks target env, GitHub auth mode, public URL, webhook events, and credential rotation gate.
@@ -58,13 +59,11 @@ Still in progress:
 
 Blocked by what/who:
 - Joe/Kyle decision: target environment/public URL.
-- Joe/Kyle decision: GitHub auth mode for wave one. Current runtime is PAT-first.
-- Plaky board owner: board/group IDs, field IDs, and status option values.
-- Security owner: rotate every pasted/shared credential before deploy.
+- Plaky admin/access person: board/group IDs, field IDs, and status option values.
+- Security/deployment person: rotate every pasted/shared credential before deploy.
 
 What I need next:
 - Approve the wave-one target host and hostname.
-- Confirm PAT vs GitHub App for wave one.
 - Provide/confirm Plaky board/group/field IDs.
 - After secrets are rotated and stored on the host, I can run readiness, preflight, compose up, smoke, and write the final go-live pass/fail note.
 ```
@@ -80,6 +79,21 @@ Boardman production for wave one is:
 - `repos.yml` and `team_assignments.yml`: deployment config.
 - `worker/`: optional Cloudflare Worker for `/assign-qa`, not the main backend.
 
+## Queue Path
+
+The wave-one Boardman Docker Compose path does not run Kafka, Redpanda, or any Kafka-compatible
+broker.
+
+Current queue path:
+
+- API enqueues async jobs into SQLite table `background_jobs` in `boardman.db`.
+- `boardman-worker` runs `python -m boardman.sqlite_worker`.
+- The worker claims jobs from SQLite and runs registered handlers.
+- Optional `redis` is only for API/agent cache when the `agent-cache` profile is enabled.
+
+If Joe wants a Kafka-compatible path later, that is a separate queue adapter/service decision.
+It is not required for the standalone Boardman wave-one deploy.
+
 Boardman production is not the full Deepiri platform. Norozo, API gateway, auth service,
 engagement service, task orchestrator, Kubernetes, managed databases, vector DBs, GPU hosts,
 and local model inference should stay outside the wave-one Boardman deploy unless Joe explicitly
@@ -88,7 +102,7 @@ changes the scope.
 ## Go-Live Gates
 
 - Target environment and public hostname are confirmed.
-- GitHub auth mode is confirmed.
+- GitHub auth mode is PAT for wave one.
 - GitHub webhook payload URL is `https://<boardman-host>/api/v1/webhooks/github`.
 - Webhook events are enabled: issues, pull requests, pull request reviews, pull request review comments, issue comments.
 - All pasted/shared credentials are rotated and stored only in the target environment.
@@ -101,3 +115,18 @@ changes the scope.
 - A test webhook creates/updates a Plaky item without duplicates on replay.
 - PR link/review/comment status tests pass.
 - Final pass/fail note is posted with host, commit, smoke repo, webhook result, Plaky result, and rollback commit.
+
+## Secrets To Rotate
+
+Rotate these before deployment if they were pasted/shared or used from a personal account:
+
+- `PLAKY_API_KEY`
+- `GITHUB_PAT`
+- `GITHUB_WEBHOOK_SECRET`
+- `WORKER_INTERNAL_SECRET`
+- `ROUTE_SECRET`
+- Cloudflare API token, if Cloudflare DNS or the optional Cloudflare Worker path is used.
+- Hosted LLM API keys, if used in production: OpenAI, OpenRouter, Anthropic, Gemini.
+- Database or Redis passwords, if a managed DB/cache is introduced later.
+
+GitHub App secrets are not part of wave one because Joe confirmed PAT.
