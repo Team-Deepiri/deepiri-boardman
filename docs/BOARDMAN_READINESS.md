@@ -36,6 +36,20 @@ poetry run boardman readiness --strict-pending
 The command never prints secret values. It reports only whether required values are present,
 placeholder-like, rotated, or still pending.
 
+## Plaky Inventory
+
+When someone has the Plaky key/access, they can export the IDs needed for `repos.yml` and
+`team_assignments.yml`:
+
+```bash
+poetry run boardman plaky-inventory
+poetry run boardman plaky-inventory --board-id <board-id>
+poetry run boardman plaky-inventory --board-id <board-id> --format json
+```
+
+This prints board IDs, group IDs, field keys, status option IDs/values, and user IDs without
+printing the Plaky API key.
+
 ## Current Owner-Area Reply
 
 Use this in the Boardman chat when someone asks for concrete status:
