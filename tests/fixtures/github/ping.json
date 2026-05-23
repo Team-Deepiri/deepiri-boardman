@@ -1,0 +1,16 @@
+{
+  "zen": "Acceptance ping for standalone Boardman.",
+  "hook_id": 440001,
+  "hook": {
+    "type": "Repository",
+    "id": 990001
+  },
+  "repository": {
+    "full_name": "Team-Deepiri/deepiri-boardman",
+    "name": "deepiri-boardman"
+  },
+  "sender": {
+    "login": "acceptance-bot",
+    "id": 710001
+  }
+}

@@ -1,0 +1,40 @@
+{
+  "action": "submitted",
+  "review": {
+    "state": "approved",
+    "body": "Synthetic approval review fixture.",
+    "user": {
+      "login": "fixture-reviewer",
+      "id": 710030
+    }
+  },
+  "pull_request": {
+    "number": 2301,
+    "title": "Acceptance PR payload",
+    "body": "Fixes #1201\n\nSynthetic PR fixture for webhook route checks.",
+    "html_url": "https://github.com/Team-Deepiri/deepiri-boardman/pull/2301",
+    "state": "open",
+    "merged": false,
+    "draft": false,
+    "user": {
+      "login": "fixture-author",
+      "id": 710020
+    },
+    "base": {
+      "ref": "main",
+      "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "head": {
+      "ref": "acceptance-fixture-branch",
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  },
+  "repository": {
+    "full_name": "Team-Deepiri/deepiri-boardman",
+    "name": "deepiri-boardman"
+  },
+  "sender": {
+    "login": "fixture-reviewer",
+    "id": 710030
+  }
+}

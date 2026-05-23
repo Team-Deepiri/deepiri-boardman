@@ -1,0 +1,25 @@
+{
+  "action": "created",
+  "issue": {
+    "number": 2301,
+    "pull_request": {
+      "url": "https://api.github.com/repos/Team-Deepiri/deepiri-boardman/pulls/2301"
+    }
+  },
+  "comment": {
+    "id": 880001,
+    "body": "Synthetic issue comment fixture.",
+    "user": {
+      "login": "fixture-commenter",
+      "id": 710040
+    }
+  },
+  "repository": {
+    "full_name": "Team-Deepiri/deepiri-boardman",
+    "name": "deepiri-boardman"
+  },
+  "sender": {
+    "login": "fixture-commenter",
+    "id": 710040
+  }
+}

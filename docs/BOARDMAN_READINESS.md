@@ -70,6 +70,13 @@ One-command offline acceptance gate:
 bash scripts/acceptance_offline.sh
 ```
 
+Webhook fixture traceability for acceptance packs:
+
+```bash
+for f in tests/fixtures/github/*.json; do jq -e . "$f" >/dev/null; done
+ls tests/fixtures/github
+```
+
 These fixtures intentionally enforce wave-one decisions:
 
 - `GITHUB_AUTH_MODE=pat`
