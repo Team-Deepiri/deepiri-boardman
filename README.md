@@ -62,6 +62,7 @@ poetry run boardman register repo --category ai --table "AI Bugs / What to DO"
 poetry run boardman scan ORG/REPO --dry-run
 poetry run boardman doctor
 poetry run boardman readiness
+poetry run boardman plaky-inventory --board-id BOARD_ID
 poetry run boardman agent chat -m "What should we prioritize?"
 poetry run boardman agent ask -m "List open Plaky tasks"
 poetry run boardman init REPO
