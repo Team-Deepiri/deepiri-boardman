@@ -77,6 +77,12 @@ for f in tests/fixtures/github/*.json; do jq -e . "$f" >/dev/null; done
 ls tests/fixtures/github
 ```
 
+Webhook replay/idempotency check (same `X-GitHub-Delivery` twice):
+
+```bash
+BOARDMAN_COMPOSE_FILE=docker-compose.prod.yml bash scripts/deploy_smoke.sh
+```
+
 These fixtures intentionally enforce wave-one decisions:
 
 - `GITHUB_AUTH_MODE=pat`
@@ -161,6 +167,7 @@ changes the scope.
 - `BOARDMAN_COMPOSE_FILE=docker-compose.prod.yml bash scripts/deploy_preflight.sh` passes.
 - `docker compose -f docker-compose.prod.yml up -d --build` starts API, worker, and nginx.
 - `BOARDMAN_COMPOSE_FILE=docker-compose.prod.yml bash scripts/deploy_smoke.sh` passes.
+- Webhook replay with the same `X-GitHub-Delivery` is ignored as duplicate.
 - A test webhook creates/updates a Plaky item without duplicates on replay.
 - PR link/review/comment status tests pass.
 - Final pass/fail note is posted with host, commit, smoke repo, webhook result, Plaky result, and rollback commit.

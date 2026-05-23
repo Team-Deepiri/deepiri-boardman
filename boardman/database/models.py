@@ -59,6 +59,18 @@ class SyncLog(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class GitHubWebhookDelivery(Base):
+    """Tracks processed GitHub webhook delivery IDs for replay/idempotency checks."""
+
+    __tablename__ = "github_webhook_deliveries"
+
+    delivery_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="processed")
+    note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, index=True)
+
+
 class ScanRun(Base):
     __tablename__ = "scan_runs"
 
