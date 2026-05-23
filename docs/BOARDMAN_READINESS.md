@@ -64,6 +64,12 @@ Offline acceptance SQLite prep:
 bash scripts/acceptance_prepare.sh
 ```
 
+One-command offline acceptance gate:
+
+```bash
+bash scripts/acceptance_offline.sh
+```
+
 These fixtures intentionally enforce wave-one decisions:
 
 - `GITHUB_AUTH_MODE=pat`
