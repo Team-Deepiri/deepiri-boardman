@@ -16,6 +16,7 @@ from boardman.assignment.qa_picker import ensure_github_owner_repo
 from boardman.database.models import AgentSession, ProjectContext, ScanRun
 from boardman.database.session import async_session
 from boardman.plaky.client import PlakyClient
+from boardman.plaky.inventory import collect_plaky_inventory
 from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
 from boardman.readiness import build_readiness_report
 from boardman.repos_config import (
@@ -564,6 +565,129 @@ def readiness_cmd(
 
     if report.failures or (strict_pending and report.pending):
         raise typer.Exit(1)
+
+
+@app.command("plaky-inventory")
+def plaky_inventory_cmd(
+    board_id: Optional[str] = typer.Option(
+        None,
+        "--board-id",
+        help="Board ID to inspect for groups, fields, and status options.",
+    ),
+    include_users: bool = typer.Option(
+        True,
+        "--include-users/--no-users",
+        help="Include workspace users for member/assignee ID handoff.",
+    ),
+    format: str = typer.Option("table", "--format", "-f", help="Output format: table or json."),
+):
+    """List Plaky board/group/field/status IDs for deployment config."""
+
+    async def run():
+        inventory = await collect_plaky_inventory(
+            board_id=board_id or "",
+            include_users=include_users,
+        )
+        if format == "json":
+            console.print(json.dumps(inventory, indent=2, default=str))
+            return
+        if format != "table":
+            console.print("[red]Error:[/red] --format must be table or json")
+            raise typer.Exit(2)
+
+        _print_plaky_inventory(inventory, board_id=board_id or "")
+        if not inventory.get("ok"):
+            raise typer.Exit(1)
+
+    asyncio.run(run())
+
+
+def _print_plaky_inventory(inventory: dict, *, board_id: str = "") -> None:
+    messages = inventory.get("messages") or []
+    for message in messages:
+        console.print(f"[yellow]{message}[/yellow]")
+
+    boards = [b for b in inventory.get("boards") or [] if isinstance(b, dict)]
+    board_table = Table(title="Plaky Boards")
+    board_table.add_column("ID", style="cyan")
+    board_table.add_column("Name")
+    board_table.add_column("Space ID", style="dim")
+    for board in boards:
+        board_table.add_row(
+            str(board.get("id") or ""),
+            str(board.get("name") or ""),
+            str(board.get("space_id") or ""),
+        )
+    console.print(board_table)
+
+    if not board_id:
+        console.print("[dim]Run with --board-id <id> to list groups, fields, and status options.[/dim]")
+
+    groups = [g for g in inventory.get("groups") or [] if isinstance(g, dict)]
+    if groups:
+        group_table = Table(title="Plaky Groups")
+        group_table.add_column("ID", style="cyan")
+        group_table.add_column("Name")
+        for group in groups:
+            group_table.add_row(str(group.get("id") or ""), str(group.get("name") or ""))
+        console.print(group_table)
+
+    fields = [f for f in inventory.get("fields") or [] if isinstance(f, dict)]
+    if fields:
+        field_table = Table(title="Plaky Fields")
+        field_table.add_column("Key", style="cyan")
+        field_table.add_column("Name")
+        field_table.add_column("Type")
+        field_table.add_column("Options")
+        for field in fields:
+            options = field.get("options") or []
+            option_labels = [
+                str(opt.get("name") or opt.get("id") or opt.get("optionId") or "")
+                for opt in options
+                if isinstance(opt, dict)
+            ]
+            field_table.add_row(
+                str(field.get("key") or ""),
+                str(field.get("name") or ""),
+                str(field.get("type") or ""),
+                ", ".join([label for label in option_labels if label][:20]),
+            )
+        console.print(field_table)
+
+    status_fields = [f for f in inventory.get("status_fields") or [] if isinstance(f, dict)]
+    if status_fields:
+        status_table = Table(title="Status Options")
+        status_table.add_column("Field Key", style="cyan")
+        status_table.add_column("Field Name")
+        status_table.add_column("Option ID / Value")
+        status_table.add_column("Option Name")
+        for field in status_fields:
+            for opt in field.get("options") or []:
+                if not isinstance(opt, dict):
+                    continue
+                status_table.add_row(
+                    str(field.get("key") or ""),
+                    str(field.get("name") or ""),
+                    str(opt.get("id") or opt.get("optionId") or opt.get("value") or ""),
+                    str(opt.get("name") or opt.get("label") or opt.get("title") or ""),
+                )
+        console.print(status_table)
+
+    users = [u for u in inventory.get("users") or [] if isinstance(u, dict)]
+    if users:
+        user_table = Table(title="Plaky Users")
+        user_table.add_column("ID", style="cyan")
+        user_table.add_column("Name")
+        user_table.add_column("Email", style="dim")
+        user_table.add_column("GitHub", style="dim")
+        for user in users:
+            user_table.add_row(
+                str(user.get("id") or ""),
+                str(user.get("name") or ""),
+                str(user.get("email") or user.get("primaryEmail") or ""),
+                str(user.get("github_login") or ""),
+            )
+        console.print(user_table)
 
 
 def _agent_chat_async(
