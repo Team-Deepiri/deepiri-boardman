@@ -50,6 +50,47 @@ poetry run boardman plaky-inventory --board-id <board-id> --format json
 This prints board IDs, group IDs, field keys, status option IDs/values, and user IDs without
 printing the Plaky API key.
 
+## Acceptance Fixtures
+
+For engineering-completion checks without production access, use the acceptance fixture files:
+
+- `.env.acceptance.example`
+- `repos.acceptance.yml`
+- `team_assignments.acceptance.yml`
+
+Offline acceptance SQLite prep:
+
+```bash
+bash scripts/acceptance_prepare.sh
+```
+
+One-command offline acceptance gate:
+
+```bash
+bash scripts/acceptance_offline.sh
+```
+
+Webhook fixture traceability for acceptance packs:
+
+```bash
+for f in tests/fixtures/github/*.json; do jq -e . "$f" >/dev/null; done
+ls tests/fixtures/github
+```
+
+Webhook replay/idempotency check (same `X-GitHub-Delivery` twice):
+
+```bash
+BOARDMAN_COMPOSE_FILE=docker-compose.prod.yml bash scripts/deploy_smoke.sh
+```
+
+These fixtures intentionally enforce wave-one decisions:
+
+- `GITHUB_AUTH_MODE=pat`
+- `BOARDMAN_SECRETS_ROTATED=true`
+- Hosted-LLM mode only (`LLM_PROVIDER=openai`, no local Ollama production behavior)
+
+These files are intentionally fake and must never contain real secrets.
+
 ## Current Owner-Area Reply
 
 Use this in the Boardman chat when someone asks for concrete status:
@@ -126,6 +167,7 @@ changes the scope.
 - `BOARDMAN_COMPOSE_FILE=docker-compose.prod.yml bash scripts/deploy_preflight.sh` passes.
 - `docker compose -f docker-compose.prod.yml up -d --build` starts API, worker, and nginx.
 - `BOARDMAN_COMPOSE_FILE=docker-compose.prod.yml bash scripts/deploy_smoke.sh` passes.
+- Webhook replay with the same `X-GitHub-Delivery` is ignored as duplicate.
 - A test webhook creates/updates a Plaky item without duplicates on replay.
 - PR link/review/comment status tests pass.
 - Final pass/fail note is posted with host, commit, smoke repo, webhook result, Plaky result, and rollback commit.

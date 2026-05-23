@@ -95,11 +95,13 @@ check_running_services() {
 
 check_webhook_ping() {
   local api_url="$1"
-  local payload signature secret code resp_file
+  local payload signature secret code replay_code resp_file replay_resp_file delivery_id
 
   payload='{"zen":"boardman smoke ping"}'
   secret="$(env_value GITHUB_WEBHOOK_SECRET)"
   resp_file="$(mktemp)"
+  replay_resp_file="$(mktemp)"
+  delivery_id="smoke-$(date +%s)-$$"
 
   if [[ -n "$secret" ]]; then
     signature="$(printf '%s' "$payload" | openssl dgst -sha256 -hmac "$secret" | awk '{print $2}')"
@@ -108,6 +110,16 @@ check_webhook_ping() {
         -X POST "${api_url}/api/v1/webhooks/github" \
         -H 'Content-Type: application/json' \
         -H 'X-GitHub-Event: ping' \
+        -H "X-GitHub-Delivery: ${delivery_id}" \
+        -H "X-Hub-Signature-256: sha256=${signature}" \
+        --data "$payload"
+    )"
+    replay_code="$(
+      curl -sS -o "$replay_resp_file" -w '%{http_code}' \
+        -X POST "${api_url}/api/v1/webhooks/github" \
+        -H 'Content-Type: application/json' \
+        -H 'X-GitHub-Event: ping' \
+        -H "X-GitHub-Delivery: ${delivery_id}" \
         -H "X-Hub-Signature-256: sha256=${signature}" \
         --data "$payload"
     )"
@@ -118,6 +130,15 @@ check_webhook_ping() {
         -X POST "${api_url}/api/v1/webhooks/github" \
         -H 'Content-Type: application/json' \
         -H 'X-GitHub-Event: ping' \
+        -H "X-GitHub-Delivery: ${delivery_id}" \
+        --data "$payload"
+    )"
+    replay_code="$(
+      curl -sS -o "$replay_resp_file" -w '%{http_code}' \
+        -X POST "${api_url}/api/v1/webhooks/github" \
+        -H 'Content-Type: application/json' \
+        -H 'X-GitHub-Event: ping' \
+        -H "X-GitHub-Delivery: ${delivery_id}" \
         --data "$payload"
     )"
   fi
@@ -127,7 +148,14 @@ check_webhook_ping() {
   else
     fail "webhook ping failed (status=${code}); response=$(cat "$resp_file")"
   fi
-  rm -f "$resp_file"
+
+  if [[ "$replay_code" == "200" ]] && grep -qi 'duplicate delivery ignored' "$replay_resp_file"; then
+    pass "webhook replay returned duplicate-ignore response"
+  else
+    fail "webhook replay duplicate check failed (status=${replay_code}); response=$(cat "$replay_resp_file")"
+  fi
+
+  rm -f "$resp_file" "$replay_resp_file"
 }
 
 check_boardman_logs() {

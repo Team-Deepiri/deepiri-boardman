@@ -2,8 +2,10 @@ import json
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, Request, Response
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from boardman.database.models import GitHubWebhookDelivery
 from boardman.database.session import get_db
 from boardman.github.webhooks import (
     IssueCommentEventPayload,
@@ -36,23 +38,63 @@ async def github_webhook(
     session: AsyncSession = Depends(get_db),
 ) -> Response:
     raw_body = await request.body()
+    event_type = request.headers.get("X-GitHub-Event", "")
+    delivery_id = request.headers.get("X-GitHub-Delivery", "").strip()
 
     signature = request.headers.get("X-Hub-Signature-256", "")
     if not verify_signature(raw_body, signature, settings.github_webhook_secret):
         body = json.dumps({"ok": False, "message": "Invalid signature"})
         return Response(content=body, status_code=401)
 
-    event_type = request.headers.get("X-GitHub-Event", "")
+    async def _mark_delivery(status: str, note: str) -> None:
+        if not delivery_id:
+            return
+        row = await session.get(GitHubWebhookDelivery, delivery_id)
+        if row:
+            row.status = status
+            row.note = note
+
+    if delivery_id:
+        already = (
+            await session.execute(
+                select(GitHubWebhookDelivery).where(
+                    GitHubWebhookDelivery.delivery_id == delivery_id
+                )
+            )
+        ).scalar_one_or_none()
+        if already and already.status == "processed":
+            body = json.dumps(
+                {
+                    "ok": True,
+                    "message": "Duplicate delivery ignored",
+                    "delivery_id": delivery_id,
+                    "event_type": already.event_type,
+                }
+            )
+            return Response(content=body)
+        if not already:
+            session.add(
+                GitHubWebhookDelivery(
+                    delivery_id=delivery_id,
+                    event_type=event_type or "unknown",
+                    status="processing",
+                )
+            )
+            await session.flush()
+
     try:
         payload_dict = json.loads(raw_body.decode("utf-8"))
     except Exception:
+        await _mark_delivery("processed", "invalid_json")
         return Response(content=json.dumps({"ok": False, "message": "Invalid JSON"}), status_code=400)
 
     if event_type == "ping":
+        await _mark_delivery("processed", "pong")
         return Response(content=json.dumps({"ok": True, "message": "pong"}))
 
     payload = parse_webhook_payload(event_type, payload_dict)
     if not payload:
+        await _mark_delivery("processed", "unsupported_event")
         body = json.dumps({"ok": False, "message": "Unsupported event type"})
         return Response(content=body, status_code=400)
 
@@ -86,6 +128,8 @@ async def github_webhook(
             result = await handle_pr_opened(payload, session)
 
     if result is not None:
+        await _mark_delivery("processed", "handled")
         return Response(content=json.dumps(result))
 
+    await _mark_delivery("processed", "ignored")
     return Response(content=json.dumps({"ok": True, "message": "Event ignored"}))
