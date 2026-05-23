@@ -1,0 +1,54 @@
+# Acceptance-only team assignment fixture (fake IDs).
+# This file is intentionally non-production and contains no real user or field IDs.
+
+plaky_field_keys:
+  engineer: field_acc_engineer_001
+  qa: field_acc_qa_001
+  repo: field_acc_repo_001
+  github_repos: field_acc_github_repos_001
+
+member_defaults:
+  roles: [engineer, qa]
+  qa_tier: 3
+  tier: standard
+  repo_globs:
+    - "Team-Deepiri/*"
+  weight: 1.0
+
+member_overrides:
+  ktbarnette:
+    id: usr_acc_kyle_001
+    roles: [engineer, qa]
+    qa_tier: 3
+  support-eng-1:
+    id: usr_acc_support_001
+    roles: [engineer, qa]
+    qa_tier: 2
+  support-eng-2:
+    id: usr_acc_support_002
+    roles: [qa]
+    qa_tier: 3
+
+hardware_tiers:
+  light:
+    weight_bias: 0.75
+  standard:
+    weight_bias: 1.0
+  heavy:
+    weight_bias: 1.15
+
+repo_requirements:
+  heavy_repo_patterns:
+    - "*emotion*"
+    - "*gpu*"
+    - "*cuda*"
+
+selection:
+  random_jitter: 0.12
+
+ambiguous_pr:
+  enabled: false
+  triage_board_id: board_acc_triage_001
+  triage_group_id: group_acc_triage_001
+  assign_qa: true
+  title_template: "Triage: PR #{number} - {repo}"

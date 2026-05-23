@@ -50,6 +50,28 @@ poetry run boardman plaky-inventory --board-id <board-id> --format json
 This prints board IDs, group IDs, field keys, status option IDs/values, and user IDs without
 printing the Plaky API key.
 
+## Acceptance Fixtures
+
+For engineering-completion checks without production access, use the acceptance fixture files:
+
+- `.env.acceptance.example`
+- `repos.acceptance.yml`
+- `team_assignments.acceptance.yml`
+
+Offline acceptance SQLite prep:
+
+```bash
+bash scripts/acceptance_prepare.sh
+```
+
+These fixtures intentionally enforce wave-one decisions:
+
+- `GITHUB_AUTH_MODE=pat`
+- `BOARDMAN_SECRETS_ROTATED=true`
+- Hosted-LLM mode only (`LLM_PROVIDER=openai`, no local Ollama production behavior)
+
+These files are intentionally fake and must never contain real secrets.
+
 ## Current Owner-Area Reply
 
 Use this in the Boardman chat when someone asks for concrete status:
