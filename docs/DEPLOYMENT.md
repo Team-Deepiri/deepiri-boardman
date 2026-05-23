@@ -22,6 +22,9 @@ The production cloud Compose stack (`docker-compose.prod.yml`) runs three requir
 - `boardman-worker`: SQLite background worker for queued agent/reorder jobs.
 - `boardman-nginx`: static UI plus `/api` reverse proxy on port `8088`.
 
+Wave one uses `GITHUB_AUTH_MODE=pat`. GitHub App auth is not required unless Joe changes that
+deployment decision later.
+
 The local/dev Compose stack (`docker-compose.yml`) also includes `ollama` so CPU/GPU behavior can be
 validated locally in the same style as Cyrex. Do not run that Ollama sidecar on the cloud VPS.
 
@@ -29,6 +32,15 @@ validated locally in the same style as Cyrex. Do not run that Ollama sidecar on 
 
 Do not confuse `boardman-worker` with the Cloudflare Worker in `worker/`. The Cloudflare Worker
 is an optional QA assignment proxy/fallback and is deployed with Wrangler, not Docker Compose.
+
+## Queue Path
+
+There is no Kafka-compatible broker in the wave-one Boardman Compose file.
+
+- API async jobs are stored in the SQLite `background_jobs` table inside `boardman.db`.
+- `boardman-worker` runs `python -m boardman.sqlite_worker` and claims those SQLite jobs.
+- Optional `redis` is cache-only for API/agent data when enabled; it is not the worker queue.
+- Kafka or Redpanda would be a future service/adapter decision, not required for first deploy.
 
 ## Required Secrets
 
@@ -50,6 +62,11 @@ openssl rand -hex 32
 
 Use dedicated service credentials for production. Do not deploy Kyle's personal PAT or personal
 Plaky key except as a temporary emergency bootstrap with an explicit rotation task.
+
+Also rotate any pasted/shared Cloudflare API token if Cloudflare DNS or the optional Cloudflare
+Worker path is used. Rotate hosted LLM keys if they were pasted/shared and will be used in
+production (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`).
+GitHub App secrets are not required for wave one because PAT auth is confirmed.
 
 ## VPS Bootstrap
 
@@ -90,6 +107,12 @@ PLAKY_API_KEY=<service-plaky-key>
 GITHUB_PAT=<service-github-pat>
 GITHUB_WEBHOOK_SECRET=<random-hex-secret>
 WORKER_INTERNAL_SECRET=<random-hex-secret>
+ROUTE_SECRET=<random-hex-secret-if-cloudflare-worker-is-used>
+BOARDMAN_SECRETS_ROTATED=true
+BOARDMAN_TARGET_ENV=vps
+GITHUB_AUTH_MODE=pat
+BOARDMAN_PUBLIC_URL=https://<boardman-host>
+GITHUB_WEBHOOK_EVENTS=issues,pull_request,pull_request_review,pull_request_review_comment,issue_comment
 GITHUB_ORG=deepiri-org
 LLM_PROVIDER=openai
 PR_LINKING_LLM_ENABLED=false
