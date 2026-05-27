@@ -1,5 +1,6 @@
 """Agent HTTP path with LLM mocked (no LangChain tool loop)."""
 
+import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 
