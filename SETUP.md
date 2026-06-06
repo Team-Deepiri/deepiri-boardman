@@ -1,5 +1,7 @@
 # deepiri-boardman Setup Guide
 
+> For full quick start, CLI list, and Docker prod path see [README.md](README.md). Agents: see [AGENTS.md](AGENTS.md).
+
 ## Required Credentials
 
 ### 1. PLAKY_API_KEY (Required)
@@ -12,9 +14,9 @@
    PLAKY_API_KEY=your_plaky_api_key_here
    ```
 
-### 2. GITHUB_WEBHOOK_SECRET (Optional but recommended)
+### 2. GITHUB_WEBHOOK_SECRET (Required for production)
 
-1. Generate a random secret (e.g., via terminal):
+1. Generate a random secret:
    ```bash
    python -c "import secrets; print(secrets.token_hex(32))"
    ```
@@ -22,70 +24,80 @@
    ```
    GITHUB_WEBHOOK_SECRET=your_webhook_secret_here
    ```
-3. When setting up the webhook in GitHub, use this same secret
+3. Use the same secret when registering GitHub webhooks
 
-### 3. GITHUB_PAT (Optional - only for CLI sync command)
+### 3. GITHUB_PAT (Required for scan, init, agent tools)
 
-1. Go to GitHub → **Settings** → **Developer settings** → **Personal access tokens** → **Tokens (classic)**
-2. Generate new token with scope: `repo` (full control of private repositories)
+1. GitHub → **Settings** → **Developer settings** → **Personal access tokens**
+2. Generate token with `repo` scope (and `read:org` if using QA team roster)
 3. Add to `.env`:
    ```
    GITHUB_PAT=your_github_pat_here
    ```
 
+Also required for `boardman init`, `boardman scan`, and agent GitHub tools. Optional for webhook-only deploys.
+
 ## GitHub Webhook Setup
 
 For each repo you want to sync:
 
-1. Go to **Repo Settings** → **Webhooks** → **Add webhook**
+1. **Repo Settings** → **Webhooks** → **Add webhook**
 2. Fill in:
    - **Payload URL**: `https://your-server:8090/api/v1/webhooks/github`
    - **Content type**: `application/json`
-   - **Secret**: (same as GITHUB_WEBHOOK_SECRET)
-   - **Events**: Select "Issues" and "Pull requests"
-3. Click **Add webhook**
+   - **Secret**: (same as `GITHUB_WEBHOOK_SECRET`)
+   - **Events**: Issues, Pull requests, Pull request reviews, Issue comments
+3. **Add webhook**
 
 ## Quick Start
 
 ```bash
-# 1. Clone/setup
-cd /home/joeblack/Documents/Deepiri/deepiri-boardman
+git clone <repo-url> deepiri-boardman
+cd deepiri-boardman
 
-# 2. Copy env file and fill in your credentials
 cp .env.example .env
-nano .env
+# Edit .env with PLAKY_API_KEY, GITHUB_PAT, GITHUB_WEBHOOK_SECRET
 
-# 3. Install dependencies (Poetry — see pyproject.toml / poetry.lock)
-poetry install
-
-# 4. Run migrations
+poetry install --with dev
 poetry run alembic upgrade head
-
-# 5. Run locally
 poetry run python -m boardman.main
 
-# 6. Verify health
 curl http://localhost:8090/api/v1/health
 ```
 
 ## Docker Deployment
 
-The API image installs dependencies with **Poetry** (`Dockerfile`: `poetry install --without dev`). Lockfile: `poetry.lock`.
+Poetry lockfile is used in the API image (`Dockerfile`: `poetry install --without dev`).
+
+**Local/dev** (includes optional Ollama):
 
 ```bash
-test -d boardman.db && rm -rf boardman.db
-: > boardman.db
+./scripts/deploy_preflight.sh
 docker compose up -d --build
 ```
 
-For VPS deployment, service credentials, worker setup, webhook smoke tests, and rotation steps, see
-[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
-
-## CLI Usage
+**Production** (no Ollama):
 
 ```bash
-poetry run boardman create-task --title "Fix bug" --description "..." --priority high --repo deepiri-platform
-poetry run boardman link-pr --pr-url https://github.com/.../pull/123 --task-id XYZ123
-poetry run boardman list --status open
-poetry run boardman sync --repo owner/repo --dry-run
+cp .env.production.example .env
+BOARDMAN_COMPOSE_FILE=docker-compose.prod.yml bash scripts/deploy_preflight.sh
+docker compose -f docker-compose.prod.yml up -d --build
+BOARDMAN_COMPOSE_FILE=docker-compose.prod.yml bash scripts/deploy_smoke.sh
 ```
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for VPS credentials, worker, and rotation.
+
+## CLI Usage (common)
+
+```bash
+poetry run boardman create-task --title "Fix bug" --description "..." --priority Medium --github-repo owner/repo
+poetry run boardman link-pr --pr-url https://github.com/.../pull/123 --task-id ID --board-id ID
+poetry run boardman list --status "In Progress" --board-id ID
+poetry run boardman sync --repo owner/repo --dry-run
+poetry run boardman scan owner/repo --dry-run
+poetry run boardman agent chat -m "Summarize open tasks"
+poetry run boardman readiness
+poetry run boardman doctor
+```
+
+Full command list: [README.md](README.md).
