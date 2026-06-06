@@ -36,8 +36,10 @@ node_modules/
 *.swo
 *~
 
-# Cursor
-.cursor/
+# Cursor — ignore local IDE state; track shared rules in .cursor/rules/
+.cursor/*
+!.cursor/rules/
+!.cursor/rules/**
 .cursorrules
 
 # Environment
