@@ -1,4 +1,8 @@
-# Deepiri Board Manager Agent - Full Plan
+# Deepiri Board Manager Agent — Module Reference
+
+> **Status:** The agent layer described here is **largely implemented**. This doc supplements [PLAN.md](./PLAN.md) with module-level detail. For current CLI/API surfaces and repo map, see [AGENTS.md](../AGENTS.md).
+>
+> **Doc maintenance:** Update this file when agent modules, tools, or prompts change. See [AGENTS_MAINTENANCE.md](./AGENTS_MAINTENANCE.md).
 
 ## Vision
 
@@ -30,37 +34,35 @@ An AI-powered Product Manager that lives inside `deepiri-boardman`. It scans you
 
 ---
 
-## Core Components
+## Core Components (implemented)
 
-### 1. LLM Client (`boardman/llm/`)
+### 1. LLM (`boardman/llm/`)
 
 ```
 boardman/llm/
-├── __init__.py
-├── client.py          # Abstract LLM client interface
-├── ollama.py          # Ollama implementation (from deepiri-platform)
-├── openai.py          # OpenAI GPT implementation
-├── anthropic.py       # Claude implementation
-├── gemini.py          # Google Gemini implementation
-└── factory.py        # Factory to get client based on config
+├── factory.py           # get_chat_model() — Ollama, OpenAI, Anthropic, Gemini, OpenRouter
+├── completion.py        # Shared completion helpers
+└── ollama_autodetect.py # Model pick from GET /api/tags when LLM_MODEL empty
 ```
 
-### 2. Langchain Agent (`boardman/agent/`)
+Providers are LangChain chat models (not separate `ollama.py` / `openai.py` files).
+
+### 2. LangChain Agent (`boardman/agent/`)
 
 ```
 boardman/agent/
-├── __init__.py
-├── config.py          # Agent configuration, system prompt
-├── prompt.py          # Main system prompt templates
-├── memory.py          # Conversation history, session management
-├── state.py           # Agent state (thinking, waiting, etc.)
-├── tools/
-│   ├── __init__.py
-│   ├── repo_scanner.py      # Scan repo, read docs, code structure
-│   ├── plaky_tasks.py       # Create, update, delete Plaky tasks
-│   ├── plaky_board.py       # Move tasks, reorder, create subtasks
-│   └── github_tools.py      # Create GitHub issues, PRs
-└── agent.py                 # Main Langchain agent setup
+├── runner.py            # LangChain tool-calling agent (AgentExecutor / graph)
+├── service.py           # run_agent_chat(), session orchestration
+├── prompts.py           # BOARD_MANAGER_SYSTEM + prompt constants
+├── guardrails.py        # allow_writes, bulk confirmation policy
+├── memory_store.py      # AgentSession / AgentMessage persistence
+├── task_draft.py        # Task draft state on session
+├── tool_context.py      # Plaky board/group context for tools
+└── tools/
+    ├── plaky_tools.py       # Plaky list/create/update (gated by allow_writes)
+    ├── repo_tools.py        # scan_local_repo, thoughts
+    ├── github_tools.py      # GitHub read helpers
+    └── assignment_tools.py  # QA assignment preview
 ```
 
 ---
@@ -114,66 +116,28 @@ Route tasks to the appropriate table based on repo category.
 
 ---
 
-## Memory System (`boardman/agent/memory.py`)
+## Memory System (`boardman/agent/memory_store.py`)
 
-- **Conversation history**: Store last N messages per session
-- **Project context**: Remember what each repo is about
-- **Task history**: Remember what tasks were created for each repo
-- **SQLite storage** for persistence
-
-```python
-class AgentMemory:
-    def add_message(session_id, role, content)
-    def get_history(session_id, limit=50)
-    def store_project_context(repo, context)
-    def get_project_context(repo)
-    def clear_session(session_id)
-```
+- **Conversation history**: `AgentMessage` rows per `session_id` (limit `AGENT_MAX_HISTORY`)
+- **Project context**: `ProjectContext` table — per-repo summary, goals, `last_scanned`
+- **Session metadata**: `AgentSession` — `repo`, `prompt_version`, optional `task_draft_json`
+- **Tool audit**: `tool_calls_json` on messages when tools run
+- **SQLite** via SQLAlchemy async session; Alembic migration `002_agent_scan_tables.py`
 
 ---
 
-## Tools System (`boardman/agent/tools/`)
+## Tools (`boardman/agent/tools/`)
 
-### repo_scanner.py
+Built by `build_all_tools(allow_writes=…)` in `tools/__init__.py`:
 
-```python
-async def scan_repo(repo: str) -> dict:
-    """Scan repo structure, read README, docs, find TODO"""
-    # - List top-level directories
-    # - Read README.md, docs/, SPEC.md
-    # - Find TODO.md, CHANGELOG.md
-    # - Get recent commit messages
-    # - Return summary of repo state
-```
+| Module | Tools | Notes |
+|--------|-------|-------|
+| `plaky_tools.py` | list/get/create/update tasks, subtasks, comments | Writes require `allow_writes=true` |
+| `repo_tools.py` | `scan_local_repo`, `thoughts` | Reads README, docs/, `DIRECTION.md`, `AGENTS.md`, bounded tree |
+| `github_tools.py` | issue/file/commit reads | Read-mostly; no duplicate webhook logic |
+| `assignment_tools.py` | `assignment_preview` | QA picker preview |
 
-### plaky_tasks.py
-
-```python
-async def create_task(title, description, priority, repo) -> dict
-async def update_task(task_id, title, description, priority) -> dict
-async def delete_task(task_id) -> dict
-async def get_task(task_id) -> dict
-async def list_tasks(repo, status) -> list
-```
-
-### plaky_board.py
-
-```python
-async def move_task_to_column(task_id, column_id) -> dict
-async def create_subtask(parent_task_id, title) -> dict
-async def get_task_details(task_id) -> dict
-async def reorder_tasks(task_ids, column_id) -> dict
-async def update_task_assignee(task_id, user_email) -> dict
-async def get_columns(board_id) -> list
-```
-
-### github_tools.py
-
-```python
-async def create_issue(repo, title, body) -> dict
-async def get_issues(repo, state) -> list
-async def link_pr_to_issue(issue_number, pr_url) -> dict
-```
+**Not separate files:** original design had `repo_scanner.py`, `plaky_tasks.py`, `plaky_board.py` — consolidated into `repo_tools.py` and `plaky_tools.py`.
 
 ---
 
@@ -214,89 +178,53 @@ class ProjectContext(Base):
 
 ---
 
-## CLI Commands
+## CLI Commands (current)
 
 ```bash
-# Start interactive agent session for a repo
-boardman agent --repo deepiri-platform
+# Agent chat (sticky session via --session)
+poetry run boardman agent chat -m "What should we prioritize?" --repo owner/repo
+poetry run boardman agent chat -m "Create a task for X" --allow-writes --use-tools
 
-# One-shot task generation
-boardman agent generate --repo deepiri-platform --goal "Add user auth"
+# Alias
+poetry run boardman agent ask -m "List open Plaky tasks"
 
-# Scan repo and summarize
-boardman agent scan --repo deepiri-platform
+# Repo scan (separate from agent — LLM task generation)
+poetry run boardman scan owner/repo --dry-run
 
-# List agent sessions
-boardman agent sessions
+# Health
+poetry run boardman doctor
+```
 
-# Clear session history
-boardman agent clear --session-id <id>
+**Not implemented (original design):** `boardman agent --repo` REPL, `agent generate`, `agent scan`, `agent sessions`, `agent clear`, `boardman config set`. Use env vars (`LLM_PROVIDER`, `LLM_MODEL`) for provider config; `DELETE /api/v1/agent/sessions/{id}` to drop a session.
 
-# Configure LLM provider
-boardman config set llm_provider ollama
-boardman config set llm_model llama3:8b
+---
+
+## API Endpoints (current)
+
+```
+POST   /api/v1/agent/chat              # message, session_id?, repo?, allow_writes?, queue?
+POST   /api/v1/agent/chat/stream
+GET    /api/v1/agent/jobs/{job_id}
+GET    /api/v1/agent/sessions/{id}/history
+DELETE /api/v1/agent/sessions/{id}
+POST   /api/v1/agent/scan
+POST   /api/v1/agent/init-direction
 ```
 
 ---
 
-## API Endpoints
+## Plaky Integration
 
-```python
-# Agent chat endpoint
-POST /api/v1/agent/chat
-Body: {"message": "Create tasks for adding auth", "repo": "deepiri-platform"}
-Response: {"ok": true, "reply": "...", "session_id": "..."}
+**Shipped** (`boardman/plaky/client.py`):
 
-# Agent sessions
-GET /api/v1/agent/sessions
-GET /api/v1/agent/sessions/{session_id}/history
-DELETE /api/v1/agent/sessions/{session_id}
+- `create_task`, `get_tasks`, `get_task`, `add_comment`
+- `update_task_fields`, `patch_item_field_values`, `create_subtask`
+- Board schema: `list_boards`, `list_groups`, `get_board`, `list_board_items`
+- Inventory helpers in `plaky/inventory.py`, placement in `plaky/placement.py`
 
-# Agent tools (direct calls)
-POST /api/v1/agent/scan-repo
-POST /api/v1/agent/create-tasks
-POST /api/v1/agent/organize-board
-```
+**Partial / evolving:** column move, bulk reorder (`services/plaky_group_reorder.py` + worker job), assignee field updates via schema-driven patches.
 
----
-
-## Plaky Integration (Extended)
-
-Current: `create_task`, `add_comment`, `update_task_status`
-
-New capabilities needed:
-- **Get all columns** → understand board structure
-- **Move task between columns** → PATCH with column ID
-- **Create subtask** → POST /tasks/{id}/subtasks
-- **Reorder tasks** → PATCH /tasks/reorder
-- **Get task details** → including assignee, column, subtasks
-- **Update assignee** → PATCH with assignee
-
-```python
-class PlakyClient:
-    # ... existing methods ...
-    
-    async def get_columns(self, board_id: str = None) -> List[Dict]:
-        """Get all columns in a board"""
-    
-    async def move_task_to_column(self, task_id: str, column_id: str) -> Dict:
-        """Move task to different column"""
-    
-    async def create_subtask(self, parent_task_id: str, title: str) -> Dict:
-        """Create subtask under a task"""
-    
-    async def get_task_details(self, task_id: str) -> Dict:
-        """Get full task with subtasks, assignee, etc."""
-    
-    async def reorder_tasks(self, task_ids: List[str], column_id: str) -> Dict:
-        """Reorder tasks in a column"""
-    
-    async def update_task_assignee(self, task_id: str, user_email: str) -> Dict:
-        """Assign user to task"""
-    
-    async def archive_task(self, task_id: str) -> Dict:
-        """Archive a task"""
-```
+**Not built:** dedicated `archive_task` wrapper; some original AGENT_PLAN method names map to `update_task_fields` / public items API instead.
 
 ---
 
@@ -408,33 +336,17 @@ services:
 
 ---
 
-## Implementation Order
+## Implementation status
 
-### Phase 1: Foundation
-1. Add LLM client factory + Ollama integration (copy from deepiri-platform)
-2. Add basic Langchain agent setup
-3. Add system prompt
+| Phase | Items | Status |
+|-------|-------|--------|
+| 1 — Foundation | LLM factory, LangChain agent, system prompt | **Done** |
+| 2 — Memory | AgentSession, AgentMessage, ProjectContext | **Done** |
+| 3 — Tools | repo_tools, plaky_tools, github_tools, assignment_tools | **Done** |
+| 4 — CLI + API | `agent chat/ask`, `/api/v1/agent/*` | **Done** |
+| 5 — Polish | History in prompts, guardrails, fallbacks, doctor | **Done** |
 
-### Phase 2: Memory
-4. Add AgentSession, AgentMessage, ProjectContext models
-5. Implement memory storage/retrieval
-6. Add session management to agent
-
-### Phase 3: Tools
-7. Implement repo scanner tool
-8. Extend Plaky client (columns, subtasks, reorder)
-9. Implement plaky tasks tool
-10. Implement plaky board tool
-11. Implement github tools
-
-### Phase 4: CLI + API
-12. Add `boardman agent` CLI commands
-13. Add `/api/v1/agent/` endpoints
-
-### Phase 5: Polish
-14. Add conversation history context to prompts
-15. Add project context memory
-16. Add error handling + fallbacks
+**v2+ (not started):** LangGraph state machine, vector memory, interactive REPL, `agent sessions` list CLI.
 
 ---
 
@@ -461,25 +373,19 @@ AGENT_SESSION_TIMEOUT=3600  # seconds
 ## Verification
 
 ```bash
-# Test agent
-boardman agent --repo deepiri-platform
-> What would you like to work on?
-> Create tasks for adding user auth
-> What kind of auth do you need? (JWT, OAuth, etc)
-> JWT with refresh tokens
-> Created 5 tasks in Plaky
+# CLI agent
+poetry run boardman agent chat -m "Summarize open Plaky tasks" --repo owner/repo
 
-# Test API
+# API
 curl -X POST http://localhost:8090/api/v1/agent/chat \
   -H "Content-Type: application/json" \
-  -d '{"message": "Create tasks for adding auth", "repo": "deepiri-platform"}'
+  -d '{"message": "What is in DIRECTION.md?", "repo": "owner/repo"}'
 
-# Test memory
-boardman agent sessions
+# Session history (use session_id from chat response)
+curl http://localhost:8090/api/v1/agent/sessions/{session_id}/history
 
-# Test organize
-boardman agent --repo deepiri-platform
-> Move high priority tasks to the top
+# Automated tests
+poetry run pytest tests/test_agent_guardrails.py tests/test_tools.py -q
 ```
 
 ---

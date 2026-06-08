@@ -154,6 +154,8 @@ Readiness/status handoff: [docs/BOARDMAN_READINESS.md](docs/BOARDMAN_READINESS.m
 
 Full roadmap: [docs/PLAN.md](docs/PLAN.md).
 
+Agent context (for AI coding tools): [AGENTS.md](AGENTS.md) ([CLAUDE.md](CLAUDE.md) symlink).
+
 ## Tests
 
 ```bash

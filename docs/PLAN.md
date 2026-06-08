@@ -1,6 +1,8 @@
 # deepiri-boardman — System Plan
 
-**This file is the single planning source of truth:** GitHub ↔ Plaky automation, `DIRECTION.md` / `boardman scan`, board routing, **and** the AI Board Manager assistant (LangChain, memory, multi-provider LLM, Plaky power tools). For module-level agent sketches, see [AGENT_PLAN.md](./AGENT_PLAN.md).
+**This file is the single planning source of truth:** GitHub ↔ Plaky automation, `DIRECTION.md` / `boardman scan`, board routing, **and** the AI Board Manager assistant (LangChain, memory, multi-provider LLM, Plaky power tools). For module-level agent detail, see [AGENT_PLAN.md](./AGENT_PLAN.md). For coding-agent context, see [AGENTS.md](../AGENTS.md).
+
+**Doc maintenance:** Coding agents and contributors must keep this file aligned with the repo when features ship or interfaces change. See [AGENTS_MAINTENANCE.md](./AGENTS_MAINTENANCE.md) (PLAN.md triggers).
 
 ---
 
@@ -11,27 +13,41 @@
 - The connection between GitHub repos and Plaky tasks (automated, no human in the loop)
 - The "what does this repo need to do" intelligence (AI-driven task generation from repo direction)
 - The organization of the Plaky board (routing tasks to the right table/group by repo type)
-- **(Planned)** A conversational AI product manager: repo-grounded planning, task create/update/reorganize in Plaky, session memory, tool guardrails
+- A conversational AI product manager (**shipped**): repo-grounded planning, task create/update in Plaky, session memory, tool guardrails (`allow_writes`), LangChain tools
 
 It does **not** touch Discord — that stays in norozo.
 
-I implemented this already in deepiri-boardman. Okay, but I want to be able to, for instance, have a CLI that can detect what needs to be done. Like, I was describing creating issues on GitHub and linking them to Plaky, as well as an automated workflow service that exists in this repo that automates tasks, like sending a comment under a Plaky task that links to the GitHub PR. But how would we go about connecting them? Number one, that’s what I want, but I also want the ability, for instance, have this be installable, use the deepiri-boardman command to point at a repo, and then it just creates Plaky tasks for that repo that need to be done stemming from the direction of the repo. Now, as I’m thinking, I’m not sure how to maintain and constantly update that direction of the repo so that the Plaky issues can be parsed from the direction—maybe it’s a Markdown file, maybe it’s a database, maybe I don’t know. But you see what I mean: I want to be able to point to a repo and then it just adds Plaky tasks to the board. Now, we do have the board currently hooked up with AI Table, ML/Data Table, Infrastructure Table, Backend/Database Table, and a Frontend Table, but it’s all mixed up for all the repos. Lowkey, I want to do minimal organization, and in fact, Deepiri Boardman should handle the organization.
-
 ---
 
-## What's Already Built (v0.1)
+## What's Built
 
-The core sync plumbing is done:
+### Core sync (v0.1)
 
 | Feature | How it works |
 |---|---|
 | GitHub issue opened → Plaky task | Webhook → `issue_handler.py` → `POST /tasks` |
 | GitHub PR opened → Plaky comment | Webhook → `pr_handler.py` → `POST /tasks/{id}/comments` |
 | GitHub PR merged → Plaky status update | Webhook → `pr_handler.py` → `PATCH /tasks/{id}` |
-| CLI create task with repo tag | `boardman create-task --repo deepiri-sorge` |
+| CLI create task with repo tag | `boardman create-task --github-repo owner/repo` |
 | CLI sync open issues → Plaky | `boardman sync --repo owner/repo` |
 | CLI list tasks | `boardman list` |
 | GitHub ↔ Plaky mapping DB | `IssueTaskMap` in SQLite |
+
+### Shipped since v0.1
+
+| Feature | How it works |
+|---|---|
+| `repos.yml` board routing | `boardman register`; `plaky/placement.py` |
+| `DIRECTION.md` + AI scan | `boardman scan`, `POST /api/v1/agent/scan`; `services/scan_handler.py` |
+| Direction bootstrap | `boardman init`, `POST /api/v1/agent/init-direction` |
+| LangChain agent + memory | `boardman agent chat/ask`, `POST /api/v1/agent/chat` (+ stream, async jobs) |
+| Agent tools | `plaky_tools`, `repo_tools`, `github_tools`, `assignment_tools` |
+| Web UI | `boardman-ui/` — Vite/React chat; nginx proxy `:8088` in Docker |
+| QA assignment / tiering | `assignment/`, `github/qa_*`; optional Cloudflare `worker/` |
+| PR↔task fuzzy linking | `services/pr_task_linking.py`, `PullRequestTaskLink` table |
+| PR QA workflow | `pr_handler.py` — Needs QA / In QA when env statuses configured |
+| Background jobs | SQLite `background_jobs` + `boardman-worker` |
+| Readiness / doctor | `boardman readiness`, `boardman doctor` |
 
 The connection is already working. Register a GitHub webhook at:
 
@@ -43,15 +59,13 @@ Secret: GITHUB_WEBHOOK_SECRET
 
 ---
 
-## The Missing Piece: Repo Direction + AI Task Generation
+## Repo Direction + AI Task Generation (shipped)
 
-### The Problem
+`boardman sync` is reactive — it only creates Plaky tasks from **existing open GitHub issues**.
 
-Right now `boardman sync` pulls **existing open GitHub issues** and creates Plaky tasks from them. That's reactive — it only knows what's already been written down as an issue.
+`boardman scan` is proactive — it reads each repo's `DIRECTION.md`, recent commits, and open issues, then uses an LLM to propose tasks not already on the board.
 
-What we actually want: **point boardman at a repo and it figures out what needs to be done** — whether or not GitHub issues exist yet. Then it creates the Plaky tasks automatically.
-
-### The Solution: `DIRECTION.md` + `boardman scan`
+### `DIRECTION.md` + `boardman scan`
 
 Each repo gets a `DIRECTION.md` file at its root. This is the single source of truth for where that repo is headed. It's human-written, version-controlled, and LLM-readable.
 
@@ -187,50 +201,24 @@ When boardman creates a Plaky task, it reads `repos.yml` to route it to the righ
 
 ---
 
-## New CLI Commands to Build
+## CLI commands
 
-On top of what already exists (`create-task`, `link-pr`, `list`, `sync`):
+Full examples: [README.md](../README.md).
 
-### `boardman scan`
+| Command | Status | Notes |
+|---------|--------|-------|
+| `create-task`, `update-task`, `create-subtask`, `link-pr`, `list`, `sync` | Shipped | Core Plaky + GitHub sync |
+| `boardman scan <owner/repo> [--dry-run]` | Shipped | AI task generation from `DIRECTION.md` |
+| `boardman scan-all [--dry-run]` | Shipped | Scan all registered repos |
+| `boardman init <owner/repo>` | Shipped | Bootstrap `DIRECTION.md` via GitHub PR |
+| `boardman register <owner/repo> --category …` | Shipped | Add repo to `repos.yml` |
+| `boardman status [<owner/repo>]` | Shipped | Task counts, last scan date |
+| `boardman agent chat/ask -m "…"` | Shipped | Agent chat (`--allow-writes`, `--use-tools`, `--session`) |
+| `boardman doctor` | Shipped | Ollama + Plaky + config checks |
+| `boardman readiness` | Shipped | Go-live readiness report |
+| `boardman plaky-inventory` | Shipped | Board schema/users/groups export |
 
-```
-boardman scan <owner/repo> [--dry-run] [--model claude|ollama]
-```
-
-AI-powered task generation from `DIRECTION.md`. Core new feature.
-
-### `boardman init`
-
-```
-boardman init <owner/repo>
-```
-
-Creates a `DIRECTION.md` template in the repo via GitHub API (creates a file commit). Gets engineers to fill it in before running scan.
-
-### `boardman register`
-
-```
-boardman register <owner/repo> --category ai|ml|backend|frontend|infrastructure
-```
-
-Adds a repo to `repos.yml` so boardman knows where to route its tasks.
-
-### `boardman status`
-
-```
-boardman status [<owner/repo>]
-```
-
-Shows: how many tasks are in Plaky for this repo, what's open vs done, last scan date.
-
-### Agent (planned)
-
-```
-boardman agent --repo <slug>                    # interactive REPL, sticky session
-boardman agent chat --session ... --message "..."  # one-shot
-boardman agent scan --path ...                  # repo context only, no Plaky writes
-boardman doctor                                  # Ollama reachable, model pulled, Plaky token valid
-```
+**Not built:** interactive agent REPL (`boardman agent --repo`), `boardman agent generate`, `boardman agent sessions`, `boardman config set` — use `agent chat` with `session_id` instead.
 
 ---
 
@@ -399,18 +387,18 @@ A full assistant with memory and board surgery is a large surface. **Do not** sh
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
-### Package layout (target)
+### Package layout (current)
 
-See [AGENT_PLAN.md](./AGENT_PLAN.md) for diagrams; target tree:
+See [AGENT_PLAN.md](./AGENT_PLAN.md) for module detail. Implemented tree:
 
 ```
 boardman/
 ├── llm/
-│   ├── factory.py, ollama.py, openai.py, anthropic.py, gemini.py
+│   ├── factory.py, completion.py, ollama_autodetect.py
 ├── agent/
-│   ├── prompts.py, memory_store.py, guardrails.py, runner.py
+│   ├── prompts.py, memory_store.py, guardrails.py, runner.py, service.py
 │   └── tools/
-│       ├── repo_context.py, plaky_tasks.py, plaky_board.py, github_read.py
+│       ├── plaky_tools.py, repo_tools.py, github_tools.py, assignment_tools.py
 ```
 
 ### Memory, state, queue
@@ -420,7 +408,8 @@ boardman/
 - **Project context:** per-repo summary, goals, constraints — updated by tools and scan.
 - **Tables:** `AgentSession`, `AgentMessage`, `ProjectContext` (Alembic) — see AGENT_PLAN.md.
 - **Agent state v1:** Implicit in conversation + `pending_confirmation` in app code.
-- **Queue v1:** None; **v2:** background jobs for heavy repo scans.
+- **Queue v1 (shipped):** SQLite `background_jobs` + `boardman-worker` for async agent chat and Plaky reorder jobs.
+- **Queue v2+:** Optional Redis/Kafka for multi-region scale (not required).
 
 ### Long system prompt (v1 — ship in `boardman/agent/prompts.py`)
 
@@ -486,9 +475,9 @@ Bump **`PROMPT_VERSION`** when this changes; store on `AgentSession` for debuggi
 
 **Plaky**
 
-**Today** (`boardman/plaky/client.py`): `create_task`, `get_tasks`, `get_task`, `add_comment`, `update_task_status`.
+**Shipped** (`boardman/plaky/client.py`): `create_task`, `get_tasks`, `get_task`, `add_comment`, `update_task_fields`, `create_subtask`, `patch_item_field_values`, board schema/inventory helpers. Agent tools in `plaky_tools.py` wrap these.
 
-**Needed** (verify live Plaky API): columns, move task, subtasks, reorder within column, title/body/assignee/priority updates, archive/delete (behind confirmation). Each: `PlakyClient` method + LangChain tool.
+**Partial / ongoing:** column move, bulk reorder, assignee updates — some paths exist via field patches; verify against live Plaky board schema. Archive/delete behind `allow_writes` + confirmation.
 
 **GitHub (read-mostly v1):** list issues, file content, recent commits — avoid duplicating `issue_handler.py` logic.
 
@@ -502,160 +491,80 @@ Bump **`PROMPT_VERSION`** when this changes; store on `AgentSession` for debuggi
 4. **Organize board** → list state → preview moves/reorder → confirm → execute.
 5. **Revise tasks** → edit, split subtasks, reassign (confirm if bulk).
 
-### Agent API (planned)
+### Agent API (shipped)
 
-- `POST /api/v1/agent/chat` — `{ message, session_id?, repo? }` → `{ reply, session_id, ... }`
+- `POST /api/v1/agent/chat` — `{ message, session_id?, repo?, allow_writes?, provider?, model?, queue? }`
+- `POST /api/v1/agent/chat/stream` — streaming variant
+- `GET /api/v1/agent/jobs/{job_id}` — async job status (when `queue=true`)
 - `GET /api/v1/agent/sessions/{id}/history`
 - `DELETE /api/v1/agent/sessions/{id}`
+- `POST /api/v1/agent/scan` — LLM scan (`dry_run`, `repo`, …)
+- `POST /api/v1/agent/init-direction` — bootstrap `DIRECTION.md` PR
 
-### Web UI — reuse Cyrex interface (Vite + React)
+**Not built:** `GET /api/v1/agent/sessions` (list all), direct tool endpoints (`scan-repo`, `create-tasks`, `organize-board`) — use chat with tools instead.
 
-**Source tree (monorepo):** `deepiri-platform/diri-cyrex/cyrex-interface/`
+### Web UI (shipped)
 
-**v1 scope (intentionally narrow):** only **(1) MessagesWidget** and **(2) the main Cyrex “Interactive Chat” panel** — transcript bubbles, composer, Send, connection header, and the same dark monospace chat chrome. **No** spreadsheet, **no** Agent Playground, **no** LiveSpreadsheet, **no** orchestration/workflow/RAG/debug tabs from Cyrex.
+**Package:** `boardman-ui/` — Vite + React chat shell derived from Cyrex (chat panel + MessagesWidget only; no spreadsheet/playground).
 
-Board Manager gets a **separate** package (e.g. `deepiri-boardman/boardman-ui/`): **Vite 5 + React 18 + TypeScript**, minimal shell (sidebar can be a single “Chat” view + control to open MessagesWidget). Do **not** copy all of `App.tsx`; copy Tier 1 shell + **extract** the chat tab into a small `BoardmanChatPanel.tsx` (or inline in `App.tsx` if tiny). Proxy `/api` → boardman **8090** in `vite.config.ts`.
+| Environment | URL | Notes |
+|-------------|-----|-------|
+| Local dev | `http://localhost:5176` | `npm run dev`; proxies `/api` → `:8090` |
+| Docker prod | `http://localhost:8088` | `boardman-nginx` serves `dist/` + `/api` proxy |
 
-#### Tier 1 — copy (then rename / tweak labels)
+See [boardman-ui/README.md](../boardman-ui/README.md) and [DEPLOYMENT.md](./DEPLOYMENT.md).
 
-| Source file | Purpose |
-|-------------|---------|
-| `package.json` | Scripts (`dev`, `build`, `lint`); dependencies: `react`, `react-dom`, `axios`, `react-icons`, `vite`, `@vitejs/plugin-react`, `typescript`, eslint stack. Change `name` to e.g. `boardman-ui`. |
-| `package-lock.json` | Regenerate with `npm install` after copy if preferred. |
-| `tsconfig.json` | TS project for Vite + React. |
-| `tsconfig.node.json` | Vite config typing. |
-| `vite.config.ts` | Add `server.proxy`: `/api` → `http://localhost:8090` (or env). Change dev port if it clashes (Cyrex uses **5175**). |
-| `index.html` | Root HTML; update `<title>` / meta to Board Manager. |
-| `Dockerfile` | Multi-stage or dev pattern from Cyrex; align Node version with Cyrex. |
-| `.eslintrc.cjs` | ESLint for `src`. |
-| `.gitignore` | Node / dist / Vite defaults. |
-| `public/favicon.svg` | Replace or keep as placeholder branding. |
-| `src/main.tsx` | React root mount. |
-| `src/vite-env.d.ts` | Vite client types. |
-| `src/styles/variables.css` | Design tokens (colors, spacing) — keep for visual parity with Cyrex. |
-| `src/context/AppProviders.tsx` | Provider wrapper. |
-| `src/context/UIContext.tsx` | Active tab / UI state for sidebar. |
-| `src/context/index.ts` | Re-exports. |
-| `src/components/layout/Sidebar.tsx` | Nav rail; **strip** Cyrex tabs — e.g. one primary “Chat” (main panel) + optional Health; keep hook that opens MessagesWidget if Cyrex had a messages button in header/sidebar. |
-| `src/components/layout/Sidebar.module.css` | Sidebar styles. |
-| `src/App.css` | Global app layout (main + sidebar); keep, trim unused classes if any. |
-| `src/utils/index.ts` | Shared helpers if still relevant after strip-down. |
-
-#### Tier 2 — copy and adapt (Boardman-specific behavior)
-
-| Source file | Purpose |
-|-------------|---------|
-| `src/components/MessagesWidget/MessagesWidget.tsx` | Floating **Messages** drawer (LinkedIn-style); adapt API calls from Cyrex agent/orchestration endpoints to **boardman** `POST /api/v1/agent/chat` (and session/history as implemented). Prune Cyrex-only flows (group chats, multi-agent factory) if you want a thinner v1 — keep the **UX**: list → thread, composer, loading states. |
-| `src/components/MessagesWidget/MessagesWidget.css` | Widget layout and animations. |
-| **`src/App.tsx` — extract only the Chat tab** | In Cyrex, the **“Interactive Chat”** block is under `activeTab === 'chat'` (starts ~line 3485): header + `renderConnectionPanel()`, scrollable **role-colored message bubbles**, input row, provider toggle (API vs local), Send, and optionally the **Local LLM Configuration** subsection below the box (~3667+). **Lift that JSX + the related state** (`chatHistory`, `chatInput`, `handleChatSend`, `ChatMessage` type, `chatProvider`, local LLM fields / `scanForLLMServices` if you still want local discovery — or replace local block with simple model dropdown fed by `boardman doctor` / env). Wire `handleChatSend` to **`/api/v1/agent/chat`** instead of `/orchestration/process`. **Do not** pull orchestration, workflow, RAG, or other tabs. |
-
-#### Tier 3 — do **not** copy (explicit exclusions)
-
-- **`src/components/AgentPlayground/**`** — entire folder, including **`LiveSpreadsheet.tsx` / `.css`** (no spreadsheet view).
-- **`src/App.tsx` as a whole** — only the extracted Chat-tab slice (Tier 2); never drop the full file in as-is.
-- **`src/components/VendorFraud/**`**, **`WorkflowPlayground/**`**, **`DocumentIndexing/**`** — Cyrex product surfaces.
-- Any other Cyrex tabs/panels (orchestration forms, safety, intelligence playground, etc.).
-
-#### Reference doc in Cyrex repo
-
-- `deepiri-platform/diri-cyrex/cyrex-interface/README.md` — local dev (`npm run dev -- --port 5175`), Docker compose service name `cyrex-interface`.
-
-#### Compose / ops
-
-**Local dev:** Vite dev server (e.g. port **5176**) with `server.proxy` so the browser calls **`/api/*` → `http://localhost:8090`** (FastAPI). No nginx required day-to-day.
-
-**Production (recommended): nginx + FastAPI**
-
-- **FastAPI (uvicorn)** — API only: webhooks, REST, future `/api/v1/agent/*`. Listens internally on **8090** (not exposed publicly if nginx is the only entry).
-- **nginx** — Terminates TLS (if used), serves the **static SPA** from `boardman-ui/dist` (`npm run build`), sets cache headers for assets; **`location /api/`** (and e.g. `/docs` if desired) **reverse-proxies** to the `boardman` upstream. SPA **fallback:** `try_files $uri /index.html` for client-side routing.
-- **Optional multi-stage Docker:** build stage runs `npm ci && npm run build` for `boardman-ui`; final image is **nginx** + copied `dist/` + `default.conf`, alongside or separate from the **boardman** Python image — or one compose stack: services `boardman` (FastAPI), `boardman-nginx` (static + proxy), same Docker network (`proxy_pass http://boardman:8090`).
-
-**Alternative (smaller deploys):** mount `StaticFiles` + catch-all route in FastAPI for `dist/` — one process, no nginx — acceptable if you do not need nginx features (rate limits, TLS termination at edge, separate static scaling).
+**Historical note:** v1 was copied from `deepiri-platform/diri-cyrex/cyrex-interface/` (chat tab + MessagesWidget only). Cyrex copy instructions are archived in git history if needed.
 
 ---
 
 ## Implementation phases (unified)
 
-**A — Organization layer**
+| Phase | Scope | Status |
+|-------|-------|--------|
+| **A** — Organization layer | `repos.yml`, routing in handlers, `boardman register` | **Done** |
+| **B** — Direction + scan | `init`, `scan`, `llm/factory.py`, `ScanRun` table | **Done** |
+| **C** — Automated scan | Cron weekly scan; norozo/Discord summary | **Not started** |
+| **D** — Agent prerequisites | `PROMPT_VERSION`, Plaky API verification | **Done** |
+| **E** — Agent skeleton | LangChain + tools, `boardman agent chat/ask` | **Done** |
+| **F** — Agent memory | `AgentSession`, `AgentMessage`, `ProjectContext` | **Done** |
+| **G** — Repo grounding | `repo_tools.scan_local_repo`, `DIRECTION.md` / README | **Done** |
+| **H** — Plaky power tools | Subtasks, field updates, agent `plaky_tools` | **Mostly done** — bulk reorder/move still evolving |
+| **I** — Polish | `boardman doctor`, SQLite job queue, rate limits | **Done** — LangGraph still v2+ |
+| **J** — Web UI | `boardman-ui/`, nginx in Docker | **Done** |
 
-- `repos.yml`; `issue_handler` / `pr_handler` read routing (Plaky table param or description fallback)
-- `boardman register`
-
-**B — Direction + scan**
-
-- `boardman init`, `boardman scan`
-- `boardman/llm/client.py` (or factory) — Claude + Ollama
-- DB: `ScanRun`; `.env`: keys + `OLLAMA_BASE_URL`, `DEFAULT_SCAN_MODEL`
-
-**C — Automated scan (optional / later)**
-
-- Cron weekly scan; norozo/Discord summary; `boardman status`
-
-**D — Agent prerequisites**
-
-- `PROMPT_VERSION` documented above; confirm Plaky API for columns/subtasks/reorder
-
-**E — Agent skeleton**
-
-- `llm/factory.py` + Ollama + one cloud provider; LangChain + tools: `get_tasks`, `create_task` only; `boardman agent ask` (stateless)
-
-**F — Agent memory**
-
-- Alembic: `AgentSession`, `AgentMessage`, `ProjectContext`; CLI/API `session_id`; rolling history + optional summary
-
-**G — Repo grounding**
-
-- Local scanner + `DIRECTION.md` / README; optional GitHub fetch; structured `scan` tool output
-
-**H — Plaky power tools**
-
-- Extend `PlakyClient`; update title/body, subtasks, move/reorder per API; confirmation gate for bulk
-
-**I — Polish**
-
-- Optional LangGraph; background queue if scans timeout; `boardman doctor` (Ollama + model + Plaky checks)
-
-**J — Web UI (Cyrex-derived)**
-
-- New package `boardman-ui/`: Tier 1 + **MessagesWidget** + **extracted Interactive Chat panel** from Cyrex `App.tsx` only; **no** AgentPlayground / LiveSpreadsheet / spreadsheet; slim `App.tsx`; proxy to boardman `:8090`; Docker + compose optional.
+Future work: see [NEW_FEATURES_PLAN.md](./NEW_FEATURES_PLAN.md) (bidirectional sync, etc.).
 
 ---
 
-## New files to create
+## Current package layout
 
 ```
 deepiri-boardman/
-├── pyproject.toml               # Poetry: dependencies + scripts (commit poetry.lock)
-├── poetry.lock
-├── poetry.toml                  # in-project .venv
-├── repos.yml
-├── boardman-ui/                 # Vite + React; Cyrex chat-only subset (see “Web UI”)
-│   ├── package.json, tsconfig*.json, vite.config.ts, index.html
-│   ├── Dockerfile, .eslintrc.cjs, .gitignore
-│   ├── public/favicon.svg
-│   └── src/
-│       ├── main.tsx, App.tsx (slim: sidebar + chat + MessagesWidget toggle), App.css, vite-env.d.ts
-│       ├── styles/variables.css
-│       ├── context/
-│       ├── components/layout/
-│       ├── components/MessagesWidget/
-│       ├── components/BoardmanChatPanel.tsx   # optional split: extracted Cyrex “Interactive Chat” tab
-│       └── utils/
+├── AGENTS.md, CLAUDE.md         # Agent context (machine-oriented)
+├── pyproject.toml, poetry.lock
+├── repos.yml, team_assignments.yml
+├── boardman-ui/                 # Vite + React agent chat (shipped)
 ├── boardman/
-│   ├── llm/
-│   │   ├── __init__.py, factory.py, ollama.py, openai.py, anthropic.py, gemini.py
-│   ├── agent/
-│   │   ├── prompts.py, memory_store.py, guardrails.py, runner.py
-│   │   └── tools/ ...
-│   ├── services/
-│   │   └── scan_handler.py
-│   └── cli/
-│       └── commands.py          # scan, init, register, status, agent, doctor
-├── boardman/database/
-│   └── models.py                # ScanRun, AgentSession, AgentMessage, ProjectContext
+│   ├── main.py, settings.py
+│   ├── cli/commands.py
+│   ├── routes/                  # agent, tasks, github_events, plaky, repos, assignment, health
+│   ├── services/                # issue/pr/scan handlers, PR linking, task mutations
+│   ├── plaky/, github/, assignment/
+│   ├── llm/                     # factory.py, completion.py, ollama_autodetect.py
+│   ├── agent/                   # runner, service, prompts, guardrails, memory_store, tools/
+│   ├── database/models.py
+│   ├── broker/, jobs/, cache/, ratelimit/
+│   └── sqlite_worker.py
+├── alembic/versions/            # 001–004 migrations
+├── tests/
+├── scripts/                     # deploy_preflight, deploy_smoke, verify_agents_md
+├── worker/                      # Optional Cloudflare QA proxy
 └── docs/
     ├── PLAN.md                  # This file
-    ├── AGENT_PLAN.md
+    ├── AGENT_PLAN.md, AGENTS_MAINTENANCE.md
+    ├── DEPLOYMENT.md, BOARDMAN_*.md
+    ├── NEW_FEATURES_PLAN.md, ADDITIONAL_FEATURES.md
     └── DIRECTION_TEMPLATE.md
 ```
 
@@ -703,13 +612,19 @@ PROMPT_VERSION=2026-04-09
 
 ## Verification checklist (agent + scan + UI)
 
-- [ ] Ollama works from container and host with documented ports
-- [ ] Provider switch is env-only + restart
-- [ ] Session survives restart (DB history)
-- [ ] Agent does not invent task IDs (eval)
-- [ ] Bulk Plaky change requires confirmation when flag on
-- [ ] Scan/agent repo tools return real paths/excerpts
-- [ ] `boardman-ui` dev server proxies API to boardman; agent chat round-trips in browser
+- [x] Ollama works from container and host with documented ports (`docker-compose.yml`, README)
+- [x] Provider switch is env-only + restart (`LLM_PROVIDER`, `LLM_MODEL` in settings)
+- [x] Session survives restart (DB history — `AgentSession` / `AgentMessage`, tests)
+- [x] Agent does not invent task IDs (guardrails + tool-first policy; `test_agent_guardrails.py`)
+- [x] Bulk Plaky change requires confirmation when flag on (`AGENT_REQUIRE_CONFIRM_BULK`, `allow_writes`)
+- [x] Scan/agent repo tools return real paths/excerpts (`repo_tools`, `test_tools.py`)
+- [x] `boardman-ui` dev server proxies API to boardman; agent chat round-trips in browser
+
+---
+
+## Design notes (archive)
+
+Original product intent (pre-implementation): installable `boardman` CLI that points at a repo, reads direction (settled on `DIRECTION.md`), creates Plaky tasks, and automates GitHub↔Plaky linking (PR comments, status). Boardman owns Plaky table organization via `repos.yml` so tasks are not mixed across AI/ML/infra/backend/frontend domains.
 
 ---
 
@@ -718,3 +633,4 @@ PROMPT_VERSION=2026-04-09
 | Date | Change |
 |------|--------|
 | 2026-04-09 | UI/nginx plan; Python deps via **Poetry** (`pyproject.toml` + `poetry.lock`); Docker uses Poetry. |
+| 2026-06-05 | Reconciled shipped vs planned: agent, scan, UI, worker marked done; added AGENTS.md maintenance note; verification checklist checked off. |
