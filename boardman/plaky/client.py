@@ -1,3 +1,4 @@
+import asyncio
 import time
 from typing import AbstractSet, Any, Dict, List, Optional, Set
 
@@ -29,7 +30,7 @@ async def _request_with_rate_limit_retry(
 
         retry_after = response.headers.get("Retry-After")
         wait_seconds = int(retry_after) if retry_after and retry_after.isdigit() else 2
-        time.sleep(wait_seconds)
+        await asyncio.sleep(wait_seconds)
 
     return response
 
@@ -1253,16 +1254,147 @@ class PlakyClient:
             "message": f"Failed to create task ({response.status_code}): {response.text[:200]}",
         }
 
-    async def get_tasks(self, status: str = "open") -> Dict[str, Any]:
+    async def get_tasks(self, status: str = "open", board_id: str | None = None) -> Dict[str, Any]:
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
 
         if self._public_root():
+            status_value_labels: Dict[str, str] = {}
+            status_field_keys: Set[str] = set()
+
+            def _status_text(row: Dict[str, Any]) -> str:
+                direct = [
+                    row.get("status"),
+                    row.get("state"),
+                    row.get("workflowStatus"),
+                    row.get("workflow_state"),
+                ]
+                for cand in direct:
+                    txt = str(cand or "").strip()
+                    if txt:
+                        return txt
+
+                field_blocks: List[Any] = []
+                for k in ("itemFields", "item_fields", "fields", "customFields", "custom_fields"):
+                    v = row.get(k)
+                    if isinstance(v, list):
+                        field_blocks.extend(v)
+                for f in field_blocks:
+                    if not isinstance(f, dict):
+                        continue
+                    field_key = str(f.get("key") or f.get("itemFieldKey") or "").strip()
+                    name_hint = str(
+                        f.get("name")
+                        or f.get("label")
+                        or f.get("title")
+                        or f.get("itemFieldName")
+                        or f.get("key")
+                        or f.get("itemFieldKey")
+                        or ""
+                    ).strip().lower()
+                    if not any(tok in name_hint for tok in ("status", "state", "workflow")):
+                        continue
+                    vals = [
+                        f.get("value"),
+                        f.get("text"),
+                        f.get("name"),
+                        f.get("label"),
+                        (f.get("option") or {}).get("name") if isinstance(f.get("option"), dict) else None,
+                        (f.get("selectedOption") or {}).get("name")
+                        if isinstance(f.get("selectedOption"), dict)
+                        else None,
+                    ]
+                    for v in vals:
+                        txt = str(v or "").strip()
+                        if txt and field_key in status_field_keys and txt in status_value_labels:
+                            return status_value_labels[txt]
+                        if txt:
+                            return txt
+                return ""
+
+            bid = (
+                (board_id or "").strip()
+                or (context_board_id() or "").strip()
+                or (settings.plaky_pr_tracking_board_id or "").strip()
+            )
+            if not bid:
+                return {
+                    "ok": True,
+                    "status": 200,
+                    "tasks": [],
+                    "message": "Global /tasks listing is unavailable on v1/public and no board id was provided.",
+                }
+            try:
+                b = await self.get_board(bid)
+                board = b.get("board") if isinstance(b, dict) and isinstance(b.get("board"), dict) else {}
+                fields = board.get("fields") if isinstance(board, dict) else []
+                if isinstance(fields, list):
+                    for f in fields:
+                        if not isinstance(f, dict):
+                            continue
+                        k = str(f.get("key") or "").strip()
+                        name = str(f.get("name") or f.get("title") or "").strip().lower()
+                        if not k or not any(tok in name for tok in ("status", "state", "workflow")):
+                            continue
+                        status_field_keys.add(k)
+                        cfg = f.get("configuration") if isinstance(f.get("configuration"), dict) else {}
+                        vals = cfg.get("values") if isinstance(cfg, dict) else []
+                        if isinstance(vals, list):
+                            for opt in vals:
+                                if not isinstance(opt, dict):
+                                    continue
+                                ov = str(opt.get("key") or opt.get("id") or "").strip()
+                                ol = str(opt.get("title") or opt.get("name") or "").strip()
+                                if ov and ol:
+                                    status_value_labels[ov] = ol
+            except Exception:
+                pass
+            listed = await self.list_board_items(bid, max_pages=5)
+            if not listed.get("ok"):
+                return {
+                    "ok": False,
+                    "status": listed.get("status") or 400,
+                    "message": listed.get("message") or "Failed to list board items.",
+                }
+            rows = [x for x in (listed.get("items") or []) if isinstance(x, dict)]
+            original_count = len(rows)
+            status_in = (status or "").strip().casefold()
+            if status_in and status_in not in ("all", "*"):
+                filtered: List[Dict[str, Any]] = []
+                numeric_only_statuses = True
+                for row in rows:
+                    resolved = _status_text(row)
+                    if resolved and not resolved.isdigit():
+                        numeric_only_statuses = False
+                    if resolved and resolved.casefold() == status_in:
+                        if not str(row.get("status") or "").strip():
+                            row["status"] = resolved
+                        filtered.append(row)
+                if filtered:
+                    rows = filtered
+                elif original_count > 0 and numeric_only_statuses:
+                    return {
+                        "ok": True,
+                        "status": 200,
+                        "tasks": rows,
+                        "message": (
+                            f"Loaded from board items on board_id={bid}. "
+                            f"Status filter '{status}' could not be matched because item statuses are numeric ids."
+                        ),
+                    }
+                else:
+                    rows = filtered
+            else:
+                for row in rows:
+                    if not str(row.get("status") or "").strip():
+                        resolved = _status_text(row)
+                        if resolved:
+                            row["status"] = resolved
             return {
                 "ok": True,
                 "status": 200,
-                "tasks": [],
-                "message": "Global /tasks listing is not on Plaky v1 public API; use board items or match_board.",
+                "tasks": rows,
+                "message": f"Loaded from board items on board_id={bid}.",
             }
 
         url = f"{self.base_url.rstrip('/')}/tasks"

@@ -12,6 +12,7 @@ import {
   IconUser,
 } from "./components/Icons";
 import { AppSelect } from "./components/AppSelect";
+import { MarkdownMessage } from "./components/MarkdownMessage";
 
 type Role = "user" | "assistant";
 
@@ -789,7 +790,16 @@ export default function App() {
                       <div className="message__meta">
                         {msg.role === "user" ? "You" : "Assistant"}
                       </div>
-                      <div className="message__content">{msg.content}</div>
+                      <div className="message__content">
+                        {msg.role === "assistant" ? (
+                          <MarkdownMessage
+                            content={msg.content}
+                            isStreaming={loading && i === messages.length - 1 && msg.role === "assistant"}
+                          />
+                        ) : (
+                          msg.content
+                        )}
+                      </div>
                     </div>
                   </li>
                 ))}
@@ -873,7 +883,16 @@ export default function App() {
                 {messages.map((msg, i) => (
                   <li key={i} className={`drawer__msg drawer__msg--${msg.role}`}>
                     <span className="drawer__msg-role">{msg.role === "user" ? "You" : "Assistant"}</span>
-                    <div className="drawer__msg-text">{msg.content}</div>
+                    <div className="drawer__msg-text">
+                      {msg.role === "assistant" ? (
+                        <MarkdownMessage
+                          content={msg.content}
+                          isStreaming={loading && i === messages.length - 1 && msg.role === "assistant"}
+                        />
+                      ) : (
+                        msg.content
+                      )}
+                    </div>
                   </li>
                 ))}
                 {loading && messages[messages.length - 1]?.role !== "assistant" ? (

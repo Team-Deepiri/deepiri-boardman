@@ -1,21 +1,33 @@
 import asyncio
 import json
 import re
+from html import escape
+from pathlib import Path
 from typing import List, Optional
 
 import httpx
 import typer
 from rich.console import Console
 from rich.table import Table
-
 from sqlalchemy import func, select
 
 from boardman.agent.service import run_agent_chat
-from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
+from boardman.assignment.qa_picker import ensure_github_owner_repo
 from boardman.database.models import AgentSession, ProjectContext, ScanRun
 from boardman.database.session import async_session
 from boardman.plaky.client import PlakyClient
+from boardman.plaky.inventory import collect_plaky_inventory
+from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
+from boardman.readiness import build_readiness_report
+from boardman.repos_config import (
+    list_registered_repos,
+    list_workspace_repos,
+    repos_yaml_canonical_repo_key,
+    upsert_repo,
+)
+from boardman.services.direction_init import init_direction_file
 from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
+from boardman.services.scan_handler import run_repo_scan
 from boardman.services.task_mutations import (
     CreateSubtaskInput,
     CreateTaskInput,
@@ -24,9 +36,6 @@ from boardman.services.task_mutations import (
     create_task_internal,
     update_task_internal,
 )
-from boardman.repos_config import list_registered_repos, list_workspace_repos, upsert_repo
-from boardman.services.direction_init import init_direction_file
-from boardman.services.scan_handler import run_repo_scan
 from boardman.settings import settings
 
 app = typer.Typer(help="deepiri-boardman CLI")
@@ -220,16 +229,25 @@ def link_pr(
 def list_tasks_cmd(
     status: str = typer.Option("open", "--status", "-s", help="Task status: open, done, etc."),
     format: str = typer.Option("table", "--format", "-f", help="Output format: table, json"),
+    plaky_board_id: Optional[str] = typer.Option(
+        None,
+        "--board-id",
+        help="Board id for listing items in v1/public mode.",
+    ),
 ):
     plaky = PlakyClient()
 
     async def run():
-        result = await plaky.get_tasks(status=status)
+        result = await plaky.get_tasks(status=status, board_id=plaky_board_id)
         if not result.get("ok"):
             console.print(f"[red]Error:[/red] {result.get('message')}")
             return
 
         tasks = result.get("tasks", [])
+        if not tasks:
+            msg = str(result.get("message") or "").strip()
+            if msg:
+                console.print(f"[yellow]{msg}[/yellow]")
         if format == "json":
             import json
             console.print(json.dumps(tasks, indent=2))
@@ -239,10 +257,16 @@ def list_tasks_cmd(
             table.add_column("Title")
             table.add_column("Status")
             for task in tasks:
-                task_id = task.get("id") or task.get("taskId", "N/A")
-                title = task.get("title", "Untitled")
-                task_status = task.get("status", "unknown")
-                table.add_row(task_id, title, task_status)
+                task_id = str(task.get("id") or task.get("itemId") or task.get("taskId") or "N/A")
+                title = str(task.get("title") or task.get("name") or "Untitled")
+                task_status = (
+                    task.get("status")
+                    or task.get("state")
+                    or task.get("workflowStatus")
+                    or task.get("workflow_state")
+                    or "unknown"
+                )
+                table.add_row(task_id, title, str(task_status))
             console.print(table)
 
     asyncio.run(run())
@@ -308,12 +332,27 @@ def update_task_cmd(
 
 @app.command()
 def sync(
-    repo: str = typer.Option(..., prompt=True, help="GitHub repo (owner/repo)"),
+    repo: str = typer.Option(
+        ...,
+        prompt=True,
+        help="GitHub repo name",
+    ),
+    board_id: str = typer.Option(
+        ...,
+        "--board-id",
+        help="Plaky board id",
+    ),
+    group_id: str = typer.Option(
+        ...,
+        "--group-id",
+        help="Plaky group id",
+    ),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be synced without making changes"),
 ):
     if not settings.github_pat:
         console.print("[red]Error: GITHUB_PAT not configured[/red]")
         raise typer.Exit(1)
+    repo = ensure_github_owner_repo(repo)
 
     async def run():
         async with httpx.AsyncClient() as client:
@@ -328,16 +367,29 @@ def sync(
 
             plaky = PlakyClient()
             for issue in issues:
-                title = f"[{repo}] {issue['title']}"
-                body = f"{issue.get('body', '')}\n\n{issue['html_url']}"
+                title = f"{repo.split('/')[-1]} Issue: {issue['title']}"
+                issue_url = str(issue.get("html_url") or "").strip()
+                issue_number = issue.get("number")
+                issue_body = str(issue.get("body") or "").strip()
+                if settings.plaky_pr_comment_links_as_html and issue_url:
+                    label = f"{repo} issue #{issue_number}" if issue_number is not None else issue_url
+                    issue_link = f'<a href="{escape(issue_url, quote=True)}">{escape(label)}</a>'
+                else:
+                    issue_link = issue_url
+                body = f"{issue_body}\n\nIssue: {issue_link}" if issue_link else issue_body
                 console.print(f"  - #{issue['number']}: {issue['title']}")
                 if not dry_run:
                     result = await create_task_internal(
                         CreateTaskInput(
                             title=title,
                             description=body,
-                            priority="medium",
                             github_repos=[repo],
+                            task_type="Issue",
+                            status="Available",
+                            priority="High",
+                            plaky_board_id=board_id,
+                            plaky_group_id=group_id,
+                            auto_assign_team=False
                         )
                     )
                     if result.get("ok"):
@@ -350,13 +402,22 @@ def sync(
 
 @app.command("register")
 def register_repo(
-    repo: str = typer.Argument(..., help="GitHub repo owner/name"),
+    repo: str = typer.Argument(
+        ...,
+        help="Repository name or owner/repo; YAML key is repo name only. Bare names prepend "
+        "GITHUB_BARE_REPO_OWNER for GitHub as owner/repo elsewhere in the toolchain.",
+    ),
     category: str = typer.Option(..., "--category", "-c", help="ai|ml|backend|frontend|infrastructure"),
     plaky_table: str = typer.Option(..., "--table", "-t", help="Plaky table name"),
     description: str = typer.Option("", "--description", "-d"),
 ):
+    canon = repos_yaml_canonical_repo_key(repo)
+    full_slug = ensure_github_owner_repo(repo)
     upsert_repo(repo, category, plaky_table, description)
-    console.print(f"[green]Registered[/green] {repo} → {plaky_table}")
+    extra = ""
+    if full_slug.strip() != canon.strip():
+        extra = f" [dim]({full_slug})[/dim]"
+    console.print(f"[green]Registered[/green] {canon}{extra} → {plaky_table}")
 
 
 @app.command("scan")
@@ -428,6 +489,207 @@ def doctor():
     asyncio.run(run())
 
 
+@app.command("readiness")
+def readiness_cmd(
+    env_file: Path = typer.Option(
+        Path(".env"),
+        "--env-file",
+        help="Env file to inspect without printing secret values.",
+    ),
+    compose_file: Path = typer.Option(
+        Path("docker-compose.prod.yml"),
+        "--compose-file",
+        help="Docker Compose file to inspect.",
+    ),
+    repos_file: Path = typer.Option(Path("repos.yml"), "--repos-file", help="Repo routing YAML."),
+    team_assignments_file: Path = typer.Option(
+        Path("team_assignments.yml"),
+        "--team-assignments-file",
+        help="Plaky/team assignment YAML.",
+    ),
+    database_file: Path = typer.Option(
+        Path("boardman.db"),
+        "--database-file",
+        help="SQLite file bind-mounted into Docker.",
+    ),
+    format: str = typer.Option("table", "--format", "-f", help="Output format: table or json."),
+    strict_pending: bool = typer.Option(
+        False,
+        "--strict-pending",
+        help="Exit non-zero when checks are pending, not only when they fail.",
+    ),
+):
+    """Offline production readiness report for the standalone Boardman repo."""
+    report = build_readiness_report(
+        Path.cwd(),
+        env_file=env_file,
+        compose_file=compose_file,
+        repos_file=repos_file,
+        team_assignments_file=team_assignments_file,
+        database_file=database_file,
+    )
+
+    if format == "json":
+        console.print(json.dumps(report.to_dict(), indent=2))
+    elif format == "table":
+        status_style = {
+            "pass": "green",
+            "warn": "yellow",
+            "pending": "magenta",
+            "fail": "red",
+        }
+        console.print(
+            "[bold]Boardman readiness[/bold] "
+            f"pass={report.passed} warn={report.warnings} "
+            f"pending={report.pending} fail={report.failures}"
+        )
+        table = Table(title="Standalone Boardman Deployment Gates")
+        table.add_column("Status", width=9)
+        table.add_column("Area", width=12)
+        table.add_column("Check")
+        table.add_column("Detail")
+        table.add_column("Next")
+        for check in report.checks:
+            style = status_style.get(check.status, "white")
+            table.add_row(
+                f"[{style}]{check.status.upper()}[/{style}]",
+                check.area,
+                check.name,
+                check.detail,
+                check.next_step,
+            )
+        console.print(table)
+    else:
+        console.print("[red]Error:[/red] --format must be table or json")
+        raise typer.Exit(2)
+
+    if report.failures or (strict_pending and report.pending):
+        raise typer.Exit(1)
+
+
+@app.command("plaky-inventory")
+def plaky_inventory_cmd(
+    board_id: Optional[str] = typer.Option(
+        None,
+        "--board-id",
+        help="Board ID to inspect for groups, fields, and status options.",
+    ),
+    include_users: bool = typer.Option(
+        True,
+        "--include-users/--no-users",
+        help="Include workspace users for member/assignee ID handoff.",
+    ),
+    format: str = typer.Option("table", "--format", "-f", help="Output format: table or json."),
+):
+    """List Plaky board/group/field/status IDs for deployment config."""
+
+    async def run():
+        inventory = await collect_plaky_inventory(
+            board_id=board_id or "",
+            include_users=include_users,
+        )
+        if format == "json":
+            console.print(json.dumps(inventory, indent=2, default=str))
+            return
+        if format != "table":
+            console.print("[red]Error:[/red] --format must be table or json")
+            raise typer.Exit(2)
+
+        _print_plaky_inventory(inventory, board_id=board_id or "")
+        if not inventory.get("ok"):
+            raise typer.Exit(1)
+
+    asyncio.run(run())
+
+
+def _print_plaky_inventory(inventory: dict, *, board_id: str = "") -> None:
+    messages = inventory.get("messages") or []
+    for message in messages:
+        console.print(f"[yellow]{message}[/yellow]")
+
+    boards = [b for b in inventory.get("boards") or [] if isinstance(b, dict)]
+    board_table = Table(title="Plaky Boards")
+    board_table.add_column("ID", style="cyan")
+    board_table.add_column("Name")
+    board_table.add_column("Space ID", style="dim")
+    for board in boards:
+        board_table.add_row(
+            str(board.get("id") or ""),
+            str(board.get("name") or ""),
+            str(board.get("space_id") or ""),
+        )
+    console.print(board_table)
+
+    if not board_id:
+        console.print("[dim]Run with --board-id <id> to list groups, fields, and status options.[/dim]")
+
+    groups = [g for g in inventory.get("groups") or [] if isinstance(g, dict)]
+    if groups:
+        group_table = Table(title="Plaky Groups")
+        group_table.add_column("ID", style="cyan")
+        group_table.add_column("Name")
+        for group in groups:
+            group_table.add_row(str(group.get("id") or ""), str(group.get("name") or ""))
+        console.print(group_table)
+
+    fields = [f for f in inventory.get("fields") or [] if isinstance(f, dict)]
+    if fields:
+        field_table = Table(title="Plaky Fields")
+        field_table.add_column("Key", style="cyan")
+        field_table.add_column("Name")
+        field_table.add_column("Type")
+        field_table.add_column("Options")
+        for field in fields:
+            options = field.get("options") or []
+            option_labels = [
+                str(opt.get("name") or opt.get("id") or opt.get("optionId") or "")
+                for opt in options
+                if isinstance(opt, dict)
+            ]
+            field_table.add_row(
+                str(field.get("key") or ""),
+                str(field.get("name") or ""),
+                str(field.get("type") or ""),
+                ", ".join([label for label in option_labels if label][:20]),
+            )
+        console.print(field_table)
+
+    status_fields = [f for f in inventory.get("status_fields") or [] if isinstance(f, dict)]
+    if status_fields:
+        status_table = Table(title="Status Options")
+        status_table.add_column("Field Key", style="cyan")
+        status_table.add_column("Field Name")
+        status_table.add_column("Option ID / Value")
+        status_table.add_column("Option Name")
+        for field in status_fields:
+            for opt in field.get("options") or []:
+                if not isinstance(opt, dict):
+                    continue
+                status_table.add_row(
+                    str(field.get("key") or ""),
+                    str(field.get("name") or ""),
+                    str(opt.get("id") or opt.get("optionId") or opt.get("value") or ""),
+                    str(opt.get("name") or opt.get("label") or opt.get("title") or ""),
+                )
+        console.print(status_table)
+
+    users = [u for u in inventory.get("users") or [] if isinstance(u, dict)]
+    if users:
+        user_table = Table(title="Plaky Users")
+        user_table.add_column("ID", style="cyan")
+        user_table.add_column("Name")
+        user_table.add_column("Email", style="dim")
+        user_table.add_column("GitHub", style="dim")
+        for user in users:
+            user_table.add_row(
+                str(user.get("id") or ""),
+                str(user.get("name") or ""),
+                str(user.get("email") or user.get("primaryEmail") or ""),
+                str(user.get("github_login") or ""),
+            )
+        console.print(user_table)
+
+
 def _agent_chat_async(
     message: str,
     session_id: Optional[str],
@@ -495,22 +757,32 @@ app.add_typer(agent_app, name="agent")
 
 @app.command("init")
 def init_direction(
-    repo: str = typer.Argument(..., help="owner/repo"),
-    branch: Optional[str] = typer.Option(None, "--branch"),
-    force: bool = typer.Option(False, "--force", help="Overwrite existing DIRECTION.md"),
+    repo: str = typer.Argument(
+        ...,
+        help="repo name (deepiri-demo) or full slug (owner/deepiri-demo)",
+    ),
+    force: bool = typer.Option(False, "--force", help="Overwrite existing DIRECTION.md")
 ):
-    parts = repo.split("/")
-    if len(parts) != 2:
-        console.print("[red]repo must be owner/name[/red]")
-        raise typer.Exit(1)
-
     async def run():
-        r = await init_direction_file(parts[0], parts[1], branch=branch, force=force)
+        default_owner = "Team-Deepiri"
+        parts = (repo or "").strip().split("/")
+        if len(parts) == 1 and parts[0]:
+            owner, name = default_owner, parts[0]
+        elif len(parts) == 2:
+            owner, name = parts[0], parts[1]
+        else:
+            console.print("[red]repo must be owner/name or bare repo name[/red]")
+            raise typer.Exit(1)
+
+        r = await init_direction_file(owner, name, force=force)
         if r.get("ok"):
             if r.get("skipped"):
                 console.print(f"[yellow]Skipped:[/yellow] {r.get('message')} {r.get('url', '')}")
             else:
-                console.print(f"[green]DIRECTION.md created[/green] branch={r.get('branch')} url={r.get('url')}")
+                console.print(
+                    f"[green]PR created for DIRECTION.md[/green] "
+                    f"base={r.get('branch')} head={r.get('pr_branch')} url={r.get('url')}"
+                )
         else:
             console.print(f"[red]{r.get('message')}[/red]")
             raise typer.Exit(1)

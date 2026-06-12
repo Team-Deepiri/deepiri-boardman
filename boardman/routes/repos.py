@@ -8,7 +8,7 @@ import httpx
 
 from boardman.assignment.tier_classifier import classify_repos_tier, classify_repo_tier
 from boardman.github.repo_metadata import fetch_repo_metadata, fetch_repos_metadata, RepoMetadata
-from boardman.repos_config import _load_raw, update_repo_tiers
+from boardman.repos_config import _load_raw, routing_yaml_candidate_map_keys, update_repo_tiers
 from boardman.settings import settings
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -68,7 +68,13 @@ async def get_repo_tier(full_name: str) -> SingleRepoResponse:
     """Get tier for a specific repo (from repos.yml or compute on-the-fly)."""
     raw = _load_raw()
     repos = raw.get("repos", {})
-    entry = repos.get(full_name)
+    short_repo = full_name.split("/", 1)[1] if "/" in full_name else full_name
+    entry = None
+    for key in routing_yaml_candidate_map_keys(full_name, short_repo, settings.github_org):
+        candidate = repos.get(key)
+        if isinstance(candidate, dict):
+            entry = candidate
+            break
     
     if entry and isinstance(entry, dict) and entry.get("tier"):
         tier = int(entry["tier"])

@@ -1,7 +1,8 @@
 # Boardman Deployment Runbook
 
-This runbook covers the first production-like Boardman deployment: Docker Compose on a VPS,
+This runbook covers the first production Boardman deployment: Docker Compose on a VPS,
 service credentials, GitHub webhooks, Plaky keys, worker setup, and smoke tests.
+Production cloud deployments must not run local Ollama/model inference.
 
 ## Branch and PR Rules
 
@@ -15,20 +16,35 @@ service credentials, GitHub webhooks, Plaky keys, worker setup, and smoke tests.
 
 ## Services
 
-The Compose stack runs five services:
+The production cloud Compose stack (`docker-compose.prod.yml`) runs three required services:
 
 - `boardman`: FastAPI API and GitHub webhook receiver on port `8090`.
-- `boardman-worker`: arq background worker for queued agent/reorder jobs.
-- `redis`: private Redis for arq and optional rate limiting.
+- `boardman-worker`: SQLite background worker for queued agent/reorder jobs.
 - `boardman-nginx`: static UI plus `/api` reverse proxy on port `8088`.
-- `ollama`: local LLM sidecar on port `11434` inside the Compose network.
+
+Wave one uses `GITHUB_AUTH_MODE=pat`. GitHub App auth is not required unless Joe changes that
+deployment decision later.
+
+The local/dev Compose stack (`docker-compose.yml`) also includes `ollama` so CPU/GPU behavior can be
+validated locally in the same style as Cyrex. Do not run that Ollama sidecar on the cloud VPS.
+
+`redis` is optional behind the `agent-cache` profile and is only needed when `AGENT_REDIS_URL` is configured.
 
 Do not confuse `boardman-worker` with the Cloudflare Worker in `worker/`. The Cloudflare Worker
 is an optional QA assignment proxy/fallback and is deployed with Wrangler, not Docker Compose.
 
+## Queue Path
+
+There is no Kafka-compatible broker in the wave-one Boardman Compose file.
+
+- API async jobs are stored in the SQLite `background_jobs` table inside `boardman.db`.
+- `boardman-worker` runs `python -m boardman.sqlite_worker` and claims those SQLite jobs.
+- Optional `redis` is cache-only for API/agent data when enabled; it is not the worker queue.
+- Kafka or Redpanda would be a future service/adapter decision, not required for first deploy.
+
 ## Required Secrets
 
-Create a server-local `.env` from `.env.example`. Do not commit `.env`.
+Create a server-local `.env` from `.env.production.example`. Do not commit `.env`.
 
 | Secret | Purpose | Rotation trigger |
 | --- | --- | --- |
@@ -46,6 +62,11 @@ openssl rand -hex 32
 
 Use dedicated service credentials for production. Do not deploy Kyle's personal PAT or personal
 Plaky key except as a temporary emergency bootstrap with an explicit rotation task.
+
+Also rotate any pasted/shared Cloudflare API token if Cloudflare DNS or the optional Cloudflare
+Worker path is used. Rotate hosted LLM keys if they were pasted/shared and will be used in
+production (`OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`).
+GitHub App secrets are not required for wave one because PAT auth is confirmed.
 
 ## VPS Bootstrap
 
@@ -75,7 +96,7 @@ exists, get explicit approval before treating `main` as the deployment baseline.
 Create and edit the runtime env:
 
 ```bash
-cp .env.example .env
+cp .env.production.example .env
 nano .env
 ```
 
@@ -86,12 +107,21 @@ PLAKY_API_KEY=<service-plaky-key>
 GITHUB_PAT=<service-github-pat>
 GITHUB_WEBHOOK_SECRET=<random-hex-secret>
 WORKER_INTERNAL_SECRET=<random-hex-secret>
+ROUTE_SECRET=<random-hex-secret-if-cloudflare-worker-is-used>
+BOARDMAN_SECRETS_ROTATED=true
+BOARDMAN_TARGET_ENV=vps
+GITHUB_AUTH_MODE=pat
+BOARDMAN_PUBLIC_URL=https://<boardman-host>
+GITHUB_WEBHOOK_EVENTS=issues,pull_request,pull_request_review,pull_request_review_comment,issue_comment
 GITHUB_ORG=deepiri-org
-LLM_PROVIDER=ollama
+LLM_PROVIDER=openai
+PR_LINKING_LLM_ENABLED=false
+ASSIGNMENT_IDENTITY_LLM_ENABLED=false
 ```
 
-For Docker Compose, keep `OLLAMA_BASE_URL` as configured by `docker-compose.yml`
-(`http://ollama:11434`) and keep Redis private on the Compose network.
+Do not set `LLM_PROVIDER=ollama` in cloud production. If LLM-dependent behavior is required,
+use an approved hosted provider key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `GEMINI_API_KEY`).
+If no provider is approved yet, keep LLM-dependent features disabled for the first smoke test.
 
 ## Start the Stack
 
@@ -106,23 +136,16 @@ chmod 600 boardman.db
 ```
 
 ```bash
-docker compose up -d --build
-docker compose ps
-```
-
-Pull a small Ollama model first so the agent can respond on modest hardware:
-
-```bash
-docker compose exec ollama ollama pull qwen2.5:0.5b
-docker compose exec ollama ollama list
+docker compose -f docker-compose.prod.yml up -d --build
+docker compose -f docker-compose.prod.yml ps
 ```
 
 Check logs:
 
 ```bash
-docker compose logs --tail=100 boardman
-docker compose logs --tail=100 boardman-worker
-docker compose logs --tail=100 boardman-nginx
+docker compose -f docker-compose.prod.yml logs --tail=100 boardman
+docker compose -f docker-compose.prod.yml logs --tail=100 boardman-worker
+docker compose -f docker-compose.prod.yml logs --tail=100 boardman-nginx
 ```
 
 ## Health Checks
@@ -132,22 +155,21 @@ From the VPS:
 ```bash
 curl -fsS http://localhost:8090/api/v1/health
 curl -fsS http://localhost:8088/api/v1/health
-curl -fsS http://localhost:11434/api/tags
 ```
 
 Or run the bundled runtime smoke script from the repo root:
 
 ```bash
-bash scripts/deploy_smoke.sh
+BOARDMAN_COMPOSE_FILE=docker-compose.prod.yml bash scripts/deploy_smoke.sh
 ```
 
 Expected:
 
 - `boardman` health returns HTTP 200.
 - `boardman-nginx` proxies `/api` to `boardman`.
-- Ollama lists at least one pulled model.
-- Redis is not exposed publicly.
-- Logs say the Plaky API key is present and identify the Ollama base URL.
+- Ollama smoke checks are skipped because production cloud does not run local LLM inference.
+- Redis remains disabled unless `--profile agent-cache` is explicitly enabled; if enabled, keep it private.
+- Logs say the Plaky API key is present.
 - Webhook `ping` returns HTTP 200 with `pong`.
 
 ## GitHub Webhook Setup
@@ -171,7 +193,7 @@ replace it with HTTPS before wider rollout.
 
 ## End-to-End Smoke Test
 
-1. Confirm `docker compose ps` shows all services running.
+1. Confirm `docker compose -f docker-compose.prod.yml ps` shows all services running.
 2. Send GitHub webhook `ping`; delivery should return 200 with `pong`.
 3. Create a test GitHub issue in the smoke-test repo.
 4. Confirm webhook delivery returns 200.
@@ -186,8 +208,8 @@ Record the smoke test result in the Plaky task or deployment notes.
 
 ## Cloudflare Worker Optional Path
 
-The `worker/` package is a Cloudflare Worker for QA assignment. It is separate from the Compose
-`boardman-worker`.
+The `worker/` package is a Cloudflare Worker for QA assignment only. It is separate from the Compose
+`boardman-worker` and is not the main Boardman backend deployment.
 
 Required Worker secrets/vars:
 
@@ -196,11 +218,13 @@ Required Worker secrets/vars:
 - `ROUTE_SECRET`: bearer token callers use when calling the Worker.
 - `QA_TEAM_JSON`: optional fallback data if the Worker is not proxying to Boardman.
 
+The Worker should only expose `/health` and `/assign-qa`.
+
 Deploy only after the Boardman API is reachable:
 
 ```bash
 cd worker
-npm install
+npm ci
 npm run deploy
 ```
 

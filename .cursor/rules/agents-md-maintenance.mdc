@@ -1,0 +1,26 @@
+---
+description: Keep project docs (AGENTS.md, PLAN.md, etc.) accurate when repo changes
+globs: boardman/**,docs/**,pyproject.toml,docker-compose*.yml,repos.yml,SETUP.md,README.md,AGENTS.md,DIRECTION.md
+alwaysApply: false
+---
+
+# Documentation maintenance
+
+When you change matched files, read [docs/AGENTS_MAINTENANCE.md](docs/AGENTS_MAINTENANCE.md) and update docs in the **same PR**.
+
+## Always check
+
+- [AGENTS.md](AGENTS.md) — CLI/API, env vars, repo map, implemented vs planned
+- Bump **Last verified** in AGENTS.md; run `poetry run python scripts/verify_agents_md.py`
+
+## Also update when relevant
+
+| Change | Doc |
+|--------|-----|
+| Agent tools, prompts, memory | [docs/AGENT_PLAN.md](docs/AGENT_PLAN.md) |
+| Feature shipped or phase completed | [docs/PLAN.md](docs/PLAN.md) |
+| Planned feature partial/full delivery | [docs/NEW_FEATURES_PLAN.md](docs/NEW_FEATURES_PLAN.md) |
+| User-facing commands or deploy steps | [README.md](README.md), [SETUP.md](SETUP.md) |
+| This repo's goals/priorities | [DIRECTION.md](DIRECTION.md) |
+
+Do not duplicate PLAN.md into AGENTS.md — index and link.

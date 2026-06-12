@@ -45,3 +45,27 @@ async def test_list_workspace_repos_yaml_only_without_pat(monkeypatch, tmp_path)
     rc.reload_repos_config()
     out = await rc.list_workspace_repos()
     assert list(out.keys()) == ["other/extra"]
+
+
+def test_get_routing_reports_explicit_vs_default_source(monkeypatch, tmp_path):
+    yml = tmp_path / "repos.yml"
+    yml.write_text(
+        "defaults:\n  category: misc\n  plaky_table: Inbox\n"
+        "repos:\n  deepiri-org/one:\n    category: backend\n    plaky_table: API\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(rc.settings, "repos_yml_path", str(yml))
+    monkeypatch.setattr(rc.settings, "github_org", "deepiri-org")
+    rc.reload_repos_config()
+
+    r1, s1 = rc.get_routing("deepiri-org/one", "one", "deepiri-org", with_source=True)
+    assert s1 == "explicit"
+    assert r1 is not None and r1.plaky_table == "API"
+
+    r2, s2 = rc.get_routing("deepiri-org/two", "two", "deepiri-org", with_source=True)
+    assert s2 == "org_default"
+    assert r2 is not None and r2.plaky_table == "Inbox"
+
+    r3, s3 = rc.get_routing("other-org/none", "none", "deepiri-org", with_source=True)
+    assert s3 == "none"
+    assert r3 is None

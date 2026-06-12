@@ -22,6 +22,7 @@ TASK_STATUS_TAGS: tuple[str, ...] = (
 )
 
 TASK_TYPE_TAGS: tuple[str, ...] = (
+    "Issue",
     "Story",
     "Feature",
     "Bug",
@@ -134,6 +135,10 @@ def type_field_patch_candidates(canonical_type: str) -> tuple[str, ...]:
         parts.append("story")
     elif cf == "story":
         parts.append("feature")
+    elif cf == "issue":
+        parts.append("bug")
+    elif cf == "bug":
+        parts.append("issue")
     return _unique_cf(tuple(parts))
 
 

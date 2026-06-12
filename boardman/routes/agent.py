@@ -1,5 +1,5 @@
 from collections.abc import AsyncIterator
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -67,7 +67,40 @@ class InitDirectionRequest(BaseModel):
     force: bool = False
 
 
-@router.post("/agent/chat")
+class InitDirectionResponse(BaseModel):
+    ok: bool
+    message: str | None = None
+    skipped: bool | None = None
+    url: str | None = None
+    branch: str | None = None
+    pr_branch: str | None = None
+    actor: str | None = None
+
+
+class AgentChatResponse(BaseModel):
+    ok: bool = True
+    reply: str = Field(..., description="Assistant reply as GitHub-flavored markdown (plain text, not HTML).")
+    session_id: str
+    content_format: Literal["markdown"] = "markdown"
+
+
+class AgentHistoryMessage(BaseModel):
+    role: str
+    content: str = Field(..., description="Message body; assistant rows are GitHub-flavored markdown.")
+    created_at: str | None = None
+    content_format: Literal["markdown", "plain"] = Field(
+        ...,
+        description="How clients should render content: markdown for assistant, plain for user.",
+    )
+
+
+class AgentHistoryResponse(BaseModel):
+    ok: bool = True
+    session_id: str
+    messages: list[AgentHistoryMessage]
+
+
+@router.post("/agent/chat", response_model=AgentChatResponse)
 async def agent_chat(
     body: AgentChatRequest,
     request: Request,
@@ -95,7 +128,7 @@ async def agent_chat(
             plaky_board_id=context_board_id(),
             plaky_group_id=context_group_id(),
         )
-    return {"ok": True, "reply": reply, "session_id": sid}
+    return AgentChatResponse(reply=reply, session_id=sid)
 
 
 @router.post("/agent/chat/stream")
@@ -157,10 +190,10 @@ async def agent_job_status(job_id: str) -> dict[str, Any]:
     return out
 
 
-@router.get("/agent/sessions/{session_id}/history")
-async def agent_history(session_id: str, session: AsyncSession = Depends(get_db)) -> dict:
+@router.get("/agent/sessions/{session_id}/history", response_model=AgentHistoryResponse)
+async def agent_history(session_id: str, session: AsyncSession = Depends(get_db)) -> AgentHistoryResponse:
     hist = await get_session_history(session, session_id)
-    return {"ok": True, "session_id": session_id, "messages": hist}
+    return AgentHistoryResponse(session_id=session_id, messages=hist)
 
 
 @router.delete("/agent/sessions/{session_id}")
@@ -186,10 +219,15 @@ async def agent_scan(
     return result
 
 
-@router.post("/agent/init-direction")
+@router.post("/agent/init-direction", response_model=InitDirectionResponse)
 async def api_init_direction(body: InitDirectionRequest) -> dict:
+    """
+    Initialize DIRECTION.md by opening a PR from a temporary branch.
+    Requires a signed-in `gh` user with push access to the target repo.
+    """
     parts = body.repo.split("/")
     if len(parts) != 2:
         return {"ok": False, "message": "repo must be owner/name"}
     owner, name = parts[0], parts[1]
-    return await init_direction_file(owner, name, branch=body.branch, force=body.force)
+    # `init_direction_file` currently chooses the PR base/branch itself.
+    return await init_direction_file(owner, name, force=body.force)

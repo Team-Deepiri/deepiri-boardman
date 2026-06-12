@@ -142,6 +142,7 @@ async def test_http_agent_chat_two_turns_session_and_history(
             b1 = r1.json()
             assert b1["ok"] is True
             assert b1["reply"] == "alpha"
+            assert b1["content_format"] == "markdown"
             sid = b1["session_id"]
 
             r2 = await client.post(
@@ -157,6 +158,7 @@ async def test_http_agent_chat_two_turns_session_and_history(
             assert r2.status_code == 200, r2.text
             b2 = r2.json()
             assert b2["reply"] == "beta"
+            assert b2["content_format"] == "markdown"
             assert b2["session_id"] == sid
 
             rh = await client.get(f"/api/v1/agent/sessions/{sid}/history")
@@ -165,6 +167,11 @@ async def test_http_agent_chat_two_turns_session_and_history(
             roles = [m["role"] for m in hist]
             assert roles.count("user") == 2
             assert roles.count("assistant") == 2
+            for m in hist:
+                if m["role"] == "assistant":
+                    assert m["content_format"] == "markdown"
+                else:
+                    assert m["content_format"] == "plain"
     finally:
         app.dependency_overrides.clear()
         await engine.dispose()
@@ -245,6 +252,53 @@ async def test_langchain_path_mocked_single_turn(monkeypatch, noop_app_lifespan_
             await session.commit()
         assert reply == "tool-agent-done"
         assert sid
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_langchain_organize_request_forces_preview_until_confirm(monkeypatch, noop_app_lifespan_init):
+    import boardman.agent.service as agent_svc
+    import boardman.settings as bs
+
+    monkeypatch.setattr(bs.settings, "agent_langchain_tools", True)
+    monkeypatch.setattr(bs.settings, "agent_require_confirm_bulk", True)
+
+    captured: list[bool] = []
+
+    async def fake_run_tool_agent(*args: Any, **kwargs: Any) -> str:
+        captured.append(bool(kwargs.get("allow_writes")))
+        return "preview-plan"
+
+    monkeypatch.setattr(agent_svc, "run_tool_agent", fake_run_tool_agent)
+
+    engine, factory = await _memory_engine_and_factory()
+    try:
+        async with factory() as session:
+            reply, _ = await agent_svc.run_agent_chat(
+                session,
+                message="Organize the board and move duplicate tasks",
+                session_id=None,
+                repo="o/r",
+                allow_writes=True,
+                use_tools=True,
+            )
+            await session.commit()
+        assert captured[-1] is False
+        assert "preview mode" in reply.lower()
+
+        async with factory() as session:
+            reply2, _ = await agent_svc.run_agent_chat(
+                session,
+                message="Yes, apply now and confirm",
+                session_id=None,
+                repo="o/r",
+                allow_writes=True,
+                use_tools=True,
+            )
+            await session.commit()
+        assert captured[-1] is True
+        assert "preview mode" not in reply2.lower()
     finally:
         await engine.dispose()
 

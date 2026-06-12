@@ -1,12 +1,24 @@
 # New Features Plan
 
+> **Doc maintenance:** Update status columns when features ship or partial implementations land. See [AGENTS_MAINTENANCE.md](./AGENTS_MAINTENANCE.md).
+
 ## Overview
 
-Extend deepiri-boardman to support bidirectional sync and intelligent task generation from consolidated project data.
+Extend deepiri-boardman with bidirectional sync and additional workflow automation. Items below were drafted before the agent/scan layer shipped; statuses reflect the repo as of 2026-06-05.
+
+| # | Feature | Status |
+|---|---------|--------|
+| 1 | Bidirectional Plaky → GitHub | **Planned** |
+| 2 | QA reviewer → In QA status | **Partial** — `pr_handler.py` when `PLAKY_PR_IN_QA_STATUS` configured |
+| 3 | Dev assignee column | **Partial** — field patches via `update_task_fields`; no dedicated `assign_task` |
+| 4 | CLI parse markdown → tasks | **Superseded** — use `boardman scan` / `POST /api/v1/agent/scan` |
+| 5 | PR opened → Needs QA | **Partial** — `_maybe_set_needs_qa` in `pr_handler.py` when env configured |
+| 6 | PR merged → Complete | **Done** — configurable via `PLAKY_PR_MERGE_STATUS` (default `in_review`) |
+| 7 | Consolidated direction data | **Done** — canonical `DIRECTION.md` per repo + optional `ProjectContext` cache |
 
 ---
 
-## 1. Bidirectional Sync: Plaky → GitHub
+## 1. Bidirectional Sync: Plaky → GitHub — **Planned**
 
 **Problem**: Currently only GitHub → Plaky works. Need to create GitHub issues from Plaky tasks.
 
@@ -20,80 +32,67 @@ Extend deepiri-boardman to support bidirectional sync and intelligent task gener
 
 ---
 
-## 2. QA Reviewer Column → "In QA" Status
+## 2. QA Reviewer Column → "In QA" Status — **Partial**
 
 **Problem**: When a PR is opened, task should go to "Needs QA". When QA reviewer is assigned, it should go to "In QA".
 
-**Implementation**:
-- GitHub PR webhook detects `reviewers` added to PR
-- Look up linked Plaky task
-- Call `plaky.update_task_status(task_id, "in_qa")`
-- Add new status mapping in settings: `plaky_pr_needs_qa_status=needs_qa`, `plaky_pr_in_qa_status=in_qa`
+**Shipped**: `boardman/services/pr_handler.py` sets In QA on review-requested events when `PLAKY_PR_IN_QA_STATUS` or dynamic schema resolution is configured.
 
-**Files**: `boardman/services/pr_handler.py` - extend `handle_pr_opened` to set initial "needs_qa" status
+**Remaining**: Ensure all board schemas map reviewer-added events reliably; document required Plaky status keys per board.
 
 ---
 
-## 3. Dev Assignee Column
+## 3. Dev Assignee Column — **Partial**
 
 **Problem**: Need to assign developers to Plaky tasks.
 
-**Implementation**:
-- Extend PlakyClient: `assign_task(task_id, user_email)` 
-- PATCH `/tasks/{id}` with `{"assignee": "..."}`
-- GitHub issue handler can pull assignee from GitHub user and map to Plaky
+**Shipped**: `patch_item_field_values` / `update_task_fields` can set person fields when schema keys are known (`team_assignments.yml`).
 
-**Files**: `boardman/plaky/client.py`
+**Remaining**: Dedicated `assign_task(task_id, user_email)` helper; auto-assign from GitHub issue assignee on webhook.
 
 ---
 
-## 4. CLI: Parse Markdown/Changelog → Create Plaky Tasks
+## 4. CLI: Parse Markdown/Changelog → Create Plaky Tasks — **Superseded**
 
-**Problem**: User wants to point CLI at a repo's "direction" data (markdown, changelog, spec) and auto-generate Plaky tasks.
+**Was**: `boardman generate --repo … --source ./direction.md`
 
-**Approach**: See brainstorming section below.
+**Now**: `boardman scan owner/repo` and `POST /api/v1/agent/scan` read `DIRECTION.md` via GitHub API, use LLM to propose tasks, dedupe via `IssueTaskMap` / scan logic.
 
-**Files**: `boardman/cli/commands.py` - add `generate` command
-
----
-
-## 5. PR Opened → "Needs QA" Status
-
-**Current**: Adds PR URL as comment  
-**New**: Move task to "Needs QA" column/status
-
-**Implementation**:
-- In `handle_pr_opened`: call `plaky.update_task_status(task_id, settings.plaky_pr_needs_qa_status)`
-
-**Files**: `boardman/services/pr_handler.py`
+The brainstorming formats below remain useful if a **non-LLM** deterministic parser is added later.
 
 ---
 
-## 6. PR Merged → "Complete"
+## 5. PR Opened → "Needs QA" Status — **Partial**
 
-**Current**: Already implemented (→ "in_review")  
-**Update**: Make configurable to "done" instead
+**Shipped**: `handle_pr_opened` calls `_maybe_set_needs_qa` when `PLAKY_PR_NEEDS_QA_STATUS` (or dynamic `plaky_status_needs_qa`) is set. Skips draft PRs when `PLAKY_SKIP_NEEDS_QA_FOR_DRAFT=true`.
 
----
-
-## 7. Consolidated Direction Data
-
-**Problem**: Where does the "direction" data live?
-
-**Options**:
-1. **Markdown files** in repo: `SPEC.md`, `CHANGELOG.md`, `TODO.md`
-2. **YAML/JSON config**: `.boardman.yaml` in repo root
-3. **Database table**: `ProjectDirection` - stores goals per repo
+**Remaining**: Default-on behavior per board without manual env tuning.
 
 ---
 
-# Brainstorming: CLI Task Generation
+## 6. PR Merged → "Complete" — **Done**
+
+Configurable via `PLAKY_PR_MERGE_STATUS` (default `in_review`). Set to board-specific "done" key when ready.
+
+---
+
+## 7. Consolidated Direction Data — **Done**
+
+**Canonical:** `DIRECTION.md` at repo root (template: [DIRECTION_TEMPLATE.md](./DIRECTION_TEMPLATE.md)).
+
+**Cache:** `ProjectContext` table updated after scan/agent operations.
+
+**Also supported in scans:** README, `docs/`, open GitHub issues, recent commits.
+
+---
+
+# Brainstorming: CLI Task Generation (archived)
+
+> Superseded by `boardman scan` for LLM-based generation. Kept for reference if a regex/YAML parser is added.
 
 ## Concept
 
 User runs: `boardman generate --repo deepiri-platform --source ./direction.md`
-
-System parses `direction.md`, extracts tasks, creates Plaky tasks.
 
 ## Data Formats Supported
 
@@ -104,11 +103,6 @@ System parses `direction.md`, extracts tasks, creates Plaky tasks.
 ## Backend
 - [ ] Implement user authentication
 - [ ] Add API rate limiting
-- [ ] Set up PostgreSQL connection
-
-## Frontend
-- [ ] Build login page
-- [ ] Create dashboard UI
 ```
 
 ### Option B: YAML Config (`.boardman.yaml`)
@@ -116,60 +110,29 @@ System parses `direction.md`, extracts tasks, creates Plaky tasks.
 direction: "Q2 2024 Platform Improvements"
 tasks:
   - title: "User Authentication"
-    description: "Implement JWT-based auth"
     priority: high
-  - title: "API Rate Limiting"
-    priority: medium
 ```
 
 ### Option C: Issue/Feature List from GitHub Issues
 ```bash
 boardman generate --repo deepiri-platform --from-github --label "to-do"
 ```
-Fetches all GitHub issues with label "to-do" → creates Plaky tasks.
-
-## Parsing Strategy
-
-1. **CLI loads file** (markdown or YAML)
-2. **Extract tasks** using regex or structured parsing
-3. **Deduplicate** against existing IssueTaskMap
-4. **Create Plaky tasks** in batch with proper formatting
-5. **Store mapping** in database
-
-## Output
-
-```
-$ boardman generate --repo deepiri-platform --source ./roadmap.md
-Found 12 tasks in roadmap.md
-Creating Plaky tasks...
-  ✓ User Authentication (high)
-  ✓ API Rate Limiting (medium)
-  - Skipped: Dashboard UI (already exists)
-Created 10 tasks, skipped 2
-```
-
-## Future: AI-Assisted Generation
-
-Use Gemini API to parse free-form text:
-```
-boardman generate --repo deepiri-platform --ai --prompt "Parse our Discord discussion about Q2 goals"
-```
 
 ---
 
-# Implementation Order
+# Implementation Order (updated)
 
-1. **PR → "Needs QA" status** - quick win
-2. **QA reviewer → "In QA" status** - extends #1
-3. **CLI generate command** - markdown/YAML parsing
-4. **Plaky → GitHub webhooks** - reverse sync
-5. **Dev assignee** - extends #4
+1. ~~**PR → "Needs QA" status**~~ — partial; configure env per board
+2. ~~**QA reviewer → "In QA" status**~~ — partial; see §2
+3. ~~**CLI generate command**~~ — superseded by `boardman scan`
+4. **Plaky → GitHub webhooks** — still planned
+5. **Dev assignee automation** — partial; extend §3
 
 ---
 
 # Open Questions
 
-1. Where should "direction" data live? (file in repo vs centralized DB)
-2. Should we support AI parsing? (Gemini API)
+1. ~~Where should "direction" data live?~~ → `DIRECTION.md` per repo (resolved)
+2. Should we support non-LLM deterministic parsing? (optional `boardman generate`)
 3. How to handle task dependencies?
 4. What's the naming convention for generated tasks?

@@ -3,13 +3,35 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import load_team_assignments
 from boardman.database.models import AgentSession
+
+
+def normalize_task_title(
+    raw: str,
+    *,
+    mode: Literal["error", "truncate"] = "error",
+    max_len: int = 160,
+) -> tuple[str, Optional[str]]:
+    """
+    Normalize a task title length.
+
+    - ``mode="error"``: empty or over ``max_len`` returns ``("", error_message)``.
+    - ``mode="truncate"``: over ``max_len`` is truncated; empty still errors.
+    """
+    t = (raw or "").strip()
+    if not t:
+        return "", "title must be non-empty"
+    if len(t) <= max_len:
+        return t, None
+    if mode == "truncate":
+        return t[:max_len], None
+    return "", f"title must be <= {max_len} characters"
 
 
 def _parse_draft(raw: Optional[str]) -> Dict[str, Any]:

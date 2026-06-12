@@ -8,8 +8,7 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Any
-from typing import Literal
+from typing import Any, Literal, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +18,7 @@ from boardman.agent.memory_store import db_messages_to_langchain
 from boardman.agent.plaky_prompt_extra import plaky_placement_markdown
 from boardman.agent.prompts import BOARD_MANAGER_SYSTEM, TASK_CREATION_WORKFLOW
 from boardman.agent.runner import iter_tool_agent, run_tool_agent
+from boardman.agent.guardrails import has_confirm_token, looks_like_board_organize_request
 from boardman.agent.task_draft import format_task_draft_for_prompt, load_task_draft
 from boardman.agent.tool_context import agent_tool_context
 from boardman.database.models import AgentMessage, AgentSession
@@ -27,6 +27,28 @@ from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
+
+_TOOL_CALLS_JSON_MAX_BYTES = 64000
+
+
+def _runtime_error_trace(exc: BaseException) -> str:
+    return json.dumps(
+        [{"tool_name": "agent_runtime", "status": "error", "result_summary": str(exc)[:500]}],
+        default=str,
+    )
+
+
+def _serialize_tool_calls_json(traces: list[dict[str, Any]]) -> Optional[str]:
+    """Serialize tool traces; drop oldest rows until JSON fits ``_TOOL_CALLS_JSON_MAX_BYTES``."""
+    if not traces:
+        return None
+    rows = list(traces)
+    while rows:
+        s = json.dumps(rows, default=str)
+        if len(s) <= _TOOL_CALLS_JSON_MAX_BYTES:
+            return s
+        rows.pop(0)
+    return json.dumps(traces[-1:], default=str)
 
 
 ErrorCategory = Literal[
@@ -243,8 +265,16 @@ async def _plaky_system_suffix(
     out = plaky_placement_markdown(plaky_board_id, plaky_group_id)
     bid = (plaky_board_id or "").strip()
     if bid:
-        bundle = await fetch_board_schema_bundle(bid)
-        out += bundle.get("markdown") or ""
+        try:
+            bundle = await fetch_board_schema_bundle(bid)
+            out += bundle.get("markdown") or ""
+        except Exception as e:
+            logger.warning("Could not load Plaky board schema bundle for %s: %s", bid, e)
+            out += (
+                f"\n\n## Current Plaky board schema (from API)\n"
+                f"**Board id:** `{bid}`\n"
+                "Schema could not be loaded right now; continue using known placement and refresh schema when possible.\n"
+            )
     return out
 
 
@@ -296,8 +326,24 @@ async def run_agent_chat(
     )
 
     reply: str
+    assistant_tool_calls_json: Optional[str] = None
     resolved_provider, resolved_model = _resolve_llm_context(provider, model, use_tools=use_tools)
     use_lc = bool(settings.agent_langchain_tools and use_tools)
+    effective_allow_writes = allow_writes
+    preview_notice = ""
+    if (
+        use_lc
+        and allow_writes
+        and settings.agent_require_confirm_bulk
+        and looks_like_board_organize_request(message)
+        and not has_confirm_token(message)
+    ):
+        effective_allow_writes = False
+        preview_notice = (
+            "I detected a board-organization/bulk-change request. I ran in preview mode (read-only) first.\n\n"
+            "You can use **plaky_review_board** in this pass to summarize duplicates, stale items, and missing acceptance criteria.\n\n"
+            "Reply with **confirm**, **go ahead**, **approve**, or **yes, apply** in your next message to enable write tools for apply.\n"
+        )
     if use_lc:
         try:
             logger.info(
@@ -309,7 +355,7 @@ async def run_agent_chat(
             lc_hist = db_messages_to_langchain(history_msgs)
             extra = (
                 f"\n\n## Tool policy\nPlaky **write** tools (create/update/comment/subtask) are "
-                f"**{'ENABLED' if allow_writes else 'OFF'}**. "
+                f"**{'ENABLED' if effective_allow_writes else 'OFF'}**. "
                 "If OFF, use only list/get and GitHub/repo read tools; tell the user to pass allow_writes to enable mutations.\n"
                 "If ON: you **must** run **plaky_board_schema** (and **plaky_list_workspace_users** for assignees) before "
                 "**plaky_create_task** / **plaky_patch_item_fields** when field keys are not already explicit in context; "
@@ -320,14 +366,23 @@ async def run_agent_chat(
             extra += plaky_suffix
             extra += draft_md + intake_extra
             async with agent_tool_context(session, ag.id, plaky_board_id, plaky_group_id):
-                reply = await run_tool_agent(
+                tool_out = await run_tool_agent(
                     message,
                     chat_history=lc_hist,
-                    allow_writes=allow_writes,
+                    allow_writes=effective_allow_writes,
                     system_extra=extra,
+                    return_trace=True,
                 )
+                if isinstance(tool_out, tuple):
+                    reply, traces = tool_out
+                    assistant_tool_calls_json = _serialize_tool_calls_json(traces)
+                else:
+                    reply = str(tool_out)
+                if preview_notice:
+                    reply = preview_notice + "\n" + reply
         except Exception as e:
             logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
+            assistant_tool_calls_json = _runtime_error_trace(e)
             reply = await _safe_plain_chat(
                 message=message,
                 repo=repo,
@@ -358,7 +413,14 @@ async def run_agent_chat(
         )
 
     session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
-    session.add(AgentMessage(session_pk=ag.id, role="assistant", content=reply))
+    session.add(
+        AgentMessage(
+            session_pk=ag.id,
+            role="assistant",
+            content=reply,
+            tool_calls_json=assistant_tool_calls_json,
+        )
+    )
     await session.flush()
 
     return reply, sid
@@ -423,14 +485,30 @@ async def iter_agent_chat_sse(
     parts: list[str] = []
     resolved_provider, resolved_model = _resolve_llm_context(provider, model, use_tools=use_tools)
     use_lc = bool(settings.agent_langchain_tools and use_tools)
+    effective_allow_writes = allow_writes
+    preview_notice = ""
+    if (
+        use_lc
+        and allow_writes
+        and settings.agent_require_confirm_bulk
+        and looks_like_board_organize_request(message)
+        and not has_confirm_token(message)
+    ):
+        effective_allow_writes = False
+        preview_notice = (
+            "I detected a board-organization/bulk-change request. I ran in preview mode (read-only) first.\n\n"
+            "You can use **plaky_review_board** in this pass to summarize duplicates, stale items, and missing acceptance criteria.\n\n"
+            "Reply with **confirm**, **go ahead**, **approve**, or **yes, apply** in your next message to enable write tools for apply.\n"
+        )
 
+    trace_buf: list[dict[str, Any]] = []
     try:
         if use_lc:
             logger.info("Agent chat stream: LangChain tool path (session_id=%s)", sid)
             lc_hist = db_messages_to_langchain(history_msgs)
             extra = (
                 f"\n\n## Tool policy\nPlaky **write** tools (create/update/comment/subtask) are "
-                f"**{'ENABLED' if allow_writes else 'OFF'}**. "
+                f"**{'ENABLED' if effective_allow_writes else 'OFF'}**. "
                 "If OFF, use only list/get and GitHub/repo read tools; tell the user to pass allow_writes to enable mutations.\n"
                 "If ON: you **must** run **plaky_board_schema** (and **plaky_list_workspace_users** for assignees) before "
                 "**plaky_create_task** / **plaky_patch_item_fields** when field keys are not already explicit in context; "
@@ -444,8 +522,9 @@ async def iter_agent_chat_sse(
                 async for chunk in iter_tool_agent(
                     message,
                     chat_history=lc_hist,
-                    allow_writes=allow_writes,
+                    allow_writes=effective_allow_writes,
                     system_extra=extra,
+                    trace_out=trace_buf,
                 ):
                     if not chunk:
                         continue
@@ -467,8 +546,20 @@ async def iter_agent_chat_sse(
                 yield _sse_event({"type": "token", "text": chunk})
 
         reply = "".join(parts)
+        if preview_notice:
+            reply = preview_notice + "\n" + reply
+        assistant_tool_calls_json: Optional[str] = None
+        if use_lc and trace_buf:
+            assistant_tool_calls_json = _serialize_tool_calls_json(trace_buf)
         session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
-        session.add(AgentMessage(session_pk=ag.id, role="assistant", content=reply))
+        session.add(
+            AgentMessage(
+                session_pk=ag.id,
+                role="assistant",
+                content=reply,
+                tool_calls_json=assistant_tool_calls_json,
+            )
+        )
         await session.flush()
         yield _sse_event({"type": "done"})
 
@@ -513,6 +604,7 @@ async def get_session_history(session: AsyncSession, session_id: str) -> list[di
                 "role": m.role,
                 "content": m.content,
                 "created_at": m.created_at.isoformat() if m.created_at else None,
+                "content_format": "markdown" if m.role == "assistant" else "plain",
             }
         )
     return out

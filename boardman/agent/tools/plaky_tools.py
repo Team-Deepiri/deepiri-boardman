@@ -21,7 +21,7 @@ from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
     plaky_repo_field_value_format,
     resolve_repo_tag_field_values_from_schema,
-    validate_field_values_against_board_schema,
+    validate_field_values_detailed,
 )
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.task_tag_vocab import canonical_task_priority, plaky_create_legacy_priority_param
@@ -35,9 +35,12 @@ async def _plaky_list_boards() -> str:
     return json.dumps(raw, default=str)[:12000]
 
 
-async def _plaky_list_tasks(status: str = "open") -> str:
+async def _plaky_list_tasks(status: str = "open", board_id: str = "") -> str:
+    from boardman.agent.tool_context import get_context_plaky_board_id
+
     c = PlakyClient()
-    r = await c.get_tasks(status=status)
+    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    r = await c.get_tasks(status=status, board_id=bid)
     return json.dumps(r, default=str)[:12000]
 
 
@@ -118,6 +121,119 @@ async def _plaky_list_workspace_users(name_query: str = "") -> str:
         },
         default=str,
     )[:12000]
+
+
+def _field_text(item: Dict[str, Any], *keys: str) -> str:
+    for k in keys:
+        v = item.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _normalize_title_key(title: str) -> str:
+    return " ".join((title or "").strip().lower().split())
+
+
+def _has_acceptance_content(desc: str) -> bool:
+    d = (desc or "").lower()
+    return "acceptance" in d or "done when" in d or "definition of done" in d
+
+
+async def _plaky_review_board(board_id: str = "", group_id: str = "", max_items: int = 200) -> str:
+    """Read-only board diagnosis used in REVIEW/preview mode before any write action.
+
+    Returns JSON summarizing duplicate-title clusters, items missing acceptance
+    criteria, and stale-looking items. Safe to call when ``allow_writes=False``.
+    """
+    from boardman.agent.tool_context import (
+        get_context_plaky_board_id,
+        get_context_plaky_group_id,
+    )
+
+    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "")
+    gid = (group_id or "").strip() or (get_context_plaky_group_id() or "")
+    if not bid:
+        return json.dumps(
+            {"ok": False, "message": "board_id missing (pass arg or set current placement)"}
+        )
+
+    c = PlakyClient()
+    lim = max(1, min(int(max_items or 200), 600))
+    raw = await c.list_board_items(bid, max_pages=max(1, (lim // 100) + 1))
+    if not raw.get("ok"):
+        return json.dumps(
+            {"ok": False, "message": raw.get("message") or "Could not load board items"}
+        )
+    items = raw.get("items") or []
+    if not isinstance(items, list):
+        items = []
+    if gid:
+        filtered: List[Dict[str, Any]] = []
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            g = it.get("group") if isinstance(it.get("group"), dict) else {}
+            candidate = str(it.get("groupId") or it.get("group_id") or g.get("id") or "").strip()
+            if candidate == gid:
+                filtered.append(it)
+        items = filtered
+    items = [it for it in items if isinstance(it, dict)][:lim]
+
+    by_title: Dict[str, List[Dict[str, Any]]] = {}
+    missing_acceptance: List[Dict[str, Any]] = []
+    stale_candidates: List[Dict[str, Any]] = []
+    done_like = 0
+    for it in items:
+        title = _field_text(it, "name", "title", "summary")
+        desc = _field_text(it, "description", "body", "text")
+        item_id = _field_text(it, "id", "itemId", "_id")
+        status = _field_text(it, "status", "state")
+        if "done" in status.lower() or "closed" in status.lower():
+            done_like += 1
+        tkey = _normalize_title_key(title)
+        if tkey:
+            by_title.setdefault(tkey, []).append(
+                {"id": item_id, "title": title, "status": status}
+            )
+        if title and not _has_acceptance_content(desc):
+            missing_acceptance.append({"id": item_id, "title": title, "status": status})
+        updated = _field_text(
+            it, "updatedAt", "updated_at", "lastUpdatedAt", "createdAt", "created_at"
+        )
+        if updated and ("2023" in updated or "2024" in updated):
+            stale_candidates.append(
+                {"id": item_id, "title": title, "updated": updated, "status": status}
+            )
+
+    duplicate_clusters = [
+        {"title_key": k, "items": vals}
+        for k, vals in by_title.items()
+        if len(vals) > 1 and k not in {"", "task"}
+    ]
+    duplicate_clusters = sorted(
+        duplicate_clusters, key=lambda x: len(x["items"]), reverse=True
+    )[:20]
+
+    summary = {
+        "ok": True,
+        "board_id": bid,
+        "group_id": gid or None,
+        "items_scanned": len(items),
+        "done_like_count": done_like,
+        "duplicate_cluster_count": len(duplicate_clusters),
+        "missing_acceptance_count": len(missing_acceptance),
+        "stale_candidate_count": len(stale_candidates),
+        "duplicate_clusters": duplicate_clusters,
+        "missing_acceptance": missing_acceptance[:40],
+        "stale_candidates": stale_candidates[:40],
+        "recommended_actions": [
+            "Merge/close duplicate clusters first.",
+            "Add acceptance criteria to high-priority items missing clear done conditions.",
+            "Review stale items for archive, rewrite, or split.",
+        ],
+    }
+    return json.dumps(summary, default=str)[:15000]
 
 
 async def _plaky_save_task_preferences(preferences_json: str) -> str:
@@ -204,6 +320,7 @@ async def _plaky_create_task(
 
     effective_board = (bid or get_context_plaky_board_id() or "").strip() or None
     normalized: Optional[Dict[str, Any]] = None
+    bundle: Optional[Dict[str, Any]] = None
     if effective_board and (repo_tokens or merged):
         bundle = await fetch_board_schema_bundle(effective_board)
         normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
@@ -228,6 +345,7 @@ async def _plaky_create_task(
             if key not in parsed:
                 merged[key] = value
 
+    field_validation_warnings: List[str] = []
     if merged:
         if normalized is None and effective_board:
             bundle = await fetch_board_schema_bundle(effective_board)
@@ -247,9 +365,26 @@ async def _plaky_create_task(
             }
             if tag_keys:
                 resolve_repo_tag_field_values_from_schema(merged, normalized, keys=tag_keys)
-        err = validate_field_values_against_board_schema(merged, normalized)
-        if err:
-            return json.dumps({"ok": False, "message": err}, default=str)
+        cleaned, errors, warnings = validate_field_values_detailed(
+            merged,
+            normalized,
+            options_check=True,
+            board_id=effective_board or "",
+            schema_fetch_ok=bundle.get("ok") if isinstance(bundle, dict) else None,
+            schema_fetch_message=str((bundle or {}).get("message") or ""),
+        )
+        if errors:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "message": "field_values_json contains invalid keys/values for board schema",
+                    "errors": errors,
+                    "warnings": warnings,
+                },
+                default=str,
+            )
+        merged = cleaned
+        field_validation_warnings = warnings
 
     canon_pri = canonical_task_priority(priority)
     r = await create_task_internal(
@@ -267,6 +402,8 @@ async def _plaky_create_task(
     out = dict(r) if isinstance(r, dict) else {"result": r}
     if merged:
         out["merged_field_values"] = merged
+    if field_validation_warnings:
+        out["field_validation_warnings"] = field_validation_warnings
     return json.dumps(out, default=str)
 
 
@@ -279,6 +416,7 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
     if not isinstance(parsed, dict):
         return json.dumps({"ok": False, "message": "fields_json must be a JSON object"})
     bid = board_id.strip()
+    field_validation_warnings: List[str] = []
     if parsed:
         bundle = await fetch_board_schema_bundle(bid)
         normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
@@ -297,12 +435,32 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
             }
             if tag_keys:
                 resolve_repo_tag_field_values_from_schema(parsed, normalized, keys=tag_keys)
-        err = validate_field_values_against_board_schema(parsed, normalized)
-        if err:
-            return json.dumps({"ok": False, "message": err}, default=str)
+        cleaned, errors, warnings = validate_field_values_detailed(
+            parsed,
+            normalized,
+            options_check=True,
+            board_id=bid,
+            schema_fetch_ok=bundle.get("ok") if isinstance(bundle, dict) else None,
+            schema_fetch_message=str((bundle or {}).get("message") or ""),
+        )
+        if errors:
+            return json.dumps(
+                {
+                    "ok": False,
+                    "message": "fields_json contains invalid keys/values for board schema",
+                    "errors": errors,
+                    "warnings": warnings,
+                },
+                default=str,
+            )
+        parsed = cleaned
+        field_validation_warnings = warnings
     c = PlakyClient()
     r = await c.patch_item_field_values(bid, item_id.strip(), parsed)
-    return json.dumps(r, default=str)
+    out = dict(r) if isinstance(r, dict) else {"result": r}
+    if field_validation_warnings:
+        out["field_validation_warnings"] = field_validation_warnings
+    return json.dumps(out, default=str)
 
 
 async def _plaky_update_task(
@@ -449,7 +607,10 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
         StructuredTool.from_function(
             coroutine=_plaky_list_tasks,
             name="plaky_list_tasks",
-            description="List Plaky tasks. Args: status (open|done|... default open).",
+            description=(
+                "List Plaky tasks. Args: status (open|done|... default open). "
+                "Optional board_id (or Current Plaky placement) enables accurate listing/filtering on v1/public."
+            ),
         ),
         StructuredTool.from_function(
             coroutine=_plaky_get_task,
@@ -481,6 +642,17 @@ def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
                 "Args: preferences_json — JSON with field_values {fieldKey: value}, optional "
                 "engineer_plaky_id, qa_plaky_id (explicit Plaky user ids), summary, "
                 "replace_field_values (bool). Next **plaky_create_task** merges these automatically."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=_plaky_review_board,
+            name="plaky_review_board",
+            description=(
+                "Read-only diagnosis of a Plaky board: duplicate-title clusters, items missing "
+                "acceptance criteria, and stale-looking items. Use in **REVIEW/preview mode** before "
+                "any bulk write to summarize what the user just asked you to organize. "
+                "Args: board_id (defaults to current placement), group_id (optional, restrict to one section), "
+                "max_items (1-600, default 200)."
             ),
         ),
     ]

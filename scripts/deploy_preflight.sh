@@ -3,6 +3,7 @@ set -u
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT" || exit 1
+COMPOSE_FILE_PATH="${BOARDMAN_COMPOSE_FILE:-docker-compose.yml}"
 
 failures=0
 warnings=0
@@ -32,6 +33,10 @@ env_value() {
   ' .env 2>/dev/null
 }
 
+compose() {
+  docker compose -f "$COMPOSE_FILE_PATH" "$@"
+}
+
 check_env_key() {
   local key="$1"
   local value
@@ -47,13 +52,44 @@ check_env_key() {
   pass ".env has ${key} set"
 }
 
+has_nvidia_gpu() {
+  if command -v nvidia-smi >/dev/null 2>&1 && nvidia-smi >/dev/null 2>&1; then
+    return 0
+  fi
+  if command -v lspci >/dev/null 2>&1 && lspci 2>/dev/null | grep -qi nvidia; then
+    return 0
+  fi
+  return 1
+}
+
+check_ollama_gpu_runtime() {
+  local docker_runtime runtime_override
+
+  if ! has_nvidia_gpu; then
+    pass "no NVIDIA GPU detected; Ollama will run on CPU"
+    return
+  fi
+
+  pass "NVIDIA GPU detected on host"
+  runtime_override="$(env_value OLLAMA_DOCKER_RUNTIME)"
+  docker_runtime="$(docker info --format '{{.DefaultRuntime}}' 2>/dev/null || true)"
+
+  if [[ "$docker_runtime" == "nvidia" ]]; then
+    pass "Docker default runtime is nvidia; Ollama will use GPU by default"
+  elif [[ "$runtime_override" == "nvidia" ]]; then
+    pass ".env sets OLLAMA_DOCKER_RUNTIME=nvidia for the Ollama service"
+  else
+    warn "NVIDIA GPU detected but Docker default runtime is not nvidia; run nvidia-ctk --set-as-default or set OLLAMA_DOCKER_RUNTIME=nvidia"
+  fi
+}
+
 printf 'Boardman deployment preflight\n'
 printf 'Repo: %s\n\n' "$ROOT"
 
-if [[ -f docker-compose.yml && -f .env.example ]]; then
+if [[ -f "$COMPOSE_FILE_PATH" && -f .env.example ]]; then
   pass "running from repo root"
 else
-  fail "run this script from the deepiri-boardman repo root"
+  fail "run this script from the deepiri-boardman repo root with a valid compose file"
 fi
 
 if [[ -f .env ]]; then
@@ -75,6 +111,11 @@ if [[ -f .env ]]; then
     warn ".env missing WORKER_INTERNAL_SECRET; internal QA worker API will be disabled"
   else
     pass ".env has WORKER_INTERNAL_SECRET set"
+  fi
+  if [[ -z "$(env_value ROUTE_SECRET)" ]]; then
+    warn ".env missing ROUTE_SECRET; Cloudflare Worker /assign-qa route will not be secured"
+  else
+    pass ".env has ROUTE_SECRET set"
   fi
 fi
 
@@ -105,16 +146,30 @@ else
 fi
 
 compose_config=""
-if compose_config="$(docker compose config 2>/dev/null)"; then
-  pass "docker compose config renders"
-  services="$(printf '%s\n' "$compose_config" | docker compose config --services 2>/dev/null)"
-  for service in boardman boardman-worker boardman-nginx redis ollama; do
+if compose_config="$(compose config 2>/dev/null)"; then
+  pass "docker compose config renders (${COMPOSE_FILE_PATH})"
+  services="$(compose config --services 2>/dev/null)"
+  for service in boardman boardman-worker boardman-nginx; do
     if printf '%s\n' "$services" | grep -qx "$service"; then
       pass "compose service ${service} is present"
     else
       fail "compose service ${service} is missing"
     fi
   done
+  if printf '%s\n' "$services" | grep -qx "ollama"; then
+    pass "compose service ollama is present for local/dev LLM"
+    check_ollama_gpu_runtime
+  else
+    pass "compose omits ollama for cloud production"
+    if printf '%s\n' "$compose_config" | grep -Eq 'LLM_PROVIDER: "?ollama"?'; then
+      fail "production compose omits ollama but renders LLM_PROVIDER=ollama; use a hosted provider or disable LLM-dependent features"
+    fi
+  fi
+  if printf '%s\n' "$services" | grep -qx "redis"; then
+    pass "optional compose service redis is present"
+  else
+    warn "optional redis service is profile-gated; enable with --profile agent-cache only if AGENT_REDIS_URL is set"
+  fi
   if printf '%s\n' "$compose_config" | grep -Eq 'published: "?11434"?'; then
     warn "compose publishes Ollama port 11434; keep it firewalled/private on VPS"
   fi

@@ -1,0 +1,22 @@
+{
+  "action": "opened",
+  "issue": {
+    "number": 1201,
+    "title": "Acceptance issue payload",
+    "body": "Synthetic issue fixture for engineering-complete webhook tests.",
+    "html_url": "https://github.com/Team-Deepiri/deepiri-boardman/issues/1201",
+    "state": "open",
+    "user": {
+      "login": "fixture-reporter",
+      "id": 710010
+    }
+  },
+  "repository": {
+    "full_name": "Team-Deepiri/deepiri-boardman",
+    "name": "deepiri-boardman"
+  },
+  "sender": {
+    "login": "fixture-reporter",
+    "id": 710010
+  }
+}

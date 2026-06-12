@@ -47,6 +47,46 @@ def reload_repos_config() -> None:
     _load_raw.cache_clear()
 
 
+def repos_yaml_canonical_repo_key(identifier: str) -> str:
+    """Key under repos.yml ``repos``: repository name segment only (no owner prefix)."""
+    s = (identifier or "").strip()
+    if "/" in s:
+        return s.rsplit("/", 1)[-1]
+    return s
+
+
+def routing_yaml_candidate_map_keys(full_name: str, short_repo_name: str = "", github_org: str = "") -> list[str]:
+    """
+    Lookup order for repos.yml entries. Supports canonical short keys plus legacy ``owner/repo`` keys.
+    """
+    fn = (full_name or "").strip()
+    o = ((github_org or "").strip() or (settings.github_org or "").strip())
+    bare = str(settings.github_bare_repo_owner or "").strip()
+
+    inferred_short = ""
+    if fn and "/" in fn:
+        inferred_short = fn.split("/", 1)[1].strip()
+    sn = ((short_repo_name or "").strip() or inferred_short or (fn if fn and "/" not in fn else ""))
+
+    ordered: list[str] = []
+    seen: set[str] = set()
+
+    def add(k: str) -> None:
+        kk = k.strip()
+        if kk and kk not in seen:
+            seen.add(kk)
+            ordered.append(kk)
+
+    add(fn)
+    if sn:
+        if o:
+            add(f"{o}/{sn}")
+        if bare:
+            add(f"{bare}/{sn}")
+        add(sn)
+    return ordered
+
+
 def _parse_entry(entry: Any) -> Optional[RepoRouting]:
     if not isinstance(entry, dict):
         return None
@@ -104,11 +144,13 @@ def _defaults_routing() -> Optional[RepoRouting]:
 
 
 def _routing_for_full_name(full_name: str, yaml_map: Dict[str, Any], org: str) -> RepoRouting:
-    entry = yaml_map.get(full_name)
-    if entry and isinstance(entry, dict):
-        r = _parse_entry(entry)
-        if r and _is_meaningful(r):
-            return r
+    short_repo = full_name.split("/", 1)[1] if "/" in full_name else full_name
+    for key in routing_yaml_candidate_map_keys(full_name, short_repo, org):
+        entry = yaml_map.get(key)
+        if entry and isinstance(entry, dict):
+            r = _parse_entry(entry)
+            if r and _is_meaningful(r):
+                return r
     owner = full_name.split("/")[0] if "/" in full_name else ""
     if owner == org:
         d = _defaults_routing()
@@ -117,19 +159,22 @@ def _routing_for_full_name(full_name: str, yaml_map: Dict[str, Any], org: str) -
     return RepoRouting()
 
 
-def get_routing(full_name: str, short_name: str, org: str) -> Optional[RepoRouting]:
-    """Look up routing by full_name, then org/short_name; then org default."""
+def get_routing(full_name: str, short_name: str, org: str, with_source: bool = False) -> Any:
+    """Look up routing by full_name, then org/short_name; optionally include the source."""
     raw = _load_raw()
     repos: Dict[str, Any] = raw.get("repos") or {}
-    entry = repos.get(full_name) or repos.get(f"{org}/{short_name}")
-    if entry and isinstance(entry, dict):
-        r = _parse_entry(entry)
-        if r and _is_meaningful(r):
-            return r
+    for key in routing_yaml_candidate_map_keys(full_name, short_name, org):
+        entry = repos.get(key)
+        if entry and isinstance(entry, dict):
+            r = _parse_entry(entry)
+            if r and _is_meaningful(r):
+                return (r, "explicit") if with_source else r
     owner = full_name.split("/")[0] if "/" in full_name else ""
     if owner == org:
-        return _defaults_routing()
-    return None
+        d = _defaults_routing()
+        if d and _is_meaningful(d):
+            return (d, "org_default") if with_source else d
+    return (None, "none") if with_source else None
 
 
 def list_registered_repos() -> Dict[str, RepoRouting]:
@@ -186,6 +231,7 @@ def upsert_repo(key: str, category: str, plaky_table: str, description: str = ""
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {"repos": {}}
     if "repos" not in raw:
         raw["repos"] = {}
+    key = repos_yaml_canonical_repo_key(key)
     raw["repos"][key] = {
         "category": category,
         "plaky_table": plaky_table,
@@ -206,12 +252,13 @@ def update_repo_tiers(tier_map: dict[str, int]) -> None:
     if "repos" not in raw:
         raw["repos"] = {}
     for key, tier in tier_map.items():
-        if key not in raw["repos"]:
-            raw["repos"][key] = {}
+        nk = repos_yaml_canonical_repo_key(key)
+        if nk not in raw["repos"]:
+            raw["repos"][nk] = {}
         if tier > 0:
-            raw["repos"][key]["tier"] = tier
-        elif "tier" in raw["repos"][key]:
-            del raw["repos"][key]["tier"]
+            raw["repos"][nk]["tier"] = tier
+        elif "tier" in raw["repos"][nk]:
+            del raw["repos"][nk]["tier"]
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         yaml.dump(raw, f, default_flow_style=False, sort_keys=False, allow_unicode=True)

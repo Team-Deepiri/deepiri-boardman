@@ -1,0 +1,22 @@
+# Acceptance-only Plaky placement map (fake IDs, no production values).
+# Used to prove deterministic config shape for wave-one engineering completion.
+
+defaults:
+  category: backend
+  plaky_table: Boardman Acceptance
+  plaky_board_id: board_acc_default_001
+  plaky_group_id: group_acc_default_001
+
+repos:
+  Team-Deepiri/deepiri-boardman:
+    category: infrastructure
+    plaky_table: Boardman Acceptance
+    plaky_board_id: board_acc_boardman_001
+    plaky_group_id: group_acc_boardman_001
+    description: Acceptance fixture routing for standalone Boardman repo.
+  Team-Deepiri/deepiri-external-bridge-service:
+    category: backend
+    plaky_table: Boardman Acceptance
+    plaky_board_id: board_acc_bridge_001
+    plaky_group_id: group_acc_bridge_001
+    description: Acceptance fixture routing for bridge webhook integration behavior.

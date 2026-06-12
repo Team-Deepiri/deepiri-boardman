@@ -160,6 +160,8 @@ class TestOllamaPerformance:
     @pytest.fixture(autouse=True)
     def setup(self):
         require_ollama_or_skip()
+        if not ollama_models():
+            pytest.skip("Ollama has no models; pull one (e.g. ollama pull qwen2.5:7b) for perf tests")
 
     def test_ollama_reachable_and_has_models(self):
         """Sanity check: Ollama is running with at least one model."""
