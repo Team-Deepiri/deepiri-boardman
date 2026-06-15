@@ -4,8 +4,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Protocol
 
-from boardman.planning.context_github import GitHubPlanningContext
-from boardman.planning.context_plaky import PlakyPlanningContext
+from boardman.planning.context_aggregator import ContextAggregator
 from boardman.planning.llm_adapter import PlanningLlm
 from boardman.planning.models import MeetingPlan, MeetingRequest
 from boardman.planning.plan_output import (
@@ -25,16 +24,34 @@ class _PlakyContext(Protocol):
     def context_markdown(self, team_focus: str) -> str: ...
 
 
+class _SyncContext(Protocol):
+    def context_markdown(self, team_focus: str) -> str: ...
+
+
+class _DirectionContext(Protocol):
+    def context_markdown(self, team_focus: str) -> str: ...
+
+
 class MeetingPlanner:
     def __init__(
         self,
         llm: PlanningLlm,
         github_context: _GitHubContext | None = None,
         plaky_context: _PlakyContext | None = None,
+        sync_context: _SyncContext | None = None,
+        direction_context: _DirectionContext | None = None,
+        context_aggregator: ContextAggregator | None = None,
     ) -> None:
         self.llm = llm
-        self.github_context = github_context or GitHubPlanningContext()
-        self.plaky_context = plaky_context or PlakyPlanningContext()
+        if context_aggregator is not None:
+            self.context_aggregator = context_aggregator
+        else:
+            self.context_aggregator = ContextAggregator(
+                github_context=github_context,
+                plaky_context=plaky_context,
+                sync_context=sync_context,
+                direction_context=direction_context,
+            )
 
     def plan(self, request: MeetingRequest) -> MeetingPlan:
         prompt = self._build_prompt(request)
@@ -118,8 +135,7 @@ class MeetingPlanner:
             for slot in self._selected_schedule(request.team_focus)
         )
         objectives_md = "\n".join(f"- {o}" for o in request.objectives)
-        github_block = self._github_block(request.team_focus)
-        plaky_block = self._plaky_block(request.team_focus)
+        context_block = self._context_block(request.team_focus)
         notes = request.notes or "None provided."
         return f"""
 Create a facilitator-ready markdown meeting plan.
@@ -139,11 +155,8 @@ Schedule:
 {schedule_md}
 {IT_ATTENDANCE_RULE}
 
-GitHub context:
-{github_block}
-
-Plaky context:
-{plaky_block}
+Organizational context (GitHub, Plaky, boardman sync, repo direction):
+{context_block}
 
 Required sections:
 1) Purpose
@@ -162,19 +175,16 @@ Rules:
 - Include owner + due date style for action items.
 """
 
-    def _github_block(self, team_focus: str) -> str:
+    def _context_block(self, team_focus: str) -> str:
         try:
-            return self.github_context.context_markdown(team_focus)
+            return self.context_aggregator.context_markdown(team_focus)
         except Exception:
-            log.warning("github_context_unavailable team_focus=%r", team_focus, exc_info=True)
-            return "GitHub unavailable."
-
-    def _plaky_block(self, team_focus: str) -> str:
-        try:
-            return self.plaky_context.context_markdown(team_focus)
-        except Exception:
-            log.warning("plaky_context_unavailable team_focus=%r", team_focus, exc_info=True)
-            return "Plaky unavailable."
+            log.warning(
+                "planning_context_aggregator_unavailable team_focus=%r",
+                team_focus,
+                exc_info=True,
+            )
+            return "Organizational context unavailable."
 
     @staticmethod
     def _selected_schedule(team_focus: str):
