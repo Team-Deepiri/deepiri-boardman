@@ -28,6 +28,8 @@ env/
 
 # Node
 node_modules/
+!boardman-ui/src/lib/
+!boardman-ui/src/lib/**
 
 # IDEs
 .idea/
