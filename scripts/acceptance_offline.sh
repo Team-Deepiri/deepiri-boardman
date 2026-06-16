@@ -212,6 +212,12 @@ else
 fi
 rm -f /tmp/boardman_acceptance_readiness.out
 
+if bash scripts/acceptance_plan.sh; then
+  pass "meeting-plan offline acceptance passed"
+else
+  fail "meeting-plan offline acceptance failed"
+fi
+
 printf '\nAcceptance complete: %s failure(s), %s warning(s)\n' "$failures" "$warnings"
 if [[ "$failures" -gt 0 ]]; then
   printf 'Result: NOT READY for engineering-complete handoff\n'
