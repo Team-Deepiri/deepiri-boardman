@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import os
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -169,6 +171,7 @@ def build_readiness_report(
     checks.extend(_check_repos_yml(repos_path, env))
     checks.extend(_check_team_assignments(team_path))
     checks.extend(_check_database(db_path))
+    checks.extend(_check_planning(root, env))
     checks.extend(_check_runtime_smoke_guidance())
 
     return ReadinessReport(
@@ -669,6 +672,189 @@ def _check_team_assignments(path: Path) -> list[ReadinessCheck]:
             "Plaky field/member inventory is filled",
         )
     ]
+
+
+def _check_planning(root: Path, env: dict[str, str]) -> list[ReadinessCheck]:
+    checks: list[ReadinessCheck] = []
+
+    plaky = env.get("PLAKY_API_KEY", "")
+    if _is_placeholder(plaky):
+        checks.append(
+            ReadinessCheck(
+                "planning",
+                "Plaky API key",
+                WARN,
+                "PLAKY_API_KEY missing or placeholder",
+                "Set PLAKY_API_KEY for Plaky board context in meeting plans.",
+            )
+        )
+    else:
+        checks.append(
+            ReadinessCheck("planning", "Plaky API key", PASS, "PLAKY_API_KEY is set")
+        )
+
+    github = env.get("GITHUB_PAT", "")
+    if _is_placeholder(github):
+        checks.append(
+            ReadinessCheck(
+                "planning",
+                "GitHub PAT",
+                WARN,
+                "GITHUB_PAT missing or placeholder",
+                "Set GITHUB_PAT for GitHub PR context in meeting plans.",
+            )
+        )
+    else:
+        checks.append(
+            ReadinessCheck("planning", "GitHub PAT", PASS, "GITHUB_PAT is set")
+        )
+
+    team_repos_path = _resolve(root, env.get("PLANNING_TEAM_REPOS_FILE", "team_repos.json"))
+    checks.append(_check_planning_json_file("team repos", team_repos_path))
+
+    team_boards_path = _resolve(
+        root,
+        env.get("PLANNING_TEAM_PLAKY_BOARDS_FILE", "team_plaky_boards.json"),
+    )
+    checks.append(_check_planning_json_file("team Plaky boards", team_boards_path))
+
+    provider = (env.get("LLM_PROVIDER") or "ollama").strip().lower()
+    if provider in {"openai", "gpt"}:
+        key_ok = not _is_placeholder(env.get("OPENAI_API_KEY", ""))
+        checks.append(
+            ReadinessCheck(
+                "planning",
+                "LLM provider",
+                PASS if key_ok else WARN,
+                f"LLM_PROVIDER={provider}"
+                + (" with OPENAI_API_KEY set" if key_ok else " but OPENAI_API_KEY missing"),
+                "" if key_ok else "Set OPENAI_API_KEY for LLM-generated meeting plans.",
+            )
+        )
+    elif provider in {"openrouter"}:
+        key_ok = not _is_placeholder(env.get("OPENROUTER_API_KEY", ""))
+        checks.append(
+            ReadinessCheck(
+                "planning",
+                "LLM provider",
+                PASS if key_ok else WARN,
+                f"LLM_PROVIDER={provider}"
+                + (" with OPENROUTER_API_KEY set" if key_ok else " but OPENROUTER_API_KEY missing"),
+                "" if key_ok else "Set OPENROUTER_API_KEY for LLM-generated meeting plans.",
+            )
+        )
+    elif provider in {"anthropic", "claude"}:
+        key_ok = not _is_placeholder(env.get("ANTHROPIC_API_KEY", ""))
+        checks.append(
+            ReadinessCheck(
+                "planning",
+                "LLM provider",
+                PASS if key_ok else WARN,
+                f"LLM_PROVIDER={provider}"
+                + (" with ANTHROPIC_API_KEY set" if key_ok else " but ANTHROPIC_API_KEY missing"),
+                "" if key_ok else "Set ANTHROPIC_API_KEY for LLM-generated meeting plans.",
+            )
+        )
+    elif provider in {"gemini", "google"}:
+        key_ok = not _is_placeholder(env.get("GEMINI_API_KEY", ""))
+        checks.append(
+            ReadinessCheck(
+                "planning",
+                "LLM provider",
+                PASS if key_ok else WARN,
+                f"LLM_PROVIDER={provider}"
+                + (" with GEMINI_API_KEY set" if key_ok else " but GEMINI_API_KEY missing"),
+                "" if key_ok else "Set GEMINI_API_KEY for LLM-generated meeting plans.",
+            )
+        )
+    else:
+        checks.append(
+            ReadinessCheck(
+                "planning",
+                "LLM provider",
+                PASS,
+                f"LLM_PROVIDER={provider or 'ollama'} (local/hosted inference expected)",
+            )
+        )
+
+    output_dir = _resolve(root, env.get("PLANNING_OUTPUT_DIR", "plans"))
+    if output_dir.exists() and output_dir.is_dir() and os.access(output_dir, os.W_OK):
+        checks.append(
+            ReadinessCheck(
+                "planning",
+                "output directory",
+                PASS,
+                f"{output_dir.name}/ is writable",
+            )
+        )
+    elif not output_dir.exists():
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            checks.append(
+                ReadinessCheck(
+                    "planning",
+                    "output directory",
+                    PASS,
+                    f"created writable {output_dir.name}/",
+                )
+            )
+        except OSError:
+            checks.append(
+                ReadinessCheck(
+                    "planning",
+                    "output directory",
+                    WARN,
+                    f"cannot create {output_dir.name}/",
+                    f"Ensure {output_dir} exists and is writable for boardman plan.",
+                )
+            )
+    else:
+        checks.append(
+            ReadinessCheck(
+                "planning",
+                "output directory",
+                WARN,
+                f"{output_dir} is not a writable directory",
+                f"Ensure {output_dir} exists and is writable for boardman plan.",
+            )
+        )
+
+    return checks
+
+
+def _check_planning_json_file(label: str, path: Path) -> ReadinessCheck:
+    if not path.is_file():
+        return ReadinessCheck(
+            "planning",
+            label,
+            WARN,
+            f"{path.name} not found (built-in defaults will be used)",
+            f"Copy team mapping example file to {path.name} for explicit team routing.",
+        )
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        return ReadinessCheck(
+            "planning",
+            label,
+            WARN,
+            f"{path.name} is not valid JSON ({type(exc).__name__})",
+            f"Fix or replace {path.name}.",
+        )
+    if not isinstance(raw, dict) or not raw:
+        return ReadinessCheck(
+            "planning",
+            label,
+            WARN,
+            f"{path.name} must be a non-empty JSON object",
+            f"Fix or replace {path.name}.",
+        )
+    return ReadinessCheck(
+        "planning",
+        label,
+        PASS,
+        f"{path.name} loaded",
+    )
 
 
 def _check_database(path: Path) -> list[ReadinessCheck]:

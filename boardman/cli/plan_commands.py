@@ -9,48 +9,17 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.status import Status
 
-from boardman.planning.context_github import GitHubPlanningContext
-from boardman.planning.context_plaky import PlakyPlanningContext
-from boardman.planning.llm_adapter import BoardmanPlanningLlm
 from boardman.planning.models import MeetingRequest
-from boardman.planning.planner import MeetingPlanner
+from boardman.planning.service import (
+    WEEK_CHOICES,
+    default_plan_output_path,
+    generate_plan,
+    week_anchor,
+)
 from boardman.planning.team_repos import TEAM_CHOICES
-from boardman.settings import settings
 
 plan_app = typer.Typer(help="Generate weekly meeting plans (from deepiri-huddle)")
 console = Console()
-WEEK_CHOICES = ("current", "next")
-
-
-def _next_monday(anchor: date) -> date:
-    days = (7 - anchor.weekday()) % 7
-    if days == 0:
-        days = 7
-    return anchor + timedelta(days=days)
-
-
-def _week_anchor(week: str) -> date:
-    base = _next_monday(date.today())
-    return base if week == "current" else base + timedelta(days=7)
-
-
-def _default_output(team: str, meeting_type: str, week: str) -> Path:
-    anchor = _week_anchor(week).isoformat()
-    safe_team = team.replace("-", "_")
-    safe_type = meeting_type.replace("-", "_")
-    out_dir = Path(settings.planning_output_dir)
-    return out_dir / f"{safe_team}_{safe_type}_{anchor}.md"
-
-
-def _build_planner(
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
-) -> MeetingPlanner:
-    return MeetingPlanner(
-        llm=BoardmanPlanningLlm(provider=provider, model=model),
-        github_context=GitHubPlanningContext(),
-        plaky_context=PlakyPlanningContext(),
-    )
 
 
 def _generate_and_write(
@@ -60,11 +29,13 @@ def _generate_and_write(
     provider: Optional[str] = None,
     model: Optional[str] = None,
 ) -> None:
-    planner = _build_planner(provider=provider, model=model)
     with Status("Generating meeting plan...", spinner="dots", console=console):
-        plan = planner.plan(request)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(plan.markdown + "\n", encoding="utf-8")
+        plan = generate_plan(
+            request,
+            output_path=output,
+            provider=provider,
+            model=model,
+        )
     console.print(
         Panel.fit(
             f"Wrote plan to [bold]{output}[/bold]\n"
@@ -94,7 +65,7 @@ def weekly(
         raise typer.BadParameter(f"team must be one of: {', '.join(TEAM_CHOICES)}")
     if week not in WEEK_CHOICES:
         raise typer.BadParameter(f"week must be one of: {', '.join(WEEK_CHOICES)}")
-    target = _week_anchor(week)
+    target = week_anchor(week)
     req = MeetingRequest(
         meeting_title="Deepiri Weekly Engineering Round Table",
         meeting_type="weekly-status-sync",
@@ -110,7 +81,7 @@ def weekly(
         target_date_iso=target.isoformat(),
         notes="Use recurring schedule and include mandatory round table.",
     )
-    out = output or _default_output(team, req.meeting_type, week)
+    out = output or default_plan_output_path(team, req.meeting_type, week)
     _generate_and_write(req, out, provider=provider, model=model)
 
 
@@ -136,7 +107,7 @@ def custom(
         raise typer.BadParameter(f"team must be one of: {', '.join(TEAM_CHOICES)}")
     if week not in WEEK_CHOICES:
         raise typer.BadParameter(f"week must be one of: {', '.join(WEEK_CHOICES)}")
-    target = _week_anchor(week)
+    target = week_anchor(week)
     req = MeetingRequest(
         meeting_title=meeting_title,
         meeting_type=meeting_type,
@@ -151,5 +122,5 @@ def custom(
         target_date_iso=target.isoformat(),
         notes=notes or None,
     )
-    out = output or _default_output(team, meeting_type, week)
+    out = output or default_plan_output_path(team, meeting_type, week)
     _generate_and_write(req, out, provider=provider, model=model)
