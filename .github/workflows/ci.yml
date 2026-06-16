@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [main, dev]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    name: Python (Poetry, ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    env:
+      BOARDMAN_AI_LIVE: "0"
+      BOARDMAN_STACK_BENCHMARK: "0"
+      PLAKY_PR_WORKFLOW_LIVE: "0"
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: poetry
+
+      - name: Install Poetry
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "poetry==2.2.1"
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Run tests
+        run: poetry run pytest
+
+  node:
+    name: Node (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: UI
+            working-directory: boardman-ui
+            cache-dependency-path: boardman-ui/package-lock.json
+          - name: Worker
+            working-directory: worker
+            cache-dependency-path: worker/package-lock.json
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: ${{ matrix.cache-dependency-path }}
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.working-directory }}
+        run: npm ci
+
+      - name: Run lint script if present
+        working-directory: ${{ matrix.working-directory }}
+        run: npm run lint --if-present
+
+      - name: Run tests if present
+        working-directory: ${{ matrix.working-directory }}
+        run: npm run test --if-present
+
+      - name: Run build script if present
+        working-directory: ${{ matrix.working-directory }}
+        run: npm run build --if-present
+
+      - name: Type-check Worker
+        if: matrix.working-directory == 'worker'
+        working-directory: worker
+        run: npx tsc --noEmit
+
+  docker:
+    name: Docker build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build backend image
+        run: docker build --file Dockerfile --tag deepiri-boardman:ci .
+
+      - name: Build nginx UI image
+        run: docker build --file deploy/nginx/Dockerfile --tag deepiri-boardman-ui:ci .
