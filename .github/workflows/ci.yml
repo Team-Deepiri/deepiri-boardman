@@ -40,7 +40,7 @@ jobs:
       - name: Install dependencies
         run: poetry install --with dev
 
-        - name: Run Ruff lint
+      - name: Run Ruff lint
         run: poetry run ruff check .
 
       - name: Check formatting with Black
