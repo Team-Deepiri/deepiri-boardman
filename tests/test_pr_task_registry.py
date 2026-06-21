@@ -78,6 +78,8 @@ async def test_withdrawn_pr_not_blocking():
 
     async with factory() as session:
         assert await has_any_open_pr_for_task(session, plaky_task_id="T9") is False
-        r = await session.execute(select(PullRequestTaskLink).where(PullRequestTaskLink.github_pr_number == 5))
+        r = await session.execute(
+            select(PullRequestTaskLink).where(PullRequestTaskLink.github_pr_number == 5)
+        )
         row = r.scalar_one()
         assert row.withdrawn_at is not None

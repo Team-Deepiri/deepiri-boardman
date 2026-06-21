@@ -1,4 +1,4 @@
-from typing import AsyncIterator
+from collections.abc import AsyncIterator
 
 from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -15,6 +15,7 @@ async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit
 
 
 if settings.database_url.startswith("sqlite"):
+
     @event.listens_for(engine.sync_engine, "connect")
     def _set_sqlite_pragmas(dbapi_connection, _connection_record) -> None:
         cur = dbapi_connection.cursor()
@@ -46,6 +47,7 @@ async def init_db() -> None:
         await conn.run_sync(Base.metadata.create_all)
 
         if settings.database_url.startswith("sqlite"):
+
             def _add_task_draft_column(sync_conn):
                 r = sync_conn.execute(text("PRAGMA table_info(agent_sessions)"))
                 cols = [row[1] for row in r.fetchall()]

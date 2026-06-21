@@ -79,14 +79,18 @@ class InitDirectionResponse(BaseModel):
 
 class AgentChatResponse(BaseModel):
     ok: bool = True
-    reply: str = Field(..., description="Assistant reply as GitHub-flavored markdown (plain text, not HTML).")
+    reply: str = Field(
+        ..., description="Assistant reply as GitHub-flavored markdown (plain text, not HTML)."
+    )
     session_id: str
     content_format: Literal["markdown"] = "markdown"
 
 
 class AgentHistoryMessage(BaseModel):
     role: str
-    content: str = Field(..., description="Message body; assistant rows are GitHub-flavored markdown.")
+    content: str = Field(
+        ..., description="Message body; assistant rows are GitHub-flavored markdown."
+    )
     created_at: str | None = None
     content_format: Literal["markdown", "plain"] = Field(
         ...,
@@ -109,7 +113,9 @@ async def agent_chat(
     await require_agent_rate_limit(request)
     if body.queue:
         if not settings.agent_async_enqueue_enabled:
-            raise HTTPException(status_code=503, detail="Async agent enqueue is disabled in settings.")
+            raise HTTPException(
+                status_code=503, detail="Async agent enqueue is disabled in settings."
+            )
         payload = body.model_dump(exclude={"queue"}, exclude_none=True)
         q = get_job_queue()
         job = await q.enqueue_job("boardman_agent_chat_job", payload)
@@ -191,7 +197,9 @@ async def agent_job_status(job_id: str) -> dict[str, Any]:
 
 
 @router.get("/agent/sessions/{session_id}/history", response_model=AgentHistoryResponse)
-async def agent_history(session_id: str, session: AsyncSession = Depends(get_db)) -> AgentHistoryResponse:
+async def agent_history(
+    session_id: str, session: AsyncSession = Depends(get_db)
+) -> AgentHistoryResponse:
     hist = await get_session_history(session, session_id)
     return AgentHistoryResponse(session_id=session_id, messages=hist)
 

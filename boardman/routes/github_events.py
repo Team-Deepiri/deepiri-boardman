@@ -1,5 +1,5 @@
 import json
-from typing import Any, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 from sqlalchemy import select
@@ -25,9 +25,11 @@ from boardman.services.pr_handler import (
     handle_pr_review_comment,
     handle_pr_review_requested,
 )
-from boardman.services.pr_review_handler import handle_issue_comment_on_pr, handle_pull_request_review
+from boardman.services.pr_review_handler import (
+    handle_issue_comment_on_pr,
+    handle_pull_request_review,
+)
 from boardman.settings import settings
-
 
 router = APIRouter()
 
@@ -86,7 +88,9 @@ async def github_webhook(
         payload_dict = json.loads(raw_body.decode("utf-8"))
     except Exception:
         await _mark_delivery("processed", "invalid_json")
-        return Response(content=json.dumps({"ok": False, "message": "Invalid JSON"}), status_code=400)
+        return Response(
+            content=json.dumps({"ok": False, "message": "Invalid JSON"}), status_code=400
+        )
 
     if event_type == "ping":
         await _mark_delivery("processed", "pong")
@@ -98,7 +102,7 @@ async def github_webhook(
         body = json.dumps({"ok": False, "message": "Unsupported event type"})
         return Response(content=body, status_code=400)
 
-    result: Optional[dict[str, Any]] = None
+    result: dict[str, Any] | None = None
 
     if isinstance(payload, IssueEventPayload) and payload.action == "opened":
         result = await handle_issue_opened(payload, session)

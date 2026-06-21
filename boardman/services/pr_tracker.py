@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,7 +54,9 @@ async def upsert_pr_row(
             )
             if not create_res.get("ok"):
                 return create_res
-            item_id = create_res.get("task", {}).get("id") or create_res.get("task", {}).get("itemId")
+            item_id = create_res.get("task", {}).get("id") or create_res.get("task", {}).get(
+                "itemId"
+            )
             if not item_id:
                 return {"ok": False, "message": "Created task but no ID returned"}
             existing.plaky_item_id = item_id
@@ -129,7 +130,7 @@ async def find_pr_tracker(
     full_name: str,
     pr_number: int,
     session: AsyncSession,
-) -> Optional[OpenPRTrack]:
+) -> OpenPRTrack | None:
     """Find an existing PR tracking record."""
     stmt = select(OpenPRTrack).where(
         OpenPRTrack.repo_full_name == full_name,

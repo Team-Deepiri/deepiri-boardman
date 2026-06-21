@@ -4,16 +4,15 @@ from __future__ import annotations
 
 import subprocess
 import time
-from typing import Optional
 
 import httpx
 
 _CACHE_TTL_SEC = 45.0
-_cache_key: Optional[str] = None
-_cache_names: Optional[list[str]] = None
+_cache_key: str | None = None
+_cache_names: list[str] | None = None
 _cache_expiry: float = 0.0
 
-_gpu_available: Optional[bool] = None
+_gpu_available: bool | None = None
 
 
 def is_gpu_available() -> bool:
@@ -38,6 +37,7 @@ def is_gpu_available() -> bool:
 
     # Fallback/Additional check: check if /dev/nvidia0 exists (common in Docker with --gpus)
     import os
+
     if os.path.exists("/dev/nvidia0"):
         _gpu_available = True
         return True
@@ -64,7 +64,7 @@ def pick_preferred_ollama_model(names: list[str], prefer_small: bool = False) ->
         raise ValueError("no Ollama models")
     uniq = sorted(set(names))
 
-    def first(pred) -> Optional[str]:
+    def first(pred) -> str | None:
         for n in uniq:
             low = n.lower()
             if pred(low):
@@ -118,7 +118,7 @@ def clear_ollama_model_cache() -> None:
     _cache_expiry = 0.0
 
 
-def resolve_ollama_model(base_url: str, explicit: Optional[str]) -> str:
+def resolve_ollama_model(base_url: str, explicit: str | None) -> str:
     """
     If explicit is non-empty, return it (unless it's from settings.llm_model and we're on CPU).
     If no GPU, fallback to settings.llm_ollama_cpu_model.
@@ -138,23 +138,23 @@ def resolve_ollama_model(base_url: str, explicit: Optional[str]) -> str:
         return pick_preferred_ollama_model(names, prefer_small=False)
 
     # Priority 2: CPU mode -> check if we should fallback from explicit settings.llm_model
-    # We only override if 'explicit' matches the default/configured 'llm_model' 
+    # We only override if 'explicit' matches the default/configured 'llm_model'
     # and isn't a specific one-off request model.
     # Actually, to be safe and clear, we use cpu_model if no GPU.
-    
+
     cpu_model = (settings.llm_ollama_cpu_model or "").strip()
     if not gpu:
         names = _cached_names(base_url)
         if not names:
             raise RuntimeError("Ollama has no models.")
-        
-        # If user explicitly set a model in request, we still respect it? 
+
+        # If user explicitly set a model in request, we still respect it?
         # For 'boardman', the typical case is settings.llm_model being the "default".
         # If settings.llm_model is set but we are on CPU, we prefer the CPU model.
-        
+
         if cpu_model and cpu_model in names:
             return cpu_model
-        
+
         # If explicit is already a small model, keep it
         if want and any(s in want.lower() for s in ["0.5b", "1.5b", "1b", "3b", "mini"]):
             return want
@@ -165,7 +165,7 @@ def resolve_ollama_model(base_url: str, explicit: Optional[str]) -> str:
     return want or pick_preferred_ollama_model(_cached_names(base_url))
 
 
-def effective_ollama_model(request_model: Optional[str] = None) -> str:
+def effective_ollama_model(request_model: str | None = None) -> str:
     """API/scan `model` override, else settings.llm_model if set, else auto from /api/tags."""
     from boardman.settings import settings
 

@@ -2,15 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
-
 from boardman.repos_config import RepoRouting
 
 
-def effective_plaky_placement(routing: Optional[RepoRouting]) -> Tuple[Optional[str], Optional[str]]:
+def effective_plaky_placement(routing: RepoRouting | None) -> tuple[str | None, str | None]:
     """Return (board_id, group_id) for creates; None means use legacy /tasks without placement."""
-    bid: Optional[str] = None
-    gid: Optional[str] = None
+    bid: str | None = None
+    gid: str | None = None
     if routing:
         if routing.plaky_board_id.strip():
             bid = routing.plaky_board_id.strip()

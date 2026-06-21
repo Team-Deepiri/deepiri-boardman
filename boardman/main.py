@@ -8,11 +8,20 @@ from boardman.assignment.config import sync_team_assignment_field_keys_from_boar
 from boardman.broker.job_queue import close_job_queue
 from boardman.cache.agent_redis import aclose_agent_redis
 from boardman.database.session import init_db
-from boardman.logging_config import setup_logging
 from boardman.llm.completion import aclose_ollama_http_client
 from boardman.llm.ollama_autodetect import effective_ollama_model
+from boardman.logging_config import setup_logging
 from boardman.ratelimit.leaky_bucket import get_agent_leaky_limiter
-from boardman.routes import agent, assignment, health, github_events, github_team, plaky, tasks, repos
+from boardman.routes import (
+    agent,
+    assignment,
+    github_events,
+    github_team,
+    health,
+    plaky,
+    repos,
+    tasks,
+)
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -43,13 +52,22 @@ async def lifespan(app: FastAPI):
             try:
                 synced = await sync_team_assignment_field_keys_from_board(bid)
                 if synced.get("updated"):
-                    _log.info("team_assignments: synced field keys from board %s -> %s", bid, synced.get("updated"))
+                    _log.info(
+                        "team_assignments: synced field keys from board %s -> %s",
+                        bid,
+                        synced.get("updated"),
+                    )
                 else:
-                    _log.info("team_assignments: field-key sync skipped (%s)", synced.get("message", "no changes"))
+                    _log.info(
+                        "team_assignments: field-key sync skipped (%s)",
+                        synced.get("message", "no changes"),
+                    )
             except Exception as e:
                 _log.warning("team_assignments: startup field-key sync failed: %s", e)
         else:
-            _log.info("team_assignments: startup field-key sync skipped (repos.yml defaults.plaky_board_id empty)")
+            _log.info(
+                "team_assignments: startup field-key sync skipped (repos.yml defaults.plaky_board_id empty)"
+            )
     prov = (settings.llm_provider or "ollama").lower()
     if prov == "ollama":
         try:
@@ -71,7 +89,9 @@ async def lifespan(app: FastAPI):
             settings.ollama_base_url,
         )
     if (settings.agent_redis_url or "").strip():
-        _log.info("Agent Redis cache: AGENT_REDIS_URL is set (API-only; worker should leave it empty)")
+        _log.info(
+            "Agent Redis cache: AGENT_REDIS_URL is set (API-only; worker should leave it empty)"
+        )
     yield
 
     await close_job_queue()

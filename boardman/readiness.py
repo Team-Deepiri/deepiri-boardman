@@ -231,9 +231,7 @@ def _check_repo_layout(root: Path, env_path: Path, compose_path: Path) -> list[R
         _file_check("repo", "smoke script", root / "scripts" / "deploy_smoke.sh"),
     ]
     if env_path.is_file():
-        checks.append(
-            ReadinessCheck("env", "runtime env file", PASS, f"{env_path.name} exists")
-        )
+        checks.append(ReadinessCheck("env", "runtime env file", PASS, f"{env_path.name} exists"))
     else:
         checks.append(
             ReadinessCheck(
@@ -421,9 +419,7 @@ def _check_compose(compose_path: Path) -> list[ReadinessCheck]:
             )
         )
     else:
-        checks.append(
-            ReadinessCheck("docker", "production ollama", PASS, "local Ollama is absent")
-        )
+        checks.append(ReadinessCheck("docker", "production ollama", PASS, "local Ollama is absent"))
 
     boardman_ports = services.get("boardman", {}).get("ports", [])
     nginx_ports = services.get("boardman-nginx", {}).get("ports", [])

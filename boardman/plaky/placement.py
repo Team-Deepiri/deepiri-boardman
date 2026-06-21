@@ -2,22 +2,22 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from contextvars import ContextVar
-from typing import AsyncIterator, Optional
 
-_board_var: ContextVar[Optional[str]] = ContextVar("plaky_board_id", default=None)
-_group_var: ContextVar[Optional[str]] = ContextVar("plaky_group_id", default=None)
+_board_var: ContextVar[str | None] = ContextVar("plaky_board_id", default=None)
+_group_var: ContextVar[str | None] = ContextVar("plaky_group_id", default=None)
 
 
-def context_board_id() -> Optional[str]:
+def context_board_id() -> str | None:
     v = _board_var.get()
     if v and v.strip():
         return v.strip()
     return None
 
 
-def context_group_id() -> Optional[str]:
+def context_group_id() -> str | None:
     v = _group_var.get()
     if v and v.strip():
         return v.strip()
@@ -26,8 +26,8 @@ def context_group_id() -> Optional[str]:
 
 @asynccontextmanager
 async def plaky_placement_context(
-    board_id: Optional[str],
-    group_id: Optional[str],
+    board_id: str | None,
+    group_id: str | None,
 ) -> AsyncIterator[None]:
     b = (board_id or "").strip() or None
     g = (group_id or "").strip() or None

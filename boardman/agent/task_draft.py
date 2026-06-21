@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,7 +17,7 @@ def normalize_task_title(
     *,
     mode: Literal["error", "truncate"] = "error",
     max_len: int = 160,
-) -> tuple[str, Optional[str]]:
+) -> tuple[str, str | None]:
     """
     Normalize a task title length.
 
@@ -34,7 +34,7 @@ def normalize_task_title(
     return "", f"title must be <= {max_len} characters"
 
 
-def _parse_draft(raw: Optional[str]) -> Dict[str, Any]:
+def _parse_draft(raw: str | None) -> dict[str, Any]:
     if not raw or not str(raw).strip():
         return {"field_values": {}, "summary": ""}
     try:
@@ -53,12 +53,15 @@ def _parse_draft(raw: Optional[str]) -> Dict[str, Any]:
     }
 
 
-def _dump_draft(d: Dict[str, Any]) -> str:
-    out = {"field_values": dict(d.get("field_values") or {}), "summary": str(d.get("summary") or "").strip()}
+def _dump_draft(d: dict[str, Any]) -> str:
+    out = {
+        "field_values": dict(d.get("field_values") or {}),
+        "summary": str(d.get("summary") or "").strip(),
+    }
     return json.dumps(out, ensure_ascii=False)
 
 
-async def load_task_draft(session: AsyncSession, agent_session_pk: int) -> Dict[str, Any]:
+async def load_task_draft(session: AsyncSession, agent_session_pk: int) -> dict[str, Any]:
     r = await session.execute(select(AgentSession).where(AgentSession.id == agent_session_pk))
     ag = r.scalar_one_or_none()
     if not ag:
@@ -70,19 +73,19 @@ async def save_task_draft_merge(
     session: AsyncSession,
     agent_session_pk: int,
     *,
-    field_values_patch: Optional[Dict[str, Any]] = None,
+    field_values_patch: dict[str, Any] | None = None,
     engineer_plaky_id: str = "",
     qa_plaky_id: str = "",
     summary: str = "",
     replace_field_values: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     r = await session.execute(select(AgentSession).where(AgentSession.id == agent_session_pk))
     ag = r.scalar_one_or_none()
     if not ag:
         return {"ok": False, "message": "agent session not found"}
 
     cur = _parse_draft(ag.task_draft_json)
-    fv: Dict[str, str] = {}
+    fv: dict[str, str] = {}
     if replace_field_values:
         fv = {}
     else:
@@ -123,7 +126,7 @@ async def save_task_draft_merge(
     return {"ok": True, "field_values": fv, "summary": new_summary}
 
 
-def format_task_draft_for_prompt(draft: Dict[str, Any]) -> str:
+def format_task_draft_for_prompt(draft: dict[str, Any]) -> str:
     fv = draft.get("field_values") or {}
     summary = draft.get("summary") or ""
     lines = [
@@ -153,9 +156,9 @@ def format_task_draft_for_prompt(draft: Dict[str, Any]) -> str:
 
 
 def merge_draft_into_field_values(
-    draft: Dict[str, Any],
-    tool_field_values: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
+    draft: dict[str, Any],
+    tool_field_values: dict[str, Any] | None,
+) -> dict[str, Any]:
     """Draft base, then tool call overlays (tool wins)."""
     base = dict(draft.get("field_values") or {})
     over = tool_field_values if isinstance(tool_field_values, dict) else {}

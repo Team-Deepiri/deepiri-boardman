@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from collections.abc import AsyncIterator
-from typing import Any, List, Optional
+from typing import Any
 
 import httpx
 
@@ -55,9 +55,9 @@ async def aclose_ollama_http_client() -> None:
         _ollama_by_loop.clear()
 
 
-def _extract_system(messages: List[dict[str, str]]) -> tuple[Optional[str], List[dict[str, str]]]:
-    system_parts: List[str] = []
-    rest: List[dict[str, str]] = []
+def _extract_system(messages: list[dict[str, str]]) -> tuple[str | None, list[dict[str, str]]]:
+    system_parts: list[str] = []
+    rest: list[dict[str, str]] = []
     for m in messages:
         if m.get("role") == "system":
             system_parts.append(m.get("content", ""))
@@ -68,10 +68,10 @@ def _extract_system(messages: List[dict[str, str]]) -> tuple[Optional[str], List
 
 
 async def chat_complete(
-    messages: List[dict[str, str]],
+    messages: list[dict[str, str]],
     *,
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
+    provider: str | None = None,
+    model: str | None = None,
     timeout: float = 120.0,
 ) -> str:
     prov = (provider or settings.llm_provider or "ollama").lower()
@@ -103,7 +103,9 @@ async def chat_complete(
         raise ValueError(f"Unknown LLM_PROVIDER: {prov}")
 
 
-async def _ollama_chat(client: httpx.AsyncClient, model: str, messages: List[dict[str, str]]) -> str:
+async def _ollama_chat(
+    client: httpx.AsyncClient, model: str, messages: list[dict[str, str]]
+) -> str:
     url = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
     body: dict[str, Any] = {"model": model, "messages": messages, "stream": False}
     ka = (settings.ollama_keep_alive or "").strip()
@@ -120,7 +122,7 @@ async def _ollama_chat(client: httpx.AsyncClient, model: str, messages: List[dic
 
 
 async def _ollama_chat_stream(
-    client: httpx.AsyncClient, model: str, messages: List[dict[str, str]]
+    client: httpx.AsyncClient, model: str, messages: list[dict[str, str]]
 ) -> AsyncIterator[str]:
     """Yield assistant content deltas from Ollama NDJSON stream (stream=true)."""
     url = f"{settings.ollama_base_url.rstrip('/')}/api/chat"
@@ -150,10 +152,10 @@ async def _ollama_chat_stream(
 
 
 async def chat_complete_stream(
-    messages: List[dict[str, str]],
+    messages: list[dict[str, str]],
     *,
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> AsyncIterator[str]:
     """
     Stream completion chunks. Ollama uses native streaming; other providers emit one chunk (full text).
@@ -171,7 +173,7 @@ async def chat_complete_stream(
 
 
 async def _anthropic_messages(
-    client: httpx.AsyncClient, model: str, messages: List[dict[str, str]]
+    client: httpx.AsyncClient, model: str, messages: list[dict[str, str]]
 ) -> str:
     if not settings.anthropic_api_key:
         raise ValueError("ANTHROPIC_API_KEY is not set")
@@ -185,7 +187,9 @@ async def _anthropic_messages(
     body: dict[str, Any] = {
         "model": model,
         "max_tokens": 4096,
-        "messages": [{"role": m["role"], "content": m["content"]} for m in rest if m["role"] != "system"],
+        "messages": [
+            {"role": m["role"], "content": m["content"]} for m in rest if m["role"] != "system"
+        ],
     }
     if system:
         body["system"] = system
@@ -193,14 +197,16 @@ async def _anthropic_messages(
     r.raise_for_status()
     data = r.json()
     parts = data.get("content") or []
-    texts: List[str] = []
+    texts: list[str] = []
     for p in parts:
         if isinstance(p, dict) and p.get("type") == "text":
             texts.append(p.get("text", ""))
     return "".join(texts).strip()
 
 
-async def _openai_chat(client: httpx.AsyncClient, model: str, messages: List[dict[str, str]]) -> str:
+async def _openai_chat(
+    client: httpx.AsyncClient, model: str, messages: list[dict[str, str]]
+) -> str:
     if not settings.openai_api_key:
         raise ValueError("OPENAI_API_KEY is not set")
     return await _openai_compat_chat(
@@ -212,7 +218,9 @@ async def _openai_chat(client: httpx.AsyncClient, model: str, messages: List[dic
     )
 
 
-async def _openrouter_chat(client: httpx.AsyncClient, model: str, messages: List[dict[str, str]]) -> str:
+async def _openrouter_chat(
+    client: httpx.AsyncClient, model: str, messages: list[dict[str, str]]
+) -> str:
     if not settings.openrouter_api_key:
         raise ValueError("OPENROUTER_API_KEY is not set")
     extra_headers: dict[str, str] = {}
@@ -238,8 +246,8 @@ async def _openai_compat_chat(
     base_url: str,
     api_key: str,
     model: str,
-    messages: List[dict[str, str]],
-    extra_headers: Optional[dict[str, str]] = None,
+    messages: list[dict[str, str]],
+    extra_headers: dict[str, str] | None = None,
 ) -> str:
     url = f"{base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "content-type": "application/json"}
@@ -255,12 +263,12 @@ async def _openai_compat_chat(
 
 
 async def _gemini_generate(
-    client: httpx.AsyncClient, model: str, messages: List[dict[str, str]]
+    client: httpx.AsyncClient, model: str, messages: list[dict[str, str]]
 ) -> str:
     if not settings.gemini_api_key:
         raise ValueError("GEMINI_API_KEY is not set")
     system, rest = _extract_system(messages)
-    parts: List[str] = []
+    parts: list[str] = []
     if system:
         parts.append(f"System:\n{system}\n\n")
     for m in rest:

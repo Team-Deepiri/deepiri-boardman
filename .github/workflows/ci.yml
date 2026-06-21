@@ -10,6 +10,36 @@ permissions:
   contents: read
 
 jobs:
+  python-lint:
+    name: Python lint
+    runs-on: ubuntu-latest
+    env:
+      BOARDMAN_AI_LIVE: "0"
+      BOARDMAN_STACK_BENCHMARK: "0"
+      PLAKY_PR_WORKFLOW_LIVE: "0"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Poetry
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install "poetry==2.2.1"
+
+      - name: Install dependencies
+        run: poetry install --with dev
+
+      - name: Run Ruff lint
+        run: poetry run ruff check .
+
+      - name: Check formatting with Black
+        run: poetry run black --check .
+
   python:
     name: Python (Poetry, ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -39,12 +69,6 @@ jobs:
 
       - name: Install dependencies
         run: poetry install --with dev
-
-      - name: Run Ruff lint
-        run: poetry run ruff check .
-
-      - name: Check formatting with Black
-        run: poetry run black --check .
 
       - name: Run tests
         run: poetry run pytest

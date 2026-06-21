@@ -62,9 +62,7 @@ def _build_prompt(
     return "\n".join(lines)
 
 
-def _parse_rerank(
-    text: str, allowed_ids: set[str]
-) -> tuple[str | None, float, str]:
+def _parse_rerank(text: str, allowed_ids: set[str]) -> tuple[str | None, float, str]:
     if not text or not text.strip():
         return None, 0.0, ""
     raw = text.strip()

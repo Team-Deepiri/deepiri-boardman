@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import time
 from datetime import datetime
-from typing import Optional, Protocol
+from typing import Protocol
 
 from boardman.database.models import AgentRateLimitBucket
 from boardman.database.session import async_session
@@ -78,11 +78,11 @@ class SqliteLeakyBucket:
                     return allow
 
 
-_agent_limiter: Optional[LeakyAcquire] = None
+_agent_limiter: LeakyAcquire | None = None
 _agent_limiter_lock = asyncio.Lock()
 
 
-async def get_agent_leaky_limiter() -> Optional[LeakyAcquire]:
+async def get_agent_leaky_limiter() -> LeakyAcquire | None:
     """Lazy init from settings (call from app lifespan or first request)."""
     global _agent_limiter
     from boardman.settings import settings
