@@ -51,8 +51,13 @@ async def list_llm_models() -> dict:
                         "models": model_list,
                         "current": current,
                     }
-        except Exception as e:
-            return {"ok": False, "provider": "ollama", "models": [], "error": str(e)}
+        except Exception:
+            return {
+                "ok": False,
+                "provider": "ollama",
+                "models": [],
+                "error": "Failed to fetch Ollama models.",
+            }
 
     # Non-Ollama providers
     return {
