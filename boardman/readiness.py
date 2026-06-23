@@ -515,6 +515,7 @@ def _placement_auto_discover_enabled(env: dict[str, str]) -> bool:
 def _check_repos_yml(path: Path, env: dict[str, str] | None = None) -> list[ReadinessCheck]:
     env = env or {}
     plaky_key = str(env.get("PLAKY_API_KEY") or "").strip()
+    # Auto-discovery path: empty repos.yml is OK when we can fetch the Plaky catalog live.
     if _placement_auto_discover_enabled(env) and plaky_key and not _is_placeholder(plaky_key):
         return [
             ReadinessCheck(

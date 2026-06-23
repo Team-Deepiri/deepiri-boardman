@@ -1,4 +1,14 @@
-"""Fetch and cache Plaky boards + groups (axiom org-catalog cache pattern)."""
+"""Fetch and cache Plaky boards + groups for repo → placement auto-discovery.
+
+Pattern mirrors deepiri-axiom org-catalog cache: list all boards, fetch groups per board,
+persist to ``.boardman/plaky-catalog.json`` with a 24h TTL (``PLAKY_CATALOG_TTL_SECONDS``).
+
+When ``PLAKY_CATALOG_CATEGORICAL_ONLY`` is true (default), only Devin's five categorical
+boards are kept — legacy boards (AI Task Board, Boardman Test Board, etc.) are dropped so
+fuzzy matching does not send tasks to the wrong sprint boards.
+
+Consumers: ``placement_discovery.resolve_placement_for_repo`` (webhooks via ``get_routing_async``).
+"""
 
 from __future__ import annotations
 
@@ -21,7 +31,7 @@ DEFAULT_TTL_SECONDS = 86_400  # 24h
 
 
 def filter_categorical_boards(boards: List[PlakyBoardEntry]) -> List[PlakyBoardEntry]:
-    """Keep only Devin's categorical boards when ``plaky_catalog_categorical_only`` is enabled."""
+    """Drop legacy/test boards; placement only searches Devin's five categorical boards."""
     if not settings.plaky_catalog_categorical_only:
         return boards
     kept = [b for b in boards if is_categorical_plaky_board(b.name)]
@@ -175,7 +185,7 @@ async def _fetch_board_groups(client: PlakyClient, board_row: dict[str, Any]) ->
 
 
 async def fetch_live_catalog(client: Optional[PlakyClient] = None) -> tuple[PlakyCatalogCache, str]:
-    """Load all boards and their groups from Plaky API."""
+    """Pull all boards + groups from Plaky; scope to categorical boards before caching."""
     c = client or PlakyClient()
     boards_result = await c.list_boards()
     if not boards_result.get("ok"):
@@ -194,6 +204,7 @@ async def fetch_live_catalog(client: Optional[PlakyClient] = None) -> tuple[Plak
         elif isinstance(item, Exception):
             _log.warning("plaky catalog: board groups fetch failed: %s", item)
     boards.sort(key=lambda b: b.name.casefold())
+    # Exclude legacy sprint boards before writing cache (see repo_category.PLAKY_CATEGORICAL_BOARD_NAMES).
     boards = filter_categorical_boards(boards)
     now = time.time()
     return PlakyCatalogCache(fetched_at=now, source="plaky-api", boards=boards), "plaky-api"
@@ -204,7 +215,7 @@ async def refresh_plaky_catalog(
     force: bool = False,
     client: Optional[PlakyClient] = None,
 ) -> tuple[PlakyCatalogCache, str]:
-    """Return catalog; refresh from Plaky when cache missing or stale."""
+    """Return catalog from disk if fresh; otherwise refresh from Plaky API (falls back to stale cache)."""
     ttl = float(settings.plaky_catalog_ttl_seconds or DEFAULT_TTL_SECONDS)
     cached = load_cached_catalog()
     now = time.time()

@@ -1,20 +1,37 @@
-"""Infer GitHub repo category from name/description (axiom github_catalog pattern).
+"""Map GitHub repo slugs to Plaky board/group placement (no repos.yml IDs).
 
-Maps internal categories to live Plaky board display names for fuzzy board matching.
+Used by ``placement_discovery`` when ``PLAKY_PLACEMENT_AUTO_DISCOVER`` is on.
+Replaces manual ``repos.yml`` board/group IDs for webhook-driven task creation.
+
+Resolution order (see ``discover_placement_from_catalog``):
+  1. Fuzzy-match repo slug against Plaky *group* names on categorical boards.
+  2. If no group scores >= ``PLAKY_PLACEMENT_MIN_SCORE`` (default 400), infer an
+     internal category from slug + optional description (axiom ``github_catalog`` hints).
+  3. Map category → one of the five live Plaky board names below, then pick a group
+     on that board (repo slug, then Open PRs / Backlog / Main table, then first group).
+
+Category slug → Plaky board (exact display names — keep in sync with Plaky UI):
+  platform       → Deepiri Platform + Services
+  ai-runtime     → Bots
+  dx             → Developer Tool Repos
+  creative       → Creative Repos
+  infra, unknown → Miscellaneous
+
+Hint tuples are adapted from deepiri-axiom ``ecosystem/github_catalog.py`` (PR #9).
 """
 
 from __future__ import annotations
 
 from typing import Final
 
-# Live Plaky board names (Devin categorical redesign — keep in sync with Plaky UI).
+# Exact Plaky board titles for Devin's categorical layout (not legacy sprint/task boards).
 PLAKY_BOARD_PLATFORM: Final[str] = "Deepiri Platform + Services"
 PLAKY_BOARD_BOTS: Final[str] = "Bots"
 PLAKY_BOARD_DEV_TOOLS: Final[str] = "Developer Tool Repos"
 PLAKY_BOARD_CREATIVE: Final[str] = "Creative Repos"
 PLAKY_BOARD_MISC: Final[str] = "Miscellaneous"
 
-# Hint tuples adapted from deepiri-axiom ecosystem/github_catalog.py (PR #9).
+# Substrings matched against "repo-slug description" (case-insensitive) for step 2 fallback.
 _PLATFORM_HINTS: Final[tuple[str, ...]] = (
     "api-gateway",
     "core-api",
@@ -73,6 +90,7 @@ CATEGORY_TO_PLAKY_BOARD: Final[dict[str, str]] = {
 # Six category slugs above map to these five Plaky boards (infra + unknown → Miscellaneous).
 PLAKY_CATEGORICAL_BOARD_NAMES: Final[frozenset[str]] = frozenset(CATEGORY_TO_PLAKY_BOARD.values())
 
+# Used when picking a group on a category board and the repo slug does not match any group name.
 DEFAULT_GROUP_NAME_QUERIES: Final[tuple[str, ...]] = (
     "Open PRs",
     "Backlog",

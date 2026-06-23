@@ -188,8 +188,12 @@ async def get_routing_async(
     """
     Resolve Plaky board/group for a GitHub repo.
 
-    When ``plaky_placement_auto_discover`` is enabled (default), uses cached Plaky catalog +
-    fuzzy group/board matching — not repos.yml. YAML is only used when auto-discovery is off.
+    When ``plaky_placement_auto_discover`` is enabled (default):
+      - Loads cached Plaky catalog (boards + groups).
+      - Fuzzy-matches repo slug → group, or falls back to category → board.
+      - Does not read ``repos.yml`` for board_id / group_id.
+
+    Set ``PLAKY_PLACEMENT_AUTO_DISCOVER=false`` to use legacy ``repos.yml`` routing only.
     """
     if settings.plaky_placement_auto_discover:
         from boardman.plaky.placement_discovery import resolve_placement_for_repo
