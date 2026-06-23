@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     plaky_team_assignment_field_sync_cooldown_seconds: float = 60.0
     # Seconds; 0 disables TTL cache for fetch_board_schema_bundle
     plaky_board_schema_cache_ttl_seconds: float = 90.0
+    # Plaky board/group catalog for repo -> placement auto-discovery (axiom-style cache).
+    plaky_catalog_cache_path: str = ".boardman/plaky-catalog.json"
+    plaky_catalog_ttl_seconds: float = 86_400.0
+    plaky_placement_auto_discover: bool = True
+    plaky_placement_min_score: int = 400
 
     github_webhook_secret: str = ""
     github_pat: str | None = None
