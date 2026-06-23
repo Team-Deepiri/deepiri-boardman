@@ -24,7 +24,7 @@ from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.agent.task_draft import normalize_task_title
-from boardman.repos_config import get_routing
+from boardman.repos_config import get_routing_async
 from boardman.settings import settings
 
 
@@ -167,7 +167,9 @@ async def run_repo_scan(
         return {"ok": False, "message": "repo must be owner/name"}
     owner, repo = parts[0], parts[1]
     short = repo
-    routing, routing_source = get_routing(repo_full, short, settings.github_org, with_source=True)
+    routing, routing_source = await get_routing_async(
+        repo_full, short, settings.github_org, with_source=True
+    )
 
     prov = (provider or settings.llm_provider or "ollama").lower()
     if prov in ("claude",):

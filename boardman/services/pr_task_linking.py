@@ -27,7 +27,7 @@ from boardman.plaky.client import PlakyClient
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.assignment.identity_match import score_github_vs_plaky, best_plaky_match_for_github
 from boardman.assignment.identity_common import plaky_email_addresses, plaky_display_name
-from boardman.repos_config import get_routing
+from boardman.repos_config import get_routing_async
 from boardman.services.issue_handler import get_linked_issue_numbers
 from boardman.services.llm_pr_task_rerank import llm_rerank_pr_candidates
 from boardman.settings import settings
@@ -561,7 +561,7 @@ async def run_pr_task_pipeline(
         head_ref=head_ref,
     )
 
-    routing = get_routing(repo_full, repo_name, org)
+    routing = await get_routing_async(repo_full, repo_name, org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
     board_id = board_id.strip()
 

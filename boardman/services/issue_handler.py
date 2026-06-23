@@ -10,7 +10,7 @@ from boardman.database.models import IssueTaskMap, SyncLog
 from boardman.github.webhooks import IssueEventPayload
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
-from boardman.repos_config import get_routing
+from boardman.repos_config import get_routing_async
 from boardman.settings import settings
 
 
@@ -34,7 +34,7 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     plaky = PlakyClient()
     full_name = payload.repository.full_name
     title = f"[{repo_name}] {payload.issue.title}"
-    routing = get_routing(full_name, repo_name, settings.github_org)
+    routing = await get_routing_async(full_name, repo_name, settings.github_org)
     routing_footer = ""
     if routing:
         routing_footer = (

@@ -177,6 +177,46 @@ def get_routing(full_name: str, short_name: str, org: str, with_source: bool = F
     return (None, "none") if with_source else None
 
 
+async def get_routing_async(
+    full_name: str,
+    short_name: str,
+    org: str,
+    with_source: bool = False,
+    *,
+    description: str = "",
+) -> Any:
+    """
+    Resolve Plaky board/group for a GitHub repo.
+
+    When ``plaky_placement_auto_discover`` is enabled (default), uses cached Plaky catalog +
+    fuzzy group/board matching — not repos.yml. YAML is only used when auto-discovery is off.
+    """
+    if settings.plaky_placement_auto_discover:
+        from boardman.plaky.placement_discovery import resolve_placement_for_repo
+
+        slug = (short_name or "").strip()
+        if not slug and "/" in (full_name or ""):
+            slug = full_name.split("/", 1)[1].strip()
+        placement = await resolve_placement_for_repo(
+            full_name,
+            slug,
+            description=description,
+        )
+        if placement:
+            r = RepoRouting(
+                category=placement.category,
+                plaky_table=placement.group_name,
+                plaky_board_id=placement.board_id,
+                plaky_group_id=placement.group_id,
+                description=f"discovered:{placement.source}",
+            )
+            src = f"discovered:{placement.source}"
+            return (r, src) if with_source else r
+        return (None, "discovered:none") if with_source else None
+
+    return get_routing(full_name, short_name, org, with_source=with_source)
+
+
 def list_registered_repos() -> Dict[str, RepoRouting]:
     """Repos declared in repos.yml only (sync)."""
     raw = _load_raw()
