@@ -21,24 +21,23 @@ def _catalog() -> PlakyCatalogCache:
             id="b-platform",
             name=PLAKY_BOARD_PLATFORM,
             groups=[
-                PlakyGroupEntry(id="g-api", name="api-gateway"),
-                PlakyGroupEntry(id="g-open", name="Open PRs"),
+                PlakyGroupEntry(id="g-synapse", name="deepiri-synapse"),
+                PlakyGroupEntry(id="g-api", name="deepiri-api-gateway"),
             ],
         ),
         PlakyBoardEntry(
             id="b-bots",
             name=PLAKY_BOARD_BOTS,
             groups=[
-                PlakyGroupEntry(id="g-boardman", name="boardman"),
-                PlakyGroupEntry(id="g-cyrex", name="cyrex"),
+                PlakyGroupEntry(id="g-boardman", name="deepiri-boardman"),
+                PlakyGroupEntry(id="g-cyrex", name="diri-cyrex"),
             ],
         ),
         PlakyBoardEntry(
             id="b-dx",
             name=PLAKY_BOARD_DEV_TOOLS,
             groups=[
-                PlakyGroupEntry(id="g-sorge", name="sorge"),
-                PlakyGroupEntry(id="g-backlog", name="Backlog"),
+                PlakyGroupEntry(id="g-sorge", name="deepiri-sorge"),
             ],
         ),
     ]
@@ -57,31 +56,37 @@ def test_infer_repo_category_cyrex_is_ai_runtime():
 
 def test_discover_placement_group_slug_match():
     cat = _catalog()
-    result = discover_placement_from_catalog(cat, "Team-Deepiri/boardman", "boardman")
+    result = discover_placement_from_catalog(cat, "Team-Deepiri/deepiri-boardman", "deepiri-boardman")
     assert result is not None
     assert result.source == "group_slug_match"
     assert result.board_id == "b-bots"
     assert result.group_id == "g-boardman"
-    assert result.group_name == "boardman"
+    assert result.group_name == "deepiri-boardman"
 
 
-def test_discover_placement_category_fallback_to_dx_board():
+def test_discover_placement_group_slug_match_on_dx_board():
     cat = _catalog()
-    result = discover_placement_from_catalog(cat, "Team-Deepiri/sorge", "sorge")
+    result = discover_placement_from_catalog(cat, "Team-Deepiri/deepiri-sorge", "deepiri-sorge")
     assert result is not None
     assert result.board_id == "b-dx"
     assert result.group_id == "g-sorge"
     assert result.source == "group_slug_match"
 
 
-def test_discover_placement_category_fallback_platform():
+def test_discover_placement_matches_prefixed_group_name():
     cat = _catalog()
-    result = discover_placement_from_catalog(cat, "Team-Deepiri/synapse", "synapse")
+    result = discover_placement_from_catalog(cat, "Team-Deepiri/synapse", "deepiri-synapse")
     assert result is not None
-    assert result.source == "category_board_fallback"
+    assert result.source == "group_slug_match"
     assert result.category == "platform"
     assert result.board_id == "b-platform"
-    assert result.group_id == "g-open"
+    assert result.group_id == "g-synapse"
+
+
+def test_discover_placement_no_group_returns_none():
+    cat = _catalog()
+    result = discover_placement_from_catalog(cat, "Team-Deepiri/brand-new-repo", "brand-new-repo")
+    assert result is None
 
 
 def test_discover_placement_ignores_legacy_boards():
@@ -96,7 +101,7 @@ def test_discover_placement_ignores_legacy_boards():
         groups=[PlakyGroupEntry(id="g-boardman", name="deepiri-boardman")],
     )
     cat = PlakyCatalogCache(fetched_at=1.0, source="test", boards=[legacy, bots])
-    result = discover_placement_from_catalog(cat, "Team-Deepiri/boardman", "boardman")
+    result = discover_placement_from_catalog(cat, "Team-Deepiri/deepiri-boardman", "deepiri-boardman")
     assert result is not None
     assert result.board_id == "b-bots"
     assert result.group_id == "g-boardman"

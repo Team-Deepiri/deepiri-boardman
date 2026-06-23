@@ -3,14 +3,16 @@
 Used by ``placement_discovery`` when ``PLAKY_PLACEMENT_AUTO_DISCOVER`` is on.
 Replaces manual ``repos.yml`` board/group IDs for webhook-driven task creation.
 
-Resolution order (see ``discover_placement_from_catalog``):
-  1. Fuzzy-match repo slug against Plaky *group* names on categorical boards.
-  2. If no group scores >= ``PLAKY_PLACEMENT_MIN_SCORE`` (default 400), infer an
-     internal category from slug + optional description (axiom ``github_catalog`` hints).
-  3. Map category → one of the five live Plaky board names below, then pick a group
-     on that board (repo slug, then Open PRs / Backlog / Main table, then first group).
+Resolution (see ``discover_placement_from_catalog``):
+  Fuzzy-match repo slug against Plaky *group* names on categorical boards
+  (``rank_plaky_rows``, min score from ``PLAKY_PLACEMENT_MIN_SCORE``). Highest
+  score wins globally (e.g. ``deepiri-boardman`` → group ``deepiri-boardman`` on Bots).
 
-Category slug → Plaky board (exact display names — keep in sync with Plaky UI):
+  Devin's boards use one group per repo — there is no Backlog/Open PRs bucket.
+  If no group matches, placement fails (returns None) so tasks are not dropped
+  into another repo's group. Add the repo as a Plaky group first.
+
+Category slug → Plaky board (used for metadata / future tooling; not a group fallback):
   platform       → Deepiri Platform + Services
   ai-runtime     → Bots
   dx             → Developer Tool Repos
@@ -89,13 +91,6 @@ CATEGORY_TO_PLAKY_BOARD: Final[dict[str, str]] = {
 
 # Six category slugs above map to these five Plaky boards (infra + unknown → Miscellaneous).
 PLAKY_CATEGORICAL_BOARD_NAMES: Final[frozenset[str]] = frozenset(CATEGORY_TO_PLAKY_BOARD.values())
-
-# Used when picking a group on a category board and the repo slug does not match any group name.
-DEFAULT_GROUP_NAME_QUERIES: Final[tuple[str, ...]] = (
-    "Open PRs",
-    "Backlog",
-    "Main table",
-)
 
 
 def infer_repo_category(name: str, description: str = "") -> str:
