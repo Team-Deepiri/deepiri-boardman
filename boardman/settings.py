@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     plaky_catalog_ttl_seconds: float = 86_400.0
     plaky_placement_auto_discover: bool = True
     plaky_placement_min_score: int = 400
+    # When true, catalog + placement only consider Devin's five categorical boards (not legacy task boards).
+    plaky_catalog_categorical_only: bool = True
 
     github_webhook_secret: str = ""
     github_pat: str | None = None

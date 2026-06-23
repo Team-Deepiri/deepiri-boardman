@@ -11,6 +11,7 @@ from boardman.plaky.plaky_catalog import (
     PlakyBoardEntry,
     PlakyCatalogCache,
     PlakyGroupEntry,
+    filter_categorical_boards,
     get_plaky_catalog,
 )
 from boardman.plaky.repo_category import (
@@ -108,7 +109,7 @@ def discover_placement_from_catalog(
     if not slug:
         return None
     min_score = _min_auto_score()
-    boards = catalog.boards
+    boards = filter_categorical_boards(catalog.boards)
 
     best_global: Optional[Tuple[PlakyBoardEntry, PlakyGroupEntry, int]] = None
     for board in boards:

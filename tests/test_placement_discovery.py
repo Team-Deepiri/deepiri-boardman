@@ -84,6 +84,36 @@ def test_discover_placement_category_fallback_platform():
     assert result.group_id == "g-open"
 
 
+def test_discover_placement_ignores_legacy_boards():
+    legacy = PlakyBoardEntry(
+        id="b-legacy",
+        name="Boardman Test Board",
+        groups=[PlakyGroupEntry(id="g-test", name="Boardman")],
+    )
+    bots = PlakyBoardEntry(
+        id="b-bots",
+        name=PLAKY_BOARD_BOTS,
+        groups=[PlakyGroupEntry(id="g-boardman", name="deepiri-boardman")],
+    )
+    cat = PlakyCatalogCache(fetched_at=1.0, source="test", boards=[legacy, bots])
+    result = discover_placement_from_catalog(cat, "Team-Deepiri/boardman", "boardman")
+    assert result is not None
+    assert result.board_id == "b-bots"
+    assert result.group_id == "g-boardman"
+
+
+def test_filter_categorical_boards():
+    from boardman.plaky.plaky_catalog import filter_categorical_boards
+
+    boards = [
+        PlakyBoardEntry(id="1", name="AI Task Board", groups=[]),
+        PlakyBoardEntry(id="2", name=PLAKY_BOARD_BOTS, groups=[]),
+    ]
+    filtered = filter_categorical_boards(boards)
+    assert len(filtered) == 1
+    assert filtered[0].name == PLAKY_BOARD_BOTS
+
+
 @pytest.mark.asyncio
 async def test_get_routing_async_uses_discovery(monkeypatch):
     from boardman.repos_config import get_routing_async

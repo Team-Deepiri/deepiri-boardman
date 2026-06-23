@@ -11,12 +11,28 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from boardman.plaky.client import PlakyClient
+from boardman.plaky.repo_category import is_categorical_plaky_board
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
 CACHE_VERSION = 1
 DEFAULT_TTL_SECONDS = 86_400  # 24h
+
+
+def filter_categorical_boards(boards: List[PlakyBoardEntry]) -> List[PlakyBoardEntry]:
+    """Keep only Devin's categorical boards when ``plaky_catalog_categorical_only`` is enabled."""
+    if not settings.plaky_catalog_categorical_only:
+        return boards
+    kept = [b for b in boards if is_categorical_plaky_board(b.name)]
+    dropped = len(boards) - len(kept)
+    if dropped:
+        _log.info(
+            "plaky catalog: scoped to %s categorical board(s) (%s legacy/test board(s) excluded)",
+            len(kept),
+            dropped,
+        )
+    return kept
 
 
 @dataclass
@@ -178,6 +194,7 @@ async def fetch_live_catalog(client: Optional[PlakyClient] = None) -> tuple[Plak
         elif isinstance(item, Exception):
             _log.warning("plaky catalog: board groups fetch failed: %s", item)
     boards.sort(key=lambda b: b.name.casefold())
+    boards = filter_categorical_boards(boards)
     now = time.time()
     return PlakyCatalogCache(fetched_at=now, source="plaky-api", boards=boards), "plaky-api"
 

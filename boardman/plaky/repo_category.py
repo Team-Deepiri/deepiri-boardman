@@ -70,6 +70,9 @@ CATEGORY_TO_PLAKY_BOARD: Final[dict[str, str]] = {
     "unknown": PLAKY_BOARD_MISC,
 }
 
+# Six category slugs above map to these five Plaky boards (infra + unknown → Miscellaneous).
+PLAKY_CATEGORICAL_BOARD_NAMES: Final[frozenset[str]] = frozenset(CATEGORY_TO_PLAKY_BOARD.values())
+
 DEFAULT_GROUP_NAME_QUERIES: Final[tuple[str, ...]] = (
     "Open PRs",
     "Backlog",
@@ -101,3 +104,13 @@ def plaky_board_query_for_category(category: str) -> str:
     """Plaky board name to pass to rank_plaky_rows for board-level fallback."""
     cat = (category or "").strip().lower()
     return CATEGORY_TO_PLAKY_BOARD.get(cat) or PLAKY_BOARD_MISC
+
+
+def is_categorical_plaky_board(name: str) -> bool:
+    """True when `name` is one of Devin's five categorical Plaky boards."""
+    return (name or "").strip() in PLAKY_CATEGORICAL_BOARD_NAMES
+
+
+def categorical_plaky_board_names() -> tuple[str, ...]:
+    """Stable tuple of allowed board display names (for docs/tests)."""
+    return tuple(sorted(PLAKY_CATEGORICAL_BOARD_NAMES))
