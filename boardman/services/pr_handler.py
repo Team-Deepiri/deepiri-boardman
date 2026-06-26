@@ -171,8 +171,9 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
 
     linked_issues = await get_linked_issue_numbers(payload.pull_request.body)
 
-    from boardman.repos_config import get_routing
-    routing = get_routing(full_name, repo_name, settings.github_org)
+    from boardman.repos_config import get_routing_async
+
+    routing = await get_routing_async(full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     plaky = PlakyClient()
@@ -331,9 +332,9 @@ async def handle_pr_ready_for_review(
     if not task_ids:
         return {"ok": True, "skipped": True, "message": "no linked Plaky tasks for this PR"}
 
-    from boardman.repos_config import get_routing
+    from boardman.repos_config import get_routing_async
 
-    routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     for tid in task_ids:
@@ -355,9 +356,9 @@ async def handle_pr_review_requested(
     if not task_ids:
         return {"ok": True, "skipped": True, "message": "no linked Plaky tasks for this PR"}
 
-    from boardman.repos_config import get_routing
+    from boardman.repos_config import get_routing_async
 
-    routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     in_qa = (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
@@ -435,10 +436,10 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
         await session.commit()
         return {"ok": True, "skipped": True, "message": "No linked Plaky tasks for this PR"}
 
-    from boardman.repos_config import get_routing
+    from boardman.repos_config import get_routing_async
 
     merge_status = (settings.plaky_pr_merge_status or "").strip() or "in_review"
-    merge_routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
+    merge_routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     board_id_merge = (merge_routing.plaky_board_id if merge_routing and merge_routing.plaky_board_id else "") or ""
     results: list[dict[str, Any]] = []
 
@@ -513,10 +514,10 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
         resolve_plaky_status_patch,
         resolve_qa_assignee_field_key,
     )
-    from boardman.repos_config import get_routing
+    from boardman.repos_config import get_routing_async
 
     cfg = load_team_assignments()
-    routing = get_routing(full_name, repo_name, settings.github_org)
+    routing = await get_routing_async(full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     qa_field = await resolve_qa_assignee_field_key(board_id, cfg.plaky_field_qa)

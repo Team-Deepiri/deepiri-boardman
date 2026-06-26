@@ -19,7 +19,7 @@ from boardman.plaky.dynamic_qa_status import (
     resolve_plaky_status_patch,
     resolve_qa_assignee_field_key,
 )
-from boardman.repos_config import get_routing
+from boardman.repos_config import get_routing_async
 from boardman.services.pr_handler import _update_plaky_task_status
 from boardman.services.pr_task_registry import distinct_task_ids_for_pr
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
@@ -78,7 +78,7 @@ async def handle_pull_request_review(
 
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
-    routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     task_ids = await _task_ids_for_pr(session, repo_name, pr_number)
@@ -219,7 +219,7 @@ async def handle_issue_comment_on_pr(
 
     repo_name = payload.repository.name
     pr_number = payload.issue.number
-    routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     task_ids = await _task_ids_for_pr(session, repo_name, pr_number)

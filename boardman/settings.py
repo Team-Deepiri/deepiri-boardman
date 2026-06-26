@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     # Seconds; 0 disables TTL cache for fetch_board_schema_bundle
     plaky_board_schema_cache_ttl_seconds: float = 90.0
 
+    # --- Repo → Plaky placement auto-discovery (replaces repos.yml board/group IDs) ---
+    # Catalog: all categorical boards + groups, cached on disk for webhook routing.
+    plaky_catalog_cache_path: str = ".boardman/plaky-catalog.json"
+    plaky_catalog_ttl_seconds: float = 86_400.0
+    plaky_placement_auto_discover: bool = True
+    plaky_placement_min_score: int = 400  # rank_plaky_rows threshold; see name_match.py
+    # Limit search to Devin's five boards (excludes legacy AI Task Board, etc.).
+    plaky_catalog_categorical_only: bool = True
+
     github_webhook_secret: str = ""
     github_pat: str | None = None
     github_org: str = "deepiri-org"
