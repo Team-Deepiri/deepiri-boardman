@@ -12,12 +12,14 @@ from boardman.settings import settings
 
 async def github_request(client: httpx.AsyncClient, path: str) -> httpx.Response:
     headers = {"Authorization": f"Bearer {settings.github_pat}", "Accept": "application/vnd.github+json"}
-    return await client.get(f"https://api.github.com{path}", headers=headers)
+    # follow_redirects: renamed repos return 301 to the new owner/name; without this every
+    # helper sees the bare 301 and reports the repo as inaccessible.
+    return await client.get(f"https://api.github.com{path}", headers=headers, follow_redirects=True)
 
 
 def github_request_sync(client: httpx.Client, path: str) -> httpx.Response:
     headers = {"Authorization": f"Bearer {settings.github_pat}", "Accept": "application/vnd.github+json"}
-    return client.get(f"https://api.github.com{path}", headers=headers)
+    return client.get(f"https://api.github.com{path}", headers=headers, follow_redirects=True)
 
 
 def _parse_owner_repo(owner_repo: str) -> Optional[Tuple[str, str]]:

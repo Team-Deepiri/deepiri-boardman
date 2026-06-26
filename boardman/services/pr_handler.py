@@ -12,6 +12,7 @@ from boardman.assignment.config import load_team_assignments
 from boardman.assignment.qa_picker import pick_qa_for_repo
 from boardman.database.models import SyncLog
 from boardman.github.webhooks import PullRequestEventPayload, PullRequestReviewCommentEventPayload
+from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status_id
 from boardman.plaky.client import PlakyClient
 from boardman.services.issue_handler import find_plaky_task_by_issue, get_linked_issue_numbers
 from boardman.services.pr_link_comment import format_pr_notice_with_url
@@ -55,6 +56,121 @@ async def _update_plaky_task_status(
 
 def _needs_qa_status_value() -> str:
     return (settings.plaky_pr_needs_qa_status or settings.plaky_status_needs_qa or "").strip()
+
+
+async def _current_status_value(
+    plaky: PlakyClient, board_id: str, task_id: str, status_field_key: str
+) -> str:
+    """Return the current option id/value stored in a STATUS field on a task item ("" if unset)."""
+    bid = (board_id or "").strip()
+    fk = (status_field_key or "").strip()
+    if not bid or not fk:
+        return ""
+    info = await plaky.get_board_item_public(bid, task_id)
+    if not info.get("ok") or not info.get("item"):
+        return ""
+    return plaky_item_status_id(info["item"], fk)
+
+
+async def _current_person_field_value(
+    plaky: PlakyClient, board_id: str, task_id: str, field_key: str
+) -> str:
+    """Return the current Plaky user id in a person field on a task item ("" if unset)."""
+    bid = (board_id or "").strip()
+    fk = (field_key or "").strip()
+    if not bid or not fk:
+        return ""
+    info = await plaky.get_board_item_public(bid, task_id)
+    if not info.get("ok") or not info.get("item"):
+        return ""
+    ids = plaky_item_person_ids(info["item"], fk)
+    return ids[0] if ids else ""
+
+
+async def _apply_pr_type_and_assignee(
+    plaky: PlakyClient,
+    *,
+    task_id: str,
+    board_id: str,
+    pull_request: Any,
+    repo_full: str,
+) -> dict[str, Any]:
+    """On a confident PR↔task link: set Type from branch/labels, and fill the developer assignee
+    (and move to "Assigned") when the task has no assignee yet.
+
+    Per the workflow: similarity already corroborated the match; we only WRITE the assignee when
+    the task currently has none — an existing assignee is never overwritten.
+    """
+    from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
+    from boardman.plaky.board_aware import board_person_field_keys
+    from boardman.plaky.dynamic_qa_status import (
+        github_actor_payload,
+        resolve_github_user_to_plaky_user_id,
+        resolve_plaky_status_patch,
+    )
+
+    out: dict[str, Any] = {}
+    bid = (board_id or "").strip()
+
+    head = getattr(pull_request, "head", None)
+    head_ref = str(head.get("ref")) if isinstance(head, dict) else ""
+    labels = pr_label_names(getattr(pull_request, "labels", None))
+    canon_type = infer_task_type_from_pr(head_ref, labels)
+    if canon_type:
+        res = await update_task_internal(
+            task_id, UpdateTaskInput(task_type=canon_type, plaky_board_id=bid or None)
+        )
+        out["type"] = {"value": canon_type, "ok": res.get("ok")}
+
+    if not bid:
+        return out
+
+    keys = await board_person_field_keys(bid)
+    cfg = load_team_assignments()
+    if keys is not None:
+        eng_key = keys.get("engineer") or ""
+    else:
+        eng_key = (cfg.plaky_field_engineer or "").strip()
+    if not eng_key:
+        return out
+
+    current_eng = await _current_person_field_value(plaky, bid, task_id, eng_key)
+    if current_eng:
+        out["assignee"] = {"skipped": "already_assigned"}
+        return out
+
+    pr_user = getattr(pull_request, "user", None)
+    author = github_actor_payload(pr_user if isinstance(pr_user, dict) else {})
+    plaky_id = await resolve_github_user_to_plaky_user_id(author)
+    if not plaky_id:
+        out["assignee"] = {"skipped": "no_plaky_match", "login": author.get("login")}
+        return out
+
+    # Resolve "Assigned" status from the live board (no hardcoded label).
+    assigned_status_key: str | None = None
+    assigned_status_val = ""
+    rp = await resolve_plaky_status_patch(bid, intent="workflow_assigned")
+    if rp:
+        assigned_status_key, assigned_status_val = rp[0], rp[1]
+
+    res = await update_task_internal(
+        task_id,
+        UpdateTaskInput(
+            engineer_plaky_id=plaky_id,
+            engineer_plaky_field_key=eng_key,
+            status=assigned_status_val or None,
+            status_plaky_field_key=assigned_status_key,
+            plaky_board_id=bid,
+        ),
+    )
+    out["assignee"] = {
+        "filled": True,
+        "plaky_id": plaky_id,
+        "login": author.get("login"),
+        "status": assigned_status_val or None,
+        "ok": res.get("ok"),
+    }
+    return out
 
 
 async def _maybe_set_needs_qa(
@@ -172,7 +288,6 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
     linked_issues = await get_linked_issue_numbers(payload.pull_request.body)
 
     from boardman.repos_config import get_routing_async
-
     routing = await get_routing_async(full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
@@ -201,6 +316,13 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                 pr_url=pr_url,
             )
             await plaky.add_comment(mapping.plaky_task_id, comment, board_id=board_id or None)
+            await _apply_pr_type_and_assignee(
+                plaky,
+                task_id=mapping.plaky_task_id,
+                board_id=board_id,
+                pull_request=payload.pull_request,
+                repo_full=full_name,
+            )
             await _maybe_set_needs_qa(plaky, mapping.plaky_task_id, is_draft, board_id)
 
             log = SyncLog(
@@ -272,6 +394,13 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                     pr_url=pr_url,
                 )
                 await plaky.add_comment(pipe.task_id, comment, board_id=board_id or None)
+                await _apply_pr_type_and_assignee(
+                    plaky,
+                    task_id=pipe.task_id,
+                    board_id=board_id,
+                    pull_request=payload.pull_request,
+                    repo_full=full_name,
+                )
                 await _maybe_set_needs_qa(plaky, pipe.task_id, is_draft, board_id)
                 log = SyncLog(
                     action="pr_linked_fuzzy",
@@ -384,6 +513,66 @@ async def handle_pr_review_requested(
     return {"ok": True, "tasks": task_ids, "status": in_qa, "event": "review_requested"}
 
 
+async def handle_pr_synchronized(
+    payload: PullRequestEventPayload,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """New commits pushed (pull_request.synchronize): if a linked task is currently QA-rejected,
+    the developer has resumed work → move it back to In Progress.
+    """
+    repo_name = payload.repository.name
+    pr_number = payload.pull_request.number
+    task_ids = await distinct_task_ids_for_pr(
+        session, github_repo=repo_name, github_pr_number=pr_number
+    )
+    if not task_ids:
+        return {"ok": True, "skipped": True, "message": "no linked Plaky tasks for this PR"}
+
+    from boardman.repos_config import get_routing_async
+
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
+    bid = board_id.strip()
+    if not bid:
+        return {"ok": True, "skipped": True, "message": "no board id for repo"}
+
+    from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+    rejected = await resolve_plaky_status_patch(bid, intent="github_pr_review_changes_requested")
+    in_progress = await resolve_plaky_status_patch(bid, intent="workflow_in_progress")
+    if not rejected or not in_progress:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "qa-rejected / in-progress status not resolvable from board",
+        }
+    rej_key, rej_id = rejected
+    ip_key, ip_id = in_progress
+
+    plaky = PlakyClient()
+    resumed: list[dict[str, Any]] = []
+    for tid in task_ids:
+        current = await _current_status_value(plaky, bid, tid, rej_key)
+        if not current or current != str(rej_id):
+            continue
+        res = await _update_plaky_task_status(tid, ip_id, bid, status_field_key=ip_key)
+        session.add(
+            SyncLog(
+                action="pr_resumed_in_progress",
+                github_repo=repo_name,
+                github_ref=str(pr_number),
+                plaky_task_id=tid,
+                detail=json.dumps({"from": "qa_rejected", "to_status": ip_id}, default=str),
+            )
+        )
+        resumed.append({"task_id": tid, "plaky": res})
+
+    await session.commit()
+    if resumed:
+        await maybe_enqueue_plaky_reorder_after_task(plaky, resumed[0]["task_id"])
+    return {"ok": True, "updated": resumed, "event": "resumed_after_rejection"}
+
+
 async def handle_pr_closed_without_merge(
     payload: PullRequestEventPayload,
     session: AsyncSession,
@@ -438,9 +627,21 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
 
     from boardman.repos_config import get_routing_async
 
-    merge_status = (settings.plaky_pr_merge_status or "").strip() or "in_review"
     merge_routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     board_id_merge = (merge_routing.plaky_board_id if merge_routing and merge_routing.plaky_board_id else "") or ""
+
+    # Merged → Completed. Explicit env wins; otherwise resolve "Completed" from the live board.
+    merge_status = (settings.plaky_pr_merge_status or "").strip()
+    merge_status_field_key: Optional[str] = None
+    if not merge_status and board_id_merge:
+        from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+        rp = await resolve_plaky_status_patch(board_id_merge, intent="workflow_completed")
+        if rp:
+            merge_status_field_key, merge_status = rp[0], rp[1]
+    if not merge_status:
+        merge_status = (settings.plaky_status_completed or "completed").strip()
+
     results: list[dict[str, Any]] = []
 
     for task_id in sorted(affected_tasks):
@@ -456,7 +657,9 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
             )
             continue
 
-        await _update_plaky_task_status(task_id, merge_status, board_id_merge)
+        await _update_plaky_task_status(
+            task_id, merge_status, board_id_merge, status_field_key=merge_status_field_key
+        )
         merge_detail = {"pr_url": pr_url, "status": merge_status, "all_prs_done": True}
         log = SyncLog(
             action="pr_merged",
@@ -545,11 +748,8 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
             continue
 
         item = task_info.get("item", {})
-        current_qa = item.get(qa_field)
-        if current_qa and isinstance(current_qa, dict):
-            assigned_qa_id = str(current_qa.get("id", ""))
-        else:
-            assigned_qa_id = str(current_qa) if current_qa else ""
+        _qa_ids = plaky_item_person_ids(item, qa_field)
+        assigned_qa_id = _qa_ids[0] if _qa_ids else ""
 
         if assigned_qa_id and reviewer_plaky_id and assigned_qa_id == reviewer_plaky_id:
             status_field_key: str | None = None

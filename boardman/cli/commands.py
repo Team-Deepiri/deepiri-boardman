@@ -357,7 +357,11 @@ def sync(
     async def run():
         async with httpx.AsyncClient() as client:
             headers = {"Authorization": f"Bearer {settings.github_pat}", "Accept": "application/vnd.github+json"}
-            resp = await client.get(f"https://api.github.com/repos/{repo}/issues?state=open", headers=headers)
+            resp = await client.get(
+                f"https://api.github.com/repos/{repo}/issues?state=open",
+                headers=headers,
+                follow_redirects=True,
+            )
             if resp.status_code != 200:
                 console.print(f"[red]Error fetching issues:[/red] {resp.text}")
                 return

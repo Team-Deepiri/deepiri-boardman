@@ -97,14 +97,21 @@ def create_app() -> FastAPI:
             allow_headers=["*"],
         )
 
+    # Always-on backend worker surface: health + GitHub webhooks + QA assignment.
     app.include_router(health.router, prefix="/api/v1")
     app.include_router(github_events.router, prefix="/api/v1")
-    app.include_router(github_team.router, prefix="/api/v1")
-    app.include_router(tasks.router, prefix="/api/v1")
-    app.include_router(plaky.router, prefix="/api/v1")
     app.include_router(assignment.router, prefix="/api/v1")
-    app.include_router(agent.router, prefix="/api/v1")
-    app.include_router(repos.router, prefix="/api/v1")
+
+    # Conversational agent (chat/scan/routing) + UI-supporting REST. Disabled in the
+    # worker-only production deployment via BOARDMAN_ENABLE_AGENT_API=false.
+    if settings.boardman_enable_agent_api:
+        app.include_router(github_team.router, prefix="/api/v1")
+        app.include_router(tasks.router, prefix="/api/v1")
+        app.include_router(plaky.router, prefix="/api/v1")
+        app.include_router(agent.router, prefix="/api/v1")
+        app.include_router(repos.router, prefix="/api/v1")
+    else:
+        _log.info("Agent/UI API routes disabled (BOARDMAN_ENABLE_AGENT_API=false): worker-only mode")
 
     return app
 
