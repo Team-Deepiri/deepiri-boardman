@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import Any, Dict, List, Set
+from typing import Any
 
 
 def normalize_identity_text(s: str) -> str:
@@ -24,15 +24,15 @@ def extract_email_from_angle(s: str) -> str:
     return t.casefold().strip()
 
 
-def github_public_email(gh: Dict[str, Any]) -> str:
+def github_public_email(gh: dict[str, Any]) -> str:
     v = gh.get("email")
     if isinstance(v, str) and v.strip():
         return extract_email_from_angle(v)
     return ""
 
 
-def plaky_email_addresses(p: Dict[str, Any]) -> List[str]:
-    out: List[str] = []
+def plaky_email_addresses(p: dict[str, Any]) -> list[str]:
+    out: list[str] = []
     for k in ("email", "primaryEmail", "mail", "userEmail"):
         v = p.get(k)
         if isinstance(v, str) and v.strip():
@@ -46,8 +46,8 @@ def plaky_email_addresses(p: Dict[str, Any]) -> List[str]:
                 ev = item.get("email") or item.get("value")
                 if isinstance(ev, str) and ev.strip():
                     out.append(extract_email_from_angle(ev))
-    seen: Set[str] = set()
-    uniq: List[str] = []
+    seen: set[str] = set()
+    uniq: list[str] = []
     for e in out:
         if e and e not in seen:
             seen.add(e)
@@ -55,7 +55,7 @@ def plaky_email_addresses(p: Dict[str, Any]) -> List[str]:
     return uniq
 
 
-def plaky_display_name(p: Dict[str, Any]) -> str:
+def plaky_display_name(p: dict[str, Any]) -> str:
     return normalize_identity_text(
         str(p.get("name") or p.get("displayName") or p.get("fullName") or "")
     )

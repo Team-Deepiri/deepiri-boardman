@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import List, Optional
 
 import httpx
 from langchain_core.tools import StructuredTool
@@ -48,7 +47,10 @@ async def _github_list_open_issues(owner_repo: str) -> str:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
     async with httpx.AsyncClient(timeout=30.0) as client:
-        headers = {"Authorization": f"Bearer {settings.github_pat}", "Accept": "application/vnd.github+json"}
+        headers = {
+            "Authorization": f"Bearer {settings.github_pat}",
+            "Accept": "application/vnd.github+json",
+        }
         r = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}/issues?state=open&per_page=30",
             headers=headers,
@@ -74,7 +76,9 @@ async def _github_fetch_direction(owner_repo: str) -> str:
     owner, repo = parsed
     async with httpx.AsyncClient(timeout=45.0) as client:
         text = await fetch_direction_md(client, owner, repo)
-    return json.dumps({"ok": True, "owner": owner, "repo": repo, "DIRECTION_md": text}, default=str)[:14000]
+    return json.dumps(
+        {"ok": True, "owner": owner, "repo": repo, "DIRECTION_md": text}, default=str
+    )[:14000]
 
 
 async def _github_fetch_file(owner_repo: str, path: str, ref: str = "") -> str:
@@ -90,7 +94,9 @@ async def _github_fetch_file(owner_repo: str, path: str, ref: str = "") -> str:
         if not branch:
             branch = await fetch_default_branch(client, owner, repo)
         text = await fetch_repo_file_text(client, owner, repo, path.strip(), ref=branch)
-    return json.dumps({"ok": True, "path": path, "ref": branch, "content": text}, default=str)[:14000]
+    return json.dumps({"ok": True, "path": path, "ref": branch, "content": text}, default=str)[
+        :14000
+    ]
 
 
 async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20) -> str:
@@ -172,7 +178,7 @@ def github_repo_planning_context_tool() -> StructuredTool:
     )
 
 
-def build_github_tools() -> List[StructuredTool]:
+def build_github_tools() -> list[StructuredTool]:
     return [
         github_list_workspace_repos_tool(),
         github_repo_planning_context_tool(),

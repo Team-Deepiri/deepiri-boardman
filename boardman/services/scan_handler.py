@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Any
 
 import httpx
-
-from datetime import datetime
-
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from boardman.database.models import ProjectContext, ScanRun
+from boardman.agent.task_draft import normalize_task_title
 from boardman.assignment.qa_picker import build_assignment_field_map
+from boardman.database.models import ProjectContext, ScanRun
 from boardman.github.repo_fetch import (
     fetch_direction_md,
     fetch_open_issues,
@@ -23,15 +22,14 @@ from boardman.llm.completion import chat_complete, parse_json_tasks
 from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
-from boardman.agent.task_draft import normalize_task_title
 from boardman.repos_config import get_routing
 from boardman.settings import settings
 
 
-def _normalize_task_fields(raw: Any) -> Dict[str, Any]:
+def _normalize_task_fields(raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         return {}
-    out: Dict[str, Any] = {}
+    out: dict[str, Any] = {}
     for k, v in raw.items():
         ks = str(k).strip()
         if not ks:
@@ -40,11 +38,11 @@ def _normalize_task_fields(raw: Any) -> Dict[str, Any]:
     return out
 
 
-def _normalize_scan_tasks(raw_tasks: Any) -> tuple[List[Dict[str, Any]], List[str]]:
-    warnings: List[str] = []
+def _normalize_scan_tasks(raw_tasks: Any) -> tuple[list[dict[str, Any]], list[str]]:
+    warnings: list[str] = []
     if not isinstance(raw_tasks, list):
         return [], ["Model output was not a JSON array; no tasks parsed."]
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     seen_titles: set[str] = set()
     for i, item in enumerate(raw_tasks):
         if not isinstance(item, dict):
@@ -93,7 +91,7 @@ async def fetch_plaky_titles_for_repo(repo_full: str, short: str) -> str:
         return f"(Plaky: {r.get('message')})"
     tasks = r.get("tasks") or []
     tag = short
-    lines: List[str] = []
+    lines: list[str] = []
     for t in tasks:
         title = t.get("title") or ""
         if tag in title or repo_full.split("/")[-1] in title:
@@ -156,9 +154,9 @@ async def run_repo_scan(
     repo_full: str,
     *,
     dry_run: bool,
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
-) -> Dict[str, Any]:
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
     if not settings.github_pat:
         return {"ok": False, "message": "GITHUB_PAT not configured"}
 
@@ -224,9 +222,13 @@ async def run_repo_scan(
         created = 0
         plaky = PlakyClient()
         cat = routing.plaky_table if routing else ""
-        routing_note = f"\n\n**Plaky group (label):** `{cat}`\n**Repo:** {repo_full}\n" if cat else f"\n\n**Repo:** {repo_full}\n"
+        routing_note = (
+            f"\n\n**Plaky group (label):** `{cat}`\n**Repo:** {repo_full}\n"
+            if cat
+            else f"\n\n**Repo:** {repo_full}\n"
+        )
         bid, gid = effective_plaky_placement(routing if routing_source == "explicit" else None)
-        routing_warnings: List[str] = []
+        routing_warnings: list[str] = []
         if routing_source == "org_default":
             routing_warnings.append(
                 "Repo has no explicit repos.yml routing; org default exists but placement was not auto-applied. "
@@ -244,19 +246,25 @@ async def run_repo_scan(
             pri = str(item.get("priority", "medium")).lower()
             full_title = f"[{short}] {title}"
             evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
-            assumptions = item.get("assumptions") if isinstance(item.get("assumptions"), list) else []
+            assumptions = (
+                item.get("assumptions") if isinstance(item.get("assumptions"), list) else []
+            )
             unknowns = item.get("unknowns") if isinstance(item.get("unknowns"), list) else []
             evidence_block = ""
             if evidence:
-                evidence_block += "\n\n**Evidence**\n" + "\n".join(f"- {str(x)[:240]}" for x in evidence[:8])
+                evidence_block += "\n\n**Evidence**\n" + "\n".join(
+                    f"- {str(x)[:240]}" for x in evidence[:8]
+                )
             if assumptions:
                 evidence_block += "\n\n**Assumptions**\n" + "\n".join(
                     f"- {str(x)[:240]}" for x in assumptions[:6]
                 )
             if unknowns:
-                evidence_block += "\n\n**Unknowns**\n" + "\n".join(f"- {str(x)[:240]}" for x in unknowns[:6])
+                evidence_block += "\n\n**Unknowns**\n" + "\n".join(
+                    f"- {str(x)[:240]}" for x in unknowns[:6]
+                )
             body = (desc + evidence_block + routing_note).strip()
-            field_map: Dict[str, Any] = dict(default_assign)
+            field_map: dict[str, Any] = dict(default_assign)
             raw_fields = item.get("fields")
             if isinstance(raw_fields, dict):
                 field_map.update({str(k): v for k, v in raw_fields.items() if str(k).strip()})
@@ -279,7 +287,9 @@ async def run_repo_scan(
         q = select(ProjectContext).where(ProjectContext.repo == repo_full)
         pc = (await session.execute(q)).scalar_one_or_none()
         summary = direction[:12000] if isinstance(direction, str) else ""
-        goals = json.dumps({"last_scan_id": scan_row.id, "tasks_parsed": len(tasks), "tasks_created": created})
+        goals = json.dumps(
+            {"last_scan_id": scan_row.id, "tasks_parsed": len(tasks), "tasks_created": created}
+        )
         if pc is None:
             session.add(
                 ProjectContext(

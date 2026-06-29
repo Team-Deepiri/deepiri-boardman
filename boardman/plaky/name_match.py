@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 
 def _norm(s: str) -> str:
     return " ".join(s.casefold().split())
 
 
-def _rank_name_against_query(name: str, query: str, query_tokens: List[str]) -> int:
+def _rank_name_against_query(name: str, query: str, query_tokens: list[str]) -> int:
     """Higher = better match. 0 = no meaningful match."""
     n = _norm(name)
     q = _norm(query)
@@ -30,12 +30,12 @@ def _rank_name_against_query(name: str, query: str, query_tokens: List[str]) -> 
 
 
 def rank_plaky_rows(
-    rows: List[Dict[str, Any]],
+    rows: list[dict[str, Any]],
     query: str,
     *,
     id_key: str = "id",
     name_key: str = "name",
-) -> Tuple[List[Dict[str, Any]], Optional[Dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """
     Sort rows by name match to `query`. Each output row: id, name, score (int).
 
@@ -44,7 +44,7 @@ def rank_plaky_rows(
     qstrip = (query or "").strip()
     q_tokens = [t for t in _norm(qstrip).split() if len(t) > 1]
 
-    ranked: List[Dict[str, Any]] = []
+    ranked: list[dict[str, Any]] = []
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -55,7 +55,7 @@ def rank_plaky_rows(
 
     ranked.sort(key=lambda x: (-x["score"], x["name"].casefold()))
 
-    best: Optional[Dict[str, Any]] = None
+    best: dict[str, Any] | None = None
     if ranked and ranked[0]["score"] >= 400:
         best = dict(ranked[0])
 

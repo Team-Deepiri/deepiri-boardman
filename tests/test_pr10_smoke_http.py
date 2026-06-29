@@ -56,9 +56,7 @@ async def test_pr10_smoke_agent_chat_stream_readonly_registry_includes_plaky_rev
     app = create_app()
     app.dependency_overrides[get_db] = override_get_db
 
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(
             "/api/v1/agent/chat/stream",
             json={

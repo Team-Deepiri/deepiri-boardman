@@ -6,11 +6,8 @@ import asyncio
 import base64
 import json
 import shutil
-import uuid
-from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Dict, Optional
-
+from typing import Any
 
 
 def _template_body(repo_full: str) -> str:
@@ -38,10 +35,10 @@ async def init_direction_file(
     repo: str,
     *,
     force: bool = False,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     repo_full = f"{owner}/{repo}"
     content = _template_body(repo_full)
-    pr_branch = f"boardman/init-direction"
+    pr_branch = "boardman/init-direction"
 
     rc, out, err = await _run_cmd("gh", "--version")
     if rc != 0:
@@ -70,11 +67,13 @@ async def init_direction_file(
             "message": (
                 f"Signed-in user '{viewer_login}' does not have write access to {repo_full}. "
                 "Authenticate with an account that can push to this repository."
-            )
+            ),
         }
 
-    existing: Optional[dict[str, Any]] = None
-    rc, out, err = await _run_cmd("gh", "api", f"repos/{owner}/{repo}/contents/DIRECTION.md?ref=main")
+    existing: dict[str, Any] | None = None
+    rc, out, err = await _run_cmd(
+        "gh", "api", f"repos/{owner}/{repo}/contents/DIRECTION.md?ref=main"
+    )
     if rc == 0 and out:
         try:
             existing = json.loads(out)
@@ -90,7 +89,7 @@ async def init_direction_file(
                 "skipped": True,
                 "message": "DIRECTION.md already exists; use force to overwrite",
                 "url": existing.get("html_url"),
-                "branch": "main"
+                "branch": "main",
             }
         remote_b64 = (existing.get("content") or "").replace("\n", "")
         try:
@@ -103,7 +102,7 @@ async def init_direction_file(
                 "skipped": True,
                 "message": "DIRECTION.md already matches template",
                 "url": existing.get("html_url"),
-                "branch": "main"
+                "branch": "main",
             }
 
     workspace_root = Path(__file__).resolve().parents[2]
@@ -120,7 +119,9 @@ async def init_direction_file(
         if rc != 0:
             return {"ok": False, "message": f"Fetch base branch failed: {err or out}"}
 
-        rc, out, err = await _run_cmd("git", "checkout", "-B", pr_branch, f"origin/main", cwd=clone_dir)
+        rc, out, err = await _run_cmd(
+            "git", "checkout", "-B", pr_branch, "origin/main", cwd=clone_dir
+        )
         if rc != 0:
             return {"ok": False, "message": f"Create branch failed: {err or out}"}
 
@@ -136,13 +137,11 @@ async def init_direction_file(
                 "ok": True,
                 "skipped": True,
                 "message": "No changes to commit for DIRECTION.md",
-                "branch": "main"
+                "branch": "main",
             }
 
         rc, out, err = await _run_cmd(
-            "git", "commit", "-m",
-            "Add DIRECTION.md via deepiri-boardman init",
-            cwd=clone_dir
+            "git", "commit", "-m", "Add DIRECTION.md via deepiri-boardman init", cwd=clone_dir
         )
         if rc != 0:
             return {
@@ -164,12 +163,19 @@ async def init_direction_file(
             f"Ensure that the branch '{pr_branch}' is deleted after the PR is merged."
         )
         rc, out, err = await _run_cmd(
-            "gh", "pr", "create",
-            "--repo", repo_full,
-            "--base", "main",
-            "--head", pr_branch,
-            "--title", pr_title,
-            "--body", pr_body
+            "gh",
+            "pr",
+            "create",
+            "--repo",
+            repo_full,
+            "--base",
+            "main",
+            "--head",
+            pr_branch,
+            "--title",
+            pr_title,
+            "--body",
+            pr_body,
         )
         if rc != 0:
             return {"ok": False, "message": f"gh pr create failed: {err or out}"}

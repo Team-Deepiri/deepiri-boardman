@@ -51,8 +51,7 @@ def test_github_roster_merge(tmp_path, monkeypatch):
 def test_explicit_members_list_skips_github_fetch(tmp_path, monkeypatch):
     yml = tmp_path / "ta.yml"
     yml.write_text(
-        textwrap.dedent(
-            """
+        textwrap.dedent("""
             plaky_field_keys:
               engineer: fe
               qa: fq
@@ -60,8 +59,7 @@ def test_explicit_members_list_skips_github_fetch(tmp_path, monkeypatch):
               - id: static-only
                 roles: [engineer]
                 repo_globs: ["deepiri-org/*"]
-            """
-        ).strip(),
+            """).strip(),
         encoding="utf-8",
     )
     monkeypatch.setattr(config.settings, "team_assignments_yml_path", str(yml))
@@ -176,7 +174,9 @@ def test_infer_plaky_field_keys_when_plaky_omits_field_type():
 
 
 @pytest.mark.asyncio
-async def test_sync_team_assignment_field_keys_from_board_updates_only_blanks(tmp_path, monkeypatch):
+async def test_sync_team_assignment_field_keys_from_board_updates_only_blanks(
+    tmp_path, monkeypatch
+):
     yml = tmp_path / "ta.yml"
     yml.write_text(
         yaml.dump(

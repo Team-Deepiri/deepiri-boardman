@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from typing import List, Optional
-
 import httpx
 
 from boardman.settings import settings
 
 
-def _parse_next_url(link_header: Optional[str]) -> Optional[str]:
+def _parse_next_url(link_header: str | None) -> str | None:
     if not link_header:
         return None
     for part in link_header.split(","):
@@ -27,16 +25,16 @@ async def fetch_org_repository_full_names(
     org: str,
     *,
     skip_archived: bool = True,
-) -> List[str]:
+) -> list[str]:
     token = settings.github_pat
     if not token:
         return []
 
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
 
-    async def _fetch_all(start_url: str) -> List[str]:
-        url: Optional[str] = start_url
-        out: List[str] = []
+    async def _fetch_all(start_url: str) -> list[str]:
+        url: str | None = start_url
+        out: list[str] = []
         while url:
             r = await client.get(url, headers=headers)
             r.raise_for_status()
@@ -64,12 +62,18 @@ async def fetch_org_repository_full_names(
             if user_exc.response.status_code != 404:
                 raise
             # Final fallback: discover orgs visible to this PAT and try each.
-            orgs_resp = await client.get("https://api.github.com/user/orgs?per_page=100", headers=headers)
+            orgs_resp = await client.get(
+                "https://api.github.com/user/orgs?per_page=100", headers=headers
+            )
             orgs_resp.raise_for_status()
-            discovered = [str(o.get("login", "")).strip() for o in (orgs_resp.json() or []) if o.get("login")]
+            discovered = [
+                str(o.get("login", "")).strip() for o in (orgs_resp.json() or []) if o.get("login")
+            ]
             names = []
             for candidate in discovered:
-                candidate_url = f"https://api.github.com/orgs/{candidate}/repos?per_page=100&type=all"
+                candidate_url = (
+                    f"https://api.github.com/orgs/{candidate}/repos?per_page=100&type=all"
+                )
                 try:
                     names = await _fetch_all(candidate_url)
                 except httpx.HTTPStatusError:

@@ -126,9 +126,11 @@ def test_score_assignee_identity_match():
         pr_author_name="Alice",
     )
     # identity_match should detect the email match and add score
-    assert result.breakdown.get("assignee_identity_match") == 50.0 or \
-           result.breakdown.get("assignee_identity_partial") == 30.0 or \
-           result.breakdown.get("assignee_identity_weak") == 15.0
+    assert (
+        result.breakdown.get("assignee_identity_match") == 50.0
+        or result.breakdown.get("assignee_identity_partial") == 30.0
+        or result.breakdown.get("assignee_identity_weak") == 15.0
+    )
 
 
 def test_score_pr_title_name_boost():

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -39,10 +39,12 @@ def _in_qa_status() -> str:
 
 
 async def _task_ids_for_pr(session: AsyncSession, repo_name: str, pr_number: int) -> list[str]:
-    return await distinct_task_ids_for_pr(session, github_repo=repo_name, github_pr_number=pr_number)
+    return await distinct_task_ids_for_pr(
+        session, github_repo=repo_name, github_pr_number=pr_number
+    )
 
 
-def _reviewer_plaky_id_from_roster(cfg: TeamAssignmentsConfig, reviewer_login: str) -> Optional[str]:
+def _reviewer_plaky_id_from_roster(cfg: TeamAssignmentsConfig, reviewer_login: str) -> str | None:
     if not reviewer_login:
         return None
     for m in cfg.members:
@@ -85,7 +87,9 @@ async def handle_pull_request_review(
     if not task_ids:
         return {"ok": True, "skipped": True, "message": "no Plaky task linked for this PR"}
 
-    review_user: dict[str, Any] = payload.review.user if isinstance(payload.review.user, dict) else {}
+    review_user: dict[str, Any] = (
+        payload.review.user if isinstance(payload.review.user, dict) else {}
+    )
     reviewer_login = str(review_user.get("login") or "").strip()
 
     state = (payload.review.state or "").strip().casefold()
@@ -99,11 +103,11 @@ async def handle_pull_request_review(
     # changes_requested: only the Plaky-assigned QA's "Request changes" → QA rejected (not other reviewers).
     # "commented" → In QA only for support-team logins to avoid noise from drive-by comments.
     target_status = ""
-    status_field_key: Optional[str] = None
+    status_field_key: str | None = None
     bid = (board_id or "").strip()
 
     changes_requested_only_assigned_qa = False
-    reviewer_plaky_id: Optional[str] = None
+    reviewer_plaky_id: str | None = None
     qa_field_for_changes: str = ""
 
     if state == "approved":
@@ -163,7 +167,9 @@ async def handle_pull_request_review(
 
     for tid in task_ids:
         if changes_requested_only_assigned_qa:
-            assigned_qa = await _assigned_qa_plaky_id(plaky, board_id or "", tid, qa_field_for_changes)
+            assigned_qa = await _assigned_qa_plaky_id(
+                plaky, board_id or "", tid, qa_field_for_changes
+            )
             if not assigned_qa or assigned_qa != reviewer_plaky_id:
                 continue
 
@@ -236,13 +242,17 @@ async def handle_issue_comment_on_pr(
 
     bid = (board_id or "").strip()
     in_qa = _in_qa_status()
-    in_qa_field_key: Optional[str] = None
+    in_qa_field_key: str | None = None
     if not in_qa and bid:
         r = await resolve_plaky_status_patch(bid, intent="workflow_in_qa")
         if r:
             in_qa_field_key, in_qa = r[0], r[1]
     if not in_qa:
-        return {"ok": True, "skipped": True, "message": "in_qa status not configured or discoverable"}
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "in_qa status not configured or discoverable",
+        }
 
     participants = await fetch_pr_assignees_and_reviewers_logins(
         payload.repository.full_name,
@@ -255,7 +265,7 @@ async def handle_issue_comment_on_pr(
     qa_field = await resolve_qa_assignee_field_key(bid, cfg.plaky_field_qa)
     plaky = PlakyClient()
 
-    member_plaky_id: Optional[str] = None
+    member_plaky_id: str | None = None
     if commenter:
         for m in cfg.members:
             gl = (m.github_login or "").strip()

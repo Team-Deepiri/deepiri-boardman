@@ -8,17 +8,17 @@ import logging
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from boardman.agent.guardrails import has_confirm_token, looks_like_board_organize_request
 from boardman.agent.memory_store import db_messages_to_langchain
 from boardman.agent.plaky_prompt_extra import plaky_placement_markdown
 from boardman.agent.prompts import BOARD_MANAGER_SYSTEM, TASK_CREATION_WORKFLOW
 from boardman.agent.runner import iter_tool_agent, run_tool_agent
-from boardman.agent.guardrails import has_confirm_token, looks_like_board_organize_request
 from boardman.agent.task_draft import format_task_draft_for_prompt, load_task_draft
 from boardman.agent.tool_context import agent_tool_context
 from boardman.database.models import AgentMessage, AgentSession
@@ -38,7 +38,7 @@ def _runtime_error_trace(exc: BaseException) -> str:
     )
 
 
-def _serialize_tool_calls_json(traces: list[dict[str, Any]]) -> Optional[str]:
+def _serialize_tool_calls_json(traces: list[dict[str, Any]]) -> str | None:
     """Serialize tool traces; drop oldest rows until JSON fits ``_TOOL_CALLS_JSON_MAX_BYTES``."""
     if not traces:
         return None
@@ -96,9 +96,15 @@ def _default_model_for_provider(provider: str) -> str:
     return (settings.llm_model or "").strip() or "unspecified"
 
 
-def _resolve_llm_context(provider: str | None, model: str | None, *, use_tools: bool) -> tuple[str, str]:
+def _resolve_llm_context(
+    provider: str | None, model: str | None, *, use_tools: bool
+) -> tuple[str, str]:
     prov = _normalize_provider(provider)
-    mdl = (model or "").strip() or (settings.llm_model or "").strip() or _default_model_for_provider(prov)
+    mdl = (
+        (model or "").strip()
+        or (settings.llm_model or "").strip()
+        or _default_model_for_provider(prov)
+    )
     return prov, mdl
 
 
@@ -120,7 +126,7 @@ def _classify_llm_error(exc: BaseException, *, provider: str) -> ErrorCategory:
             return "upstream_http"
         if isinstance(exc, httpx.ReadTimeout | httpx.TimeoutException):
             return "timeout"
-        if isinstance(exc, (httpx.ConnectError, OSError)):
+        if isinstance(exc, httpx.ConnectError | OSError):
             return "connectivity"
     except Exception:
         pass
@@ -326,7 +332,7 @@ async def run_agent_chat(
     )
 
     reply: str
-    assistant_tool_calls_json: Optional[str] = None
+    assistant_tool_calls_json: str | None = None
     resolved_provider, resolved_model = _resolve_llm_context(provider, model, use_tools=use_tools)
     use_lc = bool(settings.agent_langchain_tools and use_tools)
     effective_allow_writes = allow_writes
@@ -548,7 +554,7 @@ async def iter_agent_chat_sse(
         reply = "".join(parts)
         if preview_notice:
             reply = preview_notice + "\n" + reply
-        assistant_tool_calls_json: Optional[str] = None
+        assistant_tool_calls_json: str | None = None
         if use_lc and trace_buf:
             assistant_tool_calls_json = _serialize_tool_calls_json(trace_buf)
         session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
@@ -578,7 +584,9 @@ def _build_plain_llm_messages(
 ) -> list[dict[str, str]]:
     llm_messages: list[dict[str, str]] = [{"role": "system", "content": BOARD_MANAGER_SYSTEM}]
     if repo:
-        llm_messages[0]["content"] += f"\n\n## Current repo context\nThe user is working with: `{repo}`."
+        llm_messages[0][
+            "content"
+        ] += f"\n\n## Current repo context\nThe user is working with: `{repo}`."
     llm_messages[0]["content"] += plaky_suffix
     llm_messages[0]["content"] += extra_system_suffix
     for m in history_msgs:

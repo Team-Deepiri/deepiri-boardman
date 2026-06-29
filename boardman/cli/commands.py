@@ -3,7 +3,6 @@ import json
 import re
 from html import escape
 from pathlib import Path
-from typing import List, Optional
 
 import httpx
 import typer
@@ -50,15 +49,17 @@ def create_task(
     priority: str = typer.Option("medium", "--priority", "-p", help="Priority: low, medium, high"),
     status: str = typer.Option("in_progress", "--status", help="Workflow status"),
     task_type: str = typer.Option("feature", "--type", help="Task type"),
-    github_repos: Optional[List[str]] = typer.Option(
+    github_repos: list[str] | None = typer.Option(
         None,
         "--github-repo",
         help="GitHub repo slug(s), repeatable or comma/space separated",
     ),
-    plaky_board_id: Optional[str] = typer.Option(None, "--board-id", help="Explicit Plaky board id"),
-    plaky_group_id: Optional[str] = typer.Option(None, "--group-id", help="Explicit Plaky group id"),
-    engineer_plaky_id: Optional[str] = typer.Option(None, "--engineer-id", help="Plaky user id for engineer"),
-    qa_plaky_id: Optional[str] = typer.Option(None, "--qa-id", help="Plaky user id for QA"),
+    plaky_board_id: str | None = typer.Option(None, "--board-id", help="Explicit Plaky board id"),
+    plaky_group_id: str | None = typer.Option(None, "--group-id", help="Explicit Plaky group id"),
+    engineer_plaky_id: str | None = typer.Option(
+        None, "--engineer-id", help="Plaky user id for engineer"
+    ),
+    qa_plaky_id: str | None = typer.Option(None, "--qa-id", help="Plaky user id for QA"),
     auto_assign_team: bool = typer.Option(
         True,
         "--auto-assign-team/--no-auto-assign-team",
@@ -86,9 +87,10 @@ def create_task(
             if not task_url:
                 task = result.get("task") if isinstance(result.get("task"), dict) else {}
                 task_url = task.get("url") or task.get("task_url")
-            task_id = (
-                result.get("task_id")
-                or ((result.get("task") or {}).get("id") if isinstance(result.get("task"), dict) else None)
+            task_id = result.get("task_id") or (
+                (result.get("task") or {}).get("id")
+                if isinstance(result.get("task"), dict)
+                else None
             )
             created_ref = task_url or (f"id={task_id}" if task_id else "(no url/id returned)")
             console.print(f"[green]Task created:[/green] {created_ref}")
@@ -100,10 +102,14 @@ def create_task(
                         source_msg = f" source={source}" if source else ""
                         console.print(f"[green]Field patch applied[/green]{source_msg}")
                 else:
-                    console.print(f"[yellow]Field patch warning:[/yellow] {post_assign.get('message')}")
+                    console.print(
+                        f"[yellow]Field patch warning:[/yellow] {post_assign.get('message')}"
+                    )
             warnings = result.get("tag_resolution_warnings")
             if isinstance(warnings, list) and warnings:
-                console.print(f"[yellow]Tag resolution warnings:[/yellow] {json.dumps(warnings, indent=2)}")
+                console.print(
+                    f"[yellow]Tag resolution warnings:[/yellow] {json.dumps(warnings, indent=2)}"
+                )
             qa_pick = result.get("qa_roster_pick")
             if isinstance(qa_pick, dict):
                 console.print(f"[dim]QA roster pick:[/dim] {json.dumps(qa_pick, indent=2)}")
@@ -116,30 +122,34 @@ def create_task(
 
 @app.command()
 def create_subtask(
-    parent_task_id: str = typer.Option(..., "--parent-task-id", prompt=True, help="Parent Plaky task ID"),
+    parent_task_id: str = typer.Option(
+        ..., "--parent-task-id", prompt=True, help="Parent Plaky task ID"
+    ),
     title: str = typer.Option(..., "--title", "-t", prompt=True, help="Subtask title"),
     description: str = typer.Option("", "--description", "-d", help="Subtask description"),
     priority: str = typer.Option("medium", "--priority", "-p", help="Priority: low, medium, high"),
     status: str = typer.Option("in_progress", "--status", help="Workflow status"),
     task_type: str = typer.Option("feature", "--type", help="Task type"),
-    github_repos: Optional[List[str]] = typer.Option(
+    github_repos: list[str] | None = typer.Option(
         None,
         "--github-repo",
         help="GitHub repo slug(s), repeatable or comma/space separated",
     ),
-    engineer_plaky_id: Optional[str] = typer.Option(None, "--engineer-id", help="Plaky user id for contributor/engineer"),
-    qa_plaky_id: Optional[str] = typer.Option(None, "--qa-id", help="Plaky user id for QA"),
+    engineer_plaky_id: str | None = typer.Option(
+        None, "--engineer-id", help="Plaky user id for contributor/engineer"
+    ),
+    qa_plaky_id: str | None = typer.Option(None, "--qa-id", help="Plaky user id for QA"),
     auto_assign_qa: bool = typer.Option(
         True,
         "--auto-assign-qa/--no-auto-assign-qa",
         help="Auto-pick QA from team assignments when --qa-id is not set",
     ),
-    plaky_board_id: Optional[str] = typer.Option(
+    plaky_board_id: str | None = typer.Option(
         None,
         "--board-id",
         help="Plaky board id used for schema/field patch resolution",
     ),
-    plaky_group_id: Optional[str] = typer.Option(
+    plaky_group_id: str | None = typer.Option(
         None,
         "--group-id",
         help="Plaky group id used for subtask placement fallback",
@@ -184,12 +194,14 @@ def link_pr(
         help="GitHub PR URL(s): one URL, or several comma- or whitespace-separated",
     ),
     task_id: str = typer.Option(..., prompt=True, help="Plaky task ID"),
-    plaky_board_id: Optional[str] = typer.Option(
+    plaky_board_id: str | None = typer.Option(
         None,
         "--board-id",
         help="Plaky board id (optional; speeds v1/public item comments).",
     ),
-    update_status: bool = typer.Option(False, "--update-status", help="Update task status on merge"),
+    update_status: bool = typer.Option(
+        False, "--update-status", help="Update task status on merge"
+    ),
     print_response: bool = typer.Option(
         False,
         "--print-response",
@@ -229,7 +241,7 @@ def link_pr(
 def list_tasks_cmd(
     status: str = typer.Option("open", "--status", "-s", help="Task status: open, done, etc."),
     format: str = typer.Option("table", "--format", "-f", help="Output format: table, json"),
-    plaky_board_id: Optional[str] = typer.Option(
+    plaky_board_id: str | None = typer.Option(
         None,
         "--board-id",
         help="Board id for listing items in v1/public mode.",
@@ -250,6 +262,7 @@ def list_tasks_cmd(
                 console.print(f"[yellow]{msg}[/yellow]")
         if format == "json":
             import json
+
             console.print(json.dumps(tasks, indent=2))
         else:
             table = Table(title=f"Plaky Tasks ({status})")
@@ -275,21 +288,23 @@ def list_tasks_cmd(
 @app.command("update-task")
 def update_task_cmd(
     task_id: str = typer.Option(..., "--task-id", prompt=True, help="Plaky task ID"),
-    status: Optional[str] = typer.Option(None, "--status", help="New status"),
-    task_type: Optional[str] = typer.Option(None, "--type", help="New task type"),
-    priority: Optional[str] = typer.Option(None, "--priority", "-p", help="New priority"),
-    qa_plaky_id: Optional[str] = typer.Option(None, "--qa-id", help="Plaky user id for QA field"),
+    status: str | None = typer.Option(None, "--status", help="New status"),
+    task_type: str | None = typer.Option(None, "--type", help="New task type"),
+    priority: str | None = typer.Option(None, "--priority", "-p", help="New priority"),
+    qa_plaky_id: str | None = typer.Option(None, "--qa-id", help="Plaky user id for QA field"),
     auto_assign_qa: bool = typer.Option(
         False,
         "--auto-assign-qa/--no-auto-assign-qa",
         help="Auto-pick QA from team assignments using --github-repo",
     ),
-    github_repo: Optional[str] = typer.Option(
+    github_repo: str | None = typer.Option(
         None,
         "--github-repo",
         help="GitHub repo for --auto-assign-qa (owner/repo or repo name; bare names get GITHUB_BARE_REPO_OWNER)",
     ),
-    plaky_board_id: Optional[str] = typer.Option(None, "--board-id", help="Explicit board id for field patch"),
+    plaky_board_id: str | None = typer.Option(
+        None, "--board-id", help="Explicit board id for field patch"
+    ),
 ):
     async def run():
         result = await update_task_internal(
@@ -316,7 +331,9 @@ def update_task_cmd(
         if result.get("ok"):
             console.print("[green]Task updated[/green]")
         else:
-            summary = str(result.get("message") or "").strip() or (op_messages[0] if op_messages else "Update failed")
+            summary = str(result.get("message") or "").strip() or (
+                op_messages[0] if op_messages else "Update failed"
+            )
             console.print(f"[red]Error:[/red] {summary}")
             if len(op_messages) > 1:
                 for extra in op_messages[1:]:
@@ -347,7 +364,9 @@ def sync(
         "--group-id",
         help="Plaky group id",
     ),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be synced without making changes"),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Show what would be synced without making changes"
+    ),
 ):
     if not settings.github_pat:
         console.print("[red]Error: GITHUB_PAT not configured[/red]")
@@ -356,8 +375,13 @@ def sync(
 
     async def run():
         async with httpx.AsyncClient() as client:
-            headers = {"Authorization": f"Bearer {settings.github_pat}", "Accept": "application/vnd.github+json"}
-            resp = await client.get(f"https://api.github.com/repos/{repo}/issues?state=open", headers=headers)
+            headers = {
+                "Authorization": f"Bearer {settings.github_pat}",
+                "Accept": "application/vnd.github+json",
+            }
+            resp = await client.get(
+                f"https://api.github.com/repos/{repo}/issues?state=open", headers=headers
+            )
             if resp.status_code != 200:
                 console.print(f"[red]Error fetching issues:[/red] {resp.text}")
                 return
@@ -365,14 +389,15 @@ def sync(
             issues = resp.json()
             console.print(f"Found {len(issues)} open issues in {repo}")
 
-            plaky = PlakyClient()
             for issue in issues:
                 title = f"{repo.split('/')[-1]} Issue: {issue['title']}"
                 issue_url = str(issue.get("html_url") or "").strip()
                 issue_number = issue.get("number")
                 issue_body = str(issue.get("body") or "").strip()
                 if settings.plaky_pr_comment_links_as_html and issue_url:
-                    label = f"{repo} issue #{issue_number}" if issue_number is not None else issue_url
+                    label = (
+                        f"{repo} issue #{issue_number}" if issue_number is not None else issue_url
+                    )
                     issue_link = f'<a href="{escape(issue_url, quote=True)}">{escape(label)}</a>'
                 else:
                     issue_link = issue_url
@@ -389,7 +414,7 @@ def sync(
                             priority="High",
                             plaky_board_id=board_id,
                             plaky_group_id=group_id,
-                            auto_assign_team=False
+                            auto_assign_team=False,
                         )
                     )
                     if result.get("ok"):
@@ -407,7 +432,9 @@ def register_repo(
         help="Repository name or owner/repo; YAML key is repo name only. Bare names prepend "
         "GITHUB_BARE_REPO_OWNER for GitHub as owner/repo elsewhere in the toolchain.",
     ),
-    category: str = typer.Option(..., "--category", "-c", help="ai|ml|backend|frontend|infrastructure"),
+    category: str = typer.Option(
+        ..., "--category", "-c", help="ai|ml|backend|frontend|infrastructure"
+    ),
     plaky_table: str = typer.Option(..., "--table", "-t", help="Plaky table name"),
     description: str = typer.Option("", "--description", "-d"),
 ):
@@ -424,15 +451,19 @@ def register_repo(
 def scan_repo(
     repo: str = typer.Argument(..., help="owner/repo"),
     dry_run: bool = typer.Option(False, "--dry-run"),
-    provider: Optional[str] = typer.Option(None, "--provider"),
-    model: Optional[str] = typer.Option(None, "--model"),
+    provider: str | None = typer.Option(None, "--provider"),
+    model: str | None = typer.Option(None, "--model"),
 ):
     async def run():
         async with async_session() as session:
-            result = await run_repo_scan(session, repo, dry_run=dry_run, provider=provider, model=model)
+            result = await run_repo_scan(
+                session, repo, dry_run=dry_run, provider=provider, model=model
+            )
             await session.commit()
         if result.get("ok"):
-            console.print(f"[green]OK[/green] parsed={result.get('tasks_parsed')} created={result.get('tasks_created')}")
+            console.print(
+                f"[green]OK[/green] parsed={result.get('tasks_parsed')} created={result.get('tasks_created')}"
+            )
             if result.get("preview"):
                 console.print(json.dumps(result["preview"], indent=2))
         else:
@@ -460,19 +491,27 @@ def doctor():
                 r = await client.get(f"{settings.ollama_base_url.rstrip('/')}/api/tags")
                 if r.status_code == 200:
                     names = [m.get("name", "") for m in r.json().get("models", [])]
-                    console.print(f"[green]Ollama[/green] {settings.ollama_base_url} — {len(names)} model(s)")
+                    console.print(
+                        f"[green]Ollama[/green] {settings.ollama_base_url} — {len(names)} model(s)"
+                    )
                     try:
                         from boardman.llm.ollama_autodetect import effective_ollama_model
 
                         picked = effective_ollama_model(None)
                         src = "LLM_MODEL" if (settings.llm_model or "").strip() else "auto"
-                        console.print(f"[dim]Boardman will use[/dim] [cyan]{picked}[/cyan] [dim]({src})[/dim]")
+                        console.print(
+                            f"[dim]Boardman will use[/dim] [cyan]{picked}[/cyan] [dim]({src})[/dim]"
+                        )
                     except Exception as e:
                         console.print(f"[yellow]Could not auto-pick model:[/yellow] {e}")
                     if settings.llm_model and not any(settings.llm_model in n for n in names):
-                        console.print(f"[yellow]LLM_MODEL[/yellow] {settings.llm_model!r} not listed in tags (pull if needed)")
+                        console.print(
+                            f"[yellow]LLM_MODEL[/yellow] {settings.llm_model!r} not listed in tags (pull if needed)"
+                        )
                 else:
-                    console.print(f"[yellow]Ollama[/yellow] HTTP {r.status_code} at {settings.ollama_base_url}")
+                    console.print(
+                        f"[yellow]Ollama[/yellow] HTTP {r.status_code} at {settings.ollama_base_url}"
+                    )
         except Exception as e:
             console.print(f"[yellow]Ollama[/yellow] unreachable: {e}")
         if settings.plaky_api_key:
@@ -482,7 +521,9 @@ def doctor():
                 n = len(pr.get("boards") or [])
                 console.print(f"[green]Plaky API[/green] list_boards OK ({n} board(s))")
             else:
-                console.print(f"[yellow]Plaky API[/yellow] {pr.get('message', pr)} (HTTP {pr.get('status')})")
+                console.print(
+                    f"[yellow]Plaky API[/yellow] {pr.get('message', pr)} (HTTP {pr.get('status')})"
+                )
         if not ok:
             console.print("[dim]Fix missing keys in .env for full functionality.[/dim]")
 
@@ -569,7 +610,7 @@ def readiness_cmd(
 
 @app.command("plaky-inventory")
 def plaky_inventory_cmd(
-    board_id: Optional[str] = typer.Option(
+    board_id: str | None = typer.Option(
         None,
         "--board-id",
         help="Board ID to inspect for groups, fields, and status options.",
@@ -621,7 +662,9 @@ def _print_plaky_inventory(inventory: dict, *, board_id: str = "") -> None:
     console.print(board_table)
 
     if not board_id:
-        console.print("[dim]Run with --board-id <id> to list groups, fields, and status options.[/dim]")
+        console.print(
+            "[dim]Run with --board-id <id> to list groups, fields, and status options.[/dim]"
+        )
 
     groups = [g for g in inventory.get("groups") or [] if isinstance(g, dict)]
     if groups:
@@ -692,10 +735,10 @@ def _print_plaky_inventory(inventory: dict, *, board_id: str = "") -> None:
 
 def _agent_chat_async(
     message: str,
-    session_id: Optional[str],
-    repo: Optional[str],
-    provider: Optional[str],
-    model: Optional[str],
+    session_id: str | None,
+    repo: str | None,
+    provider: str | None,
+    model: str | None,
     allow_writes: bool,
     use_tools: bool,
 ) -> None:
@@ -724,11 +767,13 @@ def _agent_chat_async(
 @agent_app.command("chat")
 def agent_chat_cmd(
     message: str = typer.Option(..., "--message", "-m"),
-    session_id: Optional[str] = typer.Option(None, "--session"),
-    repo: Optional[str] = typer.Option(None, "--repo", "-r"),
-    provider: Optional[str] = typer.Option(None, "--provider"),
-    model: Optional[str] = typer.Option(None, "--model"),
-    allow_writes: bool = typer.Option(False, "--allow-writes", help="Enable Plaky create/update tools"),
+    session_id: str | None = typer.Option(None, "--session"),
+    repo: str | None = typer.Option(None, "--repo", "-r"),
+    provider: str | None = typer.Option(None, "--provider"),
+    model: str | None = typer.Option(None, "--model"),
+    allow_writes: bool = typer.Option(
+        False, "--allow-writes", help="Enable Plaky create/update tools"
+    ),
     use_tools: bool = typer.Option(
         False,
         "--use-tools",
@@ -741,10 +786,10 @@ def agent_chat_cmd(
 @agent_app.command("ask")
 def agent_ask_cmd(
     message: str = typer.Option(..., "--message", "-m"),
-    session_id: Optional[str] = typer.Option(None, "--session"),
-    repo: Optional[str] = typer.Option(None, "--repo", "-r"),
-    provider: Optional[str] = typer.Option(None, "--provider"),
-    model: Optional[str] = typer.Option(None, "--model"),
+    session_id: str | None = typer.Option(None, "--session"),
+    repo: str | None = typer.Option(None, "--repo", "-r"),
+    provider: str | None = typer.Option(None, "--provider"),
+    model: str | None = typer.Option(None, "--model"),
     allow_writes: bool = typer.Option(False, "--allow-writes"),
     use_tools: bool = typer.Option(False, "--use-tools"),
 ):
@@ -761,7 +806,7 @@ def init_direction(
         ...,
         help="repo name (deepiri-demo) or full slug (owner/deepiri-demo)",
     ),
-    force: bool = typer.Option(False, "--force", help="Overwrite existing DIRECTION.md")
+    force: bool = typer.Option(False, "--force", help="Overwrite existing DIRECTION.md"),
 ):
     async def run():
         default_owner = "Team-Deepiri"
@@ -792,7 +837,9 @@ def init_direction(
 
 @app.command("status")
 def status_cmd(
-    repo: Optional[str] = typer.Option(None, "--repo", help="Filter Plaky titles containing this slug"),
+    repo: str | None = typer.Option(
+        None, "--repo", help="Filter Plaky titles containing this slug"
+    ),
 ):
     async def run():
         async with async_session() as session:
@@ -824,8 +871,8 @@ def status_cmd(
 @app.command("scan-all")
 def scan_all_repos(
     dry_run: bool = typer.Option(True, "--dry-run/--no-dry-run", help="Default dry-run for safety"),
-    provider: Optional[str] = typer.Option(None, "--provider"),
-    model: Optional[str] = typer.Option(None, "--model"),
+    provider: str | None = typer.Option(None, "--provider"),
+    model: str | None = typer.Option(None, "--model"),
 ):
     async def run():
         reg = await list_workspace_repos()
@@ -839,10 +886,14 @@ def scan_all_repos(
         for key in reg:
             console.print(f"[bold]Scanning[/bold] {key} …")
             async with async_session() as session:
-                result = await run_repo_scan(session, key, dry_run=dry_run, provider=provider, model=model)
+                result = await run_repo_scan(
+                    session, key, dry_run=dry_run, provider=provider, model=model
+                )
                 await session.commit()
             if result.get("ok"):
-                console.print(f"  [green]ok[/green] created={result.get('tasks_created')} parsed={result.get('tasks_parsed')}")
+                console.print(
+                    f"  [green]ok[/green] created={result.get('tasks_created')} parsed={result.get('tasks_parsed')}"
+                )
             else:
                 console.print(f"  [red]{result.get('message')}[/red]")
 

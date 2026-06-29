@@ -28,9 +28,7 @@ def compact_option(option: Any) -> dict[str, Any]:
 
 def compact_field(field: dict[str, Any]) -> dict[str, Any]:
     options = [
-        compacted
-        for option in field.get("options") or []
-        if (compacted := compact_option(option))
+        compacted for option in field.get("options") or [] if (compacted := compact_option(option))
     ]
     return {
         "key": str(field.get("key") or "").strip(),

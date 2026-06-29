@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 import time
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any
 
 # LLMs often invent Jira-like keys; reject before hitting Plaky.
 _PLACEHOLDER_FIELD_KEY = re.compile(
@@ -40,9 +40,9 @@ def _opt_label(o: Any) -> str:
     return ""
 
 
-def _collect_options(field: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _collect_options(field: dict[str, Any]) -> list[dict[str, Any]]:
     seen_labels: set[str] = set()
-    options: List[Dict[str, Any]] = []
+    options: list[dict[str, Any]] = []
     for key in (
         "options",
         "choices",
@@ -74,7 +74,7 @@ def _collect_options(field: Dict[str, Any]) -> List[Dict[str, Any]]:
     return options
 
 
-def plaky_field_row_label(f: Dict[str, Any]) -> str:
+def plaky_field_row_label(f: dict[str, Any]) -> str:
     """Lowercase label for matching Plaky item fields across API shapes."""
     raw = (
         f.get("name")
@@ -88,13 +88,18 @@ def plaky_field_row_label(f: Dict[str, Any]) -> str:
     return str(raw).strip().lower()
 
 
-def field_row_item_key(f: Dict[str, Any]) -> str:
+def field_row_item_key(f: dict[str, Any]) -> str:
     return str(
-        f.get("key") or f.get("id") or f.get("fieldKey") or f.get("itemFieldKey") or f.get("field_id") or ""
+        f.get("key")
+        or f.get("id")
+        or f.get("fieldKey")
+        or f.get("itemFieldKey")
+        or f.get("field_id")
+        or ""
     ).strip()
 
 
-def field_likely_person_column(f: Dict[str, Any]) -> bool:
+def field_likely_person_column(f: dict[str, Any]) -> bool:
     """
     True if this field is probably a person/assignee column.
     Plaky often omits `type` or uses values we do not map — fall back to column name heuristics.
@@ -139,7 +144,7 @@ def field_likely_person_column(f: Dict[str, Any]) -> bool:
     )
 
 
-def field_likely_github_repo_column(f: Dict[str, Any]) -> bool:
+def field_likely_github_repo_column(f: dict[str, Any]) -> bool:
     """True if this field is probably a GitHub / repository text or link column."""
     if not isinstance(f, dict):
         return False
@@ -161,12 +166,12 @@ def field_likely_github_repo_column(f: Dict[str, Any]) -> bool:
     )
 
 
-def _nested_field_meta(f: Dict[str, Any]) -> Dict[str, Any]:
+def _nested_field_meta(f: dict[str, Any]) -> dict[str, Any]:
     inner = f.get("field")
     return inner if isinstance(inner, dict) else {}
 
 
-def _normalize_field_dict(f: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+def _normalize_field_dict(f: dict[str, Any]) -> dict[str, Any] | None:
     nested = _nested_field_meta(f)
     name = (
         f.get("name")
@@ -198,13 +203,18 @@ def _normalize_field_dict(f: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not name:
         return None
     ftype = str(
-        f.get("type") or f.get("fieldType") or f.get("kind") or nested.get("type") or nested.get("fieldType") or ""
+        f.get("type")
+        or f.get("fieldType")
+        or f.get("kind")
+        or nested.get("type")
+        or nested.get("fieldType")
+        or ""
     ).strip()
     options = _collect_options(f) or _collect_options(nested)
     return {"name": name, "type": ftype, "key": key, "options": options}
 
 
-def _option_primary_patch_value(opt: Dict[str, Any]) -> Any:
+def _option_primary_patch_value(opt: dict[str, Any]) -> Any:
     """Pick a PATCH-friendly value for a schema option dict (prefer stable ids over labels)."""
     for k in ("id", "optionId", "value", "_id"):
         raw = opt.get(k)
@@ -225,12 +235,12 @@ def _option_primary_patch_value(opt: Dict[str, Any]) -> Any:
 
 
 def select_field_patch_pair_from_schema(
-    normalized: Optional[Dict[str, Any]],
+    normalized: dict[str, Any] | None,
     *,
     column_name_substrings: tuple[str, ...],
     value_label_candidates: tuple[str, ...],
     exclude_name_substrings: tuple[str, ...] = (),
-) -> Optional[tuple[str, Any]]:
+) -> tuple[str, Any] | None:
     """
     Find a select-like board field (non-empty `options`) whose label matches `column_name_substrings`,
     then resolve a board PATCH value from `value_label_candidates` (matched case-insensitively).
@@ -282,19 +292,24 @@ def select_field_patch_pair_from_schema(
     return None
 
 
-def _field_type_upper(f: Dict[str, Any]) -> str:
+def _field_type_upper(f: dict[str, Any]) -> str:
     nested = f.get("field") if isinstance(f.get("field"), dict) else {}
     return str(
-        f.get("type") or f.get("fieldType") or f.get("kind") or nested.get("type") or nested.get("fieldType") or ""
+        f.get("type")
+        or f.get("fieldType")
+        or f.get("kind")
+        or nested.get("type")
+        or nested.get("fieldType")
+        or ""
     ).upper()
 
 
-def field_is_plaky_tag_column(f: Dict[str, Any]) -> bool:
+def field_is_plaky_tag_column(f: dict[str, Any]) -> bool:
     return "TAG" in _field_type_upper(f)
 
 
 def plaky_repo_field_value_format(
-    normalized: Optional[Dict[str, Any]],
+    normalized: dict[str, Any] | None,
     item_field_key: str,
 ) -> str:
     """
@@ -328,7 +343,7 @@ def _norm_tag_compare_token(s: str) -> str:
     return t
 
 
-def _repo_tokens_from_assignment_value(raw: Any) -> List[str]:
+def _repo_tokens_from_assignment_value(raw: Any) -> list[str]:
     """Split comma-joined owner/repo strings from assignment field map values."""
     if isinstance(raw, list):
         return [str(x).strip() for x in raw if str(x).strip()]
@@ -344,9 +359,9 @@ def _repo_tokens_from_assignment_value(raw: Any) -> List[str]:
 
 
 def match_repo_tokens_to_plaky_tag_option_values(
-    field: Dict[str, Any],
-    tokens: List[str],
-) -> Tuple[Optional[List[Any]], List[str]]:
+    field: dict[str, Any],
+    tokens: list[str],
+) -> tuple[list[Any] | None, list[str]]:
     """
     Map GitHub owner/repo strings to TAG field option ids (or primary patch literals).
 
@@ -361,9 +376,9 @@ def match_repo_tokens_to_plaky_tag_option_values(
     if not isinstance(options, list) or not options:
         return None, list(tokens)
 
-    matched: List[Any] = []
+    matched: list[Any] = []
     seen: set[Any] = set()
-    unmatched: List[str] = []
+    unmatched: list[str] = []
 
     for token in tokens:
         nt = _norm_tag_compare_token(token)
@@ -378,14 +393,7 @@ def match_repo_tokens_to_plaky_tag_option_values(
             nl = _norm_tag_compare_token(lab_raw)
             if not nl:
                 continue
-            if (
-                nt == nl
-                or nt in nl
-                or nl in nt
-                or short == nl
-                or short in nl
-                or nl in short
-            ):
+            if nt == nl or nt in nl or nl in nt or short == nl or short in nl or nl in short:
                 hit = _option_primary_patch_value(opt)
                 if hit is not None:
                     break
@@ -400,18 +408,18 @@ def match_repo_tokens_to_plaky_tag_option_values(
 
 
 def resolve_repo_tag_field_values_from_schema(
-    field_values: Dict[str, Any],
-    normalized: Optional[Dict[str, Any]],
+    field_values: dict[str, Any],
+    normalized: dict[str, Any] | None,
     *,
-    keys: Set[str],
-) -> Tuple[Dict[str, Any], List[Dict[str, Any]]]:
+    keys: set[str],
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     """
     For Plaky TAG columns in ``keys``, replace GitHub repo strings with option ids from ``normalized``.
 
     Mutates ``field_values`` in place. Returns ``(field_values, warnings)`` where each warning is a
     small dict (``field_key``, ``token``, ``message``).
     """
-    warnings: List[Dict[str, Any]] = []
+    warnings: list[dict[str, Any]] = []
     if not field_values or not normalized or not keys:
         return field_values, warnings
 
@@ -419,7 +427,7 @@ def resolve_repo_tag_field_values_from_schema(
     if not isinstance(raw_fields, list):
         return field_values, warnings
 
-    by_key: Dict[str, Dict[str, Any]] = {}
+    by_key: dict[str, dict[str, Any]] = {}
     for f in raw_fields:
         if isinstance(f, dict):
             ik = field_row_item_key(f)
@@ -473,9 +481,9 @@ def looks_like_placeholder_plaky_field_key(key: str) -> bool:
 
 
 def validate_field_values_against_board_schema(
-    field_values: Dict[str, Any],
-    normalized: Optional[Dict[str, Any]],
-) -> Optional[str]:
+    field_values: dict[str, Any],
+    normalized: dict[str, Any] | None,
+) -> str | None:
     """
     Return an agent-visible error string if field keys are invalid; None if OK or not checkable.
 
@@ -484,7 +492,7 @@ def validate_field_values_against_board_schema(
     """
     if not field_values:
         return None
-    fields: List[Any] = []
+    fields: list[Any] = []
     if isinstance(normalized, dict):
         raw = normalized.get("fields")
         if isinstance(raw, list):
@@ -520,13 +528,13 @@ def validate_field_values_against_board_schema(
     return None
 
 
-def _field_option_strings(field: Dict[str, Any]) -> List[str]:
+def _field_option_strings(field: dict[str, Any]) -> list[str]:
     """Display strings for a normalized field's options.
 
     Returns ``[]`` when the field is not options-bearing (free text, person,
     item, date, …) or when the bundle did not include option metadata.
     """
-    out: List[str] = []
+    out: list[str] = []
     for opt in _collect_options(field):
         lab = _opt_label(opt) if isinstance(opt, dict) else str(opt).strip()
         if lab:
@@ -534,7 +542,7 @@ def _field_option_strings(field: Dict[str, Any]) -> List[str]:
     return out
 
 
-def match_field_option_value(options: List[str], value: Any) -> tuple[Any, Optional[str]]:
+def match_field_option_value(options: list[str], value: Any) -> tuple[Any, str | None]:
     """Case-insensitive option matching.
 
     Returns ``(canonical_or_passthrough_value, error_or_None)``.
@@ -556,14 +564,14 @@ def match_field_option_value(options: List[str], value: Any) -> tuple[Any, Optio
 
 
 def validate_field_values_detailed(
-    field_values: Dict[str, Any],
-    normalized: Optional[Dict[str, Any]],
+    field_values: dict[str, Any],
+    normalized: dict[str, Any] | None,
     *,
     options_check: bool = False,
     board_id: str = "",
-    schema_fetch_ok: Optional[bool] = None,
+    schema_fetch_ok: bool | None = None,
     schema_fetch_message: str = "",
-) -> tuple[Dict[str, Any], List[str], List[str]]:
+) -> tuple[dict[str, Any], list[str], list[str]]:
     """Validate field keys (and optionally option values) against the board schema.
 
     Returns ``(cleaned_values, errors, warnings)``.
@@ -581,18 +589,18 @@ def validate_field_values_detailed(
         the agent can mention that schema validation was best-effort.
     """
     del board_id  # accepted for symmetry with PR #10 callers; kept for future use
-    warnings: List[str] = []
+    warnings: list[str] = []
     if not field_values:
         return {}, [], warnings
 
-    fields: List[Any] = []
+    fields: list[Any] = []
     if isinstance(normalized, dict):
         raw = normalized.get("fields")
         if isinstance(raw, list):
             fields = raw
 
     allowed: set[str] = set()
-    by_key: Dict[str, Dict[str, Any]] = {}
+    by_key: dict[str, dict[str, Any]] = {}
     for f in fields:
         if not isinstance(f, dict):
             continue
@@ -601,7 +609,7 @@ def validate_field_values_detailed(
             allowed.add(k)
             by_key[k] = f
 
-    errors: List[str] = []
+    errors: list[str] = []
 
     bad_ph = [
         k
@@ -628,9 +636,7 @@ def validate_field_values_detailed(
         return {}, errors, warnings
 
     if schema_fetch_ok is not None and not schema_fetch_ok:
-        warnings.append(
-            f"schema bundle returned warning: {schema_fetch_message or 'unknown'}"
-        )
+        warnings.append(f"schema bundle returned warning: {schema_fetch_message or 'unknown'}")
 
     if not by_key:
         if not fields:
@@ -639,7 +645,7 @@ def validate_field_values_detailed(
             warnings.append("board schema had no field keys; skipped key/value validation")
         return dict(field_values), [], warnings
 
-    cleaned: Dict[str, Any] = {}
+    cleaned: dict[str, Any] = {}
     for k, v in field_values.items():
         ks = str(k).strip()
         if not ks or ks not in by_key:
@@ -663,21 +669,29 @@ def validate_field_values_detailed(
     return cleaned, [], warnings
 
 
-def _deep_find_field_lists(obj: Any, *, depth: int = 0, max_depth: int = 6) -> List[List[Any]]:
+def _deep_find_field_lists(obj: Any, *, depth: int = 0, max_depth: int = 6) -> list[list[Any]]:
     """Nested board JSON sometimes nests field definition lists under settings/meta blocks."""
     if depth > max_depth or not isinstance(obj, dict):
         return []
-    out: List[List[Any]] = []
+    out: list[list[Any]] = []
     for k, v in obj.items():
         lk = str(k).lower()
         if isinstance(v, list) and v and isinstance(v[0], dict):
             sample = v[0]
             has_sig = any(
                 sample.get(x)
-                for x in ("itemFieldKey", "fieldKey", "field", "fieldName", "boardFieldId", "itemFieldId")
+                for x in (
+                    "itemFieldKey",
+                    "fieldKey",
+                    "field",
+                    "fieldName",
+                    "boardFieldId",
+                    "itemFieldId",
+                )
             )
             if has_sig and any(
-                t in lk for t in ("field", "column", "item", "board", "custom", "property", "definition")
+                t in lk
+                for t in ("field", "column", "item", "board", "custom", "property", "definition")
             ):
                 out.append(v)
         elif isinstance(v, dict):
@@ -685,12 +699,14 @@ def _deep_find_field_lists(obj: Any, *, depth: int = 0, max_depth: int = 6) -> L
     return out
 
 
-def field_stubs_from_board_items(items: List[Dict[str, Any]], *, limit: int = 5) -> List[Dict[str, Any]]:
+def field_stubs_from_board_items(
+    items: list[dict[str, Any]], *, limit: int = 5
+) -> list[dict[str, Any]]:
     """
     When GET board omits field definitions, infer field keys + labels from item payloads
     (timeline/list API usually embeds itemFields / fields per item).
     """
-    stubs: List[Dict[str, Any]] = []
+    stubs: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in (items or [])[:limit]:
         if not isinstance(item, dict):
@@ -721,11 +737,11 @@ def field_stubs_from_board_items(items: List[Dict[str, Any]], *, limit: int = 5)
 
 
 def merge_normalized_field_list(
-    existing: List[Dict[str, Any]],
-    additions: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
+    existing: list[dict[str, Any]],
+    additions: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
     """Append schema field rows from `additions` when their `key` is not already present."""
-    by_k: Dict[str, Dict[str, Any]] = {}
+    by_k: dict[str, dict[str, Any]] = {}
     for f in existing or []:
         if isinstance(f, dict):
             nk = field_row_item_key(f)
@@ -740,16 +756,18 @@ def merge_normalized_field_list(
     return list(by_k.values())
 
 
-def normalize_board_payload(board_raw: Optional[Dict[str, Any]], groups: List[Dict[str, Any]]) -> Dict[str, Any]:
+def normalize_board_payload(
+    board_raw: dict[str, Any] | None, groups: list[dict[str, Any]]
+) -> dict[str, Any]:
     """
     Extract board name, groups, and field definitions with option lists when present.
     Works across varying Plaky API shapes by scanning common keys.
     """
     board_name = ""
-    fields: List[Dict[str, Any]] = []
+    fields: list[dict[str, Any]] = []
     if isinstance(board_raw, dict):
         board_name = str(board_raw.get("name") or board_raw.get("title") or "").strip()
-        field_lists: List[Any] = []
+        field_lists: list[Any] = []
         for key in (
             "itemFields",
             "item_fields",
@@ -775,7 +793,7 @@ def normalize_board_payload(board_raw: Optional[Dict[str, Any]], groups: List[Di
                     nf = _normalize_field_dict(f)
                     if nf:
                         fields.append(nf)
-    deduped: List[Dict[str, Any]] = []
+    deduped: list[dict[str, Any]] = []
     seen_key: set[str] = set()
     for f in fields:
         fk = field_row_item_key(f)
@@ -786,7 +804,11 @@ def normalize_board_payload(board_raw: Optional[Dict[str, Any]], groups: List[Di
         deduped.append(f)
     return {
         "board_name": board_name,
-        "groups": [{"id": str(g.get("id", "")), "name": str(g.get("name", ""))} for g in groups if g.get("id")],
+        "groups": [
+            {"id": str(g.get("id", "")), "name": str(g.get("name", ""))}
+            for g in groups
+            if g.get("id")
+        ],
         "fields": deduped,
     }
 
@@ -796,8 +818,8 @@ def format_board_schema_markdown(
     *,
     ok: bool,
     message: str = "",
-    normalized: Optional[Dict[str, Any]] = None,
-    raw_top_keys: Optional[List[str]] = None,
+    normalized: dict[str, Any] | None = None,
+    raw_top_keys: list[str] | None = None,
 ) -> str:
     """Markdown block appended to the system prompt."""
     lines = [
@@ -823,7 +845,9 @@ def format_board_schema_markdown(
             lines.append(f"- `{g.get('id')}` — {g.get('name', '')}")
     fields = n.get("fields") or []
     if fields:
-        lines.append("**Fields (use these labels/values when describing or updating items — match API literals):**")
+        lines.append(
+            "**Fields (use these labels/values when describing or updating items — match API literals):**"
+        )
         for f in fields[:60]:
             opts = f.get("options") or []
             typ = f.get("type") or ""
@@ -835,7 +859,8 @@ def format_board_schema_markdown(
                 opt_labels = []
                 for o in opts:
                     lab = o.get("name") if isinstance(o, dict) else str(o)
-                    if lab: opt_labels.append(lab)
+                    if lab:
+                        opt_labels.append(lab)
                 lines.append(f"  - Allowed values: {', '.join(opt_labels[:50])}")
                 if len(opt_labels) > 50:
                     lines.append("  - …")
@@ -854,7 +879,7 @@ def format_board_schema_markdown(
     return "\n".join(lines)
 
 
-async def fetch_board_schema_bundle(board_id: str) -> Dict[str, Any]:
+async def fetch_board_schema_bundle(board_id: str) -> dict[str, Any]:
     """Load groups + board detail and return normalized schema + markdown for prompts."""
     from boardman.plaky.client import PlakyClient
 
@@ -901,7 +926,7 @@ async def fetch_board_schema_bundle(board_id: str) -> Dict[str, Any]:
     if not isinstance(groups, list):
         groups = []
     board_raw = board_r.get("board") if board_r.get("ok") else None
-    raw_keys: List[str] = []
+    raw_keys: list[str] = []
     if isinstance(board_raw, dict):
         raw_keys = [str(k) for k in board_raw.keys()]
 
@@ -914,7 +939,9 @@ async def fetch_board_schema_bundle(board_id: str) -> Dict[str, Any]:
             rows = [x for x in (listed.get("items") or []) if isinstance(x, dict)]
             stubs = field_stubs_from_board_items(rows)
             if stubs:
-                normalized["fields"] = merge_normalized_field_list(normalized.get("fields") or [], stubs)
+                normalized["fields"] = merge_normalized_field_list(
+                    normalized.get("fields") or [], stubs
+                )
         except Exception:
             pass
     ok_groups = bool(groups_r.get("ok"))

@@ -1,4 +1,4 @@
-from typing import Any, List, Optional
+from typing import Any
 
 from fastapi import APIRouter, Depends
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -7,7 +7,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from boardman.database.session import get_db
 from boardman.plaky.client import PlakyClient
 from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
-from boardman.settings import settings
 from boardman.services.task_mutations import (
     CreateSubtaskInput,
     CreateTaskInput,
@@ -16,7 +15,7 @@ from boardman.services.task_mutations import (
     create_task_internal,
     update_task_internal,
 )
-
+from boardman.settings import settings
 
 router = APIRouter()
 
@@ -30,21 +29,21 @@ class CreateTaskRequest(BaseModel):
         default="Feature",
         validation_alias=AliasChoices("type", "task_type"),
     )
-    github_repos: Optional[List[str]] = None  # owner/repo strings; deduped
+    github_repos: list[str] | None = None  # owner/repo strings; deduped
     # Older clients/scripts send a single slug here; prefer github_repos. Same effect as filters.repo.
-    repo: Optional[str] = None
-    plaky_board_id: Optional[str] = None
-    plaky_group_id: Optional[str] = None
-    engineer_plaky_id: Optional[str] = None
-    qa_plaky_id: Optional[str] = None
+    repo: str | None = None
+    plaky_board_id: str | None = None
+    plaky_group_id: str | None = None
+    engineer_plaky_id: str | None = None
+    qa_plaky_id: str | None = None
     # When True (default), empty qa_plaky_id is filled from team_assignments.yml (repo roster).
     # Engineer/contributor is never roster-filled; set engineer_plaky_id to assign dev.
     # Explicit qa_plaky_id always wins over the roster pick.
     auto_assign_team: bool = True
-    filters: Optional[dict] = None
+    filters: dict | None = None
 
 
-def _merged_create_task_filters(req: CreateTaskRequest) -> Optional[dict[str, Any]]:
+def _merged_create_task_filters(req: CreateTaskRequest) -> dict[str, Any] | None:
     """Merge legacy top-level ``repo`` into ``filters.repo`` without overriding an explicit filters entry."""
     merged: dict[str, Any] = dict(req.filters) if req.filters else {}
     top_repo = (req.repo or "").strip()
@@ -60,23 +59,23 @@ class LinkPRRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     # Backward compatible single URL; combine with pr_urls when both sent.
-    pr_url: Optional[str] = None
-    pr_urls: Optional[List[str]] = None
+    pr_url: str | None = None
+    pr_urls: list[str] | None = None
     update_status: bool = False
-    plaky_board_id: Optional[str] = None
+    plaky_board_id: str | None = None
 
 
 class UpdateTaskRequest(BaseModel):
-    status: Optional[str] = None
-    task_type: Optional[str] = Field(
+    status: str | None = None
+    task_type: str | None = Field(
         default=None,
         validation_alias=AliasChoices("type", "task_type"),
     )
-    priority: Optional[str] = None
-    qa_plaky_id: Optional[str] = None
+    priority: str | None = None
+    qa_plaky_id: str | None = None
     auto_assign_qa: bool = False
-    github_repo: Optional[str] = None
-    plaky_board_id: Optional[str] = None
+    github_repo: str | None = None
+    plaky_board_id: str | None = None
 
 
 class CreateSubtaskRequest(BaseModel):
@@ -88,12 +87,12 @@ class CreateSubtaskRequest(BaseModel):
         default="Feature",
         validation_alias=AliasChoices("type", "task_type"),
     )
-    github_repos: Optional[List[str]] = None
-    engineer_plaky_id: Optional[str] = None
-    qa_plaky_id: Optional[str] = None
+    github_repos: list[str] | None = None
+    engineer_plaky_id: str | None = None
+    qa_plaky_id: str | None = None
     auto_assign_qa: bool = True
-    plaky_board_id: Optional[str] = None
-    plaky_group_id: Optional[str] = None
+    plaky_board_id: str | None = None
+    plaky_group_id: str | None = None
 
 
 @router.post("/tasks")
@@ -117,7 +116,9 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
 
 
 @router.post("/tasks/{task_id}/subtasks")
-async def create_subtask(task_id: str, req: CreateSubtaskRequest, session: AsyncSession = Depends(get_db)):
+async def create_subtask(
+    task_id: str, req: CreateSubtaskRequest, session: AsyncSession = Depends(get_db)
+):
     return await create_subtask_internal(
         CreateSubtaskInput(
             parent_task_id=task_id,
@@ -139,7 +140,7 @@ async def create_subtask(task_id: str, req: CreateSubtaskRequest, session: Async
 @router.get("/tasks")
 async def list_tasks(
     status: str = "open",
-    plaky_board_id: Optional[str] = None,
+    plaky_board_id: str | None = None,
     session: AsyncSession = Depends(get_db),
 ):
     plaky = PlakyClient()
@@ -155,7 +156,9 @@ async def get_task(task_id: str, session: AsyncSession = Depends(get_db)):
 
 
 @router.patch("/tasks/{task_id}")
-async def update_task(task_id: str, req: UpdateTaskRequest, session: AsyncSession = Depends(get_db)):
+async def update_task(
+    task_id: str, req: UpdateTaskRequest, session: AsyncSession = Depends(get_db)
+):
     return await update_task_internal(
         task_id,
         UpdateTaskInput(
@@ -174,7 +177,11 @@ async def update_task(task_id: str, req: UpdateTaskRequest, session: AsyncSessio
 async def link_pr(task_id: str, req: LinkPRRequest, session: AsyncSession = Depends(get_db)):
     urls = collect_pr_urls(pr_url=req.pr_url, pr_urls=req.pr_urls)
     if not urls:
-        return {"ok": False, "status": 400, "message": "Provide pr_url and/or pr_urls with at least one PR URL"}
+        return {
+            "ok": False,
+            "status": 400,
+            "message": "Provide pr_url and/or pr_urls with at least one PR URL",
+        }
 
     plaky = PlakyClient()
     comment = format_pr_link_comment(urls)

@@ -34,7 +34,9 @@ def _cold_start_diagnostic() -> bool:
 
 @pytest.mark.stack_latency
 @pytest.mark.asyncio
-async def test_ollama_and_chat_complete_latency(require_ollama_model: str, monkeypatch: pytest.MonkeyPatch):
+async def test_ollama_and_chat_complete_latency(
+    require_ollama_model: str, monkeypatch: pytest.MonkeyPatch
+):
     """
     One warm-up (unless cold-start mode), then timed warm steady-state:
     raw Ollama x2 + chat_complete x1 with num_predict capped.
@@ -102,7 +104,9 @@ async def test_ollama_and_chat_complete_latency(require_ollama_model: str, monke
         text = await chat_complete(msgs)
         t_cc = time.perf_counter() - t0
         assert text
-        print(f"[stack_latency] chat_complete (num_predict={_STACK_NUM_PREDICT}): {t_cc:.3f}s  len={len(text)}")
+        print(
+            f"[stack_latency] chat_complete (num_predict={_STACK_NUM_PREDICT}): {t_cc:.3f}s  len={len(text)}"
+        )
 
 
 def test_boardman_health_if_listening():

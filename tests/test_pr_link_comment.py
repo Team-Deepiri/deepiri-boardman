@@ -1,7 +1,6 @@
 """Tests for PR link comment helpers."""
 
 import boardman.settings as boardman_settings
-
 from boardman.services.pr_link_comment import (
     collect_pr_urls,
     format_pr_link_comment,
@@ -48,7 +47,9 @@ def test_format_pr_link_comment_plain_when_disabled(monkeypatch):
 
 def test_format_pr_notice_with_url_html(monkeypatch):
     monkeypatch.setattr(boardman_settings.settings, "plaky_pr_comment_links_as_html", True)
-    s = format_pr_notice_with_url(headline="**PR Opened:**", pr_number=13, pr_url="https://g/x/y/pull/13")
+    s = format_pr_notice_with_url(
+        headline="**PR Opened:**", pr_number=13, pr_url="https://g/x/y/pull/13"
+    )
     assert "**PR Opened:**" in s
     assert '<a href="https://g/x/y/pull/13">' in s
     assert "#13" in s

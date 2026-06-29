@@ -13,11 +13,10 @@ import logging
 import random
 import re
 from fnmatch import fnmatchcase
-from typing import Dict, List, Optional, Set, Tuple
 
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, load_team_assignments
-from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.assignment.tier_classifier import classify_repo_tier
+from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.repos_config import get_routing
 from boardman.settings import settings
 
@@ -31,18 +30,19 @@ async def _auto_classify_repo_tier(full_name: str) -> int:
     """
     if "/" not in full_name:
         return 2
-    
+
     owner, repo = full_name.split("/", 1)
-    
+
     import httpx
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         meta = await fetch_repo_metadata(client, owner, repo)
-    
+
     if meta:
         tier, _ = classify_repo_tier(meta)
         _log.info("Auto-classified repo %s as tier %d", full_name, tier)
         return tier
-    
+
     _log.warning("Could not fetch metadata for %s, defaulting to tier 2", full_name)
     return 2
 
@@ -68,7 +68,7 @@ def repo_matches_member(full_name: str, m: TeamMember) -> bool:
     return False
 
 
-def repo_is_heavy(full_name: str, patterns: List[str]) -> bool:
+def repo_is_heavy(full_name: str, patterns: list[str]) -> bool:
     key = (full_name or "").strip().lower()
     for p in patterns:
         if fnmatchcase(key, p.lower()):
@@ -83,8 +83,8 @@ def _tier_bias(cfg: TeamAssignmentsConfig, tier_name: str) -> float:
     return 1.0
 
 
-def _owners_from_member(m: TeamMember) -> Set[str]:
-    owners: Set[str] = set()
+def _owners_from_member(m: TeamMember) -> set[str]:
+    owners: set[str] = set()
     for ex in m.explicit_repos:
         if "/" in ex:
             owners.add(ex.split("/")[0])
@@ -110,8 +110,8 @@ def _same_owner_glob_overlap(a: TeamMember, b: TeamMember) -> bool:
 
 
 def _overlap_component(
-    eligible: List[TeamMember],
-) -> List[TeamMember]:
+    eligible: list[TeamMember],
+) -> list[TeamMember]:
     """
     Partition `eligible` into connected components by edges:
     explicit repo set intersection OR shared GitHub owner in patterns.
@@ -140,7 +140,7 @@ def _overlap_component(
             if _explicit_overlap(a, b) or _same_owner_glob_overlap(a, b):
                 union(i, j)
 
-    buckets: Dict[int, List[int]] = {}
+    buckets: dict[int, list[int]] = {}
     for i in range(n):
         r = find(i)
         buckets.setdefault(r, []).append(i)
@@ -149,13 +149,13 @@ def _overlap_component(
     return [eligible[i] for i in best]
 
 
-def _weighted_choice(members: List[TeamMember], cfg: TeamAssignmentsConfig) -> Optional[TeamMember]:
+def _weighted_choice(members: list[TeamMember], cfg: TeamAssignmentsConfig) -> TeamMember | None:
     if not members:
         return None
     if len(members) == 1:
         return members[0]
     jitter = cfg.random_jitter
-    weights: List[float] = []
+    weights: list[float] = []
     for m in members:
         w = max(0.05, m.weight)
         w *= _tier_bias(cfg, m.tier)
@@ -167,7 +167,9 @@ def _weighted_choice(members: List[TeamMember], cfg: TeamAssignmentsConfig) -> O
     return random.choices(members, weights=weights, k=1)[0]
 
 
-async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] = None) -> Tuple[Optional[str], str]:
+async def pick_qa_for_repo(
+    full_name: str, cfg: TeamAssignmentsConfig | None = None
+) -> tuple[str | None, str]:
     """
     Returns (plaky_person_id_or_value, reason_summary).
     Uses tier from repos.yml, or auto-classifies if not found.
@@ -221,7 +223,10 @@ async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
     if repo_is_heavy(fn, cfg.heavy_repo_patterns):
         qas = [m for m in qas if m.tier.lower() not in ("light", "minimal", "low")]
         if not qas:
-            return None, "heavy repo: no QA after legacy hardware tier filter (light/minimal/low dropped)"
+            return (
+                None,
+                "heavy repo: no QA after legacy hardware tier filter (light/minimal/low dropped)",
+            )
 
     pool = _overlap_component(qas)
     chosen = _weighted_choice(pool, cfg)
@@ -249,9 +254,9 @@ def ensure_github_owner_repo(slug: str) -> str:
     return s
 
 
-def _tokenize_repo_slugs(text: str) -> List[str]:
+def _tokenize_repo_slugs(text: str) -> list[str]:
     """Split comma/newline/whitespace-separated repo tokens (CLI ``--github-repo a b`` / agent ``repo_tag``)."""
-    out: List[str] = []
+    out: list[str] = []
     for chunk in (text or "").replace("\n", ",").split(","):
         for p in chunk.replace("\t", " ").split():
             if p.strip():
@@ -259,8 +264,8 @@ def _tokenize_repo_slugs(text: str) -> List[str]:
     return out
 
 
-def _dedupe_repo_list(repos: Optional[List[str]]) -> List[str]:
-    out: List[str] = []
+def _dedupe_repo_list(repos: list[str] | None) -> list[str]:
+    out: list[str] = []
     seen_set: set[str] = set()
     if not repos:
         return out
@@ -278,12 +283,12 @@ def _dedupe_repo_list(repos: Optional[List[str]]) -> List[str]:
 
 def normalize_github_repo_inputs(
     primary_repo: str = "",
-    github_repos: Optional[List[str]] = None,
+    github_repos: list[str] | None = None,
     *,
     extra_repo_text: str = "",
-) -> List[str]:
+) -> list[str]:
     """Return ordered unique owner/repo values from list and comma/newline text."""
-    tokens: List[str] = []
+    tokens: list[str] = []
     if primary_repo and primary_repo.strip():
         tokens.extend(_tokenize_repo_slugs(primary_repo))
     if isinstance(github_repos, list):
@@ -295,11 +300,11 @@ def normalize_github_repo_inputs(
     return _dedupe_repo_list(tokens)
 
 
-def _format_repo_tokens_for_plaky(tokens: List[str], fmt: str) -> List[str]:
+def _format_repo_tokens_for_plaky(tokens: list[str], fmt: str) -> list[str]:
     """``fmt`` ``short`` = repo name only (for TAG columns); ``full`` = keep ``owner/repo``."""
     if fmt != "short" or not tokens:
         return list(tokens)
-    out: List[str] = []
+    out: list[str] = []
     seen: set[str] = set()
     for t in tokens:
         sh = github_repo_suffix_name(t)
@@ -313,22 +318,22 @@ def _format_repo_tokens_for_plaky(tokens: List[str], fmt: str) -> List[str]:
 
 
 def build_repo_field_map(
-    cfg: Optional[TeamAssignmentsConfig] = None,
+    cfg: TeamAssignmentsConfig | None = None,
     *,
-    repo_value: Optional[str] = None,
-    github_repos: Optional[List[str]] = None,
-    plaky_field_repo_key: Optional[str] = None,
-    plaky_field_github_repos_key: Optional[str] = None,
+    repo_value: str | None = None,
+    github_repos: list[str] | None = None,
+    plaky_field_repo_key: str | None = None,
+    plaky_field_github_repos_key: str | None = None,
     repo_value_format: str = "full",
     github_repos_value_format: str = "full",
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Map configured repo-related Plaky field keys to one or more GitHub repos.
 
     Use ``repo_value_format`` / ``github_repos_value_format`` of ``short`` for Plaky TAG columns
     (values are repo names only, e.g. ``deepiri-platform``).
     """
     cfg = cfg or load_team_assignments()
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     repo_key = (plaky_field_repo_key or cfg.plaky_field_repo or "").strip()
     repos_multi_key = (plaky_field_github_repos_key or cfg.plaky_field_github_repos or "").strip()
     repo_label = (repo_value or "").strip()
@@ -355,20 +360,20 @@ def build_repo_field_map(
 
 async def build_assignment_field_map(
     full_name: str,
-    cfg: Optional[TeamAssignmentsConfig] = None,
-    field_overrides: Optional[Dict[str, str]] = None,
+    cfg: TeamAssignmentsConfig | None = None,
+    field_overrides: dict[str, str] | None = None,
     *,
-    repo_value: Optional[str] = None,
-    github_repos: Optional[List[str]] = None,
-    plaky_field_repo_key: Optional[str] = None,
-    plaky_field_github_repos_key: Optional[str] = None,
-    plaky_field_qa_key: Optional[str] = None,
+    repo_value: str | None = None,
+    github_repos: list[str] | None = None,
+    plaky_field_repo_key: str | None = None,
+    plaky_field_github_repos_key: str | None = None,
+    plaky_field_qa_key: str | None = None,
     repo_value_format: str = "full",
     github_repos_value_format: str = "full",
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Map Plaky field key -> QA person id or repo label(s) for create/patch. Overrides win for same keys."""
     cfg = cfg or load_team_assignments()
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     qa_key = (plaky_field_qa_key or cfg.plaky_field_qa or "").strip()
     qid, _ = await pick_qa_for_repo(full_name, cfg)
     if qid and qa_key:

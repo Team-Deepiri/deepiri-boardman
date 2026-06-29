@@ -1,6 +1,7 @@
 import asyncio
 import time
-from typing import AbstractSet, Any, Dict, List, Optional, Set
+from collections.abc import Set
+from typing import Any
 
 import httpx
 
@@ -12,9 +13,9 @@ async def _request_with_rate_limit_retry(
     client: httpx.AsyncClient,
     method: str,
     url: str,
-    headers: Dict[str, str],
-    json: Optional[Dict[str, Any]] = None,
-    params: Optional[Dict[str, Any]] = None,
+    headers: dict[str, str],
+    json: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
     retries: int = 2,
 ) -> httpx.Response:
     for attempt in range(retries + 1):
@@ -39,9 +40,9 @@ def _request_sync_with_rate_limit_retry(
     client: httpx.Client,
     method: str,
     url: str,
-    headers: Dict[str, str],
-    json: Optional[Dict[str, Any]] = None,
-    params: Optional[Dict[str, Any]] = None,
+    headers: dict[str, str],
+    json: dict[str, Any] | None = None,
+    params: dict[str, Any] | None = None,
     retries: int = 2,
 ) -> httpx.Response:
     for attempt in range(retries + 1):
@@ -58,7 +59,7 @@ def _request_sync_with_rate_limit_retry(
     return response
 
 
-def _headers(api_key: str) -> Dict[str, str]:
+def _headers(api_key: str) -> dict[str, str]:
     """Plaky public API uses X-API-Key (see https://docs.plaky.com/)."""
     return {
         "X-API-Key": api_key,
@@ -67,7 +68,7 @@ def _headers(api_key: str) -> Dict[str, str]:
     }
 
 
-def _headers_bearer(api_key: str) -> Dict[str, str]:
+def _headers_bearer(api_key: str) -> dict[str, str]:
     return {
         "Authorization": f"Bearer {api_key}",
         "Accept": "application/json",
@@ -75,20 +76,30 @@ def _headers_bearer(api_key: str) -> Dict[str, str]:
     }
 
 
-def _normalize_id(obj: Dict[str, Any]) -> str:
+def _normalize_id(obj: dict[str, Any]) -> str:
     return str(obj.get("id") or obj.get("_id") or obj.get("boardId") or obj.get("groupId") or "")
 
 
-def _normalize_name(obj: Dict[str, Any]) -> str:
+def _normalize_name(obj: dict[str, Any]) -> str:
     return str(obj.get("name") or obj.get("title") or obj.get("label") or "")
 
 
-def _extract_row_list(payload: Any) -> List[Any]:
+def _extract_row_list(payload: Any) -> list[Any]:
     if isinstance(payload, list):
         return payload
     if not isinstance(payload, dict):
         return []
-    for k in ("data", "spaces", "boards", "items", "groups", "users", "results", "content", "records"):
+    for k in (
+        "data",
+        "spaces",
+        "boards",
+        "items",
+        "groups",
+        "users",
+        "results",
+        "content",
+        "records",
+    ):
         v = payload.get(k)
         if isinstance(v, list):
             return v
@@ -99,7 +110,7 @@ def _payload_has_more(payload: Any) -> bool:
     return isinstance(payload, dict) and payload.get("hasMore") is True
 
 
-def _groups_from_board_payload(board: Dict[str, Any]) -> List[Dict[str, str]]:
+def _groups_from_board_payload(board: dict[str, Any]) -> list[dict[str, str]]:
     for key in (
         "groups",
         "sections",
@@ -113,7 +124,7 @@ def _groups_from_board_payload(board: Dict[str, Any]) -> List[Dict[str, str]]:
         block = board.get(key)
         if not isinstance(block, list) or not block:
             continue
-        out: List[Dict[str, str]] = []
+        out: list[dict[str, str]] = []
         for x in block:
             if isinstance(x, dict) and _normalize_id(x):
                 out.append({"id": _normalize_id(x), "name": _normalize_name(x)})
@@ -122,7 +133,7 @@ def _groups_from_board_payload(board: Dict[str, Any]) -> List[Dict[str, str]]:
     return []
 
 
-def _public_api_root_from_base_url(base_url: str) -> Optional[str]:
+def _public_api_root_from_base_url(base_url: str) -> str | None:
     """
     Plaky documented base: https://api.plaky.com/v1/public
     Migrate common misconfig (…/v2) to v1/public.
@@ -139,13 +150,13 @@ def _public_api_root_from_base_url(base_url: str) -> Optional[str]:
 
 
 class PlakyClient:
-    def __init__(self, api_key: Optional[str] = None, base_url: Optional[str] = None):
+    def __init__(self, api_key: str | None = None, base_url: str | None = None):
         self.api_key = api_key or settings.plaky_api_key
         self.base_url = base_url or settings.plaky_api_base
-        self._client: Optional[httpx.AsyncClient] = None
-        self._board_to_space: Dict[str, str] = {}
+        self._client: httpx.AsyncClient | None = None
+        self._board_to_space: dict[str, str] = {}
 
-    def _public_root(self) -> Optional[str]:
+    def _public_root(self) -> str | None:
         return _public_api_root_from_base_url(self.base_url)
 
     async def __aenter__(self):
@@ -156,14 +167,16 @@ class PlakyClient:
         if self._client:
             await self._client.aclose()
 
-    async def _get_paginated(self, client: httpx.AsyncClient, root: str, path: str) -> List[Dict[str, Any]]:
+    async def _get_paginated(
+        self, client: httpx.AsyncClient, root: str, path: str
+    ) -> list[dict[str, Any]]:
         page = 1
-        accum: List[Dict[str, Any]] = []
+        accum: list[dict[str, Any]] = []
         base = root.rstrip("/")
         p = path if path.startswith("/") else f"/{path}"
         while page <= 500:
             url = f"{base}{p}"
-            params: Dict[str, Any] = {"page": page, "pageSize": 100}
+            params: dict[str, Any] = {"page": page, "pageSize": 100}
             response = await _request_with_rate_limit_retry(
                 client, "GET", url, headers=_headers(self.api_key), params=params
             )
@@ -183,7 +196,7 @@ class PlakyClient:
         return accum
 
     @staticmethod
-    def _payload_item_id(payload: Dict[str, Any]) -> str:
+    def _payload_item_id(payload: dict[str, Any]) -> str:
         """Best-effort item id extraction across Plaky response shapes."""
         direct = str(
             payload.get("id")
@@ -208,15 +221,17 @@ class PlakyClient:
                     return nid
         return ""
 
-    def _get_paginated_sync(self, client: httpx.Client, root: str, path: str) -> List[Dict[str, Any]]:
+    def _get_paginated_sync(
+        self, client: httpx.Client, root: str, path: str
+    ) -> list[dict[str, Any]]:
         page = 1
-        accum: List[Dict[str, Any]] = []
+        accum: list[dict[str, Any]] = []
         base = root.rstrip("/")
         p = path if path.startswith("/") else f"/{path}"
         hdr = _headers(self.api_key)
         while page <= 500:
             url = f"{base}{p}"
-            params: Dict[str, Any] = {"page": page, "pageSize": 100}
+            params: dict[str, Any] = {"page": page, "pageSize": 100}
             response = _request_sync_with_rate_limit_retry(
                 client, "GET", url, headers=hdr, params=params
             )
@@ -235,23 +250,28 @@ class PlakyClient:
             page += 1
         return accum
 
-    async def resolve_space_for_board(self, board_id: str) -> Optional[str]:
+    async def resolve_space_for_board(self, board_id: str) -> str | None:
         bid = board_id.strip()
         if bid in self._board_to_space:
             return self._board_to_space[bid]
         await self.list_boards()
         return self._board_to_space.get(bid)
 
-    async def list_boards(self) -> Dict[str, Any]:
+    async def list_boards(self) -> dict[str, Any]:
         """List boards. Uses Plaky v1/public when base URL matches; else legacy /boards paths."""
         if not self.api_key:
-            return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing.", "boards": []}
+            return {
+                "ok": False,
+                "status": 400,
+                "message": "PLAKY_API_KEY is missing.",
+                "boards": [],
+            }
 
         root = self._public_root()
         if root:
             async with httpx.AsyncClient() as client:
                 spaces = await self._get_paginated(client, root, "/spaces")
-                boards_out: List[Dict[str, Any]] = []
+                boards_out: list[dict[str, Any]] = []
                 for sp in spaces:
                     sid = str(sp.get("id") or "").strip()
                     if not sid:
@@ -308,7 +328,7 @@ class PlakyClient:
             "boards": [],
         }
 
-    async def list_workspace_users(self) -> Dict[str, Any]:
+    async def list_workspace_users(self) -> dict[str, Any]:
         """Plaky v1/public: GET /users (paginated)."""
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing.", "users": []}
@@ -324,14 +344,16 @@ class PlakyClient:
 
         async with httpx.AsyncClient() as client:
             rows = await self._get_paginated(client, root, "/users")
-        users: List[Dict[str, Any]] = []
+        users: list[dict[str, Any]] = []
         for x in rows:
             if not isinstance(x, dict):
                 continue
             uid = str(x.get("id") or x.get("userId") or "").strip()
             if not uid:
                 continue
-            name = str(x.get("name") or x.get("displayName") or x.get("fullName") or x.get("email") or uid)
+            name = str(
+                x.get("name") or x.get("displayName") or x.get("fullName") or x.get("email") or uid
+            )
             email = x.get("email")
             pe = x.get("primaryEmail")
             gh_login = (
@@ -351,7 +373,7 @@ class PlakyClient:
             )
         return {"ok": True, "status": 200, "users": users}
 
-    def list_workspace_users_sync(self) -> Dict[str, Any]:
+    def list_workspace_users_sync(self) -> dict[str, Any]:
         """Sync variant for assignment loader (blocking). Same shape as list_workspace_users."""
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing.", "users": []}
@@ -367,14 +389,16 @@ class PlakyClient:
 
         with httpx.Client(timeout=30) as client:
             rows = self._get_paginated_sync(client, root, "/users")
-        users: List[Dict[str, Any]] = []
+        users: list[dict[str, Any]] = []
         for x in rows:
             if not isinstance(x, dict):
                 continue
             uid = str(x.get("id") or x.get("userId") or "").strip()
             if not uid:
                 continue
-            name = str(x.get("name") or x.get("displayName") or x.get("fullName") or x.get("email") or uid)
+            name = str(
+                x.get("name") or x.get("displayName") or x.get("fullName") or x.get("email") or uid
+            )
             email = x.get("email")
             pe = x.get("primaryEmail")
             gh_login = (
@@ -394,10 +418,15 @@ class PlakyClient:
             )
         return {"ok": True, "status": 200, "users": users}
 
-    async def list_groups(self, board_id: str) -> Dict[str, Any]:
+    async def list_groups(self, board_id: str) -> dict[str, Any]:
         """Groups/sections for a board (from board payload on v1/public)."""
         if not self.api_key:
-            return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing.", "groups": []}
+            return {
+                "ok": False,
+                "status": 400,
+                "message": "PLAKY_API_KEY is missing.",
+                "groups": [],
+            }
 
         br = await self.get_board(board_id.strip())
         if not br.get("ok"):
@@ -456,9 +485,14 @@ class PlakyClient:
             "groups": [],
         }
 
-    async def get_board(self, board_id: str) -> Dict[str, Any]:
+    async def get_board(self, board_id: str) -> dict[str, Any]:
         if not self.api_key:
-            return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing.", "board": None}
+            return {
+                "ok": False,
+                "status": 400,
+                "message": "PLAKY_API_KEY is missing.",
+                "board": None,
+            }
 
         root = self._public_root()
         bid = board_id.strip()
@@ -525,7 +559,7 @@ class PlakyClient:
         board_id: str,
         *,
         max_pages: int = 15,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Paginated item list for a board (Plaky v1/public GET .../boards/{id}/items).
         Used for PR↔task fuzzy candidate generation.
@@ -546,12 +580,12 @@ class PlakyClient:
         path = f"/spaces/{sid}/boards/{bid}/items"
         async with httpx.AsyncClient() as client:
             page = 1
-            accum: List[Dict[str, Any]] = []
+            accum: list[dict[str, Any]] = []
             base = root.rstrip("/")
             p = path if path.startswith("/") else f"/{path}"
             while page <= max_pages:
                 url = f"{base}{p}"
-                params: Dict[str, Any] = {"page": page, "pageSize": 100}
+                params: dict[str, Any] = {"page": page, "pageSize": 100}
                 response = await _request_with_rate_limit_retry(
                     client, "GET", url, headers=_headers(self.api_key), params=params
                 )
@@ -577,7 +611,7 @@ class PlakyClient:
         item_id: str,
         title: str,
         description: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         root = self._public_root()
         if not root:
             return {"ok": False, "message": "v1/public base URL required"}
@@ -587,7 +621,7 @@ class PlakyClient:
 
         base = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
         hdr = _headers(self.api_key)
-        bodies: List[Dict[str, Any]] = [
+        bodies: list[dict[str, Any]] = [
             {"name": title, "description": description},
             {"title": title, "description": description},
             {"item": {"name": title, "description": description}},
@@ -602,11 +636,15 @@ class PlakyClient:
                         client, method, base, headers=hdr, json=body
                     )
                     if r.status_code in (200, 201, 204):
-                        return {"ok": True, "status": r.status_code, "mode": f"{method} {list(body.keys())[0]}"}
+                        return {
+                            "ok": True,
+                            "status": r.status_code,
+                            "mode": f"{method} {list(body.keys())[0]}",
+                        }
 
         # Some boards expose title/description as item fields with board-specific keys.
-        title_fields: List[str] = []
-        description_fields: List[str] = []
+        title_fields: list[str] = []
+        description_fields: list[str] = []
         try:
             from boardman.plaky.board_schema import fetch_board_schema_bundle
 
@@ -628,7 +666,7 @@ class PlakyClient:
         except Exception:
             pass
 
-        patch_values: Dict[str, Any] = {}
+        patch_values: dict[str, Any] = {}
         for k in title_fields:
             patch_values[k] = title
         for k in description_fields:
@@ -655,7 +693,7 @@ class PlakyClient:
         title: str,
         description: str,
         priority: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         root = self._public_root()
         last_status = 400
         last_snip = ""
@@ -668,8 +706,8 @@ class PlakyClient:
                     "message": f"Could not resolve space for board_id={board_id!r}.",
                 }
             url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id}/items"
-            title_fields: List[str] = []
-            description_fields: List[str] = []
+            title_fields: list[str] = []
+            description_fields: list[str] = []
             try:
                 from boardman.plaky.board_schema import fetch_board_schema_bundle
 
@@ -686,16 +724,18 @@ class PlakyClient:
                             continue
                         if any(tok in name for tok in ("title", "name", "task")):
                             title_fields.append(key)
-                        if any(tok in name for tok in ("description", "details", "desc", "summary")):
+                        if any(
+                            tok in name for tok in ("description", "details", "desc", "summary")
+                        ):
                             description_fields.append(key)
             except Exception:
                 pass
-            text_fields: List[Dict[str, Any]] = []
+            text_fields: list[dict[str, Any]] = []
             for k in title_fields:
                 text_fields.append({"itemFieldKey": k, "value": title})
             for k in description_fields:
                 text_fields.append({"itemFieldKey": k, "value": description})
-            bodies: List[Dict[str, Any]] = [
+            bodies: list[dict[str, Any]] = [
                 {
                     "title": title,
                     "description": description,
@@ -772,7 +812,9 @@ class PlakyClient:
                                         if rid and (not rgid or rgid == group_id):
                                             item_id = rid
                                             break
-                        created_name = str(payload.get("name") or payload.get("title") or "").strip().lower()
+                        created_name = (
+                            str(payload.get("name") or payload.get("title") or "").strip().lower()
+                        )
                         needs_repair = bool(item_id) and (
                             not created_name
                             or created_name in ("new item", "untitled", "new task")
@@ -796,7 +838,9 @@ class PlakyClient:
                 "message": f"Plaky item create failed ({last_status}): {last_snip}",
             }
 
-    async def add_item_comment_public(self, board_id: str, item_id: str, text: str) -> Dict[str, Any]:
+    async def add_item_comment_public(
+        self, board_id: str, item_id: str, text: str
+    ) -> dict[str, Any]:
         if not self.api_key:
             return {"ok": False, "message": "PLAKY_API_KEY is missing."}
         root = self._public_root()
@@ -811,7 +855,9 @@ class PlakyClient:
         url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}/comments"
         payload = {"text": body}
         async with httpx.AsyncClient() as client:
-            r = await _request_with_rate_limit_retry(client, "POST", url, headers=_headers(self.api_key), json=payload)
+            r = await _request_with_rate_limit_retry(
+                client, "POST", url, headers=_headers(self.api_key), json=payload
+            )
         if r.status_code in (200, 201):
             try:
                 cmt = r.json()
@@ -821,8 +867,8 @@ class PlakyClient:
         return {"ok": False, "status": r.status_code, "message": r.text[:300]}
 
     async def _resolve_board_id_for_item_public(
-        self, item_id: str, *, skip_board_ids: Optional[AbstractSet[str]] = None
-    ) -> Optional[str]:
+        self, item_id: str, *, skip_board_ids: Set[str] | None = None
+    ) -> str | None:
         """Find which board contains this item id (Plaky v1/public board items)."""
         root = self._public_root()
         if not root or not self.api_key:
@@ -846,10 +892,15 @@ class PlakyClient:
                 return bid
         return None
 
-    async def get_board_item_public(self, board_id: str, item_id: str) -> Dict[str, Any]:
+    async def get_board_item_public(self, board_id: str, item_id: str) -> dict[str, Any]:
         """GET item on Plaky v1/public (custom fields + group on full payload)."""
         if not self.api_key:
-            return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing.", "item": None}
+            return {
+                "ok": False,
+                "status": 400,
+                "message": "PLAKY_API_KEY is missing.",
+                "item": None,
+            }
         root = self._public_root()
         if not root:
             return {"ok": False, "message": "v1/public base URL required", "item": None}
@@ -858,16 +909,22 @@ class PlakyClient:
             return {"ok": False, "message": "Could not resolve space for board", "item": None}
         url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
         async with httpx.AsyncClient() as client:
-            r = await _request_with_rate_limit_retry(client, "GET", url, headers=_headers(self.api_key))
+            r = await _request_with_rate_limit_retry(
+                client, "GET", url, headers=_headers(self.api_key)
+            )
         if r.status_code != 200:
             return {"ok": False, "status": r.status_code, "message": r.text[:300], "item": None}
         try:
             payload = r.json()
         except ValueError:
             return {"ok": False, "message": "Invalid JSON from Plaky", "item": None}
-        return {"ok": True, "status": r.status_code, "item": payload if isinstance(payload, dict) else {}}
+        return {
+            "ok": True,
+            "status": r.status_code,
+            "item": payload if isinstance(payload, dict) else {},
+        }
 
-    async def delete_board_item(self, board_id: str, item_id: str) -> Dict[str, Any]:
+    async def delete_board_item(self, board_id: str, item_id: str) -> dict[str, Any]:
         """DELETE an item from a Plaky board via v1/public."""
         if not self.api_key:
             return {"ok": False, "message": "PLAKY_API_KEY is missing."}
@@ -879,22 +936,24 @@ class PlakyClient:
             return {"ok": False, "message": "Could not resolve space for board"}
         url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
         async with httpx.AsyncClient() as client:
-            r = await _request_with_rate_limit_retry(client, "DELETE", url, headers=_headers(self.api_key))
+            r = await _request_with_rate_limit_retry(
+                client, "DELETE", url, headers=_headers(self.api_key)
+            )
         if r.status_code in (200, 204):
             return {"ok": True, "status": r.status_code}
         return {"ok": False, "status": r.status_code, "message": r.text[:300]}
 
     @staticmethod
-    def _patch_value_candidates(v: Any) -> List[Any]:
+    def _patch_value_candidates(v: Any) -> list[Any]:
         """
         Plaky PERSON fields need a structured assignee payload; reads often use assignedUsers/assignedTeams.
         TAG / multi-value fields may need an array or tag wrapper — try several shapes after the raw string.
         """
-        out: List[Any] = [v]
+        out: list[Any] = [v]
         if isinstance(v, list):
             if not v:
                 return [v]
-            nums: List[int] = []
+            nums: list[int] = []
             for x in v:
                 if isinstance(x, int):
                     nums.append(x)
@@ -996,10 +1055,10 @@ class PlakyClient:
         self,
         board_id: str,
         item_id: str,
-        values: Dict[str, Any],
+        values: dict[str, Any],
         *,
-        person_field_keys: Optional[AbstractSet[str]] = None,
-    ) -> Dict[str, Any]:
+        person_field_keys: Set[str] | None = None,
+    ) -> dict[str, Any]:
         """
         Set custom / board field values via Plaky v1/public PATCH .../items/{id}/fields.
         `values` maps itemFieldKey (or field id from board schema) -> value (string, id, or structure API expects).
@@ -1015,16 +1074,19 @@ class PlakyClient:
             first = {k: v for k, v in values.items() if str(k).strip() not in pk}
             second = {k: v for k, v in values.items() if str(k).strip() in pk}
             if first and second:
-                r1 = await self.patch_item_field_values(board_id, item_id, first, person_field_keys=None)
-                r2 = await self.patch_item_field_values(board_id, item_id, second, person_field_keys=None)
+                r1 = await self.patch_item_field_values(
+                    board_id, item_id, first, person_field_keys=None
+                )
+                r2 = await self.patch_item_field_values(
+                    board_id, item_id, second, person_field_keys=None
+                )
                 ok = bool(r1.get("ok")) and bool(r2.get("ok"))
                 return {
                     "ok": ok,
                     "mode": "split_person_second",
                     "phase_non_person": r1,
                     "phase_person": r2,
-                    "patched_keys": (r1.get("patched_keys") or [])
-                    + (r2.get("patched_keys") or []),
+                    "patched_keys": (r1.get("patched_keys") or []) + (r2.get("patched_keys") or []),
                     "failed": (r1.get("failed") or []) + (r2.get("failed") or []),
                 }
         root = self._public_root()
@@ -1036,7 +1098,7 @@ class PlakyClient:
         base = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
         hdr = _headers(self.api_key)
 
-        def _bulk_bodies_for(mapping: Dict[str, Any]) -> List[Dict[str, Any]]:
+        def _bulk_bodies_for(mapping: dict[str, Any]) -> list[dict[str, Any]]:
             """Prefer the OpenAPI flat object shape first; older envelope keys are fallbacks only."""
             entries_kv = [{"key": str(k), "value": val} for k, val in mapping.items()]
             entries_ifk = [{"itemFieldKey": str(k), "value": val} for k, val in mapping.items()]
@@ -1066,22 +1128,24 @@ class PlakyClient:
                 return {"users": [{"id": v}], "teams": []}
             return v
 
-        bulk_coerced: Dict[str, Any] = {}
+        bulk_coerced: dict[str, Any] = {}
         for k, v in values.items():
             bulk_coerced[k] = _person_field_write_bulk_value(v)
 
-        bulk_bodies: List[Dict[str, Any]] = []
+        bulk_bodies: list[dict[str, Any]] = []
         if bulk_coerced != values:
             bulk_bodies.extend(_bulk_bodies_for(bulk_coerced))
 
-        bulk_last_status: Optional[int] = None
+        bulk_last_status: int | None = None
         bulk_last_parsed: Any = None
-        bulk_ok_body: Optional[Dict[str, Any]] = None
+        bulk_ok_body: dict[str, Any] | None = None
         async with httpx.AsyncClient() as client:
             canonical_bulk = dict(bulk_coerced) if bulk_coerced != values else {}
             for body in bulk_bodies:
                 url = f"{base}/fields"
-                r = await _request_with_rate_limit_retry(client, "PATCH", url, headers=hdr, json=body)
+                r = await _request_with_rate_limit_retry(
+                    client, "PATCH", url, headers=hdr, json=body
+                )
                 if r.status_code in (200, 201, 204):
                     bulk_last_status = r.status_code
                     try:
@@ -1093,17 +1157,13 @@ class PlakyClient:
                     # duplicate Plaky activity (X ➞ X) without changing reliability meaningfully.
                     break
 
-            per_ok: List[str] = []
-            per_fail: List[Dict[str, Any]] = []
+            per_ok: list[str] = []
+            per_fail: list[dict[str, Any]] = []
             # Bulk PATCH often returns 200 while only applying some field types (e.g. PERSON coercions).
             # Never treat the whole map as done unless we only skip per-field for keys we actually rewrote
             # for bulk (`bulk_coerced` differs from caller `values` on that key).
-            trusted_bulk_keys: Set[str] = set()
-            if (
-                canonical_bulk
-                and bulk_ok_body == canonical_bulk
-                and bulk_last_status is not None
-            ):
+            trusted_bulk_keys: set[str] = set()
+            if canonical_bulk and bulk_ok_body == canonical_bulk and bulk_last_status is not None:
                 for k in values:
                     bk = str(k).strip()
                     if not bk:
@@ -1151,7 +1211,7 @@ class PlakyClient:
                 if not hit:
                     per_fail.append({"key": k, "status": last_status, "message": last_snip})
             mode = "bulk_then_per_field" if bulk_last_status is not None else "per_field"
-            out: Dict[str, Any] = {
+            out: dict[str, Any] = {
                 "ok": len(per_fail) == 0,
                 "mode": mode,
                 "patched_keys": per_ok,
@@ -1168,12 +1228,12 @@ class PlakyClient:
         description: str,
         priority: str = "medium",
         *,
-        board_id: Optional[str] = None,
-        group_id: Optional[str] = None,
-        field_values: Optional[Dict[str, Any]] = None,
-        person_field_keys: Optional[AbstractSet[str]] = None,
+        board_id: str | None = None,
+        group_id: str | None = None,
+        field_values: dict[str, Any] | None = None,
+        person_field_keys: Set[str] | None = None,
         defer_field_patch: bool = False,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Create a board item. When ``defer_field_patch`` is True, ``field_values`` are not PATCHed here
         (caller should patch once, e.g. POST /tasks uses ``_run_post_create_assignments`` only)."""
         if not self.api_key:
@@ -1243,7 +1303,12 @@ class PlakyClient:
                 or payload.get("taskUrl")
                 or (f"https://app.plaky.com/task/{task_id}" if task_id else None)
             )
-            return {"ok": True, "status": response.status_code, "task": payload, "task_url": task_url}
+            return {
+                "ok": True,
+                "status": response.status_code,
+                "task": payload,
+                "task_url": task_url,
+            }
 
         if response.status_code == 429:
             return {"ok": False, "status": 429, "message": "Plaky API rate limited the request."}
@@ -1254,15 +1319,15 @@ class PlakyClient:
             "message": f"Failed to create task ({response.status_code}): {response.text[:200]}",
         }
 
-    async def get_tasks(self, status: str = "open", board_id: str | None = None) -> Dict[str, Any]:
+    async def get_tasks(self, status: str = "open", board_id: str | None = None) -> dict[str, Any]:
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
 
         if self._public_root():
-            status_value_labels: Dict[str, str] = {}
-            status_field_keys: Set[str] = set()
+            status_value_labels: dict[str, str] = {}
+            status_field_keys: set[str] = set()
 
-            def _status_text(row: Dict[str, Any]) -> str:
+            def _status_text(row: dict[str, Any]) -> str:
                 direct = [
                     row.get("status"),
                     row.get("state"),
@@ -1274,7 +1339,7 @@ class PlakyClient:
                     if txt:
                         return txt
 
-                field_blocks: List[Any] = []
+                field_blocks: list[Any] = []
                 for k in ("itemFields", "item_fields", "fields", "customFields", "custom_fields"):
                     v = row.get(k)
                     if isinstance(v, list):
@@ -1283,15 +1348,19 @@ class PlakyClient:
                     if not isinstance(f, dict):
                         continue
                     field_key = str(f.get("key") or f.get("itemFieldKey") or "").strip()
-                    name_hint = str(
-                        f.get("name")
-                        or f.get("label")
-                        or f.get("title")
-                        or f.get("itemFieldName")
-                        or f.get("key")
-                        or f.get("itemFieldKey")
-                        or ""
-                    ).strip().lower()
+                    name_hint = (
+                        str(
+                            f.get("name")
+                            or f.get("label")
+                            or f.get("title")
+                            or f.get("itemFieldName")
+                            or f.get("key")
+                            or f.get("itemFieldKey")
+                            or ""
+                        )
+                        .strip()
+                        .lower()
+                    )
                     if not any(tok in name_hint for tok in ("status", "state", "workflow")):
                         continue
                     vals = [
@@ -1299,10 +1368,16 @@ class PlakyClient:
                         f.get("text"),
                         f.get("name"),
                         f.get("label"),
-                        (f.get("option") or {}).get("name") if isinstance(f.get("option"), dict) else None,
-                        (f.get("selectedOption") or {}).get("name")
-                        if isinstance(f.get("selectedOption"), dict)
-                        else None,
+                        (
+                            (f.get("option") or {}).get("name")
+                            if isinstance(f.get("option"), dict)
+                            else None
+                        ),
+                        (
+                            (f.get("selectedOption") or {}).get("name")
+                            if isinstance(f.get("selectedOption"), dict)
+                            else None
+                        ),
                     ]
                     for v in vals:
                         txt = str(v or "").strip()
@@ -1326,7 +1401,11 @@ class PlakyClient:
                 }
             try:
                 b = await self.get_board(bid)
-                board = b.get("board") if isinstance(b, dict) and isinstance(b.get("board"), dict) else {}
+                board = (
+                    b.get("board")
+                    if isinstance(b, dict) and isinstance(b.get("board"), dict)
+                    else {}
+                )
                 fields = board.get("fields") if isinstance(board, dict) else []
                 if isinstance(fields, list):
                     for f in fields:
@@ -1337,7 +1416,11 @@ class PlakyClient:
                         if not k or not any(tok in name for tok in ("status", "state", "workflow")):
                             continue
                         status_field_keys.add(k)
-                        cfg = f.get("configuration") if isinstance(f.get("configuration"), dict) else {}
+                        cfg = (
+                            f.get("configuration")
+                            if isinstance(f.get("configuration"), dict)
+                            else {}
+                        )
                         vals = cfg.get("values") if isinstance(cfg, dict) else []
                         if isinstance(vals, list):
                             for opt in vals:
@@ -1360,7 +1443,7 @@ class PlakyClient:
             original_count = len(rows)
             status_in = (status or "").strip().casefold()
             if status_in and status_in not in ("all", "*"):
-                filtered: List[Dict[str, Any]] = []
+                filtered: list[dict[str, Any]] = []
                 numeric_only_statuses = True
                 for row in rows:
                     resolved = _status_text(row)
@@ -1407,7 +1490,9 @@ class PlakyClient:
 
         if response.status_code == 200:
             payload = response.json()
-            tasks: List[Dict[str, Any]] = payload if isinstance(payload, list) else payload.get("tasks", [])
+            tasks: list[dict[str, Any]] = (
+                payload if isinstance(payload, list) else payload.get("tasks", [])
+            )
             return {"ok": True, "status": response.status_code, "tasks": tasks}
 
         if response.status_code == 429:
@@ -1420,8 +1505,8 @@ class PlakyClient:
         }
 
     async def add_comment(
-        self, task_id: str, body: str, *, board_id: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, task_id: str, body: str, *, board_id: str | None = None
+    ) -> dict[str, Any]:
         """Post a task comment. On Plaky v1/public, prefers ``…/items/{id}/comments`` (same as item creation)."""
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
@@ -1430,7 +1515,7 @@ class PlakyClient:
         if not tid:
             return {"ok": False, "status": 400, "message": "task_id is required."}
 
-        async def _via_item_public(bid: str) -> Optional[Dict[str, Any]]:
+        async def _via_item_public(bid: str) -> dict[str, Any] | None:
             r = await self.add_item_comment_public(bid, tid, body or "")
             if r.get("skipped"):
                 return {"ok": True, "status": 200, "comment": None, "route": "item_public"}
@@ -1445,8 +1530,11 @@ class PlakyClient:
 
         root = self._public_root()
         if root:
-            tried: Set[str] = set()
-            for cand in ((board_id or "").strip(), (settings.plaky_pr_tracking_board_id or "").strip()):
+            tried: set[str] = set()
+            for cand in (
+                (board_id or "").strip(),
+                (settings.plaky_pr_tracking_board_id or "").strip(),
+            ):
                 if not cand or cand in tried:
                     continue
                 tried.add(cand)
@@ -1469,7 +1557,11 @@ class PlakyClient:
             )
 
         if response.status_code in (200, 201):
-            out: Dict[str, Any] = {"ok": True, "status": response.status_code, "comment": response.json()}
+            out: dict[str, Any] = {
+                "ok": True,
+                "status": response.status_code,
+                "comment": response.json(),
+            }
             if root:
                 out["route"] = "tasks_legacy"
             return out
@@ -1483,14 +1575,16 @@ class PlakyClient:
             "message": f"Failed to add comment ({response.status_code}): {response.text[:200]}",
         }
 
-    async def get_task(self, task_id: str) -> Dict[str, Any]:
+    async def get_task(self, task_id: str) -> dict[str, Any]:
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
 
         url = f"{self.base_url.rstrip('/')}/tasks/{task_id}"
 
         async with httpx.AsyncClient() as client:
-            response = await _request_with_rate_limit_retry(client, "GET", url, headers=_headers(self.api_key))
+            response = await _request_with_rate_limit_retry(
+                client, "GET", url, headers=_headers(self.api_key)
+            )
 
         if response.status_code == 200:
             return {"ok": True, "status": response.status_code, "task": response.json()}
@@ -1498,21 +1592,25 @@ class PlakyClient:
         if response.status_code == 429:
             return {"ok": False, "status": 429, "message": "Plaky API rate limited the request."}
 
-        return {"ok": False, "status": response.status_code, "message": f"Failed to get task ({response.status_code}): {response.text[:200]}"}
+        return {
+            "ok": False,
+            "status": response.status_code,
+            "message": f"Failed to get task ({response.status_code}): {response.text[:200]}",
+        }
 
     async def update_task_fields(
         self,
         task_id: str,
         *,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        priority: Optional[str] = None,
-        status: Optional[str] = None,
-    ) -> Dict[str, Any]:
+        title: str | None = None,
+        description: str | None = None,
+        priority: str | None = None,
+        status: str | None = None,
+    ) -> dict[str, Any]:
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
 
-        body: Dict[str, Any] = {}
+        body: dict[str, Any] = {}
         if title is not None:
             body["title"] = title
         if description is not None:
@@ -1537,7 +1635,11 @@ class PlakyClient:
         if response.status_code == 429:
             return {"ok": False, "status": 429, "message": "Plaky API rate limited the request."}
 
-        return {"ok": False, "status": response.status_code, "message": f"Failed to patch task ({response.status_code}): {response.text[:200]}"}
+        return {
+            "ok": False,
+            "status": response.status_code,
+            "message": f"Failed to patch task ({response.status_code}): {response.text[:200]}",
+        }
 
     async def create_subtask(
         self,
@@ -1548,17 +1650,17 @@ class PlakyClient:
         status: str | None = None,
         task_type: str | None = None,
         priority: str | None = None,
-        field_values: Optional[Dict[str, Any]] = None,
-        person_field_keys: Optional[Set[str]] = None,
+        field_values: dict[str, Any] | None = None,
+        person_field_keys: set[str] | None = None,
         board_id: str | None = None,
         group_id: str | None = None,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Create a subtask. Prefer /tasks/{id}/subtasks; fallback to v1/public board item hierarchy."""
         if not self.api_key:
             return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
 
         url = f"{self.base_url.rstrip('/')}/tasks/{parent_task_id}/subtasks"
-        payload: Dict[str, Any] = {"title": title, "description": description or ""}
+        payload: dict[str, Any] = {"title": title, "description": description or ""}
         if (status or "").strip():
             payload["status"] = (status or "").strip()
         if (task_type or "").strip():
@@ -1576,7 +1678,11 @@ class PlakyClient:
                 )
 
         if response.status_code in (200, 201):
-            out: Dict[str, Any] = {"ok": True, "status": response.status_code, "subtask": response.json()}
+            out: dict[str, Any] = {
+                "ok": True,
+                "status": response.status_code,
+                "subtask": response.json(),
+            }
             iid = str(
                 out.get("subtask", {}).get("id")
                 or out.get("subtask", {}).get("itemId")
@@ -1634,9 +1740,9 @@ class PlakyClient:
         description: str,
         board_id: str | None,
         group_id: str | None,
-        field_values: Optional[Dict[str, Any]],
-        person_field_keys: Optional[Set[str]],
-    ) -> Dict[str, Any]:
+        field_values: dict[str, Any] | None,
+        person_field_keys: set[str] | None,
+    ) -> dict[str, Any]:
         root = self._public_root()
         if not root:
             return {"ok": False, "message": "Public item API unavailable for subtask fallback."}
@@ -1659,7 +1765,11 @@ class PlakyClient:
         parent_gid = str(
             parent.get("groupId")
             or parent.get("group_id")
-            or ((parent.get("group") or {}).get("id") if isinstance(parent.get("group"), dict) else "")
+            or (
+                (parent.get("group") or {}).get("id")
+                if isinstance(parent.get("group"), dict)
+                else ""
+            )
             or ""
         ).strip()
         if not gid:
@@ -1669,25 +1779,67 @@ class PlakyClient:
                 gr = await self.list_groups(bid)
                 groups = gr.get("groups") if isinstance(gr, dict) else []
                 if isinstance(groups, list) and groups:
-                    gid = str((groups[0] or {}).get("id") or "").strip() if isinstance(groups[0], dict) else ""
+                    gid = (
+                        str((groups[0] or {}).get("id") or "").strip()
+                        if isinstance(groups[0], dict)
+                        else ""
+                    )
             except Exception:
                 gid = ""
         if not gid:
-            return {"ok": False, "message": "Could not resolve parent item group id (provide --group-id)."}
+            return {
+                "ok": False,
+                "message": "Could not resolve parent item group id (provide --group-id).",
+            }
 
         sid = await self.resolve_space_for_board(bid)
         if not sid:
             return {"ok": False, "message": "Could not resolve space for board."}
         url = f"{root.rstrip('/')}/spaces/{sid}/boards/{bid}/items"
 
-        bodies: List[Dict[str, Any]] = [
-            {"title": title, "description": description or "", "groupId": gid, "parentId": parent_id},
-            {"title": title, "description": description or "", "groupId": gid, "parentItemId": parent_id},
-            {"title": title, "description": description or "", "groupId": gid, "parentTaskId": parent_id},
-            {"title": title, "description": description or "", "group_id": gid, "parent_id": parent_id},
-            {"title": title, "description": description or "", "group_id": gid, "parentItemId": parent_id},
-            {"name": title, "description": description or "", "groupId": gid, "parentId": parent_id},
-            {"name": title, "description": description or "", "groupId": gid, "parentItemId": parent_id},
+        bodies: list[dict[str, Any]] = [
+            {
+                "title": title,
+                "description": description or "",
+                "groupId": gid,
+                "parentId": parent_id,
+            },
+            {
+                "title": title,
+                "description": description or "",
+                "groupId": gid,
+                "parentItemId": parent_id,
+            },
+            {
+                "title": title,
+                "description": description or "",
+                "groupId": gid,
+                "parentTaskId": parent_id,
+            },
+            {
+                "title": title,
+                "description": description or "",
+                "group_id": gid,
+                "parent_id": parent_id,
+            },
+            {
+                "title": title,
+                "description": description or "",
+                "group_id": gid,
+                "parentItemId": parent_id,
+            },
+            {
+                "name": title,
+                "description": description or "",
+                "groupId": gid,
+                "parentId": parent_id,
+            },
+            {
+                "name": title,
+                "description": description or "",
+                "groupId": gid,
+                "parentItemId": parent_id,
+            },
             {"title": title, "groupId": gid, "parentId": parent_id},
         ]
 
@@ -1695,15 +1847,21 @@ class PlakyClient:
         last_snip = ""
         async with httpx.AsyncClient() as client:
             for body in bodies:
-                r = await _request_with_rate_limit_retry(client, "POST", url, headers=_headers(self.api_key), json=body)
+                r = await _request_with_rate_limit_retry(
+                    client, "POST", url, headers=_headers(self.api_key), json=body
+                )
                 last_status = r.status_code
                 last_snip = r.text[:200]
                 if r.status_code in (200, 201):
                     payload = r.json()
                     sub_id = str(
-                        payload.get("id") or payload.get("itemId") or payload.get("taskId") or payload.get("_id") or ""
+                        payload.get("id")
+                        or payload.get("itemId")
+                        or payload.get("taskId")
+                        or payload.get("_id")
+                        or ""
                     ).strip()
-                    out: Dict[str, Any] = {
+                    out: dict[str, Any] = {
                         "ok": True,
                         "status": r.status_code,
                         "subtask": payload,

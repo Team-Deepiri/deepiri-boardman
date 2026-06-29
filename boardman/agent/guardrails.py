@@ -11,18 +11,17 @@ from __future__ import annotations
 
 import re
 import unicodedata
-from typing import FrozenSet
 
 from boardman.agent.tools import build_all_tools
 
 
-def _write_tool_names() -> FrozenSet[str]:
+def _write_tool_names() -> frozenset[str]:
     ro = frozenset(t.name for t in build_all_tools(allow_writes=False))
     rw = frozenset(t.name for t in build_all_tools(allow_writes=True))
     return frozenset(rw - ro)
 
 
-WRITE_TOOLS: FrozenSet[str] = _write_tool_names()
+WRITE_TOOLS: frozenset[str] = _write_tool_names()
 
 
 def is_write_tool(name: str) -> bool:

@@ -30,11 +30,13 @@ async def test_init_direction_requires_push_access(monkeypatch: pytest.MonkeyPat
 
     assert res["ok"] is False
     assert "does not have write access" in str(res.get("message", ""))
-    assert all(not (c[:3] == ("gh", "repo", "clone")) for c in calls)
+    assert all(c[:3] != ("gh", "repo", "clone") for c in calls)
 
 
 @pytest.mark.asyncio
-async def test_init_direction_skips_when_existing_without_force(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_init_direction_skips_when_existing_without_force(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def fake_run_cmd(*argv: str, cwd: Path | None = None):
         if argv[:2] == ("gh", "--version"):
             return 0, "gh version 2.x", ""
@@ -45,7 +47,11 @@ async def test_init_direction_skips_when_existing_without_force(monkeypatch: pyt
         if argv[:3] == ("gh", "api", "repos/acme/demo"):
             return 0, json.dumps({"default_branch": "main", "permissions": {"push": True}}), ""
         if argv[:2] == ("gh", "api") and "contents/DIRECTION.md?ref=main" in argv[2]:
-            return 0, json.dumps({"html_url": "https://github.com/acme/demo/blob/main/DIRECTION.md"}), ""
+            return (
+                0,
+                json.dumps({"html_url": "https://github.com/acme/demo/blob/main/DIRECTION.md"}),
+                "",
+            )
         return 1, "", "unexpected command"
 
     monkeypatch.setattr(di, "_run_cmd", fake_run_cmd)
@@ -58,7 +64,9 @@ async def test_init_direction_skips_when_existing_without_force(monkeypatch: pyt
 
 
 @pytest.mark.asyncio
-async def test_init_direction_creates_pr_with_user_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_init_direction_creates_pr_with_user_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls: list[tuple[str, ...]] = []
 
     async def fake_run_cmd(*argv: str, cwd: Path | None = None):

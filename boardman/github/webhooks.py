@@ -1,6 +1,6 @@
-import hmac
 import hashlib
-from typing import Any, Optional
+import hmac
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,10 +18,10 @@ def verify_signature(raw_body: bytes, signature_header: str, secret: str) -> boo
 class GitHubIssue(BaseModel):
     number: int
     title: str
-    body: Optional[str] = None
+    body: str | None = None
     html_url: str
     state: str = "open"
-    user: Optional[Any] = None
+    user: Any | None = None
 
 
 class GitHubPullRequest(BaseModel):
@@ -29,14 +29,14 @@ class GitHubPullRequest(BaseModel):
 
     number: int
     title: str
-    body: Optional[str] = None
+    body: str | None = None
     html_url: str
     state: str
     merged: bool = False
     draft: bool = False
-    user: Optional[Any] = None
-    base: Optional[Any] = None
-    head: Optional[Any] = None
+    user: Any | None = None
+    base: Any | None = None
+    head: Any | None = None
     assignees: list[Any] = Field(default_factory=list)
     requested_reviewers: list[Any] = Field(default_factory=list)
 
@@ -61,9 +61,9 @@ class PullRequestEventPayload(BaseModel):
 class GitHubReview(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    user: Optional[dict] = None
+    user: dict | None = None
     state: str = ""
-    body: Optional[str] = None
+    body: str | None = None
 
 
 class PullRequestReviewEventPayload(BaseModel):
@@ -79,7 +79,7 @@ class IssueCommentIssuePayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     number: int
-    pull_request: Optional[dict] = None
+    pull_request: dict | None = None
 
 
 class IssueCommentEventPayload(BaseModel):
@@ -95,14 +95,14 @@ class PullRequestReviewCommentEventPayload(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     action: str
-    comment: Optional[dict] = None
-    pull_request: Optional[GitHubPullRequest] = None
+    comment: dict | None = None
+    pull_request: GitHubPullRequest | None = None
     repository: GitHubRepository
 
 
 class PingEventPayload(BaseModel):
-    hook: Optional[Any] = None
-    repository: Optional[GitHubRepository] = None
+    hook: Any | None = None
+    repository: GitHubRepository | None = None
 
 
 def parse_webhook_payload(event_type: str, payload_dict: dict) -> Any:
