@@ -24,6 +24,7 @@ from boardman.services.pr_handler import (
     handle_pr_ready_for_review,
     handle_pr_review_comment,
     handle_pr_review_requested,
+    handle_pr_synchronized,
 )
 from boardman.services.pr_review_handler import handle_issue_comment_on_pr, handle_pull_request_review
 from boardman.settings import settings
@@ -124,6 +125,8 @@ async def github_webhook(
             result = await handle_pr_merged(payload, session)
         elif payload.action == "closed" and not payload.pull_request.merged:
             result = await handle_pr_closed_without_merge(payload, session)
+        elif payload.action == "synchronize":
+            result = await handle_pr_synchronized(payload, session)
         elif payload.action == "reopened":
             result = await handle_pr_opened(payload, session)
 

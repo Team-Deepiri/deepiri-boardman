@@ -366,10 +366,17 @@ async def build_assignment_field_map(
     repo_value_format: str = "full",
     github_repos_value_format: str = "full",
 ) -> Dict[str, str]:
-    """Map Plaky field key -> QA person id or repo label(s) for create/patch. Overrides win for same keys."""
+    """Map Plaky field key -> QA person id or repo label(s) for create/patch. Overrides win for same keys.
+
+    ``plaky_field_qa_key``: ``None`` uses the global team_assignments key; an empty
+    string disables the QA field entirely (board schema known but has no QA column).
+    """
     cfg = cfg or load_team_assignments()
     out: Dict[str, str] = {}
-    qa_key = (plaky_field_qa_key or cfg.plaky_field_qa or "").strip()
+    if plaky_field_qa_key is None:
+        qa_key = (cfg.plaky_field_qa or "").strip()
+    else:
+        qa_key = plaky_field_qa_key.strip()
     qid, _ = await pick_qa_for_repo(full_name, cfg)
     if qid and qa_key:
         out[qa_key] = qid
