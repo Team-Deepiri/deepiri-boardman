@@ -43,6 +43,30 @@ def _opt_label(o: Any) -> str:
 def _collect_options(field: Dict[str, Any]) -> List[Dict[str, Any]]:
     seen_labels: set[str] = set()
     options: List[Dict[str, Any]] = []
+
+    def _add_from(block: Any) -> None:
+        if not isinstance(block, list):
+            return
+        for o in block:
+            lab = _opt_label(o)
+            if not lab or lab in seen_labels:
+                continue
+            seen_labels.add(lab)
+            if isinstance(o, dict):
+                # Keep the whole dict (colors/types) and normalize a stable option id.
+                # Plaky STATUS/SELECT options carry their id under `key`; downstream PATCH
+                # value selection and intent scoring read `id`/`value`, so mirror it there.
+                opt = dict(o, name=lab)
+                if not str(opt.get("id") or "").strip():
+                    for idk in ("id", "optionId", "value", "_id", "key"):
+                        v = o.get(idk)
+                        if v is not None and str(v).strip():
+                            opt["id"] = v
+                            break
+                options.append(opt)
+            else:
+                options.append({"name": lab})
+
     for key in (
         "options",
         "choices",
@@ -59,19 +83,70 @@ def _collect_options(field: Dict[str, Any]) -> List[Dict[str, Any]]:
         block = field.get(key)
         if not isinstance(block, list):
             continue
-        for o in block:
-            lab = _opt_label(o)
-            if not lab or lab in seen_labels:
-                continue
-            seen_labels.add(lab)
-            if isinstance(o, dict):
-                # Keep the whole dict so we can see colors/types if present
-                options.append(dict(o, name=lab))
-            else:
-                options.append({"name": lab})
+        _add_from(block)
         if options:
             break
+
+    # Plaky STATUS/SELECT fields nest their options under `configuration.values`
+    # (each: {"key": "<id>", "title": "<label>", ...}) — not exposed at the top level.
+    if not options:
+        conf = field.get("configuration")
+        if isinstance(conf, dict):
+            for key in ("values", "options", "choices", "statuses"):
+                _add_from(conf.get(key))
+                if options:
+                    break
+
     return options
+
+
+def plaky_item_field_value(item: Dict[str, Any], field_key: str) -> Any:
+    """Read a field's value from a Plaky item.
+
+    The v1/public item payload (``get_board_item_public``) stores fields as a LIST of
+    ``{"key", "type", "title", "value"}`` dicts — NOT a flat ``{key: value}`` map. This
+    accessor handles both that shape and a flat mapping (used by tests / other code paths).
+    """
+    if not isinstance(item, dict) or not field_key:
+        return None
+    fields = item.get("fields")
+    if isinstance(fields, list):
+        for f in fields:
+            if isinstance(f, dict) and str(f.get("key") or "") == field_key:
+                return f.get("value")
+    if field_key in item:
+        return item.get(field_key)
+    return None
+
+
+def plaky_item_status_id(item: Dict[str, Any], field_key: str) -> str:
+    """Current STATUS option id stored on an item ("" if unset)."""
+    v = plaky_item_field_value(item, field_key)
+    if isinstance(v, dict):
+        return str(v.get("id") or v.get("value") or "").strip()
+    return str(v if v is not None else "").strip()
+
+
+def plaky_item_person_ids(item: Dict[str, Any], field_key: str) -> List[str]:
+    """Plaky user ids assigned in a PERSON field (handles ``{"assignedUsers": [...]}``,
+    a single ``{"id": ...}`` dict, a list, or a bare id — across API and test shapes)."""
+    v = plaky_item_field_value(item, field_key)
+    out: List[str] = []
+    if isinstance(v, dict):
+        au = v.get("assignedUsers")
+        if isinstance(au, list):
+            out = [str(x).strip() for x in au if str(x).strip()]
+        elif v.get("id") not in (None, ""):
+            out = [str(v.get("id")).strip()]
+    elif isinstance(v, list):
+        for x in v:
+            if isinstance(x, dict) and x.get("id") not in (None, ""):
+                out.append(str(x.get("id")).strip())
+            elif str(x).strip():
+                out.append(str(x).strip())
+    elif v not in (None, ""):
+        out = [str(v).strip()]
+    return out
 
 
 def plaky_field_row_label(f: Dict[str, Any]) -> str:

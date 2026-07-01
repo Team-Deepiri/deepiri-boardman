@@ -166,7 +166,7 @@ def build_readiness_report(
     checks.extend(_check_env(env_path, env))
     checks.extend(_check_deployment_decisions(env))
     checks.extend(_check_compose(compose_path))
-    checks.extend(_check_repos_yml(repos_path))
+    checks.extend(_check_repos_yml(repos_path, env))
     checks.extend(_check_team_assignments(team_path))
     checks.extend(_check_database(db_path))
     checks.extend(_check_runtime_smoke_guidance())
@@ -505,7 +505,27 @@ def _check_queue_services(services: dict[str, Any]) -> list[ReadinessCheck]:
     ]
 
 
-def _check_repos_yml(path: Path) -> list[ReadinessCheck]:
+def _placement_auto_discover_enabled(env: dict[str, str]) -> bool:
+    raw = env.get("PLAKY_PLACEMENT_AUTO_DISCOVER")
+    if raw is None:
+        return True
+    return raw.strip().lower() not in ("0", "false", "no", "off")
+
+
+def _check_repos_yml(path: Path, env: dict[str, str] | None = None) -> list[ReadinessCheck]:
+    env = env or {}
+    plaky_key = str(env.get("PLAKY_API_KEY") or "").strip()
+    # Auto-discovery path: empty repos.yml is OK when we can fetch the Plaky catalog live.
+    if _placement_auto_discover_enabled(env) and plaky_key and not _is_placeholder(plaky_key):
+        return [
+            ReadinessCheck(
+                "plaky",
+                "repo placement",
+                PASS,
+                "auto-discovery enabled (Plaky catalog + fuzzy group/board match); "
+                "repos.yml not required for board/group IDs",
+            )
+        ]
     if not path.is_file():
         return [
             ReadinessCheck(

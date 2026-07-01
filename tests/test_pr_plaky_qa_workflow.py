@@ -100,14 +100,21 @@ def qa_settings(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "plaky_status_completed", "completed")
     monkeypatch.setattr(settings, "plaky_pr_merge_status", "completed")
 
-    def _fixed_routing(*a, **k):
+    async def _fixed_routing(*a, **k):
         return RepoRouting(plaky_board_id="board-1")
 
-    monkeypatch.setattr("boardman.repos_config.get_routing", _fixed_routing)
-    monkeypatch.setattr("boardman.services.pr_review_handler.get_routing", _fixed_routing)
-    monkeypatch.setattr("boardman.services.pr_task_linking.get_routing", _fixed_routing)
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", _fixed_routing)
+    monkeypatch.setattr("boardman.services.pr_review_handler.get_routing_async", _fixed_routing)
+    monkeypatch.setattr("boardman.services.pr_task_linking.get_routing_async", _fixed_routing)
     monkeypatch.setattr(settings, "plaky_complete_when_all_prs_merged", False)
     monkeypatch.setattr(settings, "github_org", "deepiri-org")
+
+    # QA-field resolution is now schema-first; provide a board schema so discovery returns
+    # the test's QA field key ("fld_qa") instead of hitting the live Plaky API.
+    async def _fake_normalized(_bid):
+        return {"fields": [{"key": "fld_qa", "name": "QA Engineer Assigned", "type": "person"}]}
+
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status._load_normalized", _fake_normalized)
 
 
 @pytest.mark.asyncio

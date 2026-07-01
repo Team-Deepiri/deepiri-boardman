@@ -101,6 +101,49 @@ def test_discover_qa_field_prefers_person_qa_column() -> None:
 
 
 @pytest.mark.asyncio
+async def test_resolve_new_workflow_intents(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The 2026-06 PR-lifecycle intents pick the right option on a realistic board."""
+    normalized = {
+        "fields": [
+            {
+                "name": "Status",
+                "type": "status",
+                "key": "st",
+                "options": [
+                    {"name": "Needs Assigned", "id": "needs-assigned"},
+                    {"name": "Assigned", "id": "assigned"},
+                    {"name": "In Progress", "id": "in-progress"},
+                    {"name": "Paused / Taking a break", "id": "paused"},
+                    {"name": "Needs QA", "id": "needs-qa"},
+                    {"name": "Needs QA AGAIN", "id": "needs-qa-again"},
+                    {"name": "In QA", "id": "in-qa"},
+                    {"name": "QA verified", "id": "qa-verified"},
+                    {"name": "Completed", "id": "completed"},
+                ],
+            }
+        ]
+    }
+
+    async def _preload(*_a, **_k):
+        return normalized
+
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status._load_normalized", _preload)
+
+    cases = {
+        "workflow_needs_assigned": "needs-assigned",
+        "workflow_assigned": "assigned",
+        "workflow_in_progress": "in-progress",
+        "workflow_paused": "paused",
+        "workflow_needs_qa_again": "needs-qa-again",
+        "workflow_completed": "completed",
+    }
+    for intent, expected_id in cases.items():
+        out = await resolve_plaky_status_patch("b", intent=intent)
+        assert out is not None, intent
+        assert out == ("st", expected_id), f"{intent} -> {out}, expected {expected_id}"
+
+
+@pytest.mark.asyncio
 async def test_resolve_github_user_prefers_plaky_github_link(monkeypatch: pytest.MonkeyPatch) -> None:
     users = [
         {"id": "by-github", "name": "Other", "email": "other@x.com", "github_login": "DevLogin"},

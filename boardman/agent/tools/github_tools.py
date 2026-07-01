@@ -16,8 +16,18 @@ from boardman.github.repo_fetch import (
     fetch_repo_file_text,
     parse_owner_repo,
 )
+from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.repos_config import list_workspace_repos
 from boardman.settings import settings
+
+_NOTABLE_FILE_BASENAMES = {
+    "readme.md", "readme.rst", "readme.txt",
+    "package.json", "pyproject.toml", "setup.py", "setup.cfg", "cargo.toml",
+    "go.mod", "pom.xml", "build.gradle", "gemfile",
+    "dockerfile", "docker-compose.yml", "docker-compose.yaml",
+    "makefile", "justfile",
+    ".github", "direction.md", "contributing.md", "changelog.md",
+}
 
 
 async def _github_list_workspace_repos() -> str:
@@ -52,6 +62,7 @@ async def _github_list_open_issues(owner_repo: str) -> str:
         r = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}/issues?state=open&per_page=30",
             headers=headers,
+            follow_redirects=True,
         )
         if r.status_code != 200:
             return json.dumps({"ok": False, "status": r.status_code, "text": r.text[:500]})
@@ -93,10 +104,52 @@ async def _github_fetch_file(owner_repo: str, path: str, ref: str = "") -> str:
     return json.dumps({"ok": True, "path": path, "ref": branch, "content": text}, default=str)[:14000]
 
 
+async def _github_repo_structure(owner_repo: str) -> str:
+    """
+    Fetch repo file tree + metadata from GitHub (no file content read).
+    Returns language, top-level dirs, notable config/doc files, file count, and depth.
+    Use as fallback when DIRECTION.md and README are absent.
+    """
+    if not settings.github_pat:
+        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    parsed = parse_owner_repo(owner_repo)
+    if not parsed:
+        return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
+    owner, repo = parsed
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        meta = await fetch_repo_metadata(client, owner, repo)
+    if not meta:
+        return json.dumps({"ok": False, "message": f"Could not fetch metadata for {owner}/{repo}"})
+
+    notable: List[str] = []
+    file_count = 0
+    for sig in meta.raw_signals:
+        if sig.startswith("file:"):
+            file_count += 1
+            basename = sig[5:]
+            if basename in _NOTABLE_FILE_BASENAMES:
+                notable.append(basename)
+        elif sig.startswith("dir:"):
+            pass
+
+    return json.dumps({
+        "ok": True,
+        "repo": meta.full_name,
+        "language": meta.language,
+        "default_branch": meta.default_branch,
+        "size_kb": meta.size_kb,
+        "top_level_dirs": meta.top_level_dirs,
+        "notable_files": notable,
+        "total_unique_files": file_count,
+        "max_depth": meta.max_depth,
+    }, default=str)
+
+
 async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20) -> str:
     """
     One call: DIRECTION.md + recent commits + open issues (same signals as server scan).
     Use before proposing Plaky tasks for a GitHub repo without a local clone.
+    Falls back to README.md automatically when DIRECTION.md is absent.
     """
     if not settings.github_pat:
         return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
@@ -109,10 +162,16 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
         direction = await fetch_direction_md(client, owner, repo)
         commits = await fetch_recent_commits(client, owner, repo, limit=lim)
         issues = await fetch_open_issues(client, owner, repo)
+        readme: Optional[str] = None
+        if direction.startswith("(No DIRECTION.md"):
+            raw = await fetch_repo_file_text(client, owner, repo, "README.md")
+            if not raw.startswith("(file unavailable"):
+                readme = raw
     out = {
         "ok": True,
         "repo": f"{owner}/{repo}",
         "DIRECTION_md": direction,
+        "readme_md": readme,
         "recent_commits_markdown": commits,
         "open_issues_markdown": issues,
     }
@@ -167,7 +226,21 @@ def github_repo_planning_context_tool() -> StructuredTool:
         description=(
             "Bundle DIRECTION.md + recent commits + open issues for owner/repo in one call — "
             "best starting point when planning work for a remote GitHub repo. "
+            "Automatically falls back to README.md (returned as readme_md) when DIRECTION.md is absent. "
             "Optional commits_limit (default 20, max 50). Requires GITHUB_PAT."
+        ),
+    )
+
+
+def github_repo_structure_tool() -> StructuredTool:
+    return StructuredTool.from_function(
+        coroutine=_github_repo_structure,
+        name="github_repo_structure",
+        description=(
+            "Fetch repo file tree and metadata from GitHub without reading file contents. "
+            "Returns: primary language, default branch, top-level directories, notable files "
+            "(README, Dockerfile, package.json, pyproject.toml, etc.), file count, and directory depth. "
+            "Use as a fallback when DIRECTION.md and README are absent to infer repo purpose from structure."
         ),
     )
 
@@ -176,6 +249,7 @@ def build_github_tools() -> List[StructuredTool]:
     return [
         github_list_workspace_repos_tool(),
         github_repo_planning_context_tool(),
+        github_repo_structure_tool(),
         github_fetch_direction_tool(),
         github_fetch_file_tool(),
         github_list_open_issues_tool(),

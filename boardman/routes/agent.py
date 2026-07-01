@@ -79,9 +79,11 @@ class InitDirectionResponse(BaseModel):
 
 class AgentChatResponse(BaseModel):
     ok: bool = True
-    reply: str = Field(..., description="Assistant reply as GitHub-flavored markdown (plain text, not HTML).")
-    session_id: str
+    reply: str | None = Field(None, description="Assistant reply as GitHub-flavored markdown (plain text, not HTML).")
+    session_id: str | None = None
     content_format: Literal["markdown"] = "markdown"
+    queued: bool = False
+    job_id: str | None = None
 
 
 class AgentHistoryMessage(BaseModel):
