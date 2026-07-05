@@ -3,9 +3,9 @@
 Pattern mirrors deepiri-axiom org-catalog cache: list all boards, fetch groups per board,
 persist to ``.boardman/plaky-catalog.json`` with a 24h TTL (``PLAKY_CATALOG_TTL_SECONDS``).
 
-When ``PLAKY_CATALOG_CATEGORICAL_ONLY`` is true (default), only Devin's five categorical
-boards are kept — legacy boards (AI Task Board, Boardman Test Board, etc.) are dropped so
-fuzzy matching does not send tasks to the wrong sprint boards.
+When ``PLAKY_CATALOG_CATEGORICAL_ONLY`` is true (default), legacy sprint/task boards are
+dropped heuristically (Backlog / Open PRs buckets, single-group test boards). Repo-catalog
+boards are kept — typically Devin's five categorical boards — without hardcoding their titles.
 
 Consumers: ``placement_discovery.resolve_placement_for_repo`` (webhooks via ``get_routing_async``).
 """
@@ -21,7 +21,6 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from boardman.plaky.client import PlakyClient
-from boardman.plaky.repo_category import is_categorical_plaky_board
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -29,16 +28,90 @@ _log = logging.getLogger(__name__)
 CACHE_VERSION = 1
 DEFAULT_TTL_SECONDS = 86_400  # 24h
 
+# Kanban bucket labels on legacy sprint boards — not repo-slug groups.
+_SPRINT_GROUP_NAMES: frozenset[str] = frozenset(
+    {
+        "backlog",
+        "open prs",
+        "in progress",
+        "in review",
+        "done",
+        "qa",
+        "testing",
+        "blocked",
+        "todo",
+        "to do",
+        "icebox",
+        "ready",
+        "review",
+        "merged",
+        "closed",
+        "archive",
+        "archived",
+    }
+)
+
+
+def _normalize_group_name(name: str) -> str:
+    """Lowercase slug; strip leading emoji/punctuation (e.g. Plaky ``‼️deepiri-platform``)."""
+    n = (name or "").strip().casefold()
+    i = 0
+    while i < len(n) and not n[i].isalnum():
+        i += 1
+    return n[i:]
+
+
+def looks_like_repo_group(name: str) -> bool:
+    """True when a Plaky group name looks like a GitHub repo slug, not a sprint bucket."""
+    n = _normalize_group_name(name)
+    if not n or " " in n:
+        return False
+    if n in _SPRINT_GROUP_NAMES:
+        return False
+    if n.startswith("deepiri-") or n.startswith("diri-"):
+        return True
+    # Short slugs without org prefix (e.g. ``diva`` on Creative Repos).
+    return len(n) >= 2 and n.replace("-", "").replace("_", "").isalnum()
+
+
+def is_categorical_board(board: PlakyBoardEntry) -> bool:
+    """Detect repo-catalog boards from group structure (no hardcoded board titles).
+
+    Categorical boards (Devin's five) have groups named after repos. Legacy sprint boards
+    use kanban buckets (Backlog, Open PRs, …) or a single ad-hoc test group.
+    """
+    if not board.groups:
+        return False
+    repo_like = 0
+    sprint_like = 0
+    prefixed_repo = 0
+    for group in board.groups:
+        norm = _normalize_group_name(group.name)
+        if norm in _SPRINT_GROUP_NAMES:
+            sprint_like += 1
+        elif looks_like_repo_group(group.name):
+            repo_like += 1
+            if norm.startswith("deepiri-") or norm.startswith("diri-"):
+                prefixed_repo += 1
+    if sprint_like > 0 and repo_like == 0:
+        return False
+    if repo_like == 0:
+        return False
+    # Exclude single-group test boards (e.g. group ``Boardman`` on ``Boardman Test Board``).
+    if len(board.groups) == 1 and prefixed_repo == 0:
+        return False
+    return prefixed_repo >= 1 or repo_like >= 2
+
 
 def filter_categorical_boards(boards: List[PlakyBoardEntry]) -> List[PlakyBoardEntry]:
-    """Drop legacy/test boards; placement only searches Devin's five categorical boards."""
+    """Keep repo-catalog boards; drop legacy sprint/test boards when categorical-only is on."""
     if not settings.plaky_catalog_categorical_only:
         return boards
-    kept = [b for b in boards if is_categorical_plaky_board(b.name)]
+    kept = [b for b in boards if is_categorical_board(b)]
     dropped = len(boards) - len(kept)
     if dropped:
         _log.info(
-            "plaky catalog: scoped to %s categorical board(s) (%s legacy/test board(s) excluded)",
+            "plaky catalog: scoped to %s repo-catalog board(s) (%s legacy/test board(s) excluded)",
             len(kept),
             dropped,
         )
@@ -204,7 +277,6 @@ async def fetch_live_catalog(client: Optional[PlakyClient] = None) -> tuple[Plak
         elif isinstance(item, Exception):
             _log.warning("plaky catalog: board groups fetch failed: %s", item)
     boards.sort(key=lambda b: b.name.casefold())
-    # Exclude legacy sprint boards before writing cache (see repo_category.PLAKY_CATEGORICAL_BOARD_NAMES).
     boards = filter_categorical_boards(boards)
     now = time.time()
     return PlakyCatalogCache(fetched_at=now, source="plaky-api", boards=boards), "plaky-api"

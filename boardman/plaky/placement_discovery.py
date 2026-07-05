@@ -25,7 +25,6 @@ from boardman.plaky.plaky_catalog import (
     filter_categorical_boards,
     get_plaky_catalog,
 )
-from boardman.plaky.repo_category import infer_repo_category
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -39,7 +38,7 @@ class PlacementResult:
     group_id: str
     board_name: str
     group_name: str
-    category: str  # internal slug: platform | ai-runtime | dx | creative | infra | unknown
+    category: str  # Plaky board display name (from catalog; same as board_name)
     source: str  # group_slug_match
     score: int  # fuzzy match score from rank_plaky_rows
 
@@ -108,13 +107,12 @@ def discover_placement_from_catalog(
         return None
 
     board, group, score = best_global
-    category = infer_repo_category(slug, description)
     return PlacementResult(
         board_id=board.id,
         group_id=group.id,
         board_name=board.name,
         group_name=group.name,
-        category=category,
+        category=board.name,
         source="group_slug_match",
         score=score,
     )
