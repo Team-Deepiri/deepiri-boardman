@@ -7,9 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from boardman.assignment.qa_picker import build_assignment_field_map
 from boardman.database.models import IssueTaskMap, SyncLog
 from boardman.github.webhooks import IssueEventPayload
+from boardman.plaky.board_aware import board_person_field_keys, resolve_group_for_repo
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
-from boardman.repos_config import get_routing
+from boardman.repos_config import get_routing_async
 from boardman.settings import settings
 
 ISSUE_LINK_RE = re.compile(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", re.IGNORECASE)
@@ -32,7 +33,7 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     plaky = PlakyClient()
     full_name = payload.repository.full_name
     title = f"[{repo_name}] {payload.issue.title}"
-    routing = get_routing(full_name, repo_name, settings.github_org)
+    routing = await get_routing_async(full_name, repo_name, settings.github_org)
     routing_footer = ""
     if routing:
         routing_footer = (
@@ -44,7 +45,15 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     description = f"{payload.issue.body or ''}\n\n{payload.issue.html_url}{routing_footer}"
 
     bid, gid = effective_plaky_placement(routing)
-    assign_fields = await build_assignment_field_map(full_name)
+    qa_key_override: str | None = None
+    if bid:
+        # Category boards: group is named after the repo, person field keys differ
+        # per board — resolve both from the live board instead of trusting config.
+        gid = await resolve_group_for_repo(bid, repo_name, fallback_group_id=gid, plaky=plaky)
+        keys = await board_person_field_keys(bid)
+        if keys is not None:
+            qa_key_override = keys.get("qa") or ""
+    assign_fields = await build_assignment_field_map(full_name, plaky_field_qa_key=qa_key_override)
     result = await plaky.create_task(
         title=title,
         description=description,

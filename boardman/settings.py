@@ -7,7 +7,9 @@ class Settings(BaseSettings):
 
     plaky_api_key: str = ""
     plaky_api_base: str = "https://api.plaky.com/v1/public"
-    plaky_pr_merge_status: str = "in_review"
+    # PR merged → Plaky status. Empty = resolve "Completed" from the board schema
+    # (workflow_completed intent). Set a literal label/id to override.
+    plaky_pr_merge_status: str = ""
     # When true, set `plaky_pr_merge_status` only after every linked PR is merged (or withdrawn).
     plaky_complete_when_all_prs_merged: bool = True
     # QA workflow (GitHub → Plaky). Empty = skip that transition (set to your board status keys).
@@ -31,6 +33,15 @@ class Settings(BaseSettings):
     plaky_status_qa_approved: str = ""
     plaky_status_qa_rejected: str = ""
     plaky_status_completed: str = "completed"
+    # PR-lifecycle statuses (empty = resolve from board schema via dynamic_qa_status intents):
+    # assigned (dev matched/filled in), paused (comment said "pause"), in_progress (work resumed),
+    # needs_qa_again (dev pinged QA after rework).
+    plaky_status_assigned: str = ""
+    plaky_status_paused: str = ""
+    plaky_status_in_progress: str = ""
+    plaky_status_needs_qa_again: str = ""
+    # When True, on PR↔task link with no current assignee, fill the PR author as the engineer.
+    plaky_pr_fill_assignee_from_author: bool = True
     plaky_pr_tracking_board_id: str = ""
     plaky_pr_tracking_group_id: str = ""
     # When true, GitHub PR link comments use HTML <a href> (Plaky often does not linkify bare URLs).
@@ -42,6 +53,15 @@ class Settings(BaseSettings):
     plaky_team_assignment_field_sync_cooldown_seconds: float = 60.0
     # Seconds; 0 disables TTL cache for fetch_board_schema_bundle
     plaky_board_schema_cache_ttl_seconds: float = 90.0
+
+    # --- Repo → Plaky placement auto-discovery (replaces repos.yml board/group IDs) ---
+    # Catalog: all categorical boards + groups, cached on disk for webhook routing.
+    plaky_catalog_cache_path: str = ".boardman/plaky-catalog.json"
+    plaky_catalog_ttl_seconds: float = 86_400.0
+    plaky_placement_auto_discover: bool = True
+    plaky_placement_min_score: int = 400  # rank_plaky_rows threshold; see name_match.py
+    # Limit search to the five categorical boards (excludes legacy AI Task Board, etc.).
+    plaky_catalog_categorical_only: bool = True
 
     github_webhook_secret: str = ""
     github_pat: str | None = None
@@ -96,11 +116,16 @@ class Settings(BaseSettings):
     anthropic_api_key: str = ""
     gemini_api_key: str = ""
 
+    # Production scope: the worker-only deployment serves just the GitHub→Plaky webhook
+    # automation. Set BOARDMAN_ENABLE_AGENT_API=false to NOT register the agent chat/scan
+    # routes (no conversational routing / chat in production; UI is deployed separately).
+    boardman_enable_agent_api: bool = True
+
     agent_max_history: int = 50
     agent_require_confirm_bulk: bool = True
     agent_langchain_tools: bool = True
     # LangGraph model↔tool steps cap (each step is often a full LLM call — keep low for latency)
-    agent_recursion_limit: int = 22
+    agent_recursion_limit: int = 60
     # When True, LangChain AgentExecutor prints step traces (noisy; dev only)
     agent_langchain_verbose: bool = False
     prompt_version: str = "2026-04-09"

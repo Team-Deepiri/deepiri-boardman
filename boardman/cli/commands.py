@@ -380,7 +380,9 @@ def sync(
                 "Accept": "application/vnd.github+json",
             }
             resp = await client.get(
-                f"https://api.github.com/repos/{repo}/issues?state=open", headers=headers
+                f"https://api.github.com/repos/{repo}/issues?state=open",
+                headers=headers,
+                follow_redirects=True,
             )
             if resp.status_code != 200:
                 console.print(f"[red]Error fetching issues:[/red] {resp.text}")

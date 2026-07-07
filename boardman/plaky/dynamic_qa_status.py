@@ -69,6 +69,102 @@ _WORKFLOW_NEEDS_QA_HINTS: tuple[str, ...] = (
     "qa todo",
     "queue qa",
 )
+_WORKFLOW_NEEDS_QA_AGAIN_HINTS: tuple[str, ...] = (
+    "needs qa again",
+    "qa again",
+    "re qa",
+    "back to qa",
+)
+# PR matched a task but no one is assigned yet.
+_WORKFLOW_NEEDS_ASSIGNED_HINTS: tuple[str, ...] = (
+    "needs assigned",
+    "need assigned",
+    "needs assignee",
+    "unassigned",
+    "available",
+    "backlog",
+    "to do",
+    "todo",
+    "open",
+)
+_WORKFLOW_NEEDS_ASSIGNED_NEG: tuple[str, ...] = (
+    "in progress",
+    "qa",
+    "done",
+    "completed",
+    "paused",
+    "verified",
+    "rejected",
+)
+# A developer has been matched/assigned to the task.
+_WORKFLOW_ASSIGNED_HINTS: tuple[str, ...] = (
+    "assigned",
+    "claimed",
+    "accepted",
+    "picked up",
+)
+_WORKFLOW_ASSIGNED_NEG: tuple[str, ...] = (
+    "needs assigned",
+    "need assigned",
+    "unassigned",
+    "needs qa",
+    "in qa",
+    "qa verified",
+    "qa rejected",
+    "completed",
+    "done",
+    "paused",
+)
+# Work is paused / on hold (from a PR comment saying "pause"/"paused").
+_WORKFLOW_PAUSED_HINTS: tuple[str, ...] = (
+    "paused",
+    "pause",
+    "on hold",
+    "taking a break",
+    "blocked",
+    "stuck",
+)
+_WORKFLOW_PAUSED_NEG: tuple[str, ...] = (
+    "qa",
+    "done",
+    "completed",
+)
+# Active development (e.g. dev resumed work after a QA rejection).
+_WORKFLOW_IN_PROGRESS_HINTS: tuple[str, ...] = (
+    "in progress",
+    "revisions in progress",
+    "doing",
+    "wip",
+    "active",
+    "working",
+    "in development",
+)
+_WORKFLOW_IN_PROGRESS_NEG: tuple[str, ...] = (
+    "needs",
+    "qa",
+    "done",
+    "completed",
+    "paused",
+    "available",
+)
+# Merged → done.
+_WORKFLOW_COMPLETED_HINTS: tuple[str, ...] = (
+    "completed",
+    "complete",
+    "done",
+    "merged",
+    "shipped",
+    "finished",
+    "resolved",
+    "closed",
+)
+_WORKFLOW_COMPLETED_NEG: tuple[str, ...] = (
+    "incomplete",
+    "not done",
+    "in progress",
+    "paused",
+    "qa",
+)
 
 
 def _norm(s: str) -> str:
@@ -110,8 +206,16 @@ def _pick_best_option(
     fields: list[dict[str, Any]],
     hints: tuple[str, ...],
     negative: tuple[str, ...],
+    *,
+    require_substring: str = "",
 ) -> tuple[str, str, float]:
-    """Return (field_key, option_id, score)."""
+    """Return (field_key, option_id, score).
+
+    ``require_substring``: when set, only options whose normalized label contains it are
+    considered (e.g. "again" — so a board without a dedicated column yields no match and the
+    caller can fall back to a base intent).
+    """
+    req = _norm(require_substring) if require_substring else ""
     best: tuple[str, str, float] = ("", "", float("-inf"))
     for f in fields:
         fkey = str(f.get("key") or "").strip()
@@ -125,6 +229,8 @@ def _pick_best_option(
             if not label or not oid:
                 continue
             ln = _norm(label)
+            if req and req not in ln:
+                continue
             sc = _score_option_label(ln, hints, negative)
             if sc > best[2]:
                 best = (fkey, oid, sc)
@@ -156,6 +262,12 @@ async def resolve_plaky_status_patch(
       - ``github_pr_review_changes_requested`` — **Request changes** → QA rejected-style.
       - ``workflow_in_qa`` — move into active QA.
       - ``workflow_needs_qa`` — awaiting QA.
+      - ``workflow_needs_qa_again`` — dev pinged QA again after rework.
+      - ``workflow_needs_assigned`` — PR matched a task but no assignee yet.
+      - ``workflow_assigned`` — a developer has been matched/assigned.
+      - ``workflow_paused`` — work paused / on hold (PR comment said pause).
+      - ``workflow_in_progress`` — active development (e.g. resumed after QA rejection).
+      - ``workflow_completed`` — merged / done.
     """
     normalized = preloaded_normalized
     if normalized is None:
@@ -167,6 +279,7 @@ async def resolve_plaky_status_patch(
     if not fields:
         return None
 
+    require_substring = ""
     if intent == "github_pr_review_approved":
         hints, neg = _GITHUB_APPROVE_HINTS, _GITHUB_APPROVE_NEG
     elif intent == "github_pr_review_changes_requested":
@@ -175,10 +288,24 @@ async def resolve_plaky_status_patch(
         hints, neg = _WORKFLOW_IN_QA_HINTS, ()
     elif intent == "workflow_needs_qa":
         hints, neg = _WORKFLOW_NEEDS_QA_HINTS, ()
+    elif intent == "workflow_needs_qa_again":
+        # Only matches a dedicated "...AGAIN" column; otherwise the caller falls back to
+        # workflow_needs_qa (a board with a single "Needs QA" status reuses it).
+        hints, neg, require_substring = _WORKFLOW_NEEDS_QA_AGAIN_HINTS, (), "again"
+    elif intent == "workflow_needs_assigned":
+        hints, neg = _WORKFLOW_NEEDS_ASSIGNED_HINTS, _WORKFLOW_NEEDS_ASSIGNED_NEG
+    elif intent == "workflow_assigned":
+        hints, neg = _WORKFLOW_ASSIGNED_HINTS, _WORKFLOW_ASSIGNED_NEG
+    elif intent == "workflow_paused":
+        hints, neg = _WORKFLOW_PAUSED_HINTS, _WORKFLOW_PAUSED_NEG
+    elif intent == "workflow_in_progress":
+        hints, neg = _WORKFLOW_IN_PROGRESS_HINTS, _WORKFLOW_IN_PROGRESS_NEG
+    elif intent == "workflow_completed":
+        hints, neg = _WORKFLOW_COMPLETED_HINTS, _WORKFLOW_COMPLETED_NEG
     else:
         return None
 
-    fk, oid, sc = _pick_best_option(fields, hints, neg)
+    fk, oid, sc = _pick_best_option(fields, hints, neg, require_substring=require_substring)
     if not fk or not oid or sc <= 0:
         return None
     return (fk, oid)
@@ -293,11 +420,16 @@ def configured_qa_item_field_key() -> str:
 
 
 async def resolve_qa_assignee_field_key(board_id: str, yaml_fallback: str) -> str:
-    """Prefer env, then team_assignments key, then schema discovery."""
+    """QA assignee field key: env override → live board schema → team_assignments fallback.
+
+    Schema beats the YAML key because category boards use different person-field keys
+    (e.g. QA is person-3 on one board, person-4 on another); the global YAML key can name
+    the wrong column. Falls back to YAML only when the schema is unavailable.
+    """
     k = configured_qa_item_field_key()
     if k:
         return k
-    y = (yaml_fallback or "").strip()
-    if y:
-        return y
-    return (await discover_qa_assignee_field_key(board_id)) or ""
+    discovered = await discover_qa_assignee_field_key(board_id)
+    if discovered:
+        return discovered
+    return (yaml_fallback or "").strip()

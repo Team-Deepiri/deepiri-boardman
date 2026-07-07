@@ -1,4 +1,6 @@
 import asyncio
+import logging
+import random
 import time
 from collections.abc import Set
 from typing import Any
@@ -7,6 +9,22 @@ import httpx
 
 from boardman.plaky.placement import context_board_id, context_group_id
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
+
+# Transient server errors worth retrying (the gateway/server, not our request, is at fault).
+_TRANSIENT_STATUSES = frozenset({500, 502, 503, 504})
+# Only auto-retry network/5xx failures for idempotent methods. POST (create) is excluded so a
+# blip can never double-create; setting a field (PATCH) or reading (GET) is safe to repeat.
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "PUT", "PATCH", "DELETE", "OPTIONS"})
+_RETRY_BACKOFF_BASE_SECONDS = 0.5
+_RETRY_BACKOFF_CAP_SECONDS = 4.0
+
+
+def _transient_backoff(attempt: int) -> float:
+    """Exponential backoff with jitter for transient (non-rate-limit) retries."""
+    base = min(_RETRY_BACKOFF_BASE_SECONDS * (2**attempt), _RETRY_BACKOFF_CAP_SECONDS)
+    return base + random.uniform(0, base / 2)
 
 
 async def _request_with_rate_limit_retry(
@@ -18,22 +36,54 @@ async def _request_with_rate_limit_retry(
     params: dict[str, Any] | None = None,
     retries: int = 2,
 ) -> httpx.Response:
+    idempotent = method.upper() in _IDEMPOTENT_METHODS
+    last_exc: Exception | None = None
+    response: httpx.Response | None = None
     for attempt in range(retries + 1):
-        response = await client.request(
-            method=method, url=url, headers=headers, json=json, params=params, timeout=20
-        )
+        try:
+            response = await client.request(
+                method=method, url=url, headers=headers, json=json, params=params, timeout=20
+            )
+        except httpx.RequestError as exc:
+            # Network/transport failure (timeout, connection reset). Safe to retry idempotent calls.
+            last_exc = exc
+            if not idempotent or attempt == retries:
+                raise
+            _log.warning(
+                "Plaky %s %s transient network error (attempt %d): %s",
+                method,
+                url,
+                attempt + 1,
+                exc,
+            )
+            await asyncio.sleep(_transient_backoff(attempt))
+            continue
 
-        if response.status_code != 429:
-            return response
+        if response.status_code == 429:
+            if attempt == retries:
+                return response
+            retry_after = response.headers.get("Retry-After")
+            wait_seconds = int(retry_after) if retry_after and retry_after.isdigit() else 2
+            await asyncio.sleep(wait_seconds)
+            continue
 
-        if attempt == retries:
-            return response
+        if response.status_code in _TRANSIENT_STATUSES and idempotent and attempt < retries:
+            _log.warning(
+                "Plaky %s %s transient %d (attempt %d); retrying",
+                method,
+                url,
+                response.status_code,
+                attempt + 1,
+            )
+            await asyncio.sleep(_transient_backoff(attempt))
+            continue
 
-        retry_after = response.headers.get("Retry-After")
-        wait_seconds = int(retry_after) if retry_after and retry_after.isdigit() else 2
-        await asyncio.sleep(wait_seconds)
+        return response
 
-    return response
+    if response is not None:
+        return response
+    assert last_exc is not None
+    raise last_exc
 
 
 def _request_sync_with_rate_limit_retry(
@@ -45,18 +95,53 @@ def _request_sync_with_rate_limit_retry(
     params: dict[str, Any] | None = None,
     retries: int = 2,
 ) -> httpx.Response:
+    idempotent = method.upper() in _IDEMPOTENT_METHODS
+    last_exc: Exception | None = None
+    response: httpx.Response | None = None
     for attempt in range(retries + 1):
-        response = client.request(
-            method=method, url=url, headers=headers, json=json, params=params, timeout=20
-        )
-        if response.status_code != 429:
-            return response
-        if attempt == retries:
-            return response
-        retry_after = response.headers.get("Retry-After")
-        wait_seconds = int(retry_after) if retry_after and retry_after.isdigit() else 2
-        time.sleep(wait_seconds)
-    return response
+        try:
+            response = client.request(
+                method=method, url=url, headers=headers, json=json, params=params, timeout=20
+            )
+        except httpx.RequestError as exc:
+            last_exc = exc
+            if not idempotent or attempt == retries:
+                raise
+            _log.warning(
+                "Plaky %s %s transient network error (attempt %d): %s",
+                method,
+                url,
+                attempt + 1,
+                exc,
+            )
+            time.sleep(_transient_backoff(attempt))
+            continue
+
+        if response.status_code == 429:
+            if attempt == retries:
+                return response
+            retry_after = response.headers.get("Retry-After")
+            wait_seconds = int(retry_after) if retry_after and retry_after.isdigit() else 2
+            time.sleep(wait_seconds)
+            continue
+
+        if response.status_code in _TRANSIENT_STATUSES and idempotent and attempt < retries:
+            _log.warning(
+                "Plaky %s %s transient %d (attempt %d); retrying",
+                method,
+                url,
+                response.status_code,
+                attempt + 1,
+            )
+            time.sleep(_transient_backoff(attempt))
+            continue
+
+        return response
+
+    if response is not None:
+        return response
+    assert last_exc is not None
+    raise last_exc
 
 
 def _headers(api_key: str) -> dict[str, str]:

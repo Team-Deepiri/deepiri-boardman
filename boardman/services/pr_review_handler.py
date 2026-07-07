@@ -12,6 +12,7 @@ from boardman.database.models import SyncLog
 from boardman.github.repo_fetch import fetch_pr_assignees_and_reviewers_logins
 from boardman.github.support_qa import support_team_logins_casefold
 from boardman.github.webhooks import IssueCommentEventPayload, PullRequestReviewEventPayload
+from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status_id
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.dynamic_qa_status import (
     github_actor_payload,
@@ -19,7 +20,7 @@ from boardman.plaky.dynamic_qa_status import (
     resolve_plaky_status_patch,
     resolve_qa_assignee_field_key,
 )
-from boardman.repos_config import get_routing
+from boardman.repos_config import get_routing_async
 from boardman.services.pr_handler import _update_plaky_task_status
 from boardman.services.pr_task_registry import distinct_task_ids_for_pr
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
@@ -36,6 +37,37 @@ def _qa_rejected_status() -> str:
 
 def _in_qa_status() -> str:
     return (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
+
+
+def _paused_status() -> str:
+    return (settings.plaky_status_paused or "").strip()
+
+
+def _in_progress_status() -> str:
+    return (settings.plaky_status_in_progress or "").strip()
+
+
+def _needs_qa_again_status() -> str:
+    return (
+        settings.plaky_status_needs_qa_again
+        or settings.plaky_pr_needs_qa_status
+        or settings.plaky_status_needs_qa
+        or ""
+    ).strip()
+
+
+async def _resolve_status(board_id: str, env_value: str, *intents: str) -> tuple[str | None, str]:
+    """Return (status_field_key, status_value). Prefer the env value; else try each schema intent."""
+    if env_value:
+        return None, env_value
+    bid = (board_id or "").strip()
+    if not bid:
+        return None, ""
+    for intent in intents:
+        rp = await resolve_plaky_status_patch(bid, intent=intent)
+        if rp:
+            return rp[0], rp[1]
+    return None, ""
 
 
 async def _task_ids_for_pr(session: AsyncSession, repo_name: str, pr_number: int) -> list[str]:
@@ -64,11 +96,8 @@ async def _assigned_qa_plaky_id(
     task_info = await plaky.get_board_item_public((board_id or "").strip(), task_id)
     if not task_info.get("ok") or not task_info.get("item"):
         return ""
-    item = task_info["item"]
-    current_qa = item.get(qa_field)
-    if isinstance(current_qa, dict):
-        return str(current_qa.get("id") or "")
-    return str(current_qa or "") if current_qa else ""
+    ids = plaky_item_person_ids(task_info["item"], qa_field)
+    return ids[0] if ids else ""
 
 
 async def handle_pull_request_review(
@@ -80,7 +109,7 @@ async def handle_pull_request_review(
 
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
-    routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     task_ids = await _task_ids_for_pr(session, repo_name, pr_number)
@@ -225,7 +254,7 @@ async def handle_issue_comment_on_pr(
 
     repo_name = payload.repository.name
     pr_number = payload.issue.number
-    routing = get_routing(payload.repository.full_name, repo_name, settings.github_org)
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
     task_ids = await _task_ids_for_pr(session, repo_name, pr_number)
@@ -234,13 +263,85 @@ async def handle_issue_comment_on_pr(
 
     comment_user: dict[str, Any] = {}
     commenter = ""
+    comment_body = ""
     if isinstance(payload.comment, dict):
         u = payload.comment.get("user")
         if isinstance(u, dict):
             comment_user = u
             commenter = str(u.get("login") or "").strip()
+        comment_body = str(payload.comment.get("body") or "")
 
     bid = (board_id or "").strip()
+
+    # --- Pause: any commenter saying "pause"/"paused"/"on hold" pauses the work. ---
+    from boardman.github.pr_signals import comment_mentions_qa_or_support, comment_requests_pause
+
+    if comment_requests_pause(comment_body):
+        p_key, p_val = await _resolve_status(bid, _paused_status(), "workflow_paused")
+        if not p_val:
+            return {
+                "ok": True,
+                "skipped": True,
+                "message": "pause requested but no paused status resolvable",
+            }
+        plaky_p = PlakyClient()
+        updated_p: list[dict[str, Any]] = []
+        for tid in task_ids:
+            res = await _update_plaky_task_status(
+                tid, p_val, board_id or "", status_field_key=p_key
+            )
+            session.add(
+                SyncLog(
+                    action="pr_comment_paused",
+                    github_repo=repo_name,
+                    github_ref=str(pr_number),
+                    plaky_task_id=tid,
+                    detail=json.dumps({"commenter": commenter, "plaky_status": p_val}, default=str),
+                )
+            )
+            updated_p.append({"task_id": tid, "plaky": res})
+        await session.commit()
+        if updated_p:
+            await maybe_enqueue_plaky_reorder_after_task(plaky_p, task_ids[0])
+        return {"ok": True, "updated": updated_p, "status": p_val, "event": "paused"}
+
+    # --- Dev pinged QA / support team (@mention) → Needs QA (again). ---
+    if "@" in comment_body:
+        support = support_team_logins_casefold()
+        commenter_is_qa_side = bool(commenter) and commenter.casefold() in support
+        if not commenter_is_qa_side and comment_mentions_qa_or_support(comment_body, support):
+            q_key, q_val = await _resolve_status(
+                bid, _needs_qa_again_status(), "workflow_needs_qa_again", "workflow_needs_qa"
+            )
+            if q_val:
+                plaky_q = PlakyClient()
+                updated_q: list[dict[str, Any]] = []
+                for tid in task_ids:
+                    res = await _update_plaky_task_status(
+                        tid, q_val, board_id or "", status_field_key=q_key
+                    )
+                    session.add(
+                        SyncLog(
+                            action="pr_comment_needs_qa_again",
+                            github_repo=repo_name,
+                            github_ref=str(pr_number),
+                            plaky_task_id=tid,
+                            detail=json.dumps(
+                                {"commenter": commenter, "plaky_status": q_val}, default=str
+                            ),
+                        )
+                    )
+                    updated_q.append({"task_id": tid, "plaky": res})
+                await session.commit()
+                if updated_q:
+                    await maybe_enqueue_plaky_reorder_after_task(plaky_q, task_ids[0])
+                return {
+                    "ok": True,
+                    "updated": updated_q,
+                    "status": q_val,
+                    "event": "needs_qa_again",
+                }
+
     in_qa = _in_qa_status()
     in_qa_field_key: str | None = None
     if not in_qa and bid:
@@ -283,15 +384,54 @@ async def handle_issue_comment_on_pr(
             task_info = await plaky.get_board_item_public(board_id or "", tid)
             if not task_info.get("ok") or not task_info.get("item"):
                 continue
-            item = task_info["item"]
-            current_qa = item.get(qa_field)
-            if isinstance(current_qa, dict):
-                assigned_id = str(current_qa.get("id") or "")
-            else:
-                assigned_id = str(current_qa or "")
-            if assigned_id == member_plaky_id:
+            assigned_ids = plaky_item_person_ids(task_info["item"], qa_field)
+            if member_plaky_id in assigned_ids:
                 is_assigned_qa = True
                 break
+
+    # --- Dev resuming after a QA rejection: a non-QA comment while the task is QA-rejected
+    # moves it back to In Progress (instead of In QA). Only when the status field is known
+    # from the board schema (rej_key set) so we can read & compare the current value. ---
+    if not is_assigned_qa:
+        rej_key, rej_val = await _resolve_status(
+            bid, _qa_rejected_status(), "github_pr_review_changes_requested"
+        )
+        if rej_key and rej_val:
+            ip_key, ip_val = await _resolve_status(
+                bid, _in_progress_status(), "workflow_in_progress"
+            )
+            if ip_val:
+                resumed: list[dict[str, Any]] = []
+                for tid in task_ids:
+                    info = await plaky.get_board_item_public(board_id or "", tid)
+                    if not info.get("ok") or not info.get("item"):
+                        continue
+                    cur_id = plaky_item_status_id(info["item"], rej_key)
+                    if cur_id and cur_id == str(rej_val):
+                        res = await _update_plaky_task_status(
+                            tid, ip_val, board_id or "", status_field_key=ip_key
+                        )
+                        session.add(
+                            SyncLog(
+                                action="pr_comment_resumed_in_progress",
+                                github_repo=repo_name,
+                                github_ref=str(pr_number),
+                                plaky_task_id=tid,
+                                detail=json.dumps(
+                                    {"commenter": commenter, "to_status": ip_val}, default=str
+                                ),
+                            )
+                        )
+                        resumed.append({"task_id": tid, "plaky": res})
+                if resumed:
+                    await session.commit()
+                    await maybe_enqueue_plaky_reorder_after_task(plaky, resumed[0]["task_id"])
+                    return {
+                        "ok": True,
+                        "updated": resumed,
+                        "status": ip_val,
+                        "event": "resumed_after_rejection",
+                    }
 
     if not is_participant and not is_assigned_qa:
         return {

@@ -50,7 +50,7 @@ async def _fetch_file_tree_signals(
     """
     url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
     try:
-        r = await client.get(url, headers=headers, timeout=15)
+        r = await client.get(url, headers=headers, timeout=15, follow_redirects=True)
         if r.status_code != 200:
             return [], 0, [], {}
         tree = r.json().get("tree", [])
@@ -132,7 +132,7 @@ async def fetch_repo_metadata(
     url = f"https://api.github.com/repos/{owner}/{repo}"
 
     try:
-        r = await client.get(url, headers=gh_headers)
+        r = await client.get(url, headers=gh_headers, follow_redirects=True)
         r.raise_for_status()
         data = r.json()
         branch = data.get("default_branch", "main") or "main"

@@ -22,7 +22,7 @@ from boardman.llm.completion import chat_complete, parse_json_tasks
 from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
-from boardman.repos_config import get_routing
+from boardman.repos_config import get_routing_async
 from boardman.settings import settings
 
 
@@ -165,7 +165,9 @@ async def run_repo_scan(
         return {"ok": False, "message": "repo must be owner/name"}
     owner, repo = parts[0], parts[1]
     short = repo
-    routing, routing_source = get_routing(repo_full, short, settings.github_org, with_source=True)
+    routing, routing_source = await get_routing_async(
+        repo_full, short, settings.github_org, with_source=True
+    )
 
     prov = (provider or settings.llm_provider or "ollama").lower()
     if prov in ("claude",):
@@ -228,6 +230,14 @@ async def run_repo_scan(
             else f"\n\n**Repo:** {repo_full}\n"
         )
         bid, gid = effective_plaky_placement(routing if routing_source == "explicit" else None)
+        qa_key_override: str | None = None
+        if bid:
+            from boardman.plaky.board_aware import board_person_field_keys, resolve_group_for_repo
+
+            gid = await resolve_group_for_repo(bid, short, fallback_group_id=gid, plaky=plaky)
+            keys = await board_person_field_keys(bid)
+            if keys is not None:
+                qa_key_override = keys.get("qa") or ""
         routing_warnings: list[str] = []
         if routing_source == "org_default":
             routing_warnings.append(
@@ -238,7 +248,9 @@ async def run_repo_scan(
             routing_warnings.append(
                 "No routing found for repo; create used fallback behavior without explicit board/group placement."
             )
-        default_assign = await build_assignment_field_map(repo_full)
+        default_assign = await build_assignment_field_map(
+            repo_full, plaky_field_qa_key=qa_key_override
+        )
 
         for item in tasks:
             title = str(item.get("title", "Task")).strip()
