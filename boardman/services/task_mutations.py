@@ -14,6 +14,8 @@ from boardman.assignment.qa_picker import (
     ensure_github_owner_repo,
     pick_qa_for_repo,
 )
+from boardman.assignment.qa_picker import build_repo_field_map, ensure_github_owner_repo, pick_qa_for_repo
+from boardman.plaky.board_aware import resolve_group_for_repo
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
     field_likely_person_column,
@@ -59,7 +61,7 @@ class CreateTaskInput:
 
 @dataclass(slots=True)
 class UpdateTaskInput:
-    """Partial updates only: workflow fields and QA assignee."""
+    """Partial updates only: workflow fields and QA / engineer assignee."""
 
     status: str | None = None
     # With status: optional board field key (e.g. option id from resolve_plaky_status_patch).
@@ -67,6 +69,10 @@ class UpdateTaskInput:
     task_type: str | None = None
     priority: str | None = None
     qa_plaky_id: str | None = None
+    # Engineer/developer assignee fill-in (PR author → Plaky user id). Field key is resolved
+    # per-board when not supplied.
+    engineer_plaky_id: str | None = None
+    engineer_plaky_field_key: str | None = None
     auto_assign_qa: bool = False
     github_repo: str | None = None
     plaky_board_id: str | None = None
@@ -107,6 +113,9 @@ def _scrub_placeholder_field_key(key: str, *, allowed_board_keys: set[str]) -> s
     if k in allowed_board_keys:
         return k
     if looks_like_placeholder_plaky_field_key(k):
+        return ""
+    # Board schema is known — silently drop keys the board doesn't have
+    if allowed_board_keys:
         return ""
     return k
 
@@ -483,17 +492,27 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
         }
     repo_full = merged_repos[0]
     repo_display = merged_repos[0] if merged_repos else repo_full
+    merged_repos = _merge_github_repo_inputs(primary_repo=primary_repo, extra_repos=req.github_repos, filters=filters)
+    repo_full = merged_repos[0] if merged_repos else ""
+    repo_display = repo_full
     qa_field_fallback = (settings.plaky_qa_item_field_key or "").strip()
     effective_board_id, effective_group_id = _http_placement_ids(req)
 
     if effective_board_id and not effective_group_id:
         try:
-            gr = await plaky.list_groups(effective_board_id)
-            groups = gr.get("groups") if isinstance(gr, dict) else []
-            if isinstance(groups, list) and groups:
-                gid0 = str(groups[0].get("id") or "").strip() if isinstance(groups[0], dict) else ""
-                if gid0:
-                    effective_group_id = gid0
+            repo_short = repo_full.rsplit("/", 1)[-1] if repo_full else ""
+            resolved = await resolve_group_for_repo(
+                effective_board_id, repo_short, fallback_group_id=None, plaky=plaky
+            )
+            if resolved:
+                effective_group_id = resolved
+            else:
+                gr = await plaky.list_groups(effective_board_id)
+                groups = gr.get("groups") if isinstance(gr, dict) else []
+                if isinstance(groups, list) and groups:
+                    gid0 = str(groups[0].get("id") or "").strip() if isinstance(groups[0], dict) else ""
+                    if gid0:
+                        effective_group_id = gid0
         except Exception:
             pass
 
@@ -532,6 +551,12 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
     )
     engineer_field_key = cfg_engineer_key
     qa_field_key = cfg_qa_key or qa_env_fallback
+    qa_env_fallback = _scrub_placeholder_field_key((qa_field_fallback or "").strip(), allowed_board_keys=allowed_board_keys)
+    # Board schema wins over global config: category boards use different person
+    # keys per board (e.g. Assignee is person-2 on one board, person-4 on another),
+    # and a global key can exist on the target board while naming the wrong column.
+    engineer_field_key = inferred_from_schema.get("engineer") or cfg_engineer_key
+    qa_field_key = inferred_from_schema.get("qa") or cfg_qa_key or qa_env_fallback
 
     pick_qa_id, pick_qa_reason = await pick_qa_for_repo(repo_full, cfg)
     needs_infer = effective_board_id and (
@@ -681,6 +706,8 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
             "message": "At least one GitHub repo is required (use github_repos).",
         }
     repo_full = merged_repos[0]
+    merged_repos = _merge_github_repo_inputs(primary_repo="", extra_repos=req.github_repos, filters={})
+    repo_full = merged_repos[0] if merged_repos else ""
 
     schema_normalized: dict[str, Any] | None = None
     inferred_from_schema: dict[str, str] = {}
@@ -713,8 +740,8 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
         (cfg.plaky_field_github_repos or "").strip(), allowed_board_keys=allowed_board_keys
     )
 
-    engineer_field_key = cfg_engineer_key
-    qa_field_key = cfg_qa_key
+    engineer_field_key = inferred_from_schema.get("engineer") or cfg_engineer_key
+    qa_field_key = inferred_from_schema.get("qa") or cfg_qa_key
     pick_qa_id, pick_qa_reason = await pick_qa_for_repo(repo_full, cfg)
     needs_infer = board_id and (
         (engineer_plaky_id and not engineer_field_key)
@@ -811,6 +838,8 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
     update_type_raw = (req.task_type or "").strip()
     update_priority_raw = (req.priority or "").strip()
     update_qa = (req.qa_plaky_id or "").strip()
+    update_engineer = (req.engineer_plaky_id or "").strip()
+    update_engineer_key_raw = (req.engineer_plaky_field_key or "").strip()
     update_repo_in = (req.github_repo or "").strip()
     auto_assign_qa = bool(req.auto_assign_qa)
 
@@ -853,6 +882,7 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
             update_type_raw,
             update_priority_raw,
             update_qa,
+            update_engineer,
             auto_assign_qa,
         )
     )
@@ -895,10 +925,22 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
         qa_field_key = _scrub_placeholder_field_key(
             qa_field_key, allowed_board_keys=allowed_board_keys
         )
+        qa_field_key = _scrub_placeholder_field_key((cfg.plaky_field_qa or "").strip(), allowed_board_keys=allowed_board_keys)
+        engineer_field_key = _scrub_placeholder_field_key(
+            update_engineer_key_raw or (cfg.plaky_field_engineer or "").strip(),
+            allowed_board_keys=allowed_board_keys,
+        )
+        engineer_field_key, qa_field_key = await _infer_plaky_person_column_keys(
+            board_id, engineer_field_key, qa_field_key, normalized=schema_normalized
+        )
+        qa_field_key = _scrub_placeholder_field_key(qa_field_key, allowed_board_keys=allowed_board_keys)
+        engineer_field_key = _scrub_placeholder_field_key(engineer_field_key, allowed_board_keys=allowed_board_keys)
 
         field_values: dict[str, Any] = {}
         if update_qa and qa_field_key:
             field_values[qa_field_key] = update_qa
+        if update_engineer and engineer_field_key:
+            field_values[engineer_field_key] = update_engineer
 
         canon_status = canonical_task_status(update_status_raw) if update_status_raw else ""
         canon_type = canonical_task_type(update_type_raw) if update_type_raw else ""

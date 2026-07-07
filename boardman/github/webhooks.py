@@ -37,6 +37,10 @@ class GitHubPullRequest(BaseModel):
     user: Any | None = None
     base: Any | None = None
     head: Any | None = None
+    user: Optional[Any] = None
+    base: Optional[Any] = None
+    head: Optional[Any] = None
+    labels: list[Any] = Field(default_factory=list)
     assignees: list[Any] = Field(default_factory=list)
     requested_reviewers: list[Any] = Field(default_factory=list)
 

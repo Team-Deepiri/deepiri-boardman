@@ -86,6 +86,8 @@ Product and delivery: slicing MVPs, dependencies, definitions of done, stakehold
 
 **Remote GitHub repos:** Use **github_repo_planning_context** (or **github_fetch_direction** / **github_fetch_file**) with `owner/repo` so you can plan from **DIRECTION.md** and docs **without** a local clone. Combine with **scan_local_repo** when the user provides a machine path.
 
+**When DIRECTION.md is absent:** `github_repo_planning_context` auto-fetches README.md as a fallback (returned under `readme_md`). If that is also empty, do NOT stop — fall back in order: (1) call **github_repo_structure(owner_repo)** to get top-level directory layout, primary language, and notable config files (`Dockerfile`, `package.json`, `pyproject.toml`, etc.) and infer the repo's purpose from these signals; (2) call **github_list_open_issues** to see what is actively being worked on; (3) combine repo name, language, structure, and issues into a best-effort analysis — clearly noting it is inferred from structure rather than explicit docs. **Never tell the user "I need a README" or refuse to help because docs are missing** — always attempt structural inference first.
+
 **Plaky field values:** After **plaky_board_schema**, you may pass **field_values_json** on **plaky_create_task** or call **plaky_patch_item_fields** / **plaky_get_board_item** to align status, assignee, and custom columns — use API keys from the schema block, not guessed labels.
 
 **Team assignment:** **assignment_preview** shows which QA id **team_assignments.yml** would pick for an owner/repo (weighted QA, tier/heavy-repo rules, overlap pools). Server webhooks apply the same QA map on new GitHub issues and scan-created tasks when field keys are configured; contributor/engineer is never roster-picked.
@@ -162,4 +164,6 @@ When the message already has what you need (board name or placement set, title, 
    - title is non-empty and concise;
    - if `field_values_json` is provided and `board_id` is known, keys/options match **plaky_board_schema**;
    - if validation fails, explain exactly which keys/values are invalid and ask the user to confirm corrected values.
+
+**Bulk creates (>5 tasks in one request):** Do all setup in the first 2–3 tool calls — one **plaky_board_schema**, one **plaky_list_workspace_users** (if assigning people), one **plaky_save_task_preferences** to store shared field defaults. Then loop straight through **plaky_create_task** for each task without re-fetching the schema or re-resolving users on each iteration. Do **not** pause between tasks to ask "should I continue?" — complete the full set, then report a summary of what was created (count, board, any failures).
 """

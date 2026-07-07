@@ -37,6 +37,40 @@ def test_normalize_board_payload_fields_and_groups():
     assert "Feature" in type_labels
 
 
+def test_normalize_status_options_from_configuration_values():
+    """Plaky STATUS fields nest options under configuration.values (key=id, title=label).
+
+    Regression: before this was handled, every status field normalized to 0 options, which
+    silently disabled ALL PR→Plaky status automation.
+    """
+    board = {
+        "name": "diri-cyrex",
+        "itemFields": [
+            {
+                "name": "Status",
+                "type": "STATUS",
+                "key": "status-6",
+                "configuration": {
+                    "values": [
+                        {"key": "0", "title": "NEEDS ASSIGNED", "color": "#aaa"},
+                        {"key": "8", "title": "Assigned"},
+                        {"key": "5", "title": "In QA"},
+                        {"key": "6", "title": "QA Verified"},
+                    ],
+                    "defaultValue": "0",
+                },
+            }
+        ],
+    }
+    n = normalize_board_payload(board, [])
+    status = next(f for f in n["fields"] if f["name"] == "Status")
+    by_label = {o["name"]: o for o in status["options"]}
+    assert set(by_label) == {"NEEDS ASSIGNED", "Assigned", "In QA", "QA Verified"}
+    # The option id must mirror the Plaky `key` so PATCH value selection + intent scoring work.
+    assert str(by_label["Assigned"]["id"]) == "8"
+    assert str(by_label["QA Verified"]["id"]) == "6"
+
+
 def test_format_board_schema_markdown_includes_options():
     md = format_board_schema_markdown(
         "bid-1",
