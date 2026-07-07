@@ -12,4 +12,15 @@
 #     plaky_board_id: "..."
 #     plaky_group_id: "..."
 
-repos: {}
+defaults:
+  plaky_board_id: "269031"   # Plaky board "deepiri-boardman"
+  plaky_group_id: "907471"   # group "Open PRs"
+  plaky_table: "deepiri-boardman"
+
+repos:
+  Team-Deepiri/deepiri-boardman:
+    category: automation
+    plaky_board_id: "269031"
+    plaky_group_id: "907471"
+    description: GitHub <-> Plaky sync automation service (boardman)
+    tier: 3

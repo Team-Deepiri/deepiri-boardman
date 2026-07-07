@@ -1,8 +1,11 @@
+# Field keys for the default board (repos.yml defaults → Plaky board 269031 "deepiri-boardman"):
+# person-3 = Assignee, person-4 = "QA Engineer Assigned". This board has no repo TAG column,
+# so repo/github_repos stay empty (repo names still land in the description/comment footers).
 plaky_field_keys:
-  engineer: person-1
-  qa: person-2
-  repo: tag-2
-  github_repos: tag-2
+  engineer: person-3
+  qa: person-4
+  repo: ''
+  github_repos: ''
 member_defaults:
   roles:
   - engineer

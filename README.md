@@ -22,6 +22,22 @@ Automatically syncs GitHub issues and pull requests to Plaky tasks:
 - **`boardman-ui`** — Vite/React chat + floating messages panel (Cyrex-style); dev proxy or nginx in Docker
 - **Docker Compose** — `boardman` API, **nginx** (static UI + `/api` → API), **Ollama** sidecar
 - Docker deployment ready
+- **`TESTING_LIVE_PLAKY`** — local "as-if-production" mode: while the instance runs, a background
+  poller pulls new GitHub activity (issues, PRs, reviews, comments, pushes) for
+  `TESTING_LIVE_PLAKY_REPOS` and routes it through the same handlers as the webhook, so Plaky
+  updates live **only while the machine runs**. History from before startup is never replayed.
+  Push commits referencing issues (`Fixes #12`, `#12`) are commented onto the linked Plaky task.
+  Set `false` in production (real webhooks take over).
+- **GitHub-fit scored QA picking** — `pick_qa_for_repo` ranks eligible QAs by real GitHub history:
+  recency-decayed PRs authored/reviewed per member, cosine similarity of language and repo-token
+  profiles vs the target repo, direct-contribution boost, hard tier filters (`qa_tier >= repo tier`
+  plus `qa_repo_rules` patterns), hardware filter — full ranking recorded in the assignment reason.
+  Profiles are cached on disk (`.qa_profiles_cache.json`) and pre-warmed in the background.
+  Kill-switch: `QA_GITHUB_FIT_ENABLED=false` reverts to the legacy weighted-random pick.
+- **Doc-free repo context** — `github_repo_planning_context` layers DIRECTION.md → README →
+  structural overview (description, topics, languages, file tree, manifests, entry points), so the
+  agent can explain any repo even with zero markdown files; unknown repo names return
+  `did_you_mean` suggestions from the org instead of hallucinated analyses.
 
 ## Quick Start
 
@@ -112,6 +128,10 @@ See `.env.example` for all options. Key variables:
 - `GITHUB_WEBHOOK_SECRET` - Optional. For HMAC verification
 - `GITHUB_PAT` - Optional. For CLI sync command
 - `PLAKY_PR_MERGE_STATUS` - Status to set on PR merge (default: `in_review`)
+- `TESTING_LIVE_PLAKY` - Local testing mode: poll GitHub and apply Plaky updates while running (default `false`)
+- `TESTING_LIVE_PLAKY_REPOS` - Comma-separated `owner/repo` list the poller watches
+- `TESTING_LIVE_PLAKY_POLL_SECONDS` - Poll interval (default 60, min 15)
+- `QA_GITHUB_FIT_ENABLED` - GitHub-contribution scored QA picking (default `true`)
 - `LLM_PROVIDER`, `LLM_MODEL`, `OLLAMA_BASE_URL`, cloud API keys — see `.env.example`
   - OpenRouter is supported via `LLM_PROVIDER=openrouter`, `OPENROUTER_API_KEY`, and provider-prefixed model IDs like `anthropic/claude-3.5-sonnet`.
 

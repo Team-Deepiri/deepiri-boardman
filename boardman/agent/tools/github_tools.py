@@ -12,8 +12,10 @@ from boardman.github.repo_fetch import (
     fetch_default_branch,
     fetch_direction_md,
     fetch_open_issues,
+    fetch_readme_md,
     fetch_recent_commits,
     fetch_repo_file_text,
+    fetch_repo_overview,
     parse_owner_repo,
 )
 from boardman.repos_config import list_workspace_repos
@@ -93,30 +95,137 @@ async def _github_fetch_file(owner_repo: str, path: str, ref: str = "") -> str:
     return json.dumps({"ok": True, "path": path, "ref": branch, "content": text}, default=str)[:14000]
 
 
+def _looks_missing(text: str) -> bool:
+    """Content fetchers signal errors in-band as '(...)' strings."""
+    s = (text or "").strip()
+    return not s or (s.startswith("(") and s.endswith(")"))
+
+
+async def _workspace_repo_suggestions(client: httpx.AsyncClient, requested: str, limit: int = 5) -> list[str]:
+    """Closest workspace repos to a requested name (users say 'deepiri-cyrex' for 'diri-cyrex')."""
+    from difflib import SequenceMatcher
+
+    from boardman.github.org_repos import fetch_org_repository_full_names
+
+    try:
+        names = await fetch_org_repository_full_names(client, settings.github_org)
+    except Exception:
+        return []
+    want = (requested or "").split("/")[-1].strip().lower()
+    if not want or not names:
+        return []
+    scored: list[tuple[float, str]] = []
+    for fn in names:
+        short = fn.split("/")[-1].lower()
+        score = SequenceMatcher(None, want, short).ratio()
+        if want in short or short in want:
+            score += 0.3
+        scored.append((score, fn))
+    scored.sort(key=lambda t: -t[0])
+    return [fn for score, fn in scored[:limit] if score >= 0.45]
+
+
 async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20) -> str:
     """
-    One call: DIRECTION.md + recent commits + open issues (same signals as server scan).
-    Use before proposing Plaky tasks for a GitHub repo without a local clone.
+    One call: DIRECTION.md + README + structural overview + recent commits + open issues.
+    Layered so a repo with NO markdown files still yields real context: description,
+    topics, language mix, file-tree summary, manifests, entry points.
     """
     if not settings.github_pat:
         return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
-    parsed = parse_owner_repo(owner_repo)
+    raw = (owner_repo or "").strip()
+    parsed = parse_owner_repo(raw)
+    if not parsed and raw and "/" not in raw:
+        # Bare name: assume the configured default owner instead of erroring out.
+        from boardman.assignment.qa_picker import ensure_github_owner_repo
+
+        parsed = parse_owner_repo(ensure_github_owner_repo(raw))
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
     lim = max(5, min(int(commits_limit) if commits_limit else 20, 50))
+    import asyncio
+
     async with httpx.AsyncClient(timeout=90.0) as client:
-        direction = await fetch_direction_md(client, owner, repo)
-        commits = await fetch_recent_commits(client, owner, repo, limit=lim)
-        issues = await fetch_open_issues(client, owner, repo)
+        overview = await fetch_repo_overview(client, owner, repo)
+        if isinstance(overview, dict) and "error" in overview:
+            # Repo not found / inaccessible — help the model self-correct instead of
+            # letting it conclude the codebase is a blank slate.
+            suggestions = await _workspace_repo_suggestions(client, repo)
+            return json.dumps(
+                {
+                    "ok": False,
+                    "repo": f"{owner}/{repo}",
+                    "repo_not_found": True,
+                    "message": (
+                        f"GitHub repo {owner}/{repo} does not exist or is inaccessible "
+                        f"({overview.get('error')}). Do NOT invent an analysis for it."
+                    ),
+                    "did_you_mean": suggestions,
+                    "guidance": (
+                        "If one of did_you_mean matches the user's intent, call this tool again "
+                        "with that exact owner/repo. Otherwise ask the user to confirm the name "
+                        "(you can also call github_list_workspace_repos)."
+                    ),
+                }
+            )
+        direction, readme, commits, issues = await asyncio.gather(
+            fetch_direction_md(client, owner, repo),
+            fetch_readme_md(client, owner, repo),
+            fetch_recent_commits(client, owner, repo, limit=lim),
+            fetch_open_issues(client, owner, repo),
+        )
+
+        has_direction = not _looks_missing(direction)
+        has_readme = not _looks_missing(readme)
+
+        manifest_excerpts: dict[str, str] = {}
+        if not has_direction and not has_readme:
+            # No docs at all — pull the top manifests so purpose/deps are still visible.
+            branch = overview.get("default_branch", "") if isinstance(overview, dict) else ""
+            for path in (overview.get("manifests") or [])[:3] if isinstance(overview, dict) else []:
+                text = await fetch_repo_file_text(client, owner, repo, path, ref=branch)
+                manifest_excerpts[path] = text[:2500]
+
+    sources = {
+        "DIRECTION_md": "found" if has_direction else "missing",
+        "README": "found" if has_readme else "missing",
+        "structure_overview": "found" if isinstance(overview, dict) and "error" not in overview else "unavailable",
+        "recent_commits": "found" if not _looks_missing(commits) else "unavailable",
+        "open_issues": "found" if not _looks_missing(issues) else "unavailable",
+    }
+    guidance = ""
+    if not has_direction and not has_readme:
+        guidance = (
+            "No DIRECTION.md or README in this repo. Do NOT give up: explain the repo from "
+            "structure_overview (description, topics, languages, top_level dirs, entry_points) "
+            "and manifest_excerpts, and use github_fetch_file to read entry-point/source files "
+            "when more depth is needed. State clearly that the repo has no docs and which "
+            "signals your explanation is based on."
+        )
+    elif not has_direction:
+        guidance = "DIRECTION.md missing — ground on README + structure_overview; suggest `boardman init` to seed DIRECTION.md."
+
     out = {
         "ok": True,
         "repo": f"{owner}/{repo}",
-        "DIRECTION_md": direction,
-        "recent_commits_markdown": commits,
-        "open_issues_markdown": issues,
+        "context_sources": sources,
+        "guidance": guidance,
+        "DIRECTION_md": direction[:8000] if has_direction else direction,
+        "README_md": readme[:8000] if has_readme else readme,
+        "structure_overview": overview,
+        "manifest_excerpts": manifest_excerpts,
+        "recent_commits_markdown": commits[:4000],
+        "open_issues_markdown": issues[:4000],
     }
-    return json.dumps(out, default=str)[:24000]
+    body = json.dumps(out, default=str)
+    if len(body) > 24000:
+        # Trim the biggest text fields instead of slicing JSON mid-token.
+        for k in ("README_md", "DIRECTION_md"):
+            if isinstance(out.get(k), str) and len(out[k]) > 4000:
+                out[k] = out[k][:4000] + "\n…(truncated)"
+        body = json.dumps(out, default=str)[:24000]
+    return body
 
 
 def github_list_workspace_repos_tool() -> StructuredTool:
@@ -165,9 +274,12 @@ def github_repo_planning_context_tool() -> StructuredTool:
         coroutine=_github_repo_planning_context,
         name="github_repo_planning_context",
         description=(
-            "Bundle DIRECTION.md + recent commits + open issues for owner/repo in one call — "
-            "best starting point when planning work for a remote GitHub repo. "
-            "Optional commits_limit (default 20, max 50). Requires GITHUB_PAT."
+            "Bundle DIRECTION.md + README + structural overview (description, topics, languages, "
+            "file tree, manifests, entry points) + recent commits + open issues for owner/repo in "
+            "one call — ALWAYS the starting point when explaining or planning a remote GitHub repo, "
+            "including repos with no markdown docs at all (the structure_overview and "
+            "manifest_excerpts fields cover that case). Optional commits_limit (default 20, max 50). "
+            "Requires GITHUB_PAT."
         ),
     )
 

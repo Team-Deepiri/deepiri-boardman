@@ -110,7 +110,7 @@ async def run_repo_scan(
         if prov == "anthropic":
             mdl = mdl or "claude-sonnet-4-20250514"
         elif prov in ("openai", "gpt"):
-            mdl = mdl or "gpt-4o-mini"
+            mdl = mdl or "gpt-4.1"
         elif prov in ("gemini", "google"):
             mdl = mdl or "gemini-2.0-flash"
 

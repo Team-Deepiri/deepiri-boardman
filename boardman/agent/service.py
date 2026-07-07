@@ -56,7 +56,7 @@ def _default_model_for_provider(provider: str) -> str:
     if provider == "anthropic":
         return "claude-sonnet-4-20250514"
     if provider == "openai":
-        return "gpt-4o-mini"
+        return "gpt-4.1"
     if provider == "openrouter":
         return "anthropic/claude-3.5-sonnet"
     if provider == "gemini":
@@ -289,6 +289,11 @@ async def run_agent_chat(
             ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
+    # Release the SQLite write lock NOW: the session-row insert/update above would otherwise
+    # hold it through the whole (possibly minutes-long) LLM/tool phase, and every concurrent
+    # agent turn would die with "database is locked" after the busy timeout.
+    await session.commit()
+
     intake_extra = TASK_CREATION_WORKFLOW
     draft_md, plaky_suffix = await asyncio.gather(
         _load_draft_markdown(session, ag.id),
@@ -411,6 +416,11 @@ async def iter_agent_chat_sse(
         if repo and not ag.repo:
             ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
+
+    # Release the SQLite write lock NOW: the session-row insert/update above would otherwise
+    # hold it through the whole (possibly minutes-long) LLM/tool phase, and every concurrent
+    # agent turn would die with "database is locked" after the busy timeout.
+    await session.commit()
 
     intake_extra = TASK_CREATION_WORKFLOW
     draft_md, plaky_suffix = await asyncio.gather(
