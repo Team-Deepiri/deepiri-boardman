@@ -1,14 +1,24 @@
 """
-Semi-random QA selection for Plaky assignment.
+GitHub-fit scored QA selection for Plaky assignment.
 
-- Tier + hardware: heavy repos filter out low-tier QAs when configured.
-- Overlap pools: QAs who share org or explicit repo overlap form a pool; we pick within pool.
-- Weights: member.weight * tier bias * uniform jitter → weighted random choice.
-- Auto-classify: If repo not in repos.yml, fetch metadata and classify tier dynamically.
+Hard filters first, then a real ranking:
+
+- Tier filter: member.qa_tier >= repo tier (repos.yml or auto-classified) AND
+  qa_repo_rules pattern rules (tier 1 = allowlist only, tier 2 = exclusions).
+- Hardware: heavy repos drop light/minimal/low hardware-tier QAs.
+- Fit score: each candidate's GitHub contribution profile (recency-decayed PRs
+  authored/reviewed across the org, per-repo languages + topics) is compared to
+  the target repo via cosine similarity — direct contributions to the target repo
+  weigh most, then language overlap, then repo-name/topic token overlap.
+- Final score = (base + fit) * configured weight * hardware bias * jitter; the
+  top-ranked member wins and the reason string records the full ranking.
+- Fallback: if GitHub profiles are unavailable (no PAT, rate limit, outage), the
+  legacy overlap-pool weighted-random pick still assigns someone.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 import re
@@ -16,12 +26,23 @@ from fnmatch import fnmatchcase
 from typing import Dict, List, Optional, Set, Tuple
 
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, load_team_assignments
+from boardman.assignment.repo_rules import qa_tier_allows_repo
 from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.assignment.tier_classifier import classify_repo_tier
 from boardman.repos_config import get_routing
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
+
+# Blend weights for the GitHub-fit score (sum to 1.0).
+FIT_WEIGHT_DIRECT = 0.45   # decayed contributions to the target repo itself
+FIT_WEIGHT_LANGUAGE = 0.30 # cosine over language distributions
+FIT_WEIGHT_TOKENS = 0.25   # cosine over repo-name/topic/description token bags
+# Every eligible member keeps a base score so a zero-fit candidate can still win
+# on weight when nobody has relevant history.
+FIT_BASE_SCORE = 0.15
+# Give the whole scoring step a deadline; on timeout fall back to legacy picking.
+FIT_SCORING_TIMEOUT_SECONDS = 45.0
 
 
 async def _auto_classify_repo_tier(full_name: str) -> int:
@@ -167,6 +188,96 @@ def _weighted_choice(members: List[TeamMember], cfg: TeamAssignmentsConfig) -> O
     return random.choices(members, weights=weights, k=1)[0]
 
 
+async def _github_fit_scores(
+    candidates: List[TeamMember], full_name: str
+) -> Optional[Dict[str, Tuple[float, str]]]:
+    """member.id -> (fit 0..1, detail) from GitHub contribution profiles vs the target repo.
+
+    Returns None when the target repo info or every member profile is unavailable
+    (no PAT / outage) so the caller can fall back to legacy picking.
+    """
+    from boardman.github.qa_contribution_profile import (
+        cosine_similarity,
+        direct_contribution_score,
+        fetch_contribution_profile,
+        fetch_repo_info,
+    )
+
+    if not settings.qa_github_fit_enabled or not (settings.github_pat or "").strip():
+        return None
+
+    import httpx
+
+    # Search the owner org of the target repo — settings.github_org may be a legacy
+    # alias that GitHub search rejects with HTTP 422 (org_repos has a discovery
+    # fallback; the search API does not).
+    search_org = full_name.split("/", 1)[0] if "/" in full_name else settings.github_org
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        target = await fetch_repo_info(client, full_name)
+        if target is None:
+            return None
+        target_lang = {target.language.lower(): 1.0} if target.language else {}
+        target_tokens = target.tokens()
+
+        # GitHub search dislikes concurrency (secondary rate limits) — keep it low.
+        sem = asyncio.Semaphore(2)
+
+        async def _one(m: TeamMember):
+            login = (m.github_login or "").strip()
+            if not login:
+                return m.id, None
+            async with sem:
+                try:
+                    # Per-member deadline: one slow/throttled login must not consume the
+                    # whole scoring budget — cached members still rank.
+                    profile = await asyncio.wait_for(
+                        fetch_contribution_profile(client, login, search_org), timeout=20.0
+                    )
+                except asyncio.TimeoutError:
+                    profile = None
+            if profile is None:
+                return m.id, None
+            direct = direct_contribution_score(profile, full_name)
+            lang_cos = cosine_similarity(profile.language_weights, target_lang)
+            tok_cos = cosine_similarity(profile.token_weights, target_tokens)
+            fit = FIT_WEIGHT_DIRECT * direct + FIT_WEIGHT_LANGUAGE * lang_cos + FIT_WEIGHT_TOKENS * tok_cos
+            top = ", ".join(profile.top_repos(2)) or "no org PRs"
+            detail = f"direct={direct:.2f} lang={lang_cos:.2f} tokens={tok_cos:.2f} top:[{top}]"
+            return m.id, (fit, detail)
+
+        results = await asyncio.gather(*(_one(m) for m in candidates), return_exceptions=True)
+
+    out: Dict[str, Tuple[float, str]] = {}
+    for res in results:
+        if isinstance(res, BaseException):
+            continue
+        mid, scored = res
+        if scored is not None:
+            out[mid] = scored
+    return out or None
+
+
+def _ranked_choice(
+    qas: List[TeamMember], cfg: TeamAssignmentsConfig, fits: Dict[str, Tuple[float, str]]
+) -> Tuple[Optional[TeamMember], str]:
+    """Rank by (base + fit) * weight * hardware bias * jitter; return winner + ranking text."""
+    jitter = cfg.random_jitter
+    rows: List[Tuple[float, TeamMember, str]] = []
+    for m in qas:
+        fit, detail = fits.get(m.id, (0.0, "no GitHub profile"))
+        score = (FIT_BASE_SCORE + fit) * max(0.05, m.weight) * _tier_bias(cfg, m.tier)
+        if jitter > 0:
+            score *= 1.0 + random.uniform(-jitter, jitter)
+        rows.append((score, m, detail))
+    rows.sort(key=lambda r: (-r[0], -(r[1].weight), r[1].display))
+    if not rows:
+        return None, ""
+    ranking = " > ".join(f"{m.display}:{s:.3f}" for s, m, _ in rows[:4])
+    _, winner, detail = rows[0]
+    return winner, f"fit[{detail}] ranking[{ranking}]"
+
+
 async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] = None) -> Tuple[Optional[str], str]:
     """
     Returns (plaky_person_id_or_value, reason_summary).
@@ -218,16 +329,44 @@ async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
             f"candidates had qa_tiers {[m.qa_tier for m in tier_before]}",
         )
 
+    # Pattern rules from team_assignments.yml qa_repo_rules (tier 1 allowlist / tier 2 exclusions).
+    rules_before = list(qas)
+    qas = [m for m in qas if qa_tier_allows_repo(m.qa_tier, fn, cfg.qa_repo_rules)]
+    if not qas:
+        return (
+            None,
+            f"no QA after qa_repo_rules filter for {fn!r} "
+            f"({len(rules_before)} candidate(s) passed the numeric tier filter)",
+        )
+
     if repo_is_heavy(fn, cfg.heavy_repo_patterns):
         qas = [m for m in qas if m.tier.lower() not in ("light", "minimal", "low")]
         if not qas:
             return None, "heavy repo: no QA after legacy hardware tier filter (light/minimal/low dropped)"
 
+    # GitHub-fit scored ranking; legacy overlap-pool weighted-random as the fallback.
+    fits: Optional[Dict[str, Tuple[float, str]]] = None
+    try:
+        fits = await asyncio.wait_for(_github_fit_scores(qas, fn), timeout=FIT_SCORING_TIMEOUT_SECONDS)
+    except Exception as e:  # noqa: BLE001 — never block assignment on scoring (incl. timeout)
+        _log.warning("qa_picker: GitHub fit scoring unavailable for %s: %s", fn, e)
+
+    if fits:
+        chosen, rank_detail = _ranked_choice(qas, cfg, fits)
+        if chosen:
+            return (
+                chosen.id,
+                f"qa={chosen.display} repo_tier={repo_tier} candidates={len(qas)} {rank_detail}",
+            )
+
     pool = _overlap_component(qas)
     chosen = _weighted_choice(pool, cfg)
     if not chosen:
         return None, "weighted pick failed"
-    return chosen.id, f"qa={chosen.display} pool_size={len(pool)} repo_tier={repo_tier}"
+    return (
+        chosen.id,
+        f"qa={chosen.display} pool_size={len(pool)} repo_tier={repo_tier} (legacy weighted pick; GitHub fit unavailable)",
+    )
 
 
 def github_repo_suffix_name(full: str) -> str:

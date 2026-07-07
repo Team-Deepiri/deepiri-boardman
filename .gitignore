@@ -75,3 +75,4 @@ alembic/versions/*.pyc
 # OS
 .DS_Store
 Thumbs.db
+.qa_profiles_cache.json

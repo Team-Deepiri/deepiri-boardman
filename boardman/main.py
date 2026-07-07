@@ -72,8 +72,21 @@ async def lifespan(app: FastAPI):
         )
     if (settings.agent_redis_url or "").strip():
         _log.info("Agent Redis cache: AGENT_REDIS_URL is set (API-only; worker should leave it empty)")
+    from boardman.services.github_poller import start_github_poller_if_enabled, stop_github_poller
+
+    start_github_poller_if_enabled()
+    warmer_task = None
+    if settings.qa_github_fit_enabled and (settings.github_pat or "").strip():
+        import asyncio
+
+        from boardman.github.qa_contribution_profile import warm_qa_profiles_loop
+
+        warmer_task = asyncio.create_task(warm_qa_profiles_loop(), name="qa-profile-warmer")
     yield
 
+    if warmer_task is not None:
+        warmer_task.cancel()
+    await stop_github_poller()
     await close_job_queue()
     await aclose_agent_redis()
     await aclose_ollama_http_client()

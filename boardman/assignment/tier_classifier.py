@@ -139,12 +139,15 @@ def _load() -> tuple[dict[str, float], dict[str, float]]:
 
 def classify_repo_tier(meta) -> tuple[Tier, TierScore]:
     """Pure IDF ranking - fully dynamic."""
+    # Tier 2 when signals are unavailable — matches the _load() warnings and the
+    # qa_picker auto-classify fallback. Returning 3 here would silently restrict
+    # every unknown repo to tier-3 QAs only.
     if not meta:
-        return 3, TierScore()
+        return 2, TierScore()
 
     idf_data, percentiles = _load()
     if not idf_data:
-        return 3, TierScore()
+        return 2, TierScore()
 
     idf_score = sum(idf_data.get(sig, 0.0) for sig in getattr(meta, "raw_signals", []))
     structural_score = compute_structural_complexity_score(meta)

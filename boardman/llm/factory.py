@@ -42,11 +42,12 @@ def get_chat_model() -> Any:
     if p in ("openai", "gpt"):
         from langchain_openai import ChatOpenAI
 
-        return ChatOpenAI(
-            model=(settings.llm_model or "").strip() or "gpt-4o-mini",
-            api_key=settings.openai_api_key or None,
-            temperature=0.2,
-        )
+        model = (settings.llm_model or "").strip() or "gpt-4.1"
+        kw = {"model": model, "api_key": settings.openai_api_key or None}
+        # gpt-5* and o-series reasoning models reject non-default temperature.
+        if not (model.startswith("gpt-5") or model.startswith("o")):
+            kw["temperature"] = 0.2
+        return ChatOpenAI(**kw)
 
     if p in ("openrouter", "or"):
         from langchain_openai import ChatOpenAI

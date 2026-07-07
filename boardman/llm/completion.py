@@ -82,7 +82,7 @@ async def chat_complete(
         if prov == "anthropic":
             mdl = mdl or "claude-sonnet-4-20250514"
         elif prov in ("openai", "gpt"):
-            mdl = mdl or "gpt-4o-mini"
+            mdl = mdl or "gpt-4.1"
         elif prov in ("openrouter", "or"):
             mdl = mdl or "anthropic/claude-3.5-sonnet"
         elif prov in ("gemini", "google"):
