@@ -1,13 +1,12 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
 from pathlib import Path
-from typing import Optional
 
 import typer
 from rich.console import Console
 from rich.panel import Panel
 from rich.status import Status
+from rich.table import Table
 
 from boardman.planning.models import MeetingRequest
 from boardman.planning.service import (
@@ -16,7 +15,9 @@ from boardman.planning.service import (
     generate_plan,
     week_anchor,
 )
-from boardman.planning.team_repos import TEAM_CHOICES
+from boardman.planning.team_config import resolve_planning_mappings
+from boardman.planning.team_plaky_boards import boards_for_team
+from boardman.planning.team_repos import TEAM_CHOICES, repos_for_team
 
 plan_app = typer.Typer(help="Generate weekly meeting plans (from deepiri-huddle)")
 console = Console()
@@ -26,8 +27,8 @@ def _generate_and_write(
     request: MeetingRequest,
     output: Path,
     *,
-    provider: Optional[str] = None,
-    model: Optional[str] = None,
+    provider: str | None = None,
+    model: str | None = None,
 ) -> None:
     with Status("Generating meeting plan...", spinner="dots", console=console):
         plan = generate_plan(
@@ -57,8 +58,8 @@ def weekly(
     ),
     week: str = typer.Option("next", "--week", help="current or next"),
     output: Path | None = typer.Option(None, "--output", "-o"),
-    provider: Optional[str] = typer.Option(None, "--provider", help="LLM provider override"),
-    model: Optional[str] = typer.Option(None, "--model", help="LLM model override"),
+    provider: str | None = typer.Option(None, "--provider", help="LLM provider override"),
+    model: str | None = typer.Option(None, "--model", help="LLM model override"),
 ) -> None:
     """Generate a weekly engineering round-table plan."""
     if team not in TEAM_CHOICES:
@@ -99,8 +100,8 @@ def custom(
     attendees: int = typer.Option(15, min=2, max=100),
     notes: str = typer.Option("", help="Additional planning context"),
     output: Path | None = typer.Option(None, "--output", "-o"),
-    provider: Optional[str] = typer.Option(None, "--provider"),
-    model: Optional[str] = typer.Option(None, "--model"),
+    provider: str | None = typer.Option(None, "--provider"),
+    model: str | None = typer.Option(None, "--model"),
 ) -> None:
     """Generate a custom meeting plan."""
     if team not in TEAM_CHOICES:
@@ -124,3 +125,34 @@ def custom(
     )
     out = output or default_plan_output_path(team, meeting_type, week)
     _generate_and_write(req, out, provider=provider, model=model)
+
+
+@plan_app.command("doctor")
+def doctor() -> None:
+    """Print resolved team → GitHub repo and Plaky board mappings."""
+    report = resolve_planning_mappings()
+    console.print("[bold]Meeting plan configuration[/bold]")
+    console.print(f"Team repos source: [cyan]{report.team_repos_source}[/cyan]")
+    console.print(f"Team boards source: [cyan]{report.team_boards_source}[/cyan]")
+    console.print(f"repos.yml: {report.repos_yml_path}")
+    console.print(f"team_repos.json: {report.team_repos_file}")
+    console.print(f"team_plaky_boards.json: {report.team_boards_file}")
+    console.print()
+
+    repo_table = Table(title="Team → GitHub repos")
+    repo_table.add_column("Team")
+    repo_table.add_column("Repos")
+    for team in TEAM_CHOICES:
+        repos = repos_for_team(report.team_repos, team)
+        repo_table.add_row(team, ", ".join(repos) if repos else "(none)")
+    console.print(repo_table)
+    console.print()
+
+    board_table = Table(title="Team → Plaky boards")
+    board_table.add_column("Team")
+    board_table.add_column("Board IDs")
+    for team in TEAM_CHOICES:
+        boards = boards_for_team(report.team_boards, team)
+        labels = ", ".join(board.board_id for board in boards) if boards else "(none)"
+        board_table.add_row(team, labels)
+    console.print(board_table)

@@ -54,6 +54,7 @@ planning_tests=(
   tests/test_planning_plan_output.py
   tests/test_planning_planner.py
   tests/test_planning_service.py
+  tests/test_planning_team_config.py
   tests/test_plans_route.py
   tests/test_planning_agent_tool.py
 )
