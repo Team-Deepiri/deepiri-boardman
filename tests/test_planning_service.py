@@ -103,7 +103,8 @@ def test_generate_plan_returns_plan_without_write() -> None:
     assert "## Purpose" in plan.markdown
 
 
-def test_generate_plan_writes_output_file(tmp_path: Path) -> None:
+def test_generate_plan_writes_output_file(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("boardman.planning.service.settings.planning_output_dir", str(tmp_path))
     request = MeetingRequest(
         meeting_title="Weekly",
         meeting_type="weekly-status-sync",
@@ -118,3 +119,19 @@ def test_generate_plan_writes_output_file(tmp_path: Path) -> None:
     plan = generate_plan(request, output_path=out, planner=planner)
     assert out.exists()
     assert out.read_text(encoding="utf-8").strip() == plan.markdown.strip()
+
+
+def test_generate_plan_rejects_output_path_traversal(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setattr("boardman.planning.service.settings.planning_output_dir", str(tmp_path))
+    request = MeetingRequest(
+        meeting_title="Weekly",
+        meeting_type="weekly-status-sync",
+        team_focus="qa",
+        attendees_count=10,
+        objectives=["Align"],
+        week_label="next-week",
+        target_date_iso="2026-06-16",
+    )
+    planner = MeetingPlanner(llm=_StaticLlm())  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        generate_plan(request, output_path=tmp_path.parent / "escape.md", planner=planner)

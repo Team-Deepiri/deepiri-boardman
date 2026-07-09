@@ -245,6 +245,7 @@ def test_offline_plan_pipeline_injects_fixture_context(monkeypatch):
 
 def test_offline_generate_plan_fallback_passes_schema(monkeypatch, tmp_path: Path):
     factory = _planning_db_factory()
+    monkeypatch.setattr("boardman.planning.service.settings.planning_output_dir", str(tmp_path))
     monkeypatch.setattr("boardman.settings.settings.github_pat", "fixture-token")
     monkeypatch.setattr("boardman.settings.settings.plaky_api_key", "fixture-key")
     monkeypatch.setattr(

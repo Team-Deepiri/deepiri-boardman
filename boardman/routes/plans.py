@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -8,6 +9,7 @@ from pydantic import BaseModel, Field
 from boardman.planning.models import MeetingRequest
 from boardman.planning.service import default_plan_output_path, generate_plan, week_anchor
 from boardman.planning.team_repos import TEAM_CHOICES
+from boardman.settings import settings
 
 router = APIRouter(prefix="/plans", tags=["plans"])
 
@@ -43,11 +45,28 @@ def _resolve_target_date(body: GeneratePlanRequest) -> str:
     return week_anchor(week).isoformat()
 
 
+def _confine_to_output_dir(raw: str) -> Path:
+    """Confine a client-supplied output path to the planning output directory.
+
+    Prevents path traversal: the request could otherwise write markdown to an
+    arbitrary location. The resolved target must stay within
+    ``settings.planning_output_dir``.
+    """
+    base = os.path.realpath(settings.planning_output_dir)
+    candidate = os.path.realpath(os.path.join(base, raw))
+    if candidate != base and not candidate.startswith(base + os.sep):
+        raise HTTPException(
+            status_code=422,
+            detail="output_path must stay within the planning output directory",
+        )
+    return Path(candidate)
+
+
 def _resolve_output_path(body: GeneratePlanRequest) -> Path | None:
     if not body.write_to_disk:
         return None
     if body.output_path:
-        return Path(body.output_path)
+        return _confine_to_output_dir(body.output_path)
     week = "next" if "next" in body.week_label.lower() else "current"
     return default_plan_output_path(body.team_focus, body.meeting_type, week)
 
