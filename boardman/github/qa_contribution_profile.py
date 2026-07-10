@@ -272,7 +272,10 @@ async def fetch_contribution_profile(
                 num = item.get("number")
                 if "/" not in repo_fn or num is None:
                     continue
-                pr_key = f"{q[:12]}:{repo_fn}#{num}"
+                # Dedup within ONE query (its result pages) — the full query string is the
+                # namespace. A truncated q[:12] collided across the author/reviewed-by
+                # queries and silently dropped the reviewed-by weighting.
+                pr_key = f"{q}:{repo_fn}#{num}"
                 if pr_key in seen_pr:
                     continue
                 seen_pr.add(pr_key)

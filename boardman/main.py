@@ -27,6 +27,22 @@ async def lifespan(app: FastAPI):
             await get_agent_leaky_limiter()
         except Exception as e:
             _log.warning("Agent rate limiter init skipped: %s", e)
+    # Webhook signature posture: empty secret = verification disabled (dev only).
+    ws = (settings.github_webhook_secret or "").strip()
+    if not ws:
+        if settings.testing_live_plaky:
+            _log.info("Webhook signature verification disabled (fine for TESTING_LIVE_PLAKY local mode)")
+        else:
+            _log.warning(
+                "GITHUB_WEBHOOK_SECRET is EMPTY — webhook signature verification is DISABLED. "
+                "Anyone who can reach this endpoint can forge GitHub events. Set `openssl rand -hex 32` "
+                "here and on the GitHub webhook before production."
+            )
+    elif len(ws) < 16:
+        _log.warning(
+            "GITHUB_WEBHOOK_SECRET is only %d chars — trivially forgeable. Use `openssl rand -hex 32`.",
+            len(ws),
+        )
     pk = (settings.plaky_api_key or "").strip()
     if pk:
         _log.info("Plaky: API key present (length=%d), base=%s", len(pk), settings.plaky_api_base)

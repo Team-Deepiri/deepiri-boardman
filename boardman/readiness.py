@@ -263,6 +263,54 @@ def _check_env(env_path: Path, env: dict[str, str]) -> list[ReadinessCheck]:
     for key in SECURITY_ENV_KEYS:
         checks.append(_env_key_check("security", key, env.get(key), required=False))
 
+    # TESTING_LIVE_PLAKY is a LOCAL testing mode (GitHub poller). In production it would
+    # double-process events alongside real webhooks — hard FAIL for go-live.
+    if _boolish_true(env.get("TESTING_LIVE_PLAKY")):
+        checks.append(
+            ReadinessCheck(
+                "env",
+                "TESTING_LIVE_PLAKY",
+                FAIL,
+                "must be false in production (local poller would double-process events "
+                "alongside real webhooks)",
+            )
+        )
+    else:
+        checks.append(
+            ReadinessCheck("env", "TESTING_LIVE_PLAKY", PASS, "disabled (webhooks deliver events)")
+        )
+
+    # Webhook secret strength: empty disables signature verification entirely; a short
+    # placeholder (e.g. 1 char) passes the generic placeholder check but is trivially forgeable.
+    webhook_secret = (env.get("GITHUB_WEBHOOK_SECRET") or "").strip()
+    if not webhook_secret:
+        checks.append(
+            ReadinessCheck(
+                "security",
+                "GITHUB_WEBHOOK_SECRET strength",
+                FAIL,
+                "empty — webhook signature verification is DISABLED; set `openssl rand -hex 32`",
+            )
+        )
+    elif len(webhook_secret) < 16:
+        checks.append(
+            ReadinessCheck(
+                "security",
+                "GITHUB_WEBHOOK_SECRET strength",
+                FAIL,
+                f"only {len(webhook_secret)} chars — trivially forgeable; set `openssl rand -hex 32`",
+            )
+        )
+    else:
+        checks.append(
+            ReadinessCheck(
+                "security",
+                "GITHUB_WEBHOOK_SECRET strength",
+                PASS,
+                f"{len(webhook_secret)} chars",
+            )
+        )
+
     if _boolish_true(env.get("BOARDMAN_SECRETS_ROTATED")):
         checks.append(
             ReadinessCheck(
