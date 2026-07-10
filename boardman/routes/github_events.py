@@ -16,9 +16,15 @@ from boardman.github.webhooks import (
     parse_webhook_payload,
     verify_signature,
 )
-from boardman.services.issue_handler import handle_issue_opened
+from boardman.services.issue_handler import (
+    handle_issue_closed,
+    handle_issue_opened,
+    handle_issue_reopened,
+)
 from boardman.services.pr_handler import (
     handle_pr_closed_without_merge,
+    handle_pr_converted_to_draft,
+    handle_pr_edited,
     handle_pr_merged,
     handle_pr_opened,
     handle_pr_ready_for_review,
@@ -101,8 +107,13 @@ async def github_webhook(
 
     result: Optional[dict[str, Any]] = None
 
-    if isinstance(payload, IssueEventPayload) and payload.action == "opened":
-        result = await handle_issue_opened(payload, session)
+    if isinstance(payload, IssueEventPayload):
+        if payload.action == "opened":
+            result = await handle_issue_opened(payload, session)
+        elif payload.action == "closed":
+            result = await handle_issue_closed(payload, session)
+        elif payload.action == "reopened":
+            result = await handle_issue_reopened(payload, session)
 
     elif isinstance(payload, PullRequestReviewEventPayload):
         result = await handle_pull_request_review(payload, session)
@@ -129,6 +140,10 @@ async def github_webhook(
             result = await handle_pr_synchronized(payload, session)
         elif payload.action == "reopened":
             result = await handle_pr_opened(payload, session)
+        elif payload.action == "edited":
+            result = await handle_pr_edited(payload, session)
+        elif payload.action == "converted_to_draft":
+            result = await handle_pr_converted_to_draft(payload, session)
 
     if result is not None:
         await _mark_delivery("processed", "handled")

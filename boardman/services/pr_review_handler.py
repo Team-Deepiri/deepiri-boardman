@@ -98,11 +98,67 @@ async def _assigned_qa_plaky_id(
     return ids[0] if ids else ""
 
 
+async def _handle_review_dismissed(
+    payload: PullRequestReviewEventPayload,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """A dismissed approval must not leave the task looking QA-approved → back to In QA."""
+    repo_name = payload.repository.name
+    pr_number = payload.pull_request.number
+    task_ids = await _task_ids_for_pr(session, repo_name, pr_number)
+    if not task_ids:
+        return {"ok": True, "skipped": True, "message": "no Plaky task linked for this PR"}
+
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
+    bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()
+    if not bid:
+        return {"ok": True, "skipped": True, "message": "no board id for repo; cannot verify status"}
+
+    approved = await resolve_plaky_status_patch(bid, intent="github_pr_review_approved")
+    in_qa = await resolve_plaky_status_patch(bid, intent="workflow_in_qa")
+    if not approved or not in_qa:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "qa-approved / in-qa status not resolvable from board",
+        }
+    ap_key, ap_id = approved
+    iq_key, iq_id = in_qa
+
+    from boardman.services.pr_handler import _current_status_value
+
+    plaky = PlakyClient()
+    reverted: list[dict[str, Any]] = []
+    for tid in task_ids:
+        current = await _current_status_value(plaky, bid, tid, ap_key)
+        if not current or current != str(ap_id):
+            continue
+        res = await _update_plaky_task_status(tid, iq_id, bid, status_field_key=iq_key)
+        session.add(
+            SyncLog(
+                action="pr_review_dismissed",
+                github_repo=repo_name,
+                github_ref=str(pr_number),
+                plaky_task_id=tid,
+                detail=json.dumps({"from": "qa_approved", "to_status": iq_id}, default=str),
+            )
+        )
+        reverted.append({"task_id": tid, "plaky": res})
+
+    await session.commit()
+    if reverted:
+        await maybe_enqueue_plaky_reorder_after_task(plaky, reverted[0]["task_id"])
+    return {"ok": True, "updated": reverted, "event": "review_dismissed"}
+
+
 async def handle_pull_request_review(
     payload: PullRequestReviewEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
-    if payload.action != "submitted":
+    action = (payload.action or "").strip().casefold()
+    if action == "dismissed":
+        return await _handle_review_dismissed(payload, session)
+    if action != "submitted":
         return {"ok": True, "message": "ignored non-submitted review"}
 
     repo_name = payload.repository.name
@@ -236,6 +292,61 @@ async def handle_pull_request_review(
     return {"ok": True, "updated": updated, "status": target_status}
 
 
+async def _sync_plain_issue_comment(
+    payload: IssueCommentEventPayload,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """Comments on a plain GitHub issue land on the linked Plaky task (QA discussion in one place)."""
+    from boardman.services.issue_handler import find_plaky_task_by_issue
+
+    repo_name = payload.repository.name
+    issue_number = payload.issue.number
+
+    commenter = ""
+    comment_body = ""
+    comment_url = ""
+    if isinstance(payload.comment, dict):
+        u = payload.comment.get("user")
+        if isinstance(u, dict):
+            commenter = str(u.get("login") or "").strip()
+        comment_body = str(payload.comment.get("body") or "").strip()
+        comment_url = str(payload.comment.get("html_url") or "").strip()
+    if commenter.endswith("[bot]"):
+        return {"ok": True, "skipped": True, "message": "bot comment ignored"}
+    if not comment_body:
+        return {"ok": True, "skipped": True, "message": "empty comment body"}
+
+    mapping = await find_plaky_task_by_issue(repo_name, issue_number, session)
+    if not mapping or not mapping.plaky_task_id:
+        return {"ok": True, "skipped": True, "message": "no Plaky task mapped for this issue"}
+
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
+    bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()
+
+    excerpt = comment_body[:700] + ("…" if len(comment_body) > 700 else "")
+    quoted = "> " + excerpt.replace("\n", "\n> ")
+    text = f"💬 **GitHub comment** by `{commenter or 'unknown'}` on issue #{issue_number}:\n\n{quoted}"
+    if comment_url:
+        text += f"\n\n{comment_url}"
+
+    plaky = PlakyClient()
+    res = await plaky.add_comment(mapping.plaky_task_id, text, board_id=bid or None)
+    session.add(
+        SyncLog(
+            action="issue_comment_synced",
+            github_repo=repo_name,
+            github_ref=str(issue_number),
+            plaky_task_id=mapping.plaky_task_id,
+            detail=json.dumps(
+                {"commenter": commenter, "comment_url": comment_url, "plaky_ok": res.get("ok")},
+                default=str,
+            ),
+        )
+    )
+    await session.commit()
+    return {"ok": True, "plaky_task_id": mapping.plaky_task_id, "event": "issue_comment_synced"}
+
+
 async def handle_issue_comment_on_pr(
     payload: IssueCommentEventPayload,
     session: AsyncSession,
@@ -244,7 +355,7 @@ async def handle_issue_comment_on_pr(
         return {"ok": True, "message": "ignored non-created comment"}
 
     if not payload.issue.pull_request:
-        return {"ok": True, "skipped": True, "message": "not a pull request comment"}
+        return await _sync_plain_issue_comment(payload, session)
 
     repo_name = payload.repository.name
     pr_number = payload.issue.number

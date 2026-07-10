@@ -188,13 +188,21 @@ async def get_routing_async(
     """
     Resolve Plaky board/group for a GitHub repo.
 
-    When ``plaky_placement_auto_discover`` is enabled (default):
+    Precedence: an **explicit repos.yml entry always wins** — auto-discovery is the
+    fallback for repos nobody configured, never an override of deliberate config.
+
+    When no explicit entry exists and ``plaky_placement_auto_discover`` is enabled
+    (default):
       - Loads cached Plaky catalog (boards + groups).
       - Fuzzy-matches repo slug → group, or falls back to category → board.
-      - Does not read ``repos.yml`` for board_id / group_id.
 
-    Set ``PLAKY_PLACEMENT_AUTO_DISCOVER=false`` to use legacy ``repos.yml`` routing only.
+    Set ``PLAKY_PLACEMENT_AUTO_DISCOVER=false`` to use legacy ``repos.yml``/defaults
+    routing only.
     """
+    legacy_r, legacy_src = get_routing(full_name, short_name, org, with_source=True)
+    if legacy_r is not None and legacy_src == "explicit":
+        return (legacy_r, legacy_src) if with_source else legacy_r
+
     if settings.plaky_placement_auto_discover:
         from boardman.plaky.placement_discovery import resolve_placement_for_repo
 
@@ -216,9 +224,10 @@ async def get_routing_async(
             )
             src = f"discovered:{placement.source}"
             return (r, src) if with_source else r
-        return (None, "discovered:none") if with_source else None
+        if legacy_r is None:
+            return (None, "discovered:none") if with_source else None
 
-    return get_routing(full_name, short_name, org, with_source=with_source)
+    return (legacy_r, legacy_src) if with_source else legacy_r
 
 
 def list_registered_repos() -> Dict[str, RepoRouting]:

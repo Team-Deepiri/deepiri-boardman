@@ -39,7 +39,28 @@ GITHUB_ISSUE_URL_RE = re.compile(
     re.I,
 )
 BODY_HASH_ISSUE_RE = re.compile(r"(?<!\w)#(\d+)\b")
-BRANCH_ISSUE_NUM_RE = re.compile(r"(?:^|[-_/])(\d{1,6})(?=[-_/.]|$)")
+# Branch numbers count as issue refs ONLY in issue-like contexts. A bare trailing number
+# ("upgrade-node-20", "migrate-py-311") is NOT an issue reference — treating any digit run
+# as one can auto-link a PR to an unrelated task. Accepted shapes:
+#   keyword-prefixed anywhere:          issue-42, fix/42-sync, bug_42, gh-42, task/42
+#   leading number of a path segment:   42-add-tests, feature/42-bugfix, feature/42
+BRANCH_ISSUE_KEYWORD_RE = re.compile(
+    r"(?:^|[-_/])(?:issue|iss|fix(?:es)?|bug|gh|task)[-_/]?(\d{1,6})(?=[-_/.]|$)", re.I
+)
+BRANCH_LEADING_NUM_RE = re.compile(r"^(\d{1,6})(?=$|[-_.])")
+
+
+def branch_issue_numbers(ref: str) -> set[int]:
+    """Issue numbers a branch name plausibly references (context-aware, see regexes above)."""
+    out: set[int] = set()
+    ref = (ref or "").replace("refs/heads/", "")
+    for m in BRANCH_ISSUE_KEYWORD_RE.finditer(ref):
+        out.add(int(m.group(1)))
+    for part in ref.split("/"):
+        m = BRANCH_LEADING_NUM_RE.match(part)
+        if m:
+            out.add(int(m.group(1)))
+    return {n for n in out if 1 <= n < 1_000_000}
 
 
 def github_head_ref(head: Any) -> str:
@@ -70,12 +91,7 @@ def referenced_issue_numbers(
     for m in BODY_HASH_ISSUE_RE.finditer(text):
         out.add(int(m.group(1)))
 
-    ref = head_ref.replace("refs/heads/", "")
-    for part in ref.split("/"):
-        for m in BRANCH_ISSUE_NUM_RE.finditer(part):
-            n = int(m.group(1))
-            if 1 <= n < 1_000_000:
-                out.add(n)
+    out |= branch_issue_numbers(head_ref)
 
     return out
 

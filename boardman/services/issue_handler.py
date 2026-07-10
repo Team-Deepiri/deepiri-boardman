@@ -111,3 +111,95 @@ async def find_plaky_task_by_issue(
         )
     )
     return result.scalar_one_or_none()
+
+
+async def _issue_status_transition(
+    payload: IssueEventPayload,
+    session: AsyncSession,
+    *,
+    intents: tuple[str, ...],
+    literal_fallback: str,
+    action_name: str,
+    task_comment: str,
+) -> dict:
+    """Shared close/reopen flow: map issue → task, resolve a board status, apply + comment."""
+    repo_name = payload.repository.name
+    issue_number = payload.issue.number
+    mapping = await find_plaky_task_by_issue(repo_name, issue_number, session)
+    if not mapping or not mapping.plaky_task_id:
+        return {"ok": True, "skipped": True, "message": "no Plaky task mapped for this issue"}
+
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
+    bid, _gid = effective_plaky_placement(routing)
+    bid = (bid or "").strip()
+
+    status_field_key: str | None = None
+    target = ""
+    if bid:
+        from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+        for intent in intents:
+            res = await resolve_plaky_status_patch(bid, intent=intent)
+            if res:
+                status_field_key, target = res[0], res[1]
+                break
+    if not target:
+        target = (literal_fallback or "").strip()
+    if not target:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": f"no status resolvable for {action_name} (board schema or env)",
+        }
+
+    from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
+
+    res = await update_task_internal(
+        mapping.plaky_task_id,
+        UpdateTaskInput(
+            status=target,
+            plaky_board_id=bid or None,
+            status_plaky_field_key=status_field_key,
+        ),
+    )
+    plaky = PlakyClient()
+    await plaky.add_comment(mapping.plaky_task_id, task_comment, board_id=bid or None)
+    session.add(
+        SyncLog(
+            action=action_name,
+            github_repo=repo_name,
+            github_ref=str(issue_number),
+            plaky_task_id=mapping.plaky_task_id,
+            detail=json.dumps(
+                {"issue_url": payload.issue.html_url, "plaky_status": target}, default=str
+            ),
+        )
+    )
+    await session.commit()
+    return {"ok": True, "plaky_task_id": mapping.plaky_task_id, "status": target, "plaky": res}
+
+
+async def handle_issue_closed(payload: IssueEventPayload, session: AsyncSession) -> dict:
+    """GitHub issue closed → linked Plaky task moves to Completed."""
+    n = payload.issue.number
+    return await _issue_status_transition(
+        payload,
+        session,
+        intents=("workflow_completed",),
+        literal_fallback=settings.plaky_status_completed,
+        action_name="issue_closed",
+        task_comment=f"**Issue closed on GitHub:** #{n} — task marked complete by automation.",
+    )
+
+
+async def handle_issue_reopened(payload: IssueEventPayload, session: AsyncSession) -> dict:
+    """GitHub issue reopened → linked Plaky task moves back to In Progress (or Assigned)."""
+    n = payload.issue.number
+    return await _issue_status_transition(
+        payload,
+        session,
+        intents=("workflow_in_progress", "workflow_assigned"),
+        literal_fallback="",
+        action_name="issue_reopened",
+        task_comment=f"**Issue reopened on GitHub:** #{n} — task revived by automation.",
+    )

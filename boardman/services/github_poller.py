@@ -434,8 +434,17 @@ class GitHubEventPoller:
         async with async_session() as session:
             try:
                 result: Optional[dict[str, Any]] = None
-                if isinstance(parsed, IssueEventPayload) and parsed.action == "opened":
-                    result = await handle_issue_opened(parsed, session)
+                if isinstance(parsed, IssueEventPayload):
+                    if parsed.action == "opened":
+                        result = await handle_issue_opened(parsed, session)
+                    elif parsed.action == "closed":
+                        from boardman.services.issue_handler import handle_issue_closed
+
+                        result = await handle_issue_closed(parsed, session)
+                    elif parsed.action == "reopened":
+                        from boardman.services.issue_handler import handle_issue_reopened
+
+                        result = await handle_issue_reopened(parsed, session)
                 elif isinstance(parsed, PullRequestReviewEventPayload):
                     result = await handle_pull_request_review(parsed, session)
                 elif isinstance(parsed, PullRequestReviewCommentEventPayload):
@@ -450,6 +459,14 @@ class GitHubEventPoller:
                         from boardman.services.pr_handler import handle_pr_ready_for_review
 
                         result = await handle_pr_ready_for_review(parsed, session)
+                    elif parsed.action == "edited":
+                        from boardman.services.pr_handler import handle_pr_edited
+
+                        result = await handle_pr_edited(parsed, session)
+                    elif parsed.action == "converted_to_draft":
+                        from boardman.services.pr_handler import handle_pr_converted_to_draft
+
+                        result = await handle_pr_converted_to_draft(parsed, session)
                     elif parsed.action == "closed" and parsed.pull_request.merged:
                         result = await handle_pr_merged(parsed, session)
                     elif parsed.action == "closed":

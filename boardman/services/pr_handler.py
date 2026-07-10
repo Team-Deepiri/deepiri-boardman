@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from typing import Any, Optional
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import load_team_assignments
@@ -201,10 +203,12 @@ async def _maybe_set_needs_qa(
 async def _maybe_triage_ambiguous_pr(
     payload: PullRequestEventPayload,
     session: AsyncSession,
+    top_scored: Sequence[Any] | None = None,
 ) -> dict[str, Any] | None:
     """
     PRs with no Fixes/Closes issue link: optional Plaky triage task + QA assignee.
-    Configure under `ambiguous_pr` in team_assignments.yml.
+    Configure under `ambiguous_pr` in team_assignments.yml. Idempotent per PR —
+    reopen/edit events must not create a second triage task.
     """
     cfg = load_team_assignments()
     amb = cfg.ambiguous_pr
@@ -223,6 +227,21 @@ async def _maybe_triage_ambiguous_pr(
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
     full_name = payload.repository.full_name
+
+    prior = await session.execute(
+        select(SyncLog).where(
+            SyncLog.action == "pr_ambiguous_triage",
+            SyncLog.github_repo == repo_name,
+            SyncLog.github_ref == str(pr_number),
+        )
+    )
+    if prior.scalars().first() is not None:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "triage task already created for this PR",
+            "ambiguous_triage": True,
+        }
     title = amb.title_template.format(number=pr_number, repo=repo_name, full_name=full_name)
     description = (
         f"GitHub PR (no linked issue): {pr_url}\n\n"
@@ -230,6 +249,10 @@ async def _maybe_triage_ambiguous_pr(
         "This PR did not reference an issue with `Fixes #` / `Closes #` / `Resolves #`. "
         "Triage: link the right issue, add QA plan, or split work.\n"
     )
+    if top_scored:
+        # Surface the fuzzy pipeline's best guesses so a human can link in one click —
+        # previously these only landed in the SyncLog table where nobody saw them.
+        description += "\n" + format_triage_comment(top_scored) + "\n"
 
     field_values: dict[str, str] = {}
     if amb.assign_qa:
@@ -336,6 +359,7 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
             results.append({"issue": issue_num, "task_id": mapping.plaky_task_id})
 
     if not linked_issues:
+        pipe_top: Sequence[Any] | None = None
         run_pipe = settings.pr_linking_pipeline_enabled and await should_run_pipeline(
             payload.pull_request.body
         )
@@ -359,6 +383,7 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                 pr_author_email=pr_author_email,
                 pr_author_name=pr_author_name,
             )
+            pipe_top = pipe.top_scored
             plog = SyncLog(
                 action="pr_link_pipeline",
                 github_repo=repo_name,
@@ -422,13 +447,93 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
 
             await session.commit()
 
-        triage = await _maybe_triage_ambiguous_pr(payload, session)
+        triage = await _maybe_triage_ambiguous_pr(payload, session, top_scored=pipe_top)
         if triage is not None:
             return triage
         return {"ok": True, "skipped": True, "message": "No linked issues found"}
 
     await session.commit()
     return {"ok": True, "linked": results}
+
+
+async def handle_pr_edited(
+    payload: PullRequestEventPayload,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """PR title/body edited: an unlinked PR gets one more shot at linking.
+
+    A PR opened without `Fixes #N` that is later edited to include one (or given a
+    clearer title) re-runs the full opened pipeline. Already-linked PRs are left
+    alone — automation must not churn a link a human may have curated.
+    """
+    repo_name = payload.repository.name
+    pr_number = payload.pull_request.number
+    state = (payload.pull_request.state or "").strip().casefold()
+    if state and state != "open":
+        return {"ok": True, "skipped": True, "message": "PR not open; edit ignored"}
+    task_ids = await distinct_task_ids_for_pr(
+        session, github_repo=repo_name, github_pr_number=pr_number
+    )
+    if task_ids:
+        return {"ok": True, "skipped": True, "message": "PR already linked; edit ignored"}
+    return await handle_pr_opened(payload, session)
+
+
+async def handle_pr_converted_to_draft(
+    payload: PullRequestEventPayload,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """Ready-for-review reversed (converted_to_draft): Needs QA tasks go back to In Progress."""
+    repo_name = payload.repository.name
+    pr_number = payload.pull_request.number
+    task_ids = await distinct_task_ids_for_pr(
+        session, github_repo=repo_name, github_pr_number=pr_number
+    )
+    if not task_ids:
+        return {"ok": True, "skipped": True, "message": "no linked Plaky tasks for this PR"}
+
+    from boardman.repos_config import get_routing_async
+
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
+    bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()
+    if not bid:
+        return {"ok": True, "skipped": True, "message": "no board id for repo"}
+
+    from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+    needs_qa = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
+    in_progress = await resolve_plaky_status_patch(bid, intent="workflow_in_progress")
+    if not needs_qa or not in_progress:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "needs-qa / in-progress status not resolvable from board",
+        }
+    nq_key, nq_id = needs_qa
+    ip_key, ip_id = in_progress
+
+    plaky = PlakyClient()
+    reverted: list[dict[str, Any]] = []
+    for tid in task_ids:
+        current = await _current_status_value(plaky, bid, tid, nq_key)
+        if not current or current != str(nq_id):
+            continue
+        res = await _update_plaky_task_status(tid, ip_id, bid, status_field_key=ip_key)
+        session.add(
+            SyncLog(
+                action="pr_converted_to_draft",
+                github_repo=repo_name,
+                github_ref=str(pr_number),
+                plaky_task_id=tid,
+                detail=json.dumps({"from": "needs_qa", "to_status": ip_id}, default=str),
+            )
+        )
+        reverted.append({"task_id": tid, "plaky": res})
+
+    await session.commit()
+    if reverted:
+        await maybe_enqueue_plaky_reorder_after_task(plaky, reverted[0]["task_id"])
+    return {"ok": True, "updated": reverted, "event": "converted_to_draft"}
 
 
 async def handle_pr_ready_for_review(

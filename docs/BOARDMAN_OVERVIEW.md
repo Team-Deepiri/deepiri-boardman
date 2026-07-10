@@ -31,15 +31,26 @@ No human in the loop. GitHub event in → Plaky updated out.
 
 ```
 Issue opened        →  Task created, QA auto-assigned
+Issue commented     →  Comment mirrored onto the task
+Issue closed        →  Completed
+Issue reopened      →  In Progress (task revived)
 PR opened           →  Assignee filled in, Type set, status → Needs QA
+PR edited           →  Unlinked PR gets one more linking pass (late "Fixes #N")
+PR back to draft    →  Needs QA reverted to In Progress
 QA comments         →  In QA
 QA requests changes →  QA Rejected
 Dev pushes a fix    →  In Progress
 Someone says "pause"→  Paused
 Dev pings the QA    →  Needs QA (again)
 QA approves         →  QA Verified
+Approval dismissed  →  Back to In QA
 PR merged           →  Completed
 ```
+
+Placement precedence: an explicit `repos.yml` entry always wins; the Plaky-catalog
+auto-discovery (repo-named group on the categorical boards) is the fallback for repos
+nobody configured. PRs that can't be matched to any task create a **triage task listing
+the pipeline's best guesses**, so a human can link in one click.
 
 **How it picks the QA:** every repo has a difficulty **tier** (1–3), and every QA has a tier they're
 cleared for. A tier-3 QA can review anything; a tier-1 QA only the simplest repos. Boardman looks at
