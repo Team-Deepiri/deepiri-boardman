@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
 import httpx
@@ -18,7 +17,7 @@ import httpx
 _log = logging.getLogger(__name__)
 
 # Slug/name must suggest an explicit QA tier marker (avoid accidental matches).
-_TIER_PATTERNS: Tuple[re.Pattern[str], ...] = (
+_TIER_PATTERNS: tuple[re.Pattern[str], ...] = (
     # qa-tier-2, tier-3-qa, qa_tier_1
     re.compile(r"(?:^|[-_/])(?:qa[-_])?tier[-_]?([123])(?:$|[-_/])", re.IGNORECASE),
     # Display names: "QA Tier 3 Reviewers"
@@ -32,7 +31,7 @@ _TIER_PATTERNS: Tuple[re.Pattern[str], ...] = (
 )
 
 
-def parse_qa_tier_from_github_team(slug: str, display_name: Optional[str] = None) -> Optional[int]:
+def parse_qa_tier_from_github_team(slug: str, display_name: str | None = None) -> int | None:
     """
     Return 1, 2, or 3 if slug or GitHub team name encodes a QA tier; else None.
 
@@ -54,11 +53,11 @@ async def _list_team_members(
     org: str,
     team_slug: str,
     headers: dict[str, str],
-) -> List[str]:
+) -> list[str]:
     """Lowercased GitHub logins for members of org/team_slug."""
     org_q, slug_q = quote(org, safe=""), quote(team_slug, safe="")
     path_base = f"https://api.github.com/orgs/{org_q}/teams/{slug_q}/members"
-    out: List[str] = []
+    out: list[str] = []
     page = 1
     while page <= 20:
         r = await client.get(f"{path_base}?per_page=100&page={page}", headers=headers)
@@ -84,8 +83,8 @@ async def fetch_login_max_qa_tier_from_org_teams(
     org: str,
     headers: dict[str, str],
     *,
-    skip_team_slug: Optional[str] = None,
-) -> Tuple[Dict[str, int], List[str]]:
+    skip_team_slug: str | None = None,
+) -> tuple[dict[str, int], list[str]]:
     """
     List all org teams; for each whose slug/name parses to tier 1–3, merge members.
 
@@ -93,8 +92,8 @@ async def fetch_login_max_qa_tier_from_org_teams(
       - mapping login(lower) -> max tier (3 wins over 1)
       - list of team slugs that contributed (for logging)
     """
-    login_tier: Dict[str, int] = {}
-    used_slugs: List[str] = []
+    login_tier: dict[str, int] = {}
+    used_slugs: list[str] = []
     skip_slug = (skip_team_slug or "").strip().lower()
 
     page = 1
@@ -112,7 +111,9 @@ async def fetch_login_max_qa_tier_from_org_teams(
             )
             break
         if r.status_code != 200:
-            _log.warning("GitHub HTTP %s listing teams for %s: %s", r.status_code, org, r.text[:200])
+            _log.warning(
+                "GitHub HTTP %s listing teams for %s: %s", r.status_code, org, r.text[:200]
+            )
             break
 
         teams = r.json()

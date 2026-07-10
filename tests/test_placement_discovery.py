@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from boardman.plaky.plaky_catalog import PlakyBoardEntry, PlakyCatalogCache, PlakyGroupEntry
 from boardman.plaky.placement_discovery import discover_placement_from_catalog
+from boardman.plaky.plaky_catalog import PlakyBoardEntry, PlakyCatalogCache, PlakyGroupEntry
 from boardman.plaky.repo_category import (
     PLAKY_BOARD_BOTS,
     PLAKY_BOARD_DEV_TOOLS,
@@ -56,7 +56,9 @@ def test_infer_repo_category_cyrex_is_ai_runtime():
 
 def test_discover_placement_group_slug_match():
     cat = _catalog()
-    result = discover_placement_from_catalog(cat, "Team-Deepiri/deepiri-boardman", "deepiri-boardman")
+    result = discover_placement_from_catalog(
+        cat, "Team-Deepiri/deepiri-boardman", "deepiri-boardman"
+    )
     assert result is not None
     assert result.source == "group_slug_match"
     assert result.board_id == "b-bots"
@@ -101,7 +103,9 @@ def test_discover_placement_ignores_legacy_boards():
         groups=[PlakyGroupEntry(id="g-boardman", name="deepiri-boardman")],
     )
     cat = PlakyCatalogCache(fetched_at=1.0, source="test", boards=[legacy, bots])
-    result = discover_placement_from_catalog(cat, "Team-Deepiri/deepiri-boardman", "deepiri-boardman")
+    result = discover_placement_from_catalog(
+        cat, "Team-Deepiri/deepiri-boardman", "deepiri-boardman"
+    )
     assert result is not None
     assert result.board_id == "b-bots"
     assert result.group_id == "g-boardman"
@@ -121,8 +125,8 @@ def test_filter_categorical_boards():
 
 @pytest.mark.asyncio
 async def test_get_routing_async_uses_discovery(monkeypatch):
-    from boardman.repos_config import get_routing_async
     from boardman.plaky.placement_discovery import PlacementResult
+    from boardman.repos_config import get_routing_async
 
     async def fake_resolve(*_a, **_k):
         return PlacementResult(

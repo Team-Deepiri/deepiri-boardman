@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from boardman.settings import settings
 
@@ -55,7 +55,7 @@ async def get_agent_redis() -> Any:
             return None
 
 
-async def agent_redis_get_json(key: str) -> Optional[dict[str, Any]]:
+async def agent_redis_get_json(key: str) -> dict[str, Any] | None:
     r = await get_agent_redis()
     if r is None:
         return None

@@ -11,7 +11,6 @@ from httpx import ASGITransport, AsyncClient
 from boardman.database.session import init_db
 from boardman.main import create_app
 
-
 FIXTURES_DIR = Path(__file__).resolve().parent / "fixtures" / "github"
 
 
@@ -122,7 +121,9 @@ async def test_webhook_fixture_dispatch_paths(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setattr("boardman.routes.github_events.handle_issue_opened", _fake_issue_opened)
     monkeypatch.setattr("boardman.routes.github_events.handle_pr_opened", _fake_pr_opened)
     monkeypatch.setattr("boardman.routes.github_events.handle_pull_request_review", _fake_pr_review)
-    monkeypatch.setattr("boardman.routes.github_events.handle_issue_comment_on_pr", _fake_issue_comment)
+    monkeypatch.setattr(
+        "boardman.routes.github_events.handle_issue_comment_on_pr", _fake_issue_comment
+    )
 
     await init_db()
     app = create_app()

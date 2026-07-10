@@ -14,10 +14,9 @@ from __future__ import annotations
 
 import json
 import logging
-import math
 import os
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal
 
 _log = logging.getLogger(__name__)
 
@@ -60,11 +59,29 @@ def compute_structural_complexity_score(meta) -> float:
     if docker_count > 1:
         score += 30.0 * (docker_count - 1)
 
-    infra_dirs = sum(1 for s in raw_sigs if s.startswith("dir:terraform") or s.startswith("dir:helm") or s.startswith("dir:k8s") or s.startswith("dir:.github"))
+    infra_dirs = sum(
+        1
+        for s in raw_sigs
+        if s.startswith("dir:terraform")
+        or s.startswith("dir:helm")
+        or s.startswith("dir:k8s")
+        or s.startswith("dir:.github")
+    )
     if infra_dirs > 0:
         score += infra_dirs * 12.0
 
-    configs = sum(v for k, v in counts.items() if k.startswith("file:") and (k.endswith(".yml") or k.endswith(".yaml") or k.endswith(".toml") or k.endswith(".json") or k.endswith(".config.")))
+    configs = sum(
+        v
+        for k, v in counts.items()
+        if k.startswith("file:")
+        and (
+            k.endswith(".yml")
+            or k.endswith(".yaml")
+            or k.endswith(".toml")
+            or k.endswith(".json")
+            or k.endswith(".config.")
+        )
+    )
     if configs > 5:
         score += 15.0
 
@@ -98,6 +115,7 @@ def _load() -> tuple[dict[str, float], dict[str, float]]:
     global _cache, _warned_missing
 
     from boardman.settings import settings
+
     path = settings.repo_signals_json_path
 
     try:
@@ -155,7 +173,7 @@ def classify_repo_tier(meta) -> tuple[Tier, TierScore]:
 
     p50 = percentiles.get("p50", 50)
     p80 = percentiles.get("p80", 200)
-    
+
     if final_score >= p80:
         return 3, ts
     if final_score >= p50:

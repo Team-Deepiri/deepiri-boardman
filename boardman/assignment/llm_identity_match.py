@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from functools import lru_cache
-from typing import Any, Dict, Optional
+from typing import Any
 
 from boardman.assignment.identity_common import (
     github_public_email,
@@ -37,7 +37,7 @@ def _identity_chat_model():
     return get_chat_model()
 
 
-def _build_prompt(gh: Dict[str, Any], plaky: Dict[str, Any]) -> str:
+def _build_prompt(gh: dict[str, Any], plaky: dict[str, Any]) -> str:
     login = str(gh.get("login") or "").strip()
     gname = str(gh.get("name") or "").strip()
     gemail = github_public_email(gh)
@@ -59,7 +59,7 @@ def _build_prompt(gh: Dict[str, Any], plaky: Dict[str, Any]) -> str:
     )
 
 
-def _parse_confidence(text: str) -> Optional[float]:
+def _parse_confidence(text: str) -> float | None:
     if not text or not text.strip():
         return None
     raw = text.strip()
@@ -88,7 +88,7 @@ def _parse_confidence(text: str) -> Optional[float]:
 
 
 @lru_cache(maxsize=384)
-def _cached_same_person(key: str) -> Optional[float]:
+def _cached_same_person(key: str) -> float | None:
     try:
         payload = json.loads(key)
     except json.JSONDecodeError:
@@ -114,7 +114,7 @@ def _cached_same_person(key: str) -> Optional[float]:
         return None
 
 
-def llm_same_person_confidence(gh: Dict[str, Any], plaky: Dict[str, Any]) -> Optional[float]:
+def llm_same_person_confidence(gh: dict[str, Any], plaky: dict[str, Any]) -> float | None:
     if not settings.assignment_identity_llm_enabled:
         return None
     key = json.dumps(

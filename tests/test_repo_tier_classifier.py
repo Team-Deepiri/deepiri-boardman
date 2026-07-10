@@ -29,7 +29,9 @@ def tier_signals_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return p
 
 
-def _meta(signals: list[str], *, top_level_dirs: list[str] | None = None, max_depth: int = 0) -> RepoMetadata:
+def _meta(
+    signals: list[str], *, top_level_dirs: list[str] | None = None, max_depth: int = 0
+) -> RepoMetadata:
     counts: dict[str, int] = {}
     for s in signals:
         counts[s] = counts.get(s, 0) + 1

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
-
 import pytest
 
 import boardman.services.task_mutations as tm
 from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
-
 
 _SCHEMA = {
     "normalized": {

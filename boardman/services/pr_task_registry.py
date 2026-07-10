@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
 from collections.abc import Iterable
-from typing import Optional
+from datetime import datetime
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -159,7 +158,7 @@ async def distinct_task_ids_for_pr(
     return out
 
 
-def _login_set(payload_users: Optional[Iterable[dict]]) -> set[str]:
+def _login_set(payload_users: Iterable[dict] | None) -> set[str]:
     out: set[str] = set()
     if not payload_users:
         return out

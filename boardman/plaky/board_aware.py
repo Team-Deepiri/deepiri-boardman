@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from boardman.assignment.config import infer_plaky_field_keys_from_normalized
 from boardman.plaky.board_schema import fetch_board_schema_bundle
@@ -27,7 +27,7 @@ from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
 
-_groups_cache: Dict[str, tuple[float, List[Dict[str, Any]]]] = {}
+_groups_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
 
 
 def _groups_ttl_seconds() -> float:
@@ -42,7 +42,7 @@ def clear_group_cache() -> None:
     _groups_cache.clear()
 
 
-async def _board_groups(board_id: str, plaky: Optional[PlakyClient] = None) -> List[Dict[str, Any]]:
+async def _board_groups(board_id: str, plaky: PlakyClient | None = None) -> list[dict[str, Any]]:
     bid = (board_id or "").strip()
     if not bid:
         return []
@@ -65,12 +65,12 @@ async def _board_groups(board_id: str, plaky: Optional[PlakyClient] = None) -> L
 
 
 async def resolve_group_for_repo(
-    board_id: Optional[str],
+    board_id: str | None,
     repo_short_name: str,
-    fallback_group_id: Optional[str] = None,
+    fallback_group_id: str | None = None,
     *,
-    plaky: Optional[PlakyClient] = None,
-) -> Optional[str]:
+    plaky: PlakyClient | None = None,
+) -> str | None:
     """Group id on ``board_id`` whose name equals the repo short name (case-insensitive).
 
     Returns ``fallback_group_id`` when the board has no group named after the repo,
@@ -89,7 +89,7 @@ async def resolve_group_for_repo(
     return fallback_group_id
 
 
-async def board_person_field_keys(board_id: Optional[str]) -> Optional[Dict[str, str]]:
+async def board_person_field_keys(board_id: str | None) -> dict[str, str] | None:
     """Engineer/QA person field keys from this board's own schema.
 
     Returns ``None`` when the schema could not be fetched (caller should fall back

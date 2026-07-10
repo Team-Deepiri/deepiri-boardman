@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -56,7 +56,7 @@ def _needs_qa_again_status() -> str:
     ).strip()
 
 
-async def _resolve_status(board_id: str, env_value: str, *intents: str) -> tuple[Optional[str], str]:
+async def _resolve_status(board_id: str, env_value: str, *intents: str) -> tuple[str | None, str]:
     """Return (status_field_key, status_value). Prefer the env value; else try each schema intent."""
     if env_value:
         return None, env_value
@@ -71,10 +71,12 @@ async def _resolve_status(board_id: str, env_value: str, *intents: str) -> tuple
 
 
 async def _task_ids_for_pr(session: AsyncSession, repo_name: str, pr_number: int) -> list[str]:
-    return await distinct_task_ids_for_pr(session, github_repo=repo_name, github_pr_number=pr_number)
+    return await distinct_task_ids_for_pr(
+        session, github_repo=repo_name, github_pr_number=pr_number
+    )
 
 
-def _reviewer_plaky_id_from_roster(cfg: TeamAssignmentsConfig, reviewer_login: str) -> Optional[str]:
+def _reviewer_plaky_id_from_roster(cfg: TeamAssignmentsConfig, reviewer_login: str) -> str | None:
     if not reviewer_login:
         return None
     for m in cfg.members:
@@ -114,7 +116,9 @@ async def handle_pull_request_review(
     if not task_ids:
         return {"ok": True, "skipped": True, "message": "no Plaky task linked for this PR"}
 
-    review_user: dict[str, Any] = payload.review.user if isinstance(payload.review.user, dict) else {}
+    review_user: dict[str, Any] = (
+        payload.review.user if isinstance(payload.review.user, dict) else {}
+    )
     reviewer_login = str(review_user.get("login") or "").strip()
 
     state = (payload.review.state or "").strip().casefold()
@@ -128,11 +132,11 @@ async def handle_pull_request_review(
     # changes_requested: only the Plaky-assigned QA's "Request changes" → QA rejected (not other reviewers).
     # "commented" → In QA only for support-team logins to avoid noise from drive-by comments.
     target_status = ""
-    status_field_key: Optional[str] = None
+    status_field_key: str | None = None
     bid = (board_id or "").strip()
 
     changes_requested_only_assigned_qa = False
-    reviewer_plaky_id: Optional[str] = None
+    reviewer_plaky_id: str | None = None
     qa_field_for_changes: str = ""
 
     if state == "approved":
@@ -192,7 +196,9 @@ async def handle_pull_request_review(
 
     for tid in task_ids:
         if changes_requested_only_assigned_qa:
-            assigned_qa = await _assigned_qa_plaky_id(plaky, board_id or "", tid, qa_field_for_changes)
+            assigned_qa = await _assigned_qa_plaky_id(
+                plaky, board_id or "", tid, qa_field_for_changes
+            )
             if not assigned_qa or assigned_qa != reviewer_plaky_id:
                 continue
 
@@ -273,11 +279,17 @@ async def handle_issue_comment_on_pr(
     if comment_requests_pause(comment_body):
         p_key, p_val = await _resolve_status(bid, _paused_status(), "workflow_paused")
         if not p_val:
-            return {"ok": True, "skipped": True, "message": "pause requested but no paused status resolvable"}
+            return {
+                "ok": True,
+                "skipped": True,
+                "message": "pause requested but no paused status resolvable",
+            }
         plaky_p = PlakyClient()
         updated_p: list[dict[str, Any]] = []
         for tid in task_ids:
-            res = await _update_plaky_task_status(tid, p_val, board_id or "", status_field_key=p_key)
+            res = await _update_plaky_task_status(
+                tid, p_val, board_id or "", status_field_key=p_key
+            )
             session.add(
                 SyncLog(
                     action="pr_comment_paused",
@@ -305,30 +317,43 @@ async def handle_issue_comment_on_pr(
                 plaky_q = PlakyClient()
                 updated_q: list[dict[str, Any]] = []
                 for tid in task_ids:
-                    res = await _update_plaky_task_status(tid, q_val, board_id or "", status_field_key=q_key)
+                    res = await _update_plaky_task_status(
+                        tid, q_val, board_id or "", status_field_key=q_key
+                    )
                     session.add(
                         SyncLog(
                             action="pr_comment_needs_qa_again",
                             github_repo=repo_name,
                             github_ref=str(pr_number),
                             plaky_task_id=tid,
-                            detail=json.dumps({"commenter": commenter, "plaky_status": q_val}, default=str),
+                            detail=json.dumps(
+                                {"commenter": commenter, "plaky_status": q_val}, default=str
+                            ),
                         )
                     )
                     updated_q.append({"task_id": tid, "plaky": res})
                 await session.commit()
                 if updated_q:
                     await maybe_enqueue_plaky_reorder_after_task(plaky_q, task_ids[0])
-                return {"ok": True, "updated": updated_q, "status": q_val, "event": "needs_qa_again"}
+                return {
+                    "ok": True,
+                    "updated": updated_q,
+                    "status": q_val,
+                    "event": "needs_qa_again",
+                }
 
     in_qa = _in_qa_status()
-    in_qa_field_key: Optional[str] = None
+    in_qa_field_key: str | None = None
     if not in_qa and bid:
         r = await resolve_plaky_status_patch(bid, intent="workflow_in_qa")
         if r:
             in_qa_field_key, in_qa = r[0], r[1]
     if not in_qa:
-        return {"ok": True, "skipped": True, "message": "in_qa status not configured or discoverable"}
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "in_qa status not configured or discoverable",
+        }
 
     participants = await fetch_pr_assignees_and_reviewers_logins(
         payload.repository.full_name,
@@ -341,7 +366,7 @@ async def handle_issue_comment_on_pr(
     qa_field = await resolve_qa_assignee_field_key(bid, cfg.plaky_field_qa)
     plaky = PlakyClient()
 
-    member_plaky_id: Optional[str] = None
+    member_plaky_id: str | None = None
     if commenter:
         for m in cfg.members:
             gl = (m.github_login or "").strip()
@@ -372,7 +397,9 @@ async def handle_issue_comment_on_pr(
             bid, _qa_rejected_status(), "github_pr_review_changes_requested"
         )
         if rej_key and rej_val:
-            ip_key, ip_val = await _resolve_status(bid, _in_progress_status(), "workflow_in_progress")
+            ip_key, ip_val = await _resolve_status(
+                bid, _in_progress_status(), "workflow_in_progress"
+            )
             if ip_val:
                 resumed: list[dict[str, Any]] = []
                 for tid in task_ids:
@@ -390,14 +417,21 @@ async def handle_issue_comment_on_pr(
                                 github_repo=repo_name,
                                 github_ref=str(pr_number),
                                 plaky_task_id=tid,
-                                detail=json.dumps({"commenter": commenter, "to_status": ip_val}, default=str),
+                                detail=json.dumps(
+                                    {"commenter": commenter, "to_status": ip_val}, default=str
+                                ),
                             )
                         )
                         resumed.append({"task_id": tid, "plaky": res})
                 if resumed:
                     await session.commit()
                     await maybe_enqueue_plaky_reorder_after_task(plaky, resumed[0]["task_id"])
-                    return {"ok": True, "updated": resumed, "status": ip_val, "event": "resumed_after_rejection"}
+                    return {
+                        "ok": True,
+                        "updated": resumed,
+                        "status": ip_val,
+                        "event": "resumed_after_rejection",
+                    }
 
     if not is_participant and not is_assigned_qa:
         return {

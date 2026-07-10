@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import List, Optional
 
 import httpx
 from langchain_core.tools import StructuredTool
@@ -21,12 +20,27 @@ from boardman.repos_config import list_workspace_repos
 from boardman.settings import settings
 
 _NOTABLE_FILE_BASENAMES = {
-    "readme.md", "readme.rst", "readme.txt",
-    "package.json", "pyproject.toml", "setup.py", "setup.cfg", "cargo.toml",
-    "go.mod", "pom.xml", "build.gradle", "gemfile",
-    "dockerfile", "docker-compose.yml", "docker-compose.yaml",
-    "makefile", "justfile",
-    ".github", "direction.md", "contributing.md", "changelog.md",
+    "readme.md",
+    "readme.rst",
+    "readme.txt",
+    "package.json",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "cargo.toml",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "gemfile",
+    "dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "makefile",
+    "justfile",
+    ".github",
+    "direction.md",
+    "contributing.md",
+    "changelog.md",
 }
 
 
@@ -58,7 +72,10 @@ async def _github_list_open_issues(owner_repo: str) -> str:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
     async with httpx.AsyncClient(timeout=30.0) as client:
-        headers = {"Authorization": f"Bearer {settings.github_pat}", "Accept": "application/vnd.github+json"}
+        headers = {
+            "Authorization": f"Bearer {settings.github_pat}",
+            "Accept": "application/vnd.github+json",
+        }
         r = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}/issues?state=open&per_page=30",
             headers=headers,
@@ -85,7 +102,9 @@ async def _github_fetch_direction(owner_repo: str) -> str:
     owner, repo = parsed
     async with httpx.AsyncClient(timeout=45.0) as client:
         text = await fetch_direction_md(client, owner, repo)
-    return json.dumps({"ok": True, "owner": owner, "repo": repo, "DIRECTION_md": text}, default=str)[:14000]
+    return json.dumps(
+        {"ok": True, "owner": owner, "repo": repo, "DIRECTION_md": text}, default=str
+    )[:14000]
 
 
 async def _github_fetch_file(owner_repo: str, path: str, ref: str = "") -> str:
@@ -101,7 +120,9 @@ async def _github_fetch_file(owner_repo: str, path: str, ref: str = "") -> str:
         if not branch:
             branch = await fetch_default_branch(client, owner, repo)
         text = await fetch_repo_file_text(client, owner, repo, path.strip(), ref=branch)
-    return json.dumps({"ok": True, "path": path, "ref": branch, "content": text}, default=str)[:14000]
+    return json.dumps({"ok": True, "path": path, "ref": branch, "content": text}, default=str)[
+        :14000
+    ]
 
 
 async def _github_repo_structure(owner_repo: str) -> str:
@@ -121,7 +142,7 @@ async def _github_repo_structure(owner_repo: str) -> str:
     if not meta:
         return json.dumps({"ok": False, "message": f"Could not fetch metadata for {owner}/{repo}"})
 
-    notable: List[str] = []
+    notable: list[str] = []
     file_count = 0
     for sig in meta.raw_signals:
         if sig.startswith("file:"):
@@ -132,17 +153,20 @@ async def _github_repo_structure(owner_repo: str) -> str:
         elif sig.startswith("dir:"):
             pass
 
-    return json.dumps({
-        "ok": True,
-        "repo": meta.full_name,
-        "language": meta.language,
-        "default_branch": meta.default_branch,
-        "size_kb": meta.size_kb,
-        "top_level_dirs": meta.top_level_dirs,
-        "notable_files": notable,
-        "total_unique_files": file_count,
-        "max_depth": meta.max_depth,
-    }, default=str)
+    return json.dumps(
+        {
+            "ok": True,
+            "repo": meta.full_name,
+            "language": meta.language,
+            "default_branch": meta.default_branch,
+            "size_kb": meta.size_kb,
+            "top_level_dirs": meta.top_level_dirs,
+            "notable_files": notable,
+            "total_unique_files": file_count,
+            "max_depth": meta.max_depth,
+        },
+        default=str,
+    )
 
 
 async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20) -> str:
@@ -162,7 +186,7 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
         direction = await fetch_direction_md(client, owner, repo)
         commits = await fetch_recent_commits(client, owner, repo, limit=lim)
         issues = await fetch_open_issues(client, owner, repo)
-        readme: Optional[str] = None
+        readme: str | None = None
         if direction.startswith("(No DIRECTION.md"):
             raw = await fetch_repo_file_text(client, owner, repo, "README.md")
             if not raw.startswith("(file unavailable"):
@@ -245,7 +269,7 @@ def github_repo_structure_tool() -> StructuredTool:
     )
 
 
-def build_github_tools() -> List[StructuredTool]:
+def build_github_tools() -> list[StructuredTool]:
     return [
         github_list_workspace_repos_tool(),
         github_repo_planning_context_tool(),

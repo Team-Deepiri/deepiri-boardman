@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 from fastapi import APIRouter, Header, HTTPException
 from pydantic import BaseModel
 
@@ -20,7 +18,7 @@ class PickQaBody(BaseModel):
 
 class PickQaResponse(BaseModel):
     ok: bool
-    qa_plaky_id: Optional[str] = None
+    qa_plaky_id: str | None = None
     reason_qa: str = ""
 
 
@@ -33,7 +31,7 @@ class SyncFieldKeysResponse(BaseModel):
     path: str = ""
 
 
-def _require_internal(authorization: Optional[str]) -> None:
+def _require_internal(authorization: str | None) -> None:
     secret = (settings.worker_internal_secret or "").strip()
     if not secret:
         raise HTTPException(status_code=404, detail="assignment internal API not configured")
@@ -43,14 +41,16 @@ def _require_internal(authorization: Optional[str]) -> None:
 
 
 @router.post("/assignment/pick-qa", response_model=PickQaResponse)
-async def pick_qa_internal(body: PickQaBody, authorization: Optional[str] = Header(None)) -> PickQaResponse:
+async def pick_qa_internal(
+    body: PickQaBody, authorization: str | None = Header(None)
+) -> PickQaResponse:
     _require_internal(authorization)
     qid, rq = await pick_qa_for_repo(body.repo)
     return PickQaResponse(ok=True, qa_plaky_id=qid, reason_qa=rq)
 
 
 @router.post("/assignment/sync-field-keys", response_model=SyncFieldKeysResponse)
-async def sync_field_keys(board_id: Optional[str] = None) -> SyncFieldKeysResponse:
+async def sync_field_keys(board_id: str | None = None) -> SyncFieldKeysResponse:
     bid = (board_id or "").strip()
     if not bid:
         return SyncFieldKeysResponse(

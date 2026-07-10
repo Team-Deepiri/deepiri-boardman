@@ -3,7 +3,7 @@ worker-only production scope flag."""
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -48,7 +48,7 @@ class _SyncPlaky:
         self.current = current_status_value
         self.patches: list[tuple[str, dict]] = []
 
-    async def get_board_item_public(self, board_id: str, item_id: str) -> Dict[str, Any]:
+    async def get_board_item_public(self, board_id: str, item_id: str) -> dict[str, Any]:
         return {"ok": True, "item": {"id": item_id, "status-6": self.current}}
 
     async def patch_item_field_values(self, board_id, item_id, values, **kwargs):

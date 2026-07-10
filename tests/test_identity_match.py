@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from boardman.assignment.identity_match import (
     best_plaky_match_for_github,
     score_github_vs_plaky,

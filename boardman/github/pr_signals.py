@@ -12,7 +12,7 @@ No network, no Plaky/GitHub calls — trivial to unit test.
 from __future__ import annotations
 
 import re
-from typing import Iterable, Optional, Sequence
+from collections.abc import Iterable, Sequence
 
 # Branch middle segment / label token -> canonical Plaky Type (see task_tag_vocab.TASK_TYPE_TAGS).
 _TYPE_BY_TOKEN: dict[str, str] = {
@@ -62,8 +62,8 @@ def _branch_type_token(head_ref: str) -> str:
 
 
 def infer_task_type_from_pr(
-    head_ref: Optional[str] = None,
-    labels: Optional[Sequence[str]] = None,
+    head_ref: str | None = None,
+    labels: Sequence[str] | None = None,
 ) -> str:
     """Canonical Plaky Type for a PR, or "" if no convention matched.
 
@@ -92,7 +92,7 @@ def infer_task_type_from_pr(
     return ""
 
 
-def pr_label_names(labels: Optional[Iterable[object]]) -> list[str]:
+def pr_label_names(labels: Iterable[object] | None) -> list[str]:
     """Extract label name strings from a GitHub ``labels`` array (list of dicts or strings)."""
     out: list[str] = []
     for raw in labels or []:
@@ -105,13 +105,13 @@ def pr_label_names(labels: Optional[Iterable[object]]) -> list[str]:
     return out
 
 
-def comment_requests_pause(text: Optional[str]) -> bool:
+def comment_requests_pause(text: str | None) -> bool:
     """True if a PR comment asks to pause the work (says "pause" / "paused" / "on hold")."""
     return bool(_PAUSE_RE.search(text or ""))
 
 
 def comment_mentions_qa_or_support(
-    text: Optional[str],
+    text: str | None,
     support_logins: Iterable[str],
     qa_logins: Iterable[str] = (),
 ) -> bool:

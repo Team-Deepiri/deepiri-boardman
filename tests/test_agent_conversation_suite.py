@@ -11,7 +11,8 @@ Run live subset:
 from __future__ import annotations
 
 import uuid
-from typing import Any, AsyncIterator, List
+from collections.abc import AsyncIterator
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -20,7 +21,6 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from boardman.database.models import Base
 from boardman.database.session import get_db
 from boardman.main import create_app
-
 from tests.plaky_test_board import resolve_boardman_test_board_id, resolve_boardman_test_group_id
 
 
@@ -45,21 +45,25 @@ def noop_app_lifespan_init(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_run_agent_chat_multi_turn_memory_db_persists_history(monkeypatch, noop_app_lifespan_init):
+async def test_run_agent_chat_multi_turn_memory_db_persists_history(
+    monkeypatch, noop_app_lifespan_init
+):
     """Direct service calls: same session_id sees prior user+assistant messages in the LLM payload."""
     import boardman.agent.service as agent_svc
     import boardman.settings as bs
 
     monkeypatch.setattr(bs.settings, "agent_langchain_tools", False)
 
-    captured: List[List[dict[str, str]]] = []
+    captured: list[list[dict[str, str]]] = []
 
-    async def fake_chat_complete(messages: List[dict[str, str]], **kwargs: Any) -> str:
+    async def fake_chat_complete(messages: list[dict[str, str]], **kwargs: Any) -> str:
         captured.append(messages)
         last_user = next((m["content"] for m in reversed(messages) if m.get("role") == "user"), "")
         if "second" in last_user.lower():
             prior = " ".join(m.get("content", "") for m in messages if m.get("role") == "assistant")
-            assert "first-reply" in prior or any("first-reply" in m.get("content", "") for m in messages)
+            assert "first-reply" in prior or any(
+                "first-reply" in m.get("content", "") for m in messages
+            )
             return "second-reply"
         return "first-reply"
 
@@ -95,9 +99,7 @@ async def test_run_agent_chat_multi_turn_memory_db_persists_history(monkeypatch,
 
 
 @pytest.mark.asyncio
-async def test_http_agent_chat_two_turns_session_and_history(
-    monkeypatch, noop_app_lifespan_init
-):
+async def test_http_agent_chat_two_turns_session_and_history(monkeypatch, noop_app_lifespan_init):
     """POST /agent/chat twice + GET history; DB isolated in memory; LLM mocked."""
     import boardman.agent.service as agent_svc
     import boardman.settings as bs
@@ -106,12 +108,14 @@ async def test_http_agent_chat_two_turns_session_and_history(
 
     turn = {"n": 0}
 
-    async def fake_chat_complete(messages: List[dict[str, str]], **kwargs: Any) -> str:
+    async def fake_chat_complete(messages: list[dict[str, str]], **kwargs: Any) -> str:
         turn["n"] += 1
         sys = next((m["content"] for m in messages if m.get("role") == "system"), "")
         if turn["n"] == 1:
             return "alpha"
-        assert any("alpha" in m.get("content", "") for m in messages if m.get("role") == "assistant")
+        assert any(
+            "alpha" in m.get("content", "") for m in messages if m.get("role") == "assistant"
+        )
         assert "board-99" in sys and "group-88" in sys
         assert "Current Plaky placement" in sys
         return "beta"
@@ -178,9 +182,7 @@ async def test_http_agent_chat_two_turns_session_and_history(
 
 
 @pytest.mark.asyncio
-async def test_plaky_board_id_triggers_schema_bundle_in_prompt(
-    monkeypatch, noop_app_lifespan_init
-):
+async def test_plaky_board_id_triggers_schema_bundle_in_prompt(monkeypatch, noop_app_lifespan_init):
     """plaky_board_id on chat causes fetch_board_schema_bundle to run (system prompt enrichment)."""
     import boardman.agent.service as agent_svc
     import boardman.settings as bs
@@ -199,7 +201,7 @@ async def test_plaky_board_id_triggers_schema_bundle_in_prompt(
 
     monkeypatch.setattr(agent_svc, "fetch_board_schema_bundle", fake_bundle)
 
-    async def fake_chat_complete(messages: List[dict[str, str]], **kwargs: Any) -> str:
+    async def fake_chat_complete(messages: list[dict[str, str]], **kwargs: Any) -> str:
         sys = next((m["content"] for m in messages if m.get("role") == "system"), "")
         assert "Current Plaky placement" in sys
         assert "218760" in sys
@@ -257,7 +259,9 @@ async def test_langchain_path_mocked_single_turn(monkeypatch, noop_app_lifespan_
 
 
 @pytest.mark.asyncio
-async def test_langchain_organize_request_forces_preview_until_confirm(monkeypatch, noop_app_lifespan_init):
+async def test_langchain_organize_request_forces_preview_until_confirm(
+    monkeypatch, noop_app_lifespan_init
+):
     import boardman.agent.service as agent_svc
     import boardman.settings as bs
 
@@ -328,7 +332,7 @@ async def test_live_ollama_multi_turn_conversation_memory_db(
         async with factory() as session:
             r1, sid = await agent_svc.run_agent_chat(
                 session,
-                message='Reply with exactly the word: PONG',
+                message="Reply with exactly the word: PONG",
                 session_id=None,
                 repo=None,
             )
@@ -362,12 +366,10 @@ async def test_live_http_agent_with_plaky_board_and_group_ids(
     Skips if Plaky is not configured or listing fails.
     """
     from boardman.plaky.client import PlakyClient
-    from boardman.settings import settings
 
     if not _plaky_configured():
         pytest.skip("PLAKY_API_KEY not set")
 
-    import boardman.agent.service as agent_svc
     import boardman.settings as bs
 
     monkeypatch.setattr(bs.settings, "agent_langchain_tools", False)
@@ -419,7 +421,10 @@ async def test_live_http_agent_with_plaky_board_and_group_ids(
             ("BOARDMAN_LIVE_OK" in reply)
             or ("BOARD" in reply and "GROUP" in reply)
             or (board_id in reply and group_id in reply)
-            or ("BOARDMAN" in reply and ("LIVE" in reply or "OK" in reply or "PLACEMENT" in reply or "CONTEXT" in reply))
+            or (
+                "BOARDMAN" in reply
+                and ("LIVE" in reply or "OK" in reply or "PLACEMENT" in reply or "CONTEXT" in reply)
+            )
         ), body.get("reply")
     finally:
         app.dependency_overrides.clear()
@@ -428,7 +433,9 @@ async def test_live_http_agent_with_plaky_board_and_group_ids(
 
 @pytest.mark.asyncio
 @pytest.mark.agent_e2e_live
-async def test_live_langchain_tool_loop_one_turn(ollama_model_resolved, monkeypatch, noop_app_lifespan_init):
+async def test_live_langchain_tool_loop_one_turn(
+    ollama_model_resolved, monkeypatch, noop_app_lifespan_init
+):
     """
     Real ChatOllama + AgentExecutor + tools (read-only). May be slower / flakier than plain path.
     Asks a question answerable via plaky_list_tasks or similar without writes.

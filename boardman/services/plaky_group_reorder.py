@@ -12,7 +12,12 @@ from typing import Any
 
 import httpx
 
-from boardman.plaky.client import PlakyClient, _headers, _normalize_id, _request_with_rate_limit_retry
+from boardman.plaky.client import (
+    PlakyClient,
+    _headers,
+    _normalize_id,
+    _request_with_rate_limit_retry,
+)
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -52,7 +57,9 @@ def _item_looks_done(item: dict[str, Any], markers: tuple[str, ...]) -> bool:
     return any(m in blob for m in markers if m)
 
 
-async def reorder_group_completed_last(plaky: PlakyClient, board_id: str, group_id: str) -> dict[str, Any]:
+async def reorder_group_completed_last(
+    plaky: PlakyClient, board_id: str, group_id: str
+) -> dict[str, Any]:
     bid = board_id.strip()
     gid = group_id.strip()
     if not bid or not gid:
@@ -84,7 +91,11 @@ async def reorder_group_completed_last(plaky: PlakyClient, board_id: str, group_
 
     root = plaky._public_root()
     if not root:
-        return {"ok": False, "skipped": True, "message": "Plaky v1/public base URL required for reorder"}
+        return {
+            "ok": False,
+            "skipped": True,
+            "message": "Plaky v1/public base URL required for reorder",
+        }
 
     sid = await plaky.resolve_space_for_board(bid)
     if not sid:

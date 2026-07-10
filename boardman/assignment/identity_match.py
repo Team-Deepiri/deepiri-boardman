@@ -11,13 +11,20 @@ from __future__ import annotations
 
 import re
 import unicodedata
+from collections.abc import Sequence
 from difflib import SequenceMatcher
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple
+from typing import Any
 
 from boardman.assignment.identity_common import (
     github_public_email as _github_email,
+)
+from boardman.assignment.identity_common import (
     normalize_identity_text as _normalize_text,
+)
+from boardman.assignment.identity_common import (
     plaky_display_name as _plaky_display_name,
+)
+from boardman.assignment.identity_common import (
     plaky_email_addresses as _all_plaky_emails,
 )
 from boardman.settings import settings
@@ -88,7 +95,7 @@ def _norm_token(token: str) -> str:
     return (token or "").strip().lower()
 
 
-def _name_tokens(name: str) -> List[str]:
+def _name_tokens(name: str) -> list[str]:
     n = _norm_ws_casefold(name)
     if not n:
         return []
@@ -110,17 +117,17 @@ def _canonical_full_name(name: str) -> str:
 
 def _initials_from_tokens(tokens: Sequence[str]) -> str:
     """e.g. ['john', 'michael', 'doe'] → 'jmd' (first char of each word, max 4)."""
-    parts: List[str] = []
+    parts: list[str] = []
     for t in tokens[:5]:
         if t:
             parts.append(t[0])
     return "".join(parts)[:4]
 
 
-def _login_token_variants(login: str) -> Set[str]:
+def _login_token_variants(login: str) -> set[str]:
     """jsmith, john.smith → {jsmith, john, smith, ...}"""
     s = login.strip().lower()
-    out: Set[str] = {s}
+    out: set[str] = {s}
     if not s:
         return out
     for sep in ".-_":
@@ -182,7 +189,7 @@ def _login_vs_local_score(gh_login: str, plaky_local: str) -> int:
     return 0
 
 
-def _email_pair_score(gh_email: str, pe: str) -> Tuple[int, bool]:
+def _email_pair_score(gh_email: str, pe: str) -> tuple[int, bool]:
     """
     Returns (score, is_strong_email_signal).
     Strong = exact, same-local, or very high similarity (used for corroboration).
@@ -241,7 +248,7 @@ def _email_pair_score(gh_email: str, pe: str) -> Tuple[int, bool]:
     return best, strong
 
 
-def _name_match_score(gh_name: str, pl_name: str) -> Tuple[int, bool, bool]:
+def _name_match_score(gh_name: str, pl_name: str) -> tuple[int, bool, bool]:
     """
     Returns (score, used_last_name_only, high_name_similarity).
     used_last_name_only: True when score leans on surname token overlap (down-rank elsewhere).
@@ -258,7 +265,6 @@ def _name_match_score(gh_name: str, pl_name: str) -> Tuple[int, bool, bool]:
         return 8500, False, True
 
     sim = _similar(ca, cb)
-    high_sim = sim >= 0.90
     if sim >= 0.96:
         return int(8200 + sim * 100), False, True
     if sim >= 0.92:
@@ -309,7 +315,7 @@ def _name_match_score(gh_name: str, pl_name: str) -> Tuple[int, bool, bool]:
     return 0, False, False
 
 
-def score_github_vs_plaky(gh: Dict[str, Any], plaky: Dict[str, Any]) -> int:
+def score_github_vs_plaky(gh: dict[str, Any], plaky: dict[str, Any]) -> int:
     gh_login = str(gh.get("login") or "").strip().lower()
     gh_email = _github_email(gh)
     gh_name = str(gh.get("name") or "").strip()
@@ -317,7 +323,7 @@ def score_github_vs_plaky(gh: Dict[str, Any], plaky: Dict[str, Any]) -> int:
     pl_emails = _all_plaky_emails(plaky)
     pl_name = _plaky_display_name(plaky)
 
-    email_scores: List[int] = []
+    email_scores: list[int] = []
     any_strong_email = False
     for pe in pl_emails:
         sc, strong = _email_pair_score(gh_email, pe)
@@ -326,7 +332,7 @@ def score_github_vs_plaky(gh: Dict[str, Any], plaky: Dict[str, Any]) -> int:
         if strong:
             any_strong_email = True
 
-    login_scores: List[int] = []
+    login_scores: list[int] = []
     for pe in pl_emails:
         loc = _local_part(pe)
         if loc:
@@ -395,7 +401,9 @@ def score_github_vs_plaky(gh: Dict[str, Any], plaky: Dict[str, Any]) -> int:
     if (
         settings.assignment_identity_llm_enabled
         and not had_exact_email
-        and settings.assignment_identity_llm_gray_low <= raw <= settings.assignment_identity_llm_gray_high
+        and settings.assignment_identity_llm_gray_low
+        <= raw
+        <= settings.assignment_identity_llm_gray_high
     ):
         from boardman.assignment import llm_identity_match as _lim
 
@@ -412,17 +420,17 @@ def score_github_vs_plaky(gh: Dict[str, Any], plaky: Dict[str, Any]) -> int:
 
 
 def best_plaky_match_for_github(
-    gh: Dict[str, Any],
-    plaky_users: List[Dict[str, Any]],
+    gh: dict[str, Any],
+    plaky_users: list[dict[str, Any]],
     *,
     min_score: int = 640,
     ambiguity_margin: int = 45,
-) -> Tuple[Optional[str], str, int]:
+) -> tuple[str | None, str, int]:
     """
     Returns (plaky_user_id_or_none, reason, best_score).
     reason: matched | below_threshold | ambiguous
     """
-    scored: List[Tuple[str, int]] = []
+    scored: list[tuple[str, int]] = []
     for p in plaky_users:
         if not isinstance(p, dict):
             continue

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -15,7 +15,7 @@ from boardman.settings import settings
 _log = logging.getLogger(__name__)
 
 # (monotonic_ts, team_spec, result dict) — invalidated by clear_support_team_cache()
-_support_roster_cache: Optional[Tuple[float, str, Dict[str, Any]]] = None
+_support_roster_cache: tuple[float, str, dict[str, Any]] | None = None
 SUPPORT_ROSTER_TTL_SEC = 120.0
 
 
@@ -24,7 +24,7 @@ def clear_support_team_cache() -> None:
     _support_roster_cache = None
 
 
-def get_cached_support_team_roster(team_spec: str) -> Dict[str, Any]:
+def get_cached_support_team_roster(team_spec: str) -> dict[str, Any]:
     """TTL cache for assignment loader (sync). Cleared by reload_team_assignments()."""
     import time
 
@@ -42,7 +42,7 @@ def get_cached_support_team_roster(team_spec: str) -> Dict[str, Any]:
     return result
 
 
-def parse_github_team_spec(spec: str) -> Optional[Tuple[str, str]]:
+def parse_github_team_spec(spec: str) -> tuple[str, str] | None:
     """
     `org/team-slug` as in @Team-Deepiri/support-team → ("Team-Deepiri", "support-team").
     Only the first `/` splits org from team slug (slug may contain hyphens, not slashes).
@@ -57,11 +57,11 @@ def parse_github_team_spec(spec: str) -> Optional[Tuple[str, str]]:
     return org, slug
 
 
-async def _enrich_public_names(client: httpx.AsyncClient, members: List[Dict[str, Any]]) -> None:
+async def _enrich_public_names(client: httpx.AsyncClient, members: list[dict[str, Any]]) -> None:
     """GET /users/{login} for display name (optional; team list often has login only)."""
     sem = asyncio.Semaphore(8)
 
-    async def one(row: Dict[str, Any]) -> None:
+    async def one(row: dict[str, Any]) -> None:
         login = row.get("login")
         if not login:
             return
@@ -83,9 +83,9 @@ async def _enrich_public_names(client: httpx.AsyncClient, members: List[Dict[str
 
 async def fetch_support_team_members(
     *,
-    team_spec: Optional[str] = None,
+    team_spec: str | None = None,
     enrich_names: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """
     List members of the configured GitHub org team (needs PAT with read:org or org scope).
 
@@ -113,7 +113,7 @@ async def fetch_support_team_members(
     org_q, slug_q = quote(org, safe=""), quote(team_slug, safe="")
     path_base = f"/orgs/{org_q}/teams/{slug_q}/members"
 
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     async with httpx.AsyncClient(timeout=30) as client:
         page = 1
         while page <= 20:
@@ -176,7 +176,7 @@ async def fetch_support_team_members(
     return {"ok": True, "message": "", "team": spec, "members": out}
 
 
-def _enrich_public_names_sync(client: httpx.Client, members: List[Dict[str, Any]]) -> None:
+def _enrich_public_names_sync(client: httpx.Client, members: list[dict[str, Any]]) -> None:
     for row in members:
         login = row.get("login")
         if not login:
@@ -196,9 +196,9 @@ def _enrich_public_names_sync(client: httpx.Client, members: List[Dict[str, Any]
 
 def fetch_support_team_members_sync(
     *,
-    team_spec: Optional[str] = None,
+    team_spec: str | None = None,
     enrich_names: bool = True,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Blocking fetch for load_team_assignments() (same semantics as async version)."""
     spec = (team_spec if team_spec is not None else settings.github_support_team).strip()
     parsed = parse_github_team_spec(spec)
@@ -222,7 +222,7 @@ def fetch_support_team_members_sync(
     org_q, slug_q = quote(org, safe=""), quote(team_slug, safe="")
     path_base = f"/orgs/{org_q}/teams/{slug_q}/members"
 
-    out: List[Dict[str, Any]] = []
+    out: list[dict[str, Any]] = []
     with httpx.Client(timeout=30) as client:
         page = 1
         while page <= 20:

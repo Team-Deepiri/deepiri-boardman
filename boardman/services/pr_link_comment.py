@@ -71,6 +71,6 @@ def format_pr_notice_with_url(*, headline: str, pr_number: int | None, pr_url: s
     if settings.plaky_pr_comment_links_as_html:
         href = escape(url, quote=True)
         inner = escape(f"#{pr_number}") if pr_number is not None else escape(_pr_anchor_label(url))
-        return f"{headline} <a href=\"{href}\">{inner}</a>"
+        return f'{headline} <a href="{href}">{inner}</a>'
     num_line = f"#{pr_number}" if pr_number is not None else _pr_anchor_label(url)
     return f"{headline} {num_line}\n{url}"

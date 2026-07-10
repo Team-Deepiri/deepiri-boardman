@@ -11,7 +11,7 @@ via exact linked GitHub handle on the Plaky user row when present, then the same
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.plaky.board_schema import fetch_board_schema_bundle
@@ -19,7 +19,7 @@ from boardman.plaky.client import PlakyClient
 from boardman.settings import settings
 
 # (hint phrases / words — normalized with underscores as spaces), negative substrings penalize.
-_GITHUB_APPROVE_HINTS: Tuple[str, ...] = (
+_GITHUB_APPROVE_HINTS: tuple[str, ...] = (
     "qa verified",
     "verified",
     "qa passed",
@@ -32,7 +32,7 @@ _GITHUB_APPROVE_HINTS: Tuple[str, ...] = (
     "approved for merge",
     "merge approved",
 )
-_GITHUB_APPROVE_NEG: Tuple[str, ...] = (
+_GITHUB_APPROVE_NEG: tuple[str, ...] = (
     "reject",
     "changes",
     "pending approval",
@@ -42,7 +42,7 @@ _GITHUB_APPROVE_NEG: Tuple[str, ...] = (
     "on hold",
     "draft",
 )
-_GITHUB_CHANGES_HINTS: Tuple[str, ...] = (
+_GITHUB_CHANGES_HINTS: tuple[str, ...] = (
     "qa rejected",
     "rejected",
     "changes requested",
@@ -53,7 +53,7 @@ _GITHUB_CHANGES_HINTS: Tuple[str, ...] = (
     "failed qa",
     "needs fix",
 )
-_WORKFLOW_IN_QA_HINTS: Tuple[str, ...] = (
+_WORKFLOW_IN_QA_HINTS: tuple[str, ...] = (
     "in qa",
     "qa in progress",
     "under qa",
@@ -61,7 +61,7 @@ _WORKFLOW_IN_QA_HINTS: Tuple[str, ...] = (
     "in test",
     "testing",
 )
-_WORKFLOW_NEEDS_QA_HINTS: Tuple[str, ...] = (
+_WORKFLOW_NEEDS_QA_HINTS: tuple[str, ...] = (
     "needs qa",
     "awaiting qa",
     "ready for qa",
@@ -69,14 +69,14 @@ _WORKFLOW_NEEDS_QA_HINTS: Tuple[str, ...] = (
     "qa todo",
     "queue qa",
 )
-_WORKFLOW_NEEDS_QA_AGAIN_HINTS: Tuple[str, ...] = (
+_WORKFLOW_NEEDS_QA_AGAIN_HINTS: tuple[str, ...] = (
     "needs qa again",
     "qa again",
     "re qa",
     "back to qa",
 )
 # PR matched a task but no one is assigned yet.
-_WORKFLOW_NEEDS_ASSIGNED_HINTS: Tuple[str, ...] = (
+_WORKFLOW_NEEDS_ASSIGNED_HINTS: tuple[str, ...] = (
     "needs assigned",
     "need assigned",
     "needs assignee",
@@ -87,7 +87,7 @@ _WORKFLOW_NEEDS_ASSIGNED_HINTS: Tuple[str, ...] = (
     "todo",
     "open",
 )
-_WORKFLOW_NEEDS_ASSIGNED_NEG: Tuple[str, ...] = (
+_WORKFLOW_NEEDS_ASSIGNED_NEG: tuple[str, ...] = (
     "in progress",
     "qa",
     "done",
@@ -97,13 +97,13 @@ _WORKFLOW_NEEDS_ASSIGNED_NEG: Tuple[str, ...] = (
     "rejected",
 )
 # A developer has been matched/assigned to the task.
-_WORKFLOW_ASSIGNED_HINTS: Tuple[str, ...] = (
+_WORKFLOW_ASSIGNED_HINTS: tuple[str, ...] = (
     "assigned",
     "claimed",
     "accepted",
     "picked up",
 )
-_WORKFLOW_ASSIGNED_NEG: Tuple[str, ...] = (
+_WORKFLOW_ASSIGNED_NEG: tuple[str, ...] = (
     "needs assigned",
     "need assigned",
     "unassigned",
@@ -116,7 +116,7 @@ _WORKFLOW_ASSIGNED_NEG: Tuple[str, ...] = (
     "paused",
 )
 # Work is paused / on hold (from a PR comment saying "pause"/"paused").
-_WORKFLOW_PAUSED_HINTS: Tuple[str, ...] = (
+_WORKFLOW_PAUSED_HINTS: tuple[str, ...] = (
     "paused",
     "pause",
     "on hold",
@@ -124,13 +124,13 @@ _WORKFLOW_PAUSED_HINTS: Tuple[str, ...] = (
     "blocked",
     "stuck",
 )
-_WORKFLOW_PAUSED_NEG: Tuple[str, ...] = (
+_WORKFLOW_PAUSED_NEG: tuple[str, ...] = (
     "qa",
     "done",
     "completed",
 )
 # Active development (e.g. dev resumed work after a QA rejection).
-_WORKFLOW_IN_PROGRESS_HINTS: Tuple[str, ...] = (
+_WORKFLOW_IN_PROGRESS_HINTS: tuple[str, ...] = (
     "in progress",
     "revisions in progress",
     "doing",
@@ -139,7 +139,7 @@ _WORKFLOW_IN_PROGRESS_HINTS: Tuple[str, ...] = (
     "working",
     "in development",
 )
-_WORKFLOW_IN_PROGRESS_NEG: Tuple[str, ...] = (
+_WORKFLOW_IN_PROGRESS_NEG: tuple[str, ...] = (
     "needs",
     "qa",
     "done",
@@ -148,7 +148,7 @@ _WORKFLOW_IN_PROGRESS_NEG: Tuple[str, ...] = (
     "available",
 )
 # Merged → done.
-_WORKFLOW_COMPLETED_HINTS: Tuple[str, ...] = (
+_WORKFLOW_COMPLETED_HINTS: tuple[str, ...] = (
     "completed",
     "complete",
     "done",
@@ -158,7 +158,7 @@ _WORKFLOW_COMPLETED_HINTS: Tuple[str, ...] = (
     "resolved",
     "closed",
 )
-_WORKFLOW_COMPLETED_NEG: Tuple[str, ...] = (
+_WORKFLOW_COMPLETED_NEG: tuple[str, ...] = (
     "incomplete",
     "not done",
     "in progress",
@@ -166,11 +166,14 @@ _WORKFLOW_COMPLETED_NEG: Tuple[str, ...] = (
     "qa",
 )
 
+
 def _norm(s: str) -> str:
     return " ".join(s.strip().lower().replace("_", " ").replace("-", " ").split())
 
 
-def _score_option_label(label_norm: str, hints: Tuple[str, ...], negative: Tuple[str, ...]) -> float:
+def _score_option_label(
+    label_norm: str, hints: tuple[str, ...], negative: tuple[str, ...]
+) -> float:
     score = 0.0
     for neg in negative:
         if neg in label_norm:
@@ -187,8 +190,8 @@ def _score_option_label(label_norm: str, hints: Tuple[str, ...], negative: Tuple
     return score
 
 
-def _status_fields(normalized: Dict[str, Any]) -> List[Dict[str, Any]]:
-    out: List[Dict[str, Any]] = []
+def _status_fields(normalized: dict[str, Any]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
     for f in normalized.get("fields") or []:
         if not isinstance(f, dict):
             continue
@@ -200,12 +203,12 @@ def _status_fields(normalized: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _pick_best_option(
-    fields: List[Dict[str, Any]],
-    hints: Tuple[str, ...],
-    negative: Tuple[str, ...],
+    fields: list[dict[str, Any]],
+    hints: tuple[str, ...],
+    negative: tuple[str, ...],
     *,
     require_substring: str = "",
-) -> Tuple[str, str, float]:
+) -> tuple[str, str, float]:
     """Return (field_key, option_id, score).
 
     ``require_substring``: when set, only options whose normalized label contains it are
@@ -213,7 +216,7 @@ def _pick_best_option(
     caller can fall back to a base intent).
     """
     req = _norm(require_substring) if require_substring else ""
-    best: Tuple[str, str, float] = ("", "", float("-inf"))
+    best: tuple[str, str, float] = ("", "", float("-inf"))
     for f in fields:
         fkey = str(f.get("key") or "").strip()
         if not fkey:
@@ -234,7 +237,7 @@ def _pick_best_option(
     return best
 
 
-async def _load_normalized(board_id: str) -> Optional[Dict[str, Any]]:
+async def _load_normalized(board_id: str) -> dict[str, Any] | None:
     bid = (board_id or "").strip()
     if not bid:
         return None
@@ -249,8 +252,8 @@ async def resolve_plaky_status_patch(
     board_id: str,
     *,
     intent: str,
-    preloaded_normalized: Optional[Dict[str, Any]] = None,
-) -> Optional[Tuple[str, str]]:
+    preloaded_normalized: dict[str, Any] | None = None,
+) -> tuple[str, str] | None:
     """
     Return ``(status_field_key, option_id)`` for a workflow intent, or None.
 
@@ -308,11 +311,11 @@ async def resolve_plaky_status_patch(
     return (fk, oid)
 
 
-def discover_qa_assignee_field_key_from_normalized(normalized: Dict[str, Any]) -> Optional[str]:
+def discover_qa_assignee_field_key_from_normalized(normalized: dict[str, Any]) -> str | None:
     """
     Best-effort QA person field: schema field whose name/key suggests QA and type suggests a person.
     """
-    best: Tuple[int, str] = (-10_000, "")
+    best: tuple[int, str] = (-10_000, "")
     for f in normalized.get("fields") or []:
         if not isinstance(f, dict):
             continue
@@ -339,14 +342,14 @@ def discover_qa_assignee_field_key_from_normalized(normalized: Dict[str, Any]) -
     return best[1] or None
 
 
-async def discover_qa_assignee_field_key(board_id: str) -> Optional[str]:
+async def discover_qa_assignee_field_key(board_id: str) -> str | None:
     n = await _load_normalized(board_id)
     if not n:
         return None
     return discover_qa_assignee_field_key_from_normalized(n)
 
 
-def _github_actor_dict(login: str, *, name: str = "", email: str = "") -> Dict[str, Any]:
+def _github_actor_dict(login: str, *, name: str = "", email: str = "") -> dict[str, Any]:
     return {
         "login": (login or "").strip(),
         "name": (name or "").strip(),
@@ -354,7 +357,7 @@ def _github_actor_dict(login: str, *, name: str = "", email: str = "") -> Dict[s
     }
 
 
-def github_actor_payload(user: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def github_actor_payload(user: dict[str, Any] | None) -> dict[str, Any]:
     """Normalize GitHub ``user`` objects from webhooks into the shape expected by identity matching."""
     if not isinstance(user, dict):
         return _github_actor_dict("")
@@ -366,11 +369,11 @@ def github_actor_payload(user: Optional[Dict[str, Any]]) -> Dict[str, Any]:
 
 
 async def resolve_github_user_to_plaky_user_id(
-    gh: Dict[str, Any],
+    gh: dict[str, Any],
     *,
     min_score: int = 640,
     ambiguity_margin: int = 45,
-) -> Optional[str]:
+) -> str | None:
     """
     Map a GitHub profile (login, optional name/email from webhook) to a Plaky workspace user id.
 
@@ -386,7 +389,7 @@ async def resolve_github_user_to_plaky_user_id(
     r = await c.list_workspace_users()
     if not r.get("ok"):
         return None
-    users: List[Dict[str, Any]] = [u for u in (r.get("users") or []) if isinstance(u, dict)]
+    users: list[dict[str, Any]] = [u for u in (r.get("users") or []) if isinstance(u, dict)]
     for u in users:
         uid = str(u.get("id") or "").strip()
         if not uid:
@@ -406,7 +409,7 @@ async def resolve_github_user_to_plaky_user_id(
     return None
 
 
-async def workspace_plaky_user_id_for_github_login(login: str) -> Optional[str]:
+async def workspace_plaky_user_id_for_github_login(login: str) -> str | None:
     """Backward-compatible: login-only GitHub handle → Plaky id (exact link row, then fuzzy)."""
     return await resolve_github_user_to_plaky_user_id(_github_actor_dict(login))
 
