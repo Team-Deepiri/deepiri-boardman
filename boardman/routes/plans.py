@@ -52,14 +52,16 @@ def _confine_to_output_dir(raw: str) -> Path:
     arbitrary location. The resolved target must stay within
     ``settings.planning_output_dir``.
     """
-    base = os.path.realpath(settings.planning_output_dir)
-    candidate = os.path.realpath(os.path.join(base, raw))
-    if candidate != base and not candidate.startswith(base + os.sep):
+    base = Path(settings.planning_output_dir).resolve()
+    candidate = (base / raw).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError as exc:
         raise HTTPException(
             status_code=422,
             detail="output_path must stay within the planning output directory",
-        )
-    return Path(candidate)
+        ) from exc
+    return candidate
 
 
 def _resolve_output_path(body: GeneratePlanRequest) -> Path | None:

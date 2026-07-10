@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-import os
+import re
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -34,19 +34,25 @@ def confine_to_output_dir(output_path: Path) -> Path:
     traversal: the resolved target must stay within the configured output
     directory, otherwise ``ValueError`` is raised.
     """
-    base = os.path.realpath(settings.planning_output_dir)
-    resolved = os.path.realpath(output_path)
-    if resolved != base and not resolved.startswith(base + os.sep):
-        raise ValueError(f"output_path escapes planning output directory: {output_path}")
-    return Path(resolved)
+    base = Path(settings.planning_output_dir).resolve()
+    resolved = Path(output_path).resolve()
+    try:
+        resolved.relative_to(base)
+    except ValueError as exc:
+        raise ValueError(f"output_path escapes planning output directory: {output_path}") from exc
+    return resolved
+
+
+def _safe_filename_component(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", value)
 
 
 def default_plan_output_path(team: str, meeting_type: str, week: str) -> Path:
     anchor = week_anchor(week).isoformat()
-    safe_team = team.replace("-", "_")
-    safe_type = meeting_type.replace("-", "_")
+    safe_team = _safe_filename_component(team)
+    safe_type = _safe_filename_component(meeting_type)
     out_dir = Path(settings.planning_output_dir)
-    return out_dir / f"{safe_team}_{safe_type}_{anchor}.md"
+    return confine_to_output_dir(out_dir / f"{safe_team}_{safe_type}_{anchor}.md")
 
 
 def build_planner(
