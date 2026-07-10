@@ -30,6 +30,49 @@ _NOTABLE_FILE_BASENAMES = {
 }
 
 
+async def _workspace_repo_suggestions(client: httpx.AsyncClient, requested: str, limit: int = 5) -> List[str]:
+    """Closest workspace repos to a requested name (users say 'deepiri-cyrex' for 'diri-cyrex')."""
+    from difflib import SequenceMatcher
+
+    try:
+        repos = await list_workspace_repos(client)
+        names = list(repos.keys())
+    except Exception:
+        return []
+    want = (requested or "").split("/")[-1].strip().lower()
+    if not want or not names:
+        return []
+    scored: List[tuple[float, str]] = []
+    for fn in names:
+        short = fn.split("/")[-1].lower()
+        score = SequenceMatcher(None, want, short).ratio()
+        if want in short or short in want:
+            score += 0.3
+        scored.append((score, fn))
+    scored.sort(key=lambda t: -t[0])
+    return [fn for score, fn in scored[:limit] if score >= 0.45]
+
+
+def _repo_not_found_payload(owner: str, repo: str, suggestions: List[str]) -> str:
+    return json.dumps(
+        {
+            "ok": False,
+            "repo": f"{owner}/{repo}",
+            "repo_not_found": True,
+            "message": (
+                f"GitHub repo {owner}/{repo} does not exist or is inaccessible. "
+                "Do NOT invent an analysis for it."
+            ),
+            "did_you_mean": suggestions,
+            "guidance": (
+                "If one of did_you_mean matches the user's intent, call this tool again with that "
+                "exact owner/repo. Otherwise ask the user to confirm the name (you can also call "
+                "github_list_workspace_repos)."
+            ),
+        }
+    )
+
+
 async def _github_list_workspace_repos() -> str:
     """List all GitHub repositories in the configured org merged with repos.yml config."""
     if not settings.github_pat:
@@ -118,8 +161,9 @@ async def _github_repo_structure(owner_repo: str) -> str:
     owner, repo = parsed
     async with httpx.AsyncClient(timeout=30.0) as client:
         meta = await fetch_repo_metadata(client, owner, repo)
-    if not meta:
-        return json.dumps({"ok": False, "message": f"Could not fetch metadata for {owner}/{repo}"})
+        if not meta:
+            suggestions = await _workspace_repo_suggestions(client, repo)
+            return _repo_not_found_payload(owner, repo, suggestions)
 
     notable: List[str] = []
     file_count = 0
@@ -153,12 +197,24 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
     """
     if not settings.github_pat:
         return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
-    parsed = parse_owner_repo(owner_repo)
+    raw_name = (owner_repo or "").strip()
+    parsed = parse_owner_repo(raw_name)
+    if not parsed and raw_name and "/" not in raw_name:
+        # Bare name: assume the configured default owner instead of erroring out.
+        from boardman.assignment.qa_picker import ensure_github_owner_repo
+
+        parsed = parse_owner_repo(ensure_github_owner_repo(raw_name))
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
     lim = max(5, min(int(commits_limit) if commits_limit else 20, 50))
     async with httpx.AsyncClient(timeout=90.0) as client:
+        # Existence probe first — a wrong/misspelled repo must return did_you_mean
+        # suggestions, not "(No DIRECTION.md ...)" strings the model reads as a blank repo.
+        meta = await fetch_repo_metadata(client, owner, repo)
+        if meta is None:
+            suggestions = await _workspace_repo_suggestions(client, repo)
+            return _repo_not_found_payload(owner, repo, suggestions)
         direction = await fetch_direction_md(client, owner, repo)
         commits = await fetch_recent_commits(client, owner, repo, limit=lim)
         issues = await fetch_open_issues(client, owner, repo)
