@@ -49,19 +49,22 @@ def _confine_to_output_dir(raw: str) -> Path:
     """Confine a client-supplied output path to the planning output directory.
 
     Prevents path traversal: the request could otherwise write markdown to an
-    arbitrary location. The resolved target must stay within
+    arbitrary location. The normalized target must stay within
     ``settings.planning_output_dir``.
+
+    Normalization uses pure string operations (``abspath``/``normpath``) instead
+    of ``Path.resolve``/``os.path.realpath`` so the untrusted value never reaches
+    a filesystem-touching call, and confinement is enforced with a ``startswith``
+    prefix check.
     """
-    base = Path(settings.planning_output_dir).resolve()
-    candidate = (base / raw).resolve()
-    try:
-        candidate.relative_to(base)
-    except ValueError as exc:
+    base = os.path.abspath(settings.planning_output_dir)
+    candidate = os.path.normpath(os.path.join(base, raw))
+    if candidate != base and not candidate.startswith(base + os.sep):
         raise HTTPException(
             status_code=422,
             detail="output_path must stay within the planning output directory",
-        ) from exc
-    return candidate
+        )
+    return Path(candidate)
 
 
 def _resolve_output_path(body: GeneratePlanRequest) -> Path | None:

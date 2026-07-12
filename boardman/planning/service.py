@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from datetime import date, timedelta
 from pathlib import Path
@@ -31,20 +32,23 @@ def confine_to_output_dir(output_path: Path) -> Path:
     """Confine a plan output path to ``settings.planning_output_dir``.
 
     Guards every writer (CLI ``--output``, REST ``output_path``) against path
-    traversal: the resolved target must stay within the configured output
+    traversal: the normalized target must stay within the configured output
     directory, otherwise ``ValueError`` is raised.
+
+    Normalization uses pure string operations (``abspath``/``normpath``) rather
+    than ``Path.resolve``/``os.path.realpath`` so the untrusted value never
+    reaches a filesystem-touching call, and confinement is enforced with a
+    ``startswith`` prefix check.
     """
-    base = Path(settings.planning_output_dir).resolve()
-    resolved = Path(output_path).resolve()
-    try:
-        resolved.relative_to(base)
-    except ValueError as exc:
-        raise ValueError(f"output_path escapes planning output directory: {output_path}") from exc
-    return resolved
+    base = os.path.abspath(settings.planning_output_dir)
+    target = os.path.normpath(os.path.abspath(os.fspath(output_path)))
+    if target != base and not target.startswith(base + os.sep):
+        raise ValueError(f"output_path escapes planning output directory: {output_path}")
+    return Path(target)
 
 
 def _safe_filename_component(value: str) -> str:
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", value)
+    return re.sub(r"[^A-Za-z0-9_.]", "_", value)
 
 
 def default_plan_output_path(team: str, meeting_type: str, week: str) -> Path:
