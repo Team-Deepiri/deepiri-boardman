@@ -57,9 +57,9 @@ def _confine_to_output_dir(raw: str) -> Path:
     a filesystem-touching call, and confinement is enforced with a ``startswith``
     prefix check.
     """
-    base = os.path.abspath(settings.planning_output_dir)
+    base = os.path.normpath(os.path.abspath(settings.planning_output_dir))
     candidate = os.path.normpath(os.path.join(base, raw))
-    if candidate != base and not candidate.startswith(base + os.sep):
+    if not candidate.startswith(base + os.sep):
         raise HTTPException(
             status_code=422,
             detail="output_path must stay within the planning output directory",

@@ -40,9 +40,9 @@ def confine_to_output_dir(output_path: Path) -> Path:
     reaches a filesystem-touching call, and confinement is enforced with a
     ``startswith`` prefix check.
     """
-    base = os.path.abspath(settings.planning_output_dir)
+    base = os.path.normpath(os.path.abspath(settings.planning_output_dir))
     target = os.path.normpath(os.path.abspath(os.fspath(output_path)))
-    if target != base and not target.startswith(base + os.sep):
+    if not target.startswith(base + os.sep):
         raise ValueError(f"output_path escapes planning output directory: {output_path}")
     return Path(target)
 
