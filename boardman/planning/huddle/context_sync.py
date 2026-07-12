@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from collections import defaultdict
 from dataclasses import dataclass
@@ -11,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from boardman.database.models import IssueTaskMap, OpenPRTrack, PullRequestTaskLink, SyncLog
 from boardman.database.session import async_session
+from boardman.planning.huddle.async_bridge import run_sync
 from boardman.planning.huddle.team_repos import load_team_repos, repos_for_team
 from boardman.settings import settings
 
@@ -93,7 +93,7 @@ class SyncPlanningContext:
         self._team_repos = team_repos or load_team_repos()
 
     def context_markdown(self, team_focus: str) -> str:
-        return asyncio.run(self._context_markdown_async(team_focus))
+        return run_sync(self._context_markdown_async(team_focus))
 
     async def _context_markdown_async(self, team_focus: str) -> str:
         team_repo_names = repos_for_team(self._team_repos, team_focus)

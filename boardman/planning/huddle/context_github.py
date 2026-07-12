@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -90,9 +91,12 @@ class GitHubPlanningContext:
             return f"No pull requests updated in the last {lookback} days for team repos."
         return self._format_markdown(prs, team_focus, lookback)
 
-    def _open_client(self) -> httpx.Client | _ClientCtx:
+    def _open_client(self) -> AbstractContextManager[httpx.Client]:
+        # An injected client is borrowed: hand it back via ``nullcontext`` so the
+        # ``with`` block does not close a client the caller still owns. Only a
+        # client we create ourselves is closed on exit.
         if self._client is not None:
-            return _ClientCtx(self._client)
+            return nullcontext(self._client)
         return httpx.Client(
             timeout=settings.planning_llm_timeout_seconds,
             headers={
@@ -161,17 +165,6 @@ class GitHubPlanningContext:
         lines.extend(_section("Closed (not merged)", closed_unmerged))
         lines.append("- Note: stats only (no diffs). LARGE = many files or line changes.")
         return "\n".join(lines)
-
-
-class _ClientCtx:
-    def __init__(self, client: httpx.Client) -> None:
-        self._client = client
-
-    def __enter__(self) -> httpx.Client:
-        return self._client
-
-    def __exit__(self, *args: object) -> None:
-        return None
 
 
 def _section(title: str, prs: list[PullRequestSummary]) -> list[str]:

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -14,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from boardman.database.models import ProjectContext, ScanRun
 from boardman.database.session import async_session
 from boardman.github.repo_fetch import fetch_direction_md
+from boardman.planning.huddle.async_bridge import run_sync
 from boardman.planning.huddle.context_sync import full_repo_name, repo_matches_team
 from boardman.planning.huddle.team_repos import load_team_repos, repos_for_team
 from boardman.settings import settings
@@ -54,7 +54,7 @@ class DirectionPlanningContext:
         self._direction_fetcher = direction_fetcher or _default_direction_fetcher
 
     def context_markdown(self, team_focus: str) -> str:
-        return asyncio.run(self._context_markdown_async(team_focus))
+        return run_sync(self._context_markdown_async(team_focus))
 
     async def _context_markdown_async(self, team_focus: str) -> str:
         team_repo_names = repos_for_team(self._team_repos, team_focus)

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import Protocol
 
 from boardman.llm.completion import chat_complete
 from boardman.llm.ollama_autodetect import effective_ollama_model
+from boardman.planning.huddle.async_bridge import run_sync
 from boardman.settings import settings
 
 
@@ -46,7 +46,7 @@ class BoardmanPlanningLlm:
             },
             {"role": "user", "content": prompt},
         ]
-        text = asyncio.run(
+        text = run_sync(
             chat_complete(
                 messages,
                 provider=self.provider,

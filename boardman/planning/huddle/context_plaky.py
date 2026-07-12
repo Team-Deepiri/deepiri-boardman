@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from boardman.plaky.client import PlakyClient
+from boardman.planning.huddle.async_bridge import run_sync
 from boardman.planning.huddle.team_plaky_boards import (
     PlakyBoardRef,
     board_for_team,
@@ -55,7 +55,7 @@ class PlakyPlanningContext:
         for board in boards:
             label = f"board={board.board_id}"
             try:
-                raw_items = asyncio.run(self._list_items(board))
+                raw_items = run_sync(self._list_items(board))
             except Exception as exc:
                 log.warning(
                     "planning_plaky_board_failed board=%s error_type=%s error=%s",
