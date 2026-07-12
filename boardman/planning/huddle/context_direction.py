@@ -14,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from boardman.database.models import ProjectContext, ScanRun
 from boardman.database.session import async_session
 from boardman.github.repo_fetch import fetch_direction_md
-from boardman.planning.context_sync import full_repo_name, repo_matches_team
-from boardman.planning.team_repos import load_team_repos, repos_for_team
+from boardman.planning.huddle.context_sync import full_repo_name, repo_matches_team
+from boardman.planning.huddle.team_repos import load_team_repos, repos_for_team
 from boardman.settings import settings
 
 log = logging.getLogger(__name__)

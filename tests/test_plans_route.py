@@ -4,7 +4,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from boardman.main import create_app
-from boardman.planning.models import MeetingPlan
+from boardman.planning.huddle.models import MeetingPlan
 
 
 @pytest.mark.asyncio

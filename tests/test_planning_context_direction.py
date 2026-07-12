@@ -7,7 +7,7 @@ import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from boardman.database.models import Base, ProjectContext, ScanRun
-from boardman.planning.context_direction import DirectionPlanningContext
+from boardman.planning.huddle.context_direction import DirectionPlanningContext
 
 
 async def _memory_session_factory():

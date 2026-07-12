@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 from typing import Protocol
 
-from boardman.planning.context_direction import DirectionPlanningContext
-from boardman.planning.context_github import GitHubPlanningContext
-from boardman.planning.context_plaky import PlakyPlanningContext
-from boardman.planning.context_sync import SyncPlanningContext
+from boardman.planning.huddle.context_direction import DirectionPlanningContext
+from boardman.planning.huddle.context_github import GitHubPlanningContext
+from boardman.planning.huddle.context_plaky import PlakyPlanningContext
+from boardman.planning.huddle.context_sync import SyncPlanningContext
 
 log = logging.getLogger(__name__)
 

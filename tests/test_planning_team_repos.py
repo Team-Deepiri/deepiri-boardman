@@ -1,4 +1,4 @@
-from boardman.planning.team_repos import load_team_repos, repos_for_team
+from boardman.planning.huddle.team_repos import load_team_repos, repos_for_team
 
 
 def test_repos_for_team_all_teams_dedupes() -> None:
@@ -13,7 +13,7 @@ def test_repos_for_team_all_teams_dedupes() -> None:
 def test_load_team_repos_uses_defaults_when_missing(tmp_path, monkeypatch) -> None:
     missing = tmp_path / "nope.json"
     monkeypatch.setattr(
-        "boardman.planning.team_repos.settings.planning_team_repos_file",
+        "boardman.planning.huddle.team_repos.settings.planning_team_repos_file",
         str(missing),
     )
     mapping = load_team_repos()

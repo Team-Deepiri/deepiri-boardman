@@ -7,7 +7,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from boardman.plaky.client import PlakyClient
-from boardman.planning.team_plaky_boards import (
+from boardman.planning.huddle.team_plaky_boards import (
     PlakyBoardRef,
     board_for_team,
     boards_for_team,

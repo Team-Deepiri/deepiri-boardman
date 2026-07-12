@@ -7,9 +7,9 @@ import json
 
 from langchain_core.tools import StructuredTool
 
-from boardman.planning.models import MeetingRequest
+from boardman.planning.huddle.models import MeetingRequest
+from boardman.planning.huddle.team_repos import TEAM_CHOICES
 from boardman.planning.service import default_plan_output_path, generate_plan, week_anchor
-from boardman.planning.team_repos import TEAM_CHOICES
 
 
 async def _generate_meeting_plan(

@@ -5,13 +5,13 @@ from datetime import UTC, datetime
 from typing import Protocol
 
 from boardman.planning.context_aggregator import ContextAggregator
-from boardman.planning.llm_adapter import PlanningLlm
-from boardman.planning.models import MeetingPlan, MeetingRequest
-from boardman.planning.plan_output import (
+from boardman.planning.huddle.llm_adapter import PlanningLlm
+from boardman.planning.huddle.models import MeetingPlan, MeetingRequest
+from boardman.planning.huddle.plan_output import (
     is_too_close_to_fallback,
     validate_meeting_plan_markdown,
 )
-from boardman.planning.schedule import DEFAULT_TEAM_SCHEDULE, IT_ATTENDANCE_RULE
+from boardman.planning.huddle.schedule import DEFAULT_TEAM_SCHEDULE, IT_ATTENDANCE_RULE
 
 log = logging.getLogger(__name__)
 

@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from boardman.agent.tools.planning_tools import generate_meeting_plan_tool
-from boardman.planning.models import MeetingPlan
+from boardman.planning.huddle.models import MeetingPlan
 
 
 @pytest.mark.asyncio

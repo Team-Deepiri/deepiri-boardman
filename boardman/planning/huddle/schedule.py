@@ -1,4 +1,4 @@
-from boardman.planning.models import TeamMeeting
+from boardman.planning.huddle.models import TeamMeeting
 
 DEFAULT_TEAM_SCHEDULE: list[TeamMeeting] = [
     TeamMeeting("AI/ML", "Monday", "9:30 PM", "8:30 PM", "7:30 PM", "6:30 PM"),

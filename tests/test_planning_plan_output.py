@@ -1,11 +1,11 @@
-from boardman.planning.models import MeetingRequest
-from boardman.planning.plan_output import (
+from boardman.planning.huddle.models import MeetingRequest
+from boardman.planning.huddle.plan_output import (
     is_too_close_to_fallback,
     parse_h2_sections,
     similarity_to_fallback,
     validate_meeting_plan_markdown,
 )
-from boardman.planning.planner import MeetingPlanner
+from boardman.planning.huddle.planner import MeetingPlanner
 
 
 def test_parse_h2_sections_basic() -> None:

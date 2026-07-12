@@ -8,7 +8,9 @@ from rich.panel import Panel
 from rich.status import Status
 from rich.table import Table
 
-from boardman.planning.models import MeetingRequest
+from boardman.planning.huddle.models import MeetingRequest
+from boardman.planning.huddle.team_plaky_boards import boards_for_team
+from boardman.planning.huddle.team_repos import TEAM_CHOICES, repos_for_team
 from boardman.planning.service import (
     WEEK_CHOICES,
     default_plan_output_path,
@@ -16,8 +18,6 @@ from boardman.planning.service import (
     week_anchor,
 )
 from boardman.planning.team_config import resolve_planning_mappings
-from boardman.planning.team_plaky_boards import boards_for_team
-from boardman.planning.team_repos import TEAM_CHOICES, repos_for_team
 
 plan_app = typer.Typer(help="Generate weekly meeting plans (from deepiri-huddle)")
 console = Console()

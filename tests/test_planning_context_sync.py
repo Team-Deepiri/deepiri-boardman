@@ -12,7 +12,7 @@ from boardman.database.models import (
     PullRequestTaskLink,
     SyncLog,
 )
-from boardman.planning.context_sync import (
+from boardman.planning.huddle.context_sync import (
     SyncPlanningContext,
     repo_matches_team,
 )

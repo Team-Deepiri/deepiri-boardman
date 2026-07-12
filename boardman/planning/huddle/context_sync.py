@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from boardman.database.models import IssueTaskMap, OpenPRTrack, PullRequestTaskLink, SyncLog
 from boardman.database.session import async_session
-from boardman.planning.team_repos import load_team_repos, repos_for_team
+from boardman.planning.huddle.team_repos import load_team_repos, repos_for_team
 from boardman.settings import settings
 
 log = logging.getLogger(__name__)

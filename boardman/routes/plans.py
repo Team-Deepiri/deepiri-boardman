@@ -6,9 +6,9 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from boardman.planning.models import MeetingRequest
+from boardman.planning.huddle.models import MeetingRequest
+from boardman.planning.huddle.team_repos import TEAM_CHOICES
 from boardman.planning.service import default_plan_output_path, generate_plan, week_anchor
-from boardman.planning.team_repos import TEAM_CHOICES
 from boardman.settings import settings
 
 router = APIRouter(prefix="/plans", tags=["plans"])

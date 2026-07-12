@@ -5,8 +5,8 @@ from pathlib import Path
 
 import pytest
 
-from boardman.planning.models import MeetingRequest
-from boardman.planning.planner import MeetingPlanner
+from boardman.planning.huddle.models import MeetingRequest
+from boardman.planning.huddle.planner import MeetingPlanner
 from boardman.planning.service import (
     default_plan_output_path,
     generate_plan,

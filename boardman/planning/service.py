@@ -6,9 +6,9 @@ from datetime import date, timedelta
 from pathlib import Path
 
 from boardman.planning.context_aggregator import ContextAggregator
-from boardman.planning.llm_adapter import BoardmanPlanningLlm
-from boardman.planning.models import MeetingPlan, MeetingRequest
-from boardman.planning.planner import MeetingPlanner
+from boardman.planning.huddle.llm_adapter import BoardmanPlanningLlm
+from boardman.planning.huddle.models import MeetingPlan, MeetingRequest
+from boardman.planning.huddle.planner import MeetingPlanner
 from boardman.settings import settings
 
 WEEK_CHOICES = ("current", "next")
