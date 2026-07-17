@@ -30,22 +30,29 @@ No human in the loop. GitHub event in → Plaky updated out.
 **The status flow it drives automatically:**
 
 ```
-Issue opened        →  Task created, QA auto-assigned
+Issue opened        →  Task created: status NEEDS ASSIGNED, priority auto-inferred,
+                       Type from labels (default Feature) — NO QA yet
 Issue commented     →  Comment mirrored onto the task
 Issue closed        →  Completed
 Issue reopened      →  In Progress (task revived)
-PR opened           →  Assignee filled in, Type set, status → Needs QA
+PR opened           →  Dev filled in as Assignee, Type set, THEN the QA is picked by the
+                       algorithm, @mentioned on the PR + requested as reviewer, linked on
+                       the Plaky task, status → Needs QA
 PR edited           →  Unlinked PR gets one more linking pass (late "Fixes #N")
 PR back to draft    →  Needs QA reverted to In Progress
 QA comments         →  In QA
-QA requests changes →  QA Rejected
+QA requests changes →  QA Rejected (only the assigned QA's rejection counts)
 Dev pushes a fix    →  In Progress
 Someone says "pause"→  Paused
 Dev pings the QA    →  Needs QA (again)
-QA approves         →  QA Verified
+QA approves         →  QA Verified (any reviewer's approval counts)
 Approval dismissed  →  Back to In QA
 PR merged           →  Completed
 ```
+
+QA leads (Joe Black, Austin Heitzman, Devin Gamble, Sean San, Nathan Adams) are on a
+standing exclusion list and are never auto-assigned to review PRs (`qa_excluded` in
+team_assignments.yml).
 
 Placement precedence: an explicit `repos.yml` entry always wins; the Plaky-catalog
 auto-discovery (repo-named group on the categorical boards) is the fallback for repos

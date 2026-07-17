@@ -175,6 +175,65 @@ async def _apply_pr_type_and_assignee(
     return out
 
 
+async def _assign_qa_for_pr(
+    plaky: PlakyClient,
+    *,
+    task_id: str,
+    board_id: str,
+    repo_full: str,
+    pr_number: int,
+    pr_author_login: str = "",
+    task_url: str = "",
+) -> dict[str, Any]:
+    """QA assignment happens HERE — when a PR opens — not at task creation (employer flow).
+
+    Pick via the GitHub-fit algorithm (exclusion list applied), @mention the QA on the PR,
+    request them as reviewer, and write their Plaky profile into the task's QA field.
+    Never overwrites an already-assigned QA.
+    """
+    from boardman.assignment.qa_picker import pick_qa_for_repo as _pick
+    from boardman.github.pr_actions import comment_on_pr, request_reviewers
+    from boardman.plaky.dynamic_qa_status import resolve_qa_assignee_field_key
+
+    out: dict[str, Any] = {}
+    bid = (board_id or "").strip()
+    cfg = load_team_assignments()
+    qa_key = await resolve_qa_assignee_field_key(bid, cfg.plaky_field_qa) if bid else (cfg.plaky_field_qa or "")
+    if not qa_key:
+        return {"skipped": "no QA field key resolvable for this board"}
+
+    if bid:
+        current_qa = await _current_person_field_value(plaky, bid, task_id, qa_key)
+        if current_qa:
+            return {"skipped": "qa_already_assigned", "qa_plaky_id": current_qa}
+
+    qid, why = await _pick(repo_full)
+    if not qid:
+        return {"skipped": "no eligible QA", "reason": why}
+
+    member = next((m for m in cfg.members if (m.id or "").strip() == str(qid)), None)
+    qa_login = (getattr(member, "github_login", "") or "").strip() if member else ""
+    qa_display = (getattr(member, "display", "") or "").strip() if member else ""
+
+    res = await update_task_internal(
+        task_id,
+        UpdateTaskInput(qa_plaky_id=str(qid), plaky_board_id=bid or None),
+    )
+    out["plaky_qa"] = {"id": str(qid), "display": qa_display, "ok": res.get("ok"), "reason": why[:220]}
+
+    mention = f"@{qa_login}" if qa_login else (qa_display or "QA")
+    task_ref = task_url or f"Plaky task `{task_id}`"
+    body = (
+        f"{mention} you've been assigned as **QA reviewer** for this PR by Boardman.\n\n"
+        f"Linked task: {task_ref}\n"
+        f"Why you: {why[:300]}"
+    )
+    out["github_comment"] = await comment_on_pr(repo_full, pr_number, body)
+    if qa_login and qa_login.casefold() != (pr_author_login or "").casefold():
+        out["github_reviewer"] = await request_reviewers(repo_full, pr_number, [qa_login])
+    return out
+
+
 async def _maybe_set_needs_qa(
     plaky: PlakyClient,
     task_id: str,
@@ -346,6 +405,17 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                 pull_request=payload.pull_request,
                 repo_full=full_name,
             )
+            pr_user0 = payload.pull_request.user or {}
+            qa_res = await _assign_qa_for_pr(
+                plaky,
+                task_id=mapping.plaky_task_id,
+                board_id=board_id,
+                repo_full=full_name,
+                pr_number=pr_number,
+                pr_author_login=str(pr_user0.get("login") or "") if isinstance(pr_user0, dict) else "",
+                task_url=mapping.plaky_task_url or "",
+            )
+            _log.info("PR #%s QA assignment: %s", pr_number, {k: qa_res[k] for k in list(qa_res)[:3]})
             await _maybe_set_needs_qa(plaky, mapping.plaky_task_id, is_draft, board_id)
 
             log = SyncLog(
@@ -426,6 +496,15 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                     pull_request=payload.pull_request,
                     repo_full=full_name,
                 )
+                qa_res2 = await _assign_qa_for_pr(
+                    plaky,
+                    task_id=pipe.task_id,
+                    board_id=board_id,
+                    repo_full=full_name,
+                    pr_number=pr_number,
+                    pr_author_login=str(pr_author_login or ""),
+                )
+                _log.info("PR #%s QA assignment (fuzzy link): %s", pr_number, {k: qa_res2[k] for k in list(qa_res2)[:3]})
                 await _maybe_set_needs_qa(plaky, pipe.task_id, is_draft, board_id)
                 log = SyncLog(
                     action="pr_linked_fuzzy",

@@ -22,6 +22,8 @@ class GitHubIssue(BaseModel):
     html_url: str
     state: str = "open"
     user: Optional[Any] = None
+    labels: list[Any] = Field(default_factory=list)
+    pull_request: Optional[Any] = None
 
 
 class GitHubPullRequest(BaseModel):

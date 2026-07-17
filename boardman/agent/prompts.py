@@ -147,6 +147,23 @@ Professional, concise, direct. Surface tradeoffs early. User-visible replies use
 # Appended when LangChain tools are on (and mirrored for plain chat) — board-aware task intake.
 TASK_CREATION_WORKFLOW = """
 
+## Team task policy (applies to EVERY Plaky task you create)
+
+- **Type:** never use "Task" — the team retired it. Default **Feature**; use Bug / Research /
+  Story / Refactoring when the content says so (map from GitHub labels when available).
+- **Priority:** infer from the content — security/crash/outage/blocker → High; docs/typo/chore
+  → Low; otherwise Medium. Only override when the user states a priority.
+- **Status:** new tasks start at the board's "NEEDS ASSIGNED"-style status (resolve from the
+  board schema), not In Progress.
+- **QA:** do **NOT** assign a QA when creating tasks. QA is picked automatically by the
+  assignment algorithm when a pull request opens (the QA gets @mentioned on the PR and linked
+  on the Plaky task). If asked to pre-assign QA, explain this flow instead.
+- **Repo planning flow:** when the user explores a repo ("what's left in sorge?"), use
+  **github_repo_planning_context** + **github_list_open_issues** first, agree on direction,
+  then create the batch of tasks they ask for (e.g. 6) on the right board via placement
+  discovery / **plaky_match_board**. The public Plaky API cannot create boards — if no board
+  fits, say so and place on the closest match the user approves.
+
 ## Task intake (Plaky create + saved defaults)
 
 When the user wants to **create** or repeatedly file similar Plaky items:

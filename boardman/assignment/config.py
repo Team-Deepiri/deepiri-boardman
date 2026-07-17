@@ -15,6 +15,17 @@ import yaml
 from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.assignment.llm_identity_match import clear_identity_llm_cache
 from boardman.assignment.repo_rules import QaRepoRules, default_qa_repo_rules
+
+# QA leads/managers who must NEVER be auto-assigned to review PRs (employer requirement).
+# Matching is case-insensitive against member display name AND GitHub login.
+# Override the whole list with `qa_excluded:` in team_assignments.yml.
+DEFAULT_QA_EXCLUDED: tuple[str, ...] = (
+    "Joe Black",
+    "Austin Heitzman",
+    "Devin Gamble",
+    "Sean San",
+    "Nathan Adams",
+)
 from boardman.github.team_roster import clear_support_team_cache, get_cached_support_team_roster
 from boardman.plaky.board_schema import (
     field_likely_github_repo_column,
@@ -69,6 +80,7 @@ class TeamAssignmentsConfig:
     qa_repo_rules: QaRepoRules = field(default_factory=default_qa_repo_rules)
     random_jitter: float = 0.12
     ambiguous_pr: AmbiguousPRConfig = field(default_factory=AmbiguousPRConfig)
+    qa_excluded: List[str] = field(default_factory=lambda: list(DEFAULT_QA_EXCLUDED))
 
 
 def _path() -> Path:
@@ -504,6 +516,11 @@ def load_team_assignments() -> TeamAssignmentsConfig:
         if isinstance(t1, list) and t1:
             rules.tier1_only_patterns = [str(x) for x in t1]
 
+    excluded = list(DEFAULT_QA_EXCLUDED)
+    exc_raw = data.get("qa_excluded")
+    if isinstance(exc_raw, list):
+        excluded = [str(x).strip() for x in exc_raw if str(x).strip()]
+
     return TeamAssignmentsConfig(
         plaky_field_engineer=str(keys.get("engineer") or keys.get("assignee_dev") or ""),
         plaky_field_qa=str(keys.get("qa") or keys.get("qa_engineer") or ""),
@@ -517,4 +534,5 @@ def load_team_assignments() -> TeamAssignmentsConfig:
         qa_repo_rules=rules,
         random_jitter=max(0.0, min(jitter, 0.5)),
         ambiguous_pr=ambiguous,
+        qa_excluded=excluded,
     )

@@ -3,6 +3,13 @@ plaky_field_keys:
   qa: person-2
   repo: tag-2
   github_repos: tag-2
+# Leads/managers never auto-assigned to review PRs (matched on display name or GitHub login).
+qa_excluded:
+- Joe Black
+- Austin Heitzman
+- Devin Gamble
+- Sean San
+- Nathan Adams
 member_defaults:
   roles:
   - engineer

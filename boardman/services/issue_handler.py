@@ -5,10 +5,12 @@ from typing import Optional
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from boardman.assignment.qa_picker import build_assignment_field_map
+from boardman.assignment.qa_picker import build_repo_field_map
 from boardman.database.models import IssueTaskMap, SyncLog
+from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names as issue_label_names
 from boardman.github.webhooks import IssueEventPayload
-from boardman.plaky.board_aware import board_person_field_keys, resolve_group_for_repo
+from boardman.services.priority_rules import infer_priority_from_text
+from boardman.plaky.board_aware import resolve_group_for_repo
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing_async
@@ -49,22 +51,23 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     description = f"{payload.issue.body or ''}\n\n{payload.issue.html_url}{routing_footer}"
 
     bid, gid = effective_plaky_placement(routing)
-    qa_key_override: str | None = None
     if bid:
-        # Category boards: group is named after the repo, person field keys differ
-        # per board — resolve both from the live board instead of trusting config.
+        # Category boards: group is named after the repo — resolve from the live board
+        # instead of trusting config.
         gid = await resolve_group_for_repo(bid, repo_name, fallback_group_id=gid, plaky=plaky)
-        keys = await board_person_field_keys(bid)
-        if keys is not None:
-            qa_key_override = keys.get("qa") or ""
-    assign_fields = await build_assignment_field_map(full_name, plaky_field_qa_key=qa_key_override)
+
+    # Policy (employer review): NO QA at task creation — QA is picked and @mentioned when a
+    # PR opens. Priority is inferred from the issue itself; repo tag fields still apply.
+    labels = issue_label_names(payload.issue.labels)
+    priority = infer_priority_from_text(payload.issue.title, payload.issue.body, labels)
+    repo_fields = build_repo_field_map(repo_value=full_name)
     result = await plaky.create_task(
         title=title,
         description=description,
-        priority="medium",
+        priority=priority.lower(),
         board_id=bid,
         group_id=gid,
-        field_values=assign_fields if assign_fields else None,
+        field_values=repo_fields if repo_fields else None,
     )
 
     if not result.get("ok"):
@@ -72,6 +75,31 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
 
     task_id = result.get("task", {}).get("id") or result.get("task", {}).get("taskId")
     task_url = result.get("task_url")
+
+    # Explicit defaults on the fresh task: status = NEEDS ASSIGNED (board-resolved) and
+    # Type from issue labels (default Feature — the team retired the 'Task' label).
+    task_type = infer_task_type_from_pr(None, labels) or "Feature"
+    status_key: str | None = None
+    status_val = ""
+    if bid and task_id:
+        from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+        rp = await resolve_plaky_status_patch(bid, intent="workflow_needs_assigned")
+        if rp:
+            status_key, status_val = rp[0], rp[1]
+    if task_id:
+        from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
+
+        await update_task_internal(
+            str(task_id),
+            UpdateTaskInput(
+                status=status_val or None,
+                status_plaky_field_key=status_key,
+                task_type=task_type,
+                priority=priority,
+                plaky_board_id=bid or None,
+            ),
+        )
 
     mapping = IssueTaskMap(
         github_repo=repo_name,

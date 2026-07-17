@@ -311,6 +311,20 @@ async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
             "or add qa under member_overrides for each GitHub login; Plaky id required per roster member)",
         )
 
+    # Leads/managers on the exclusion list are never auto-assigned to review PRs
+    # (qa_excluded in team_assignments.yml; defaults in assignment/config.py).
+    excluded_norm = {" ".join(e.split()).casefold() for e in (cfg.qa_excluded or [])}
+    if excluded_norm:
+
+        def _is_excluded(m: TeamMember) -> bool:
+            display = " ".join((m.display or "").split()).casefold()
+            login = (m.github_login or "").strip().casefold()
+            return display in excluded_norm or (bool(login) and login in excluded_norm)
+
+        with_qa_role = [m for m in with_qa_role if not _is_excluded(m)]
+        if not with_qa_role:
+            return (None, "all QA-role members are on the qa_excluded list")
+
     qas = [m for m in with_qa_role if repo_matches_member(fn, m)]
     if not qas:
         return (
