@@ -6,6 +6,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 from boardman.plaky.client import PlakyClient
+from boardman.planning.datetime_utils import parse_iso_datetime
 from boardman.planning.huddle.async_bridge import run_sync
 from boardman.planning.huddle.team_plaky_boards import (
     PlakyBoardRef,
@@ -250,23 +251,10 @@ def _field_value_label(value: object) -> str:
 
 def _item_updated_at(item: dict[str, Any]) -> datetime | None:
     for key in ("updatedAt", "updated_at", "modifiedAt", "lastModified", "createdAt"):
-        parsed = _parse_datetime(item.get(key))
+        parsed = parse_iso_datetime(item.get(key))
         if parsed is not None:
             return parsed
     return None
-
-
-def _parse_datetime(value: object) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    normalized = value.replace("Z", "+00:00")
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _unique_preserve(values: list[str]) -> list[str]:

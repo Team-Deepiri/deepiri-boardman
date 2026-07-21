@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
@@ -8,7 +7,12 @@ from pydantic import BaseModel, Field
 
 from boardman.planning.huddle.models import MeetingRequest
 from boardman.planning.huddle.team_repos import TEAM_CHOICES
-from boardman.planning.service import default_plan_output_path, generate_plan, week_anchor
+from boardman.planning.service import (
+    confine_to_output_dir,
+    default_plan_output_path,
+    generate_plan,
+    week_anchor,
+)
 from boardman.settings import settings
 
 router = APIRouter(prefix="/plans", tags=["plans"])
@@ -49,22 +53,20 @@ def _confine_to_output_dir(raw: str) -> Path:
     """Confine a client-supplied output path to the planning output directory.
 
     Prevents path traversal: the request could otherwise write markdown to an
-    arbitrary location. The normalized target must stay within
-    ``settings.planning_output_dir``.
-
-    Normalization uses pure string operations (``abspath``/``normpath``) instead
-    of ``Path.resolve``/``os.path.realpath`` so the untrusted value never reaches
-    a filesystem-touching call, and confinement is enforced with a ``startswith``
-    prefix check.
+    arbitrary location. Delegates the actual traversal check to
+    :func:`boardman.planning.service.confine_to_output_dir` (the single source
+    of truth) and translates its ``ValueError`` into an HTTP 422 at the route
+    boundary. The raw value is joined onto the output dir first so a relative
+    request path resolves within it.
     """
-    base = os.path.normpath(os.path.abspath(settings.planning_output_dir))
-    candidate = os.path.normpath(os.path.join(base, raw))
-    if not candidate.startswith(base + os.sep):
+    candidate = Path(settings.planning_output_dir) / raw
+    try:
+        return confine_to_output_dir(candidate)
+    except ValueError as exc:
         raise HTTPException(
             status_code=422,
             detail="output_path must stay within the planning output directory",
-        )
-    return Path(candidate)
+        ) from exc
 
 
 def _resolve_output_path(body: GeneratePlanRequest) -> Path | None:

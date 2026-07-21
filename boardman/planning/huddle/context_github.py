@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
+from boardman.planning.datetime_utils import parse_iso_datetime
 from boardman.planning.huddle.team_repos import load_team_repos, repos_for_team
 from boardman.settings import settings
 
@@ -132,7 +133,7 @@ class GitHubPlanningContext:
                 break
             stop = False
             for item in batch:
-                updated = _parse_github_datetime(item.get("updated_at"))
+                updated = parse_iso_datetime(item.get("updated_at"))
                 if updated is None or updated < cutoff:
                     stop = True
                     continue
@@ -206,19 +207,6 @@ def _to_summary(repo: str, item: dict) -> PullRequestSummary:
         created_at=str(item.get("created_at") or ""),
         labels=labels,
     )
-
-
-def _parse_github_datetime(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    normalized = value.replace("Z", "+00:00")
-    try:
-        parsed = datetime.fromisoformat(normalized)
-    except ValueError:
-        return None
-    if parsed.tzinfo is None:
-        return parsed.replace(tzinfo=UTC)
-    return parsed.astimezone(UTC)
 
 
 def _is_bot_author(item: dict) -> bool:

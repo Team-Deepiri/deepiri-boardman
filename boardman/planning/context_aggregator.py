@@ -50,7 +50,9 @@ class ContextAggregator:
     ) -> str:
         try:
             return provider.context_markdown(team_focus).strip()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - intentional: one flaky context
+            # source (network/parse error in any provider) must not abort the
+            # whole plan; degrade to an "unavailable" block and keep aggregating.
             log.warning(
                 "planning_context_failed label=%r team_focus=%r error_type=%s error=%s",
                 label,
