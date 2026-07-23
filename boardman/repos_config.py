@@ -190,7 +190,7 @@ async def get_routing_async(
 
     When ``plaky_placement_auto_discover`` is enabled (default):
       - Loads cached Plaky catalog (boards + groups).
-      - Fuzzy-matches repo slug → group, or falls back to category → board.
+      - Fuzzy-matches repo slug → Plaky group on repo-catalog boards (no repos.yml IDs).
       - Does not read ``repos.yml`` for board_id / group_id.
 
     Set ``PLAKY_PLACEMENT_AUTO_DISCOVER=false`` to use legacy ``repos.yml`` routing only.
