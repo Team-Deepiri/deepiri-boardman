@@ -40,6 +40,7 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     if routing:
         routing_footer = (
             f"\n\n---\n**Plaky group (label):** `{routing.plaky_table}`\n"
+            # category = Plaky board display name from catalog (not axiom slug).
             f"**Category:** {routing.category}\n**GitHub:** {full_name}\n"
         )
         if routing.plaky_board_id or routing.plaky_group_id:

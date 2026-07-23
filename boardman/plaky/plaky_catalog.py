@@ -3,9 +3,21 @@
 Pattern mirrors deepiri-axiom org-catalog cache: list all boards, fetch groups per board,
 persist to ``.boardman/plaky-catalog.json`` with a 24h TTL (``PLAKY_CATALOG_TTL_SECONDS``).
 
-When ``PLAKY_CATALOG_CATEGORICAL_ONLY`` is true (default), legacy sprint/task boards are
-dropped heuristically (Backlog / Open PRs buckets, single-group test boards). Repo-catalog
-boards are kept — typically Devin's five categorical boards — without hardcoding their titles.
+Board filtering (``PLAKY_CATALOG_CATEGORICAL_ONLY``, default true)
+-----------------------------------------------------------------
+Repo placement assumes Devin's layout: **one Plaky group per GitHub repo**, named like the
+repo slug (``deepiri-*`` / ``diri-*``). Board *titles* are not hardcoded — new boards
+(e.g. AI / ML Libraries) are picked up automatically when their groups look like repos.
+
+When categorical-only is on, ``filter_categorical_boards`` keeps boards that pass
+``is_categorical_board`` and drops:
+
+- Legacy sprint/kanban boards whose groups are buckets (Backlog, Open PRs, …) — see
+  ``_SPRINT_GROUP_NAMES``.
+- Single-group test boards (e.g. group ``Boardman`` on ``Boardman Test Board``).
+
+Empty boards and boards with no repo-like groups are also excluded. Heuristic assumptions
+and edge cases are documented on ``is_categorical_board``.
 
 Consumers: ``placement_discovery.resolve_placement_for_repo`` (webhooks via ``get_routing_async``).
 """
@@ -28,7 +40,10 @@ _log = logging.getLogger(__name__)
 CACHE_VERSION = 1
 DEFAULT_TTL_SECONDS = 86_400  # 24h
 
-# Kanban bucket labels on legacy sprint boards — not repo-slug groups.
+# Observed Plaky / kanban bucket labels on legacy sprint boards (not repo-slug groups).
+# Sourced from Deepiri's old sprint/task boards (AI Task Board, etc.) and common Plaky
+# defaults. Extend this set if Plaky or the team adds new sprint-style group names —
+# otherwise those boards may be misclassified as repo-catalog boards.
 _SPRINT_GROUP_NAMES: frozenset[str] = frozenset(
     {
         "backlog",
@@ -74,14 +89,8 @@ def looks_like_repo_group(name: str) -> bool:
     return len(n) >= 2 and n.replace("-", "").replace("_", "").isalnum()
 
 
-def is_categorical_board(board: PlakyBoardEntry) -> bool:
-    """Detect repo-catalog boards from group structure (no hardcoded board titles).
-
-    Categorical boards (Devin's five) have groups named after repos. Legacy sprint boards
-    use kanban buckets (Backlog, Open PRs, …) or a single ad-hoc test group.
-    """
-    if not board.groups:
-        return False
+def _group_structure_counts(board: PlakyBoardEntry) -> tuple[int, int, int]:
+    """Return (repo_like, sprint_like, prefixed_repo) counts for heuristic logging."""
     repo_like = 0
     sprint_like = 0
     prefixed_repo = 0
@@ -93,6 +102,42 @@ def is_categorical_board(board: PlakyBoardEntry) -> bool:
             repo_like += 1
             if norm.startswith("deepiri-") or norm.startswith("diri-"):
                 prefixed_repo += 1
+    return repo_like, sprint_like, prefixed_repo
+
+
+def is_categorical_board(board: PlakyBoardEntry) -> bool:
+    """Detect repo-catalog boards from group structure (no hardcoded board titles).
+
+    Assumptions (Devin / Deepiri Plaky layout):
+      - Repo-catalog boards use one group per repo, named like the GitHub slug
+        (``deepiri-*``, ``diri-*``, or a short alphanumeric slug such as ``diva``).
+      - Legacy sprint boards use kanban buckets listed in ``_SPRINT_GROUP_NAMES``.
+      - Boards are not mixed: a catalog board should not also carry Backlog/Open PRs
+        groups. If that ever appears, treat it as a Plaky layout mistake to fix, not
+        something Boardman invents a special case for.
+
+    Decision:
+      - Reject empty boards and boards with only sprint buckets (no repo-like groups).
+      - Reject single-group boards unless that group is a ``deepiri-`` / ``diri-`` slug
+        (filters ad-hoc test boards like ``Boardman`` on ``Boardman Test Board``).
+      - Accept if there is at least one prefixed repo group, or two+ repo-like groups.
+
+    Limitations: naming conventions can change; if Plaky introduces new sprint bucket
+    labels, update ``_SPRINT_GROUP_NAMES``. ``filter_categorical_boards`` logs kept/dropped
+    board names; mixed sprint+repo boards log a warning (layout smell).
+    """
+    if not board.groups:
+        return False
+    repo_like, sprint_like, prefixed_repo = _group_structure_counts(board)
+    # Unexpected in Devin's layout — flag for operators; still classify by repo groups.
+    if sprint_like > 0 and repo_like > 0:
+        _log.warning(
+            "plaky catalog: board %r has mixed sprint buckets (%s) and repo-like groups (%s); "
+            "expected one group per repo only — fix in Plaky if this is unintentional",
+            board.name,
+            sprint_like,
+            repo_like,
+        )
     if sprint_like > 0 and repo_like == 0:
         return False
     if repo_like == 0:
@@ -107,13 +152,39 @@ def filter_categorical_boards(boards: List[PlakyBoardEntry]) -> List[PlakyBoardE
     """Keep repo-catalog boards; drop legacy sprint/test boards when categorical-only is on."""
     if not settings.plaky_catalog_categorical_only:
         return boards
-    kept = [b for b in boards if is_categorical_board(b)]
-    dropped = len(boards) - len(kept)
-    if dropped:
+    kept: List[PlakyBoardEntry] = []
+    dropped_names: List[str] = []
+    for board in boards:
+        if is_categorical_board(board):
+            kept.append(board)
+        else:
+            dropped_names.append(board.name or board.id)
+    if dropped_names:
         _log.info(
-            "plaky catalog: scoped to %s repo-catalog board(s) (%s legacy/test board(s) excluded)",
+            "plaky catalog: scoped to %s repo-catalog board(s) (%s legacy/test board(s) excluded): %s",
             len(kept),
-            dropped,
+            len(dropped_names),
+            ", ".join(dropped_names),
+        )
+    if kept:
+        _log.debug(
+            "plaky catalog: keeping repo-catalog board(s): %s",
+            ", ".join(b.name or b.id for b in kept),
+        )
+    # Heuristic sanity: dropping almost everything usually means Plaky layout changed.
+    if boards and len(kept) == 0:
+        _log.warning(
+            "plaky catalog: categorical filter kept 0 of %s board(s) — "
+            "check Plaky group naming or set PLAKY_CATALOG_CATEGORICAL_ONLY=false",
+            len(boards),
+        )
+    elif boards and len(dropped_names) >= max(3, len(boards) // 2):
+        _log.warning(
+            "plaky catalog: categorical filter dropped %s of %s board(s) (%s) — "
+            "verify heuristic still matches live Plaky layout",
+            len(dropped_names),
+            len(boards),
+            ", ".join(dropped_names),
         )
     return kept
 

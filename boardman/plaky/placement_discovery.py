@@ -1,9 +1,10 @@
 """Resolve GitHub repo → Plaky board_id + group_id (auto-discovery, no repos.yml).
 
 Algorithm (``discover_placement_from_catalog``):
-  Scan every group on Devin's five categorical boards; fuzzy-match the repo slug
-  to a group name (``rank_plaky_rows``, min score from ``PLAKY_PLACEMENT_MIN_SCORE``).
-  Highest score wins globally (e.g. ``deepiri-boardman`` → Bots / ``deepiri-boardman``).
+  Scan every group on repo-catalog boards (see ``plaky_catalog.filter_categorical_boards``);
+  fuzzy-match the repo slug to a group name (``rank_plaky_rows``, min score from
+  ``PLAKY_PLACEMENT_MIN_SCORE``). Highest score wins globally
+  (e.g. ``deepiri-boardman`` → Bots / ``deepiri-boardman``).
 
   Boards use one Plaky group per repo. If no group matches, return None — do not
   fall back to Backlog, Open PRs, or another repo's group.
@@ -32,13 +33,19 @@ _log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class PlacementResult:
-    """Resolved Plaky placement for one GitHub repo slug."""
+    """Resolved Plaky placement for one GitHub repo slug.
+
+    ``category`` is the Plaky **board display name** from the live catalog (same as
+    ``board_name``), e.g. ``\"Bots\"`` or ``\"AI / ML Libraries\"``. It is *not* the
+    former axiom-style slug (``platform`` / ``ai-runtime`` / ``dx`` / …); those hints
+    were removed so placement follows Plaky layout only.
+    """
 
     board_id: str
     group_id: str
     board_name: str
     group_name: str
-    category: str  # Plaky board display name (from catalog; same as board_name)
+    category: str  # Plaky board display name (same as board_name; not an axiom slug)
     source: str  # group_slug_match
     score: int  # fuzzy match score from rank_plaky_rows
 
