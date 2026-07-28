@@ -1,0 +1,10 @@
+{
+  "ai-ml": ["deepiri-modelkit", "diri-cyrex"],
+  "qa": ["deepiri-platform"],
+  "frontend-backend-infra": [
+    "deepiri-platform",
+    "deepiri-core-api",
+    "deepiri-api-gateway"
+  ],
+  "it": []
+}

@@ -19,6 +19,7 @@ Automatically syncs GitHub issues and pull requests to Plaky tasks:
 - **`repos.yml`** routing → Plaky table hints on new tasks (webhook + scan)
 - **AI scan** (`boardman scan`, `POST /api/v1/agent/scan`) — `DIRECTION.md` + GitHub + LLM → Plaky tasks
 - **Agent chat** — LangChain tool-calling agent (Plaky + GitHub + local repo tools) with **`allow_writes`** guardrail; falls back to plain chat if tools fail
+- **Meeting plans** (`boardman plan`) — weekly/custom facilitator markdown from GitHub + Plaky context (ported from deepiri-huddle)
 - **`boardman-ui`** — Vite/React chat + floating messages panel (Cyrex-style); dev proxy or nginx in Docker
 - **Docker Compose** — production cloud stack without Ollama; local/dev stack can include an Ollama sidecar
 - Docker deployment ready
@@ -65,6 +66,8 @@ poetry run boardman readiness
 poetry run boardman plaky-inventory --board-id BOARD_ID
 poetry run boardman agent chat -m "What should we prioritize?"
 poetry run boardman agent ask -m "List open Plaky tasks"
+poetry run boardman plan weekly --team ai-ml --week next
+poetry run boardman plan custom --meeting-title "Risk review" --meeting-type risk-review --team qa
 poetry run boardman init REPO
 poetry run boardman status --repo REPO
 poetry run boardman scan-all --dry-run

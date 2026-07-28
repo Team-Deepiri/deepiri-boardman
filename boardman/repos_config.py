@@ -5,12 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import yaml
 
 from boardman.settings import settings
+
+if TYPE_CHECKING:
+    from boardman.planning.team_models import PlakyBoardRef
 
 
 @dataclass(frozen=True)
@@ -32,7 +35,7 @@ def _resolve_path() -> Path:
 
 
 @lru_cache
-def _load_raw() -> Dict[str, Any]:
+def _load_raw() -> dict[str, Any]:
     path = _resolve_path()
     if not path.is_file():
         return {"repos": {}}
@@ -55,18 +58,20 @@ def repos_yaml_canonical_repo_key(identifier: str) -> str:
     return s
 
 
-def routing_yaml_candidate_map_keys(full_name: str, short_repo_name: str = "", github_org: str = "") -> list[str]:
+def routing_yaml_candidate_map_keys(
+    full_name: str, short_repo_name: str = "", github_org: str = ""
+) -> list[str]:
     """
     Lookup order for repos.yml entries. Supports canonical short keys plus legacy ``owner/repo`` keys.
     """
     fn = (full_name or "").strip()
-    o = ((github_org or "").strip() or (settings.github_org or "").strip())
+    o = (github_org or "").strip() or (settings.github_org or "").strip()
     bare = str(settings.github_bare_repo_owner or "").strip()
 
     inferred_short = ""
     if fn and "/" in fn:
         inferred_short = fn.split("/", 1)[1].strip()
-    sn = ((short_repo_name or "").strip() or inferred_short or (fn if fn and "/" not in fn else ""))
+    sn = (short_repo_name or "").strip() or inferred_short or (fn if fn and "/" not in fn else "")
 
     ordered: list[str] = []
     seen: set[str] = set()
@@ -87,7 +92,7 @@ def routing_yaml_candidate_map_keys(full_name: str, short_repo_name: str = "", g
     return ordered
 
 
-def _parse_entry(entry: Any) -> Optional[RepoRouting]:
+def _parse_entry(entry: Any) -> RepoRouting | None:
     if not isinstance(entry, dict):
         return None
     tier_val = entry.get("tier")
@@ -109,7 +114,12 @@ def _parse_entry(entry: Any) -> Optional[RepoRouting]:
 
 def _is_meaningful(r: RepoRouting) -> bool:
     return bool(
-        r.plaky_table or r.category or r.description or r.plaky_board_id or r.plaky_group_id or r.tier > 0
+        r.plaky_table
+        or r.category
+        or r.description
+        or r.plaky_board_id
+        or r.plaky_group_id
+        or r.tier > 0
     )
 
 
@@ -121,7 +131,7 @@ def team_assignment_field_sync_board_id() -> str:
     return ""
 
 
-def _defaults_routing() -> Optional[RepoRouting]:
+def _defaults_routing() -> RepoRouting | None:
     raw = _load_raw()
     d = raw.get("defaults")
     if isinstance(d, dict):
@@ -143,7 +153,7 @@ def _defaults_routing() -> Optional[RepoRouting]:
     )
 
 
-def _routing_for_full_name(full_name: str, yaml_map: Dict[str, Any], org: str) -> RepoRouting:
+def _routing_for_full_name(full_name: str, yaml_map: dict[str, Any], org: str) -> RepoRouting:
     short_repo = full_name.split("/", 1)[1] if "/" in full_name else full_name
     for key in routing_yaml_candidate_map_keys(full_name, short_repo, org):
         entry = yaml_map.get(key)
@@ -162,7 +172,7 @@ def _routing_for_full_name(full_name: str, yaml_map: Dict[str, Any], org: str) -
 def get_routing(full_name: str, short_name: str, org: str, with_source: bool = False) -> Any:
     """Look up routing by full_name, then org/short_name; optionally include the source."""
     raw = _load_raw()
-    repos: Dict[str, Any] = raw.get("repos") or {}
+    repos: dict[str, Any] = raw.get("repos") or {}
     for key in routing_yaml_candidate_map_keys(full_name, short_name, org):
         entry = repos.get(key)
         if entry and isinstance(entry, dict):
@@ -221,10 +231,10 @@ async def get_routing_async(
     return get_routing(full_name, short_name, org, with_source=with_source)
 
 
-def list_registered_repos() -> Dict[str, RepoRouting]:
+def list_registered_repos() -> dict[str, RepoRouting]:
     """Repos declared in repos.yml only (sync)."""
     raw = _load_raw()
-    out: Dict[str, RepoRouting] = {}
+    out: dict[str, RepoRouting] = {}
     for key, entry in (raw.get("repos") or {}).items():
         if isinstance(entry, dict):
             r = _parse_entry(entry)
@@ -233,9 +243,9 @@ def list_registered_repos() -> Dict[str, RepoRouting]:
     return out
 
 
-async def list_workspace_repos(client: Optional[httpx.AsyncClient] = None) -> Dict[str, RepoRouting]:
+async def list_workspace_repos(client: httpx.AsyncClient | None = None) -> dict[str, RepoRouting]:
     """Org repos from GitHub API merged with repos.yml; falls back to YAML-only without GITHUB_PAT."""
-    yaml_map: Dict[str, Any] = dict(_load_raw().get("repos") or {})
+    yaml_map: dict[str, Any] = dict(_load_raw().get("repos") or {})
     org = settings.github_org
 
     if not settings.github_pat:
@@ -253,7 +263,7 @@ async def list_workspace_repos(client: Optional[httpx.AsyncClient] = None) -> Di
             org,
             skip_archived=settings.github_skip_archived,
         )
-        out: Dict[str, RepoRouting] = {}
+        out: dict[str, RepoRouting] = {}
         for fn in org_names:
             out[fn] = _routing_for_full_name(fn, yaml_map, org)
         for key, entry in yaml_map.items():
@@ -270,7 +280,9 @@ async def list_workspace_repos(client: Optional[httpx.AsyncClient] = None) -> Di
             await client.aclose()
 
 
-def upsert_repo(key: str, category: str, plaky_table: str, description: str = "", tier: int = 0) -> None:
+def upsert_repo(
+    key: str, category: str, plaky_table: str, description: str = "", tier: int = 0
+) -> None:
     path = _resolve_path()
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) if path.is_file() else {"repos": {}}
     if "repos" not in raw:
@@ -307,3 +319,73 @@ def update_repo_tiers(tier_map: dict[str, int]) -> None:
     with path.open("w", encoding="utf-8") as f:
         yaml.dump(raw, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
     reload_repos_config()
+
+
+def _normalize_category(category: str) -> str:
+    return category.strip().lower().replace("_", "-")
+
+
+def category_to_team_focus(category: str) -> str | None:
+    """Map repos.yml category labels to planning team slugs."""
+    if not category or not category.strip():
+        return None
+    normalized = _normalize_category(category)
+    aliases: dict[str, str] = {
+        "ai-ml": "ai-ml",
+        "aiml": "ai-ml",
+        "ai": "ai-ml",
+        "ml": "ai-ml",
+        "qa": "qa",
+        "quality": "qa",
+        "testing": "qa",
+        "frontend-backend-infra": "frontend-backend-infra",
+        "frontend": "frontend-backend-infra",
+        "backend": "frontend-backend-infra",
+        "infra": "frontend-backend-infra",
+        "infrastructure": "frontend-backend-infra",
+        "platform": "frontend-backend-infra",
+        "it": "it",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    if normalized in {"ai-ml", "qa", "frontend-backend-infra", "it", "all-teams"}:
+        return normalized
+    return None
+
+
+def derive_team_repos_from_repos_yml() -> dict[str, list[str]]:
+    """Build team → repo slug mapping from repos.yml categories."""
+    from boardman.planning.team_models import with_derived_repo_teams
+
+    mapping: dict[str, list[str]] = {}
+    for repo_key, routing in list_registered_repos().items():
+        team = category_to_team_focus(routing.category)
+        if team is None:
+            continue
+        slug = repos_yaml_canonical_repo_key(repo_key)
+        if not slug:
+            continue
+        mapping.setdefault(team, [])
+        if slug not in mapping[team]:
+            mapping[team].append(slug)
+    if not mapping:
+        return {}
+    return with_derived_repo_teams(mapping)
+
+
+def derive_team_boards_from_repos_yml() -> dict[str, PlakyBoardRef]:
+    """Build team → Plaky board mapping from repos.yml placement fields."""
+    from boardman.planning.team_models import PlakyBoardRef, with_derived_board_teams
+
+    mapping: dict[str, PlakyBoardRef] = {}
+    for _repo_key, routing in list_registered_repos().items():
+        team = category_to_team_focus(routing.category)
+        board_id = (routing.plaky_board_id or "").strip()
+        if team is None or not board_id:
+            continue
+        if team in mapping:
+            continue
+        mapping[team] = PlakyBoardRef(board_id=board_id, space_id="")
+    if not mapping:
+        return {}
+    return with_derived_board_teams(mapping)

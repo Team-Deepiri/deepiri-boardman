@@ -12,7 +12,7 @@ from boardman.logging_config import setup_logging
 from boardman.llm.completion import aclose_ollama_http_client
 from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.ratelimit.leaky_bucket import get_agent_leaky_limiter
-from boardman.routes import agent, assignment, health, github_events, github_team, plaky, tasks, repos
+from boardman.routes import agent, assignment, health, github_events, github_team, plaky, plans, tasks, repos
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -110,6 +110,7 @@ def create_app() -> FastAPI:
         app.include_router(plaky.router, prefix="/api/v1")
         app.include_router(agent.router, prefix="/api/v1")
         app.include_router(repos.router, prefix="/api/v1")
+        app.include_router(plans.router, prefix="/api/v1")
     else:
         _log.info("Agent/UI API routes disabled (BOARDMAN_ENABLE_AGENT_API=false): worker-only mode")
 

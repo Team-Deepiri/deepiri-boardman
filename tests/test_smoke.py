@@ -78,5 +78,5 @@ async def test_assignment_sync_field_keys_route(monkeypatch):
 def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
-    assert len(build_all_tools(allow_writes=False)) == 19
-    assert len(build_all_tools(allow_writes=True)) == 25
+    assert len(build_all_tools(allow_writes=False)) == 20
+    assert len(build_all_tools(allow_writes=True)) == 26
