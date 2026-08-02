@@ -245,6 +245,30 @@ async def test_issue_create_type_defaults_to_feature(db_session, monkeypatch) ->
     assert created.get("priority") == "medium"
 
 
+# --- roster override wins in GitHub->Plaky identity resolution --------------------
+
+
+@pytest.mark.asyncio
+async def test_member_override_beats_fuzzy_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    from boardman.plaky import dynamic_qa_status as dqs
+
+    bridged = _member("481106", display="Ali Ferris", login="Blasted-ctrl")
+    monkeypatch.setattr(
+        "boardman.assignment.config.load_team_assignments", lambda: _cfg([bridged])
+    )
+
+    class NoNetworkPlaky:
+        def __init__(self) -> None:
+            pass
+
+        async def list_workspace_users(self) -> dict:
+            raise AssertionError("must not hit Plaky when the roster override matches")
+
+    monkeypatch.setattr(dqs, "PlakyClient", NoNetworkPlaky)
+    got = await dqs.resolve_github_user_to_plaky_user_id({"login": "blasted-CTRL"})
+    assert got == "481106"
+
+
 # --- PR-time QA assignment --------------------------------------------------------
 
 

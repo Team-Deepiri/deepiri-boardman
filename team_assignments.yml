@@ -20,8 +20,10 @@ member_defaults:
   - deepiri-org/*
   weight: 1.0
 member_overrides:
-  your-github-login:
-    id: ''
+  # GitHub login -> explicit Plaky user id (used when the identity matcher can't
+  # bridge the accounts, e.g. login and Plaky email share nothing).
+  Blasted-ctrl:
+    id: '481106'   # Ali Ferris (aliferris2006@gmail.com)
     roles:
     - engineer
     - qa
