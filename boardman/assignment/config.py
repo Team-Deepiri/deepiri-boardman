@@ -446,42 +446,70 @@ def load_team_assignments() -> TeamAssignmentsConfig:
         isinstance(x, dict) for x in raw_members
     )
 
-    members: List[TeamMember] = []
-    if has_explicit_members:
+    def _members_from_yaml() -> List[TeamMember]:
+        # Entries inherit member_defaults for anything they omit, same as roster members —
+        # otherwise a terse fallback list ends up with no roles and picks nobody.
+        defaults = data.get("member_defaults") or {}
+        if not isinstance(defaults, dict):
+            defaults = {}
+        parsed: List[TeamMember] = []
         for m in raw_members or []:
             if not isinstance(m, dict):
                 continue
             mid = str(m.get("id") or m.get("plaky_id") or "").strip()
             if not mid:
                 continue
-            roles = m.get("roles") or []
+            roles = m.get("roles") or defaults.get("roles") or []
             if isinstance(roles, str):
                 roles = [roles]
-            globs = m.get("repo_globs") or m.get("repos_globs") or []
+            globs = m.get("repo_globs") or m.get("repos_globs") or defaults.get("repo_globs") or []
             if isinstance(globs, str):
                 globs = [globs]
             explicit = m.get("repos") or m.get("explicit_repos") or []
             if isinstance(explicit, str):
                 explicit = [explicit]
-            qa_tier = _parse_qa_tier(m.get("qa_tier"))
+            qa_tier = _parse_qa_tier(
+                m.get("qa_tier") if m.get("qa_tier") is not None else defaults.get("qa_tier")
+            )
 
             gh_login = str(m.get("github_login") or m.get("github") or "").strip()
 
-            members.append(
+            parsed.append(
                 TeamMember(
                     id=mid,
                     display=str(m.get("display") or m.get("name") or mid),
                     github_login=gh_login,
                     roles=[str(r).lower() for r in roles if r],
-                    tier=str(m.get("tier") or "standard").lower(),
+                    tier=str(m.get("tier") or defaults.get("tier") or "standard").lower(),
                     qa_tier=qa_tier,
                     repo_globs=[str(g).strip() for g in globs if str(g).strip()],
                     explicit_repos=[str(r).strip().lower() for r in explicit if str(r).strip()],
-                    weight=float(m.get("weight", 1.0)),
+                    weight=float(m.get("weight", defaults.get("weight", 1.0))),
                 )
             )
-    elif data.get("use_github_support_team_roster", True) is not False:
+        return parsed
+
+    # Roster precedence:
+    #   default            -> an explicit `members:` list is authoritative (GitHub not called);
+    #   members_fallback_only: true -> the live GitHub support team is the source of truth and
+    #   `members:` is used ONLY when that call fails (PAT missing org read, token pending org
+    #   approval, GitHub down) so QA assignment never goes dark.
+    members: List[TeamMember] = []
+    use_roster = data.get("use_github_support_team_roster", True) is not False
+    fallback_only = bool(data.get("members_fallback_only", False))
+
+    if has_explicit_members and not (fallback_only and use_roster):
+        members = _members_from_yaml()
+    elif use_roster:
         members = _members_from_github_roster(data)
+        if not members and has_explicit_members:
+            members = _members_from_yaml()
+            _log.warning(
+                "team_assignments: GitHub roster unavailable - falling back to the static "
+                "members: list in team_assignments.yml (%d member(s)). Restore the PAT's org "
+                "read access to return to the live roster.",
+                len(members),
+            )
 
     req = data.get("repo_requirements") or {}
     heavy: List[str] = []
