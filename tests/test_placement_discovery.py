@@ -4,22 +4,22 @@ from __future__ import annotations
 
 import pytest
 
-from boardman.plaky.plaky_catalog import PlakyBoardEntry, PlakyCatalogCache, PlakyGroupEntry
-from boardman.plaky.placement_discovery import discover_placement_from_catalog
-from boardman.plaky.repo_category import (
-    PLAKY_BOARD_BOTS,
-    PLAKY_BOARD_DEV_TOOLS,
-    PLAKY_BOARD_PLATFORM,
-    infer_repo_category,
-    plaky_board_query_for_category,
+from boardman.plaky.plaky_catalog import (
+    PlakyBoardEntry,
+    PlakyCatalogCache,
+    PlakyGroupEntry,
+    filter_categorical_boards,
+    is_categorical_board,
+    looks_like_repo_group,
 )
+from boardman.plaky.placement_discovery import discover_placement_from_catalog
 
 
 def _catalog() -> PlakyCatalogCache:
     boards = [
         PlakyBoardEntry(
             id="b-platform",
-            name=PLAKY_BOARD_PLATFORM,
+            name="Deepiri Platform + Services",
             groups=[
                 PlakyGroupEntry(id="g-synapse", name="deepiri-synapse"),
                 PlakyGroupEntry(id="g-api", name="deepiri-api-gateway"),
@@ -27,7 +27,7 @@ def _catalog() -> PlakyCatalogCache:
         ),
         PlakyBoardEntry(
             id="b-bots",
-            name=PLAKY_BOARD_BOTS,
+            name="Bots",
             groups=[
                 PlakyGroupEntry(id="g-boardman", name="deepiri-boardman"),
                 PlakyGroupEntry(id="g-cyrex", name="diri-cyrex"),
@@ -35,23 +35,58 @@ def _catalog() -> PlakyCatalogCache:
         ),
         PlakyBoardEntry(
             id="b-dx",
-            name=PLAKY_BOARD_DEV_TOOLS,
+            name="Developer Tool Repos",
             groups=[
                 PlakyGroupEntry(id="g-sorge", name="deepiri-sorge"),
+                PlakyGroupEntry(id="g-shared", name="deepiri-shared-utils"),
             ],
         ),
     ]
     return PlakyCatalogCache(fetched_at=1.0, source="test", boards=boards)
 
 
-def test_infer_repo_category_boardman_is_dx():
-    assert infer_repo_category("boardman") == "dx"
-    assert plaky_board_query_for_category("dx") == PLAKY_BOARD_DEV_TOOLS
+def test_looks_like_repo_group():
+    assert looks_like_repo_group("deepiri-boardman")
+    assert looks_like_repo_group("diri-cyrex")
+    assert looks_like_repo_group("‼️deepiri-platform")
+    assert looks_like_repo_group("diva")
+    assert not looks_like_repo_group("Backlog")
+    assert not looks_like_repo_group("Open PRs")
+    assert not looks_like_repo_group("")
 
 
-def test_infer_repo_category_cyrex_is_ai_runtime():
-    assert infer_repo_category("cyrex") == "ai-runtime"
-    assert plaky_board_query_for_category("ai-runtime") == PLAKY_BOARD_BOTS
+def test_is_categorical_board_detects_repo_catalog_boards():
+    board = PlakyBoardEntry(
+        id="b1",
+        name="Any Board Title",
+        groups=[
+            PlakyGroupEntry(id="g1", name="deepiri-foo"),
+            PlakyGroupEntry(id="g2", name="deepiri-bar"),
+        ],
+    )
+    assert is_categorical_board(board)
+
+
+def test_is_categorical_board_rejects_sprint_board():
+    board = PlakyBoardEntry(
+        id="b-legacy",
+        name="AI Task Board",
+        groups=[
+            PlakyGroupEntry(id="g1", name="Backlog"),
+            PlakyGroupEntry(id="g2", name="Open PRs"),
+            PlakyGroupEntry(id="g3", name="In Progress"),
+        ],
+    )
+    assert not is_categorical_board(board)
+
+
+def test_is_categorical_board_rejects_single_group_test_board():
+    board = PlakyBoardEntry(
+        id="b-test",
+        name="Boardman Test Board",
+        groups=[PlakyGroupEntry(id="g-test", name="Boardman")],
+    )
+    assert not is_categorical_board(board)
 
 
 def test_discover_placement_group_slug_match():
@@ -62,6 +97,7 @@ def test_discover_placement_group_slug_match():
     assert result.board_id == "b-bots"
     assert result.group_id == "g-boardman"
     assert result.group_name == "deepiri-boardman"
+    assert result.category == "Bots"
 
 
 def test_discover_placement_group_slug_match_on_dx_board():
@@ -71,6 +107,7 @@ def test_discover_placement_group_slug_match_on_dx_board():
     assert result.board_id == "b-dx"
     assert result.group_id == "g-sorge"
     assert result.source == "group_slug_match"
+    assert result.category == "Developer Tool Repos"
 
 
 def test_discover_placement_matches_prefixed_group_name():
@@ -78,7 +115,7 @@ def test_discover_placement_matches_prefixed_group_name():
     result = discover_placement_from_catalog(cat, "Team-Deepiri/synapse", "deepiri-synapse")
     assert result is not None
     assert result.source == "group_slug_match"
-    assert result.category == "platform"
+    assert result.category == "Deepiri Platform + Services"
     assert result.board_id == "b-platform"
     assert result.group_id == "g-synapse"
 
@@ -97,7 +134,7 @@ def test_discover_placement_ignores_legacy_boards():
     )
     bots = PlakyBoardEntry(
         id="b-bots",
-        name=PLAKY_BOARD_BOTS,
+        name="Bots",
         groups=[PlakyGroupEntry(id="g-boardman", name="deepiri-boardman")],
     )
     cat = PlakyCatalogCache(fetched_at=1.0, source="test", boards=[legacy, bots])
@@ -108,15 +145,27 @@ def test_discover_placement_ignores_legacy_boards():
 
 
 def test_filter_categorical_boards():
-    from boardman.plaky.plaky_catalog import filter_categorical_boards
-
     boards = [
-        PlakyBoardEntry(id="1", name="AI Task Board", groups=[]),
-        PlakyBoardEntry(id="2", name=PLAKY_BOARD_BOTS, groups=[]),
+        PlakyBoardEntry(
+            id="1",
+            name="AI Task Board",
+            groups=[
+                PlakyGroupEntry(id="g1", name="Backlog"),
+                PlakyGroupEntry(id="g2", name="Open PRs"),
+            ],
+        ),
+        PlakyBoardEntry(
+            id="2",
+            name="Bots",
+            groups=[
+                PlakyGroupEntry(id="g1", name="deepiri-boardman"),
+                PlakyGroupEntry(id="g2", name="deepiri-sorge"),
+            ],
+        ),
     ]
     filtered = filter_categorical_boards(boards)
     assert len(filtered) == 1
-    assert filtered[0].name == PLAKY_BOARD_BOTS
+    assert filtered[0].name == "Bots"
 
 
 @pytest.mark.asyncio
@@ -128,9 +177,9 @@ async def test_get_routing_async_uses_discovery(monkeypatch):
         return PlacementResult(
             board_id="b1",
             group_id="g1",
-            board_name=PLAKY_BOARD_BOTS,
-            group_name="boardman",
-            category="dx",
+            board_name="Bots",
+            group_name="deepiri-boardman",
+            category="Bots",
             source="group_slug_match",
             score=500,
         )
