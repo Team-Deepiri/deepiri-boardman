@@ -342,3 +342,28 @@ async def test_assign_qa_for_pr_skips_when_already_assigned(monkeypatch: pytest.
         object(), task_id="t-1", board_id="b1", repo_full="o/r", pr_number=9
     )
     assert out["skipped"] == "qa_already_assigned"
+
+
+# --- Type fallbacks so no board is left with Type unset ---------------------------
+
+
+def test_type_candidates_resolve_on_a_board_without_feature() -> None:
+    """Board options today are Story/Task/Bug/Research (no Feature, no Refactor).
+
+    Every canonical Type must still land on something rather than silently no-op.
+    """
+    from boardman.plaky.task_tag_vocab import type_field_patch_candidates
+
+    board = {"story", "task", "bug", "research"}
+    for canonical in ("Feature", "Bug", "Research", "Refactoring", "Documentation", "Chore", "Tests"):
+        cands = type_field_patch_candidates(canonical)
+        assert any(c.casefold() in board for c in cands), f"{canonical} resolves to nothing"
+
+
+def test_type_candidates_prefer_exact_match_first() -> None:
+    """After the board renames Task -> Feature, Feature must win over the Story fallback."""
+    from boardman.plaky.task_tag_vocab import type_field_patch_candidates
+
+    cands = type_field_patch_candidates("Feature")
+    assert cands[0].casefold() == "feature"
+    assert "story" in [c.casefold() for c in cands]
