@@ -16,7 +16,7 @@ from sqlalchemy.orm import selectinload
 
 from boardman.agent.memory_store import db_messages_to_langchain
 from boardman.agent.plaky_prompt_extra import plaky_placement_markdown
-from boardman.agent.prompts import BOARD_MANAGER_SYSTEM, TASK_CREATION_WORKFLOW
+from boardman.agent.prompts import BOARD_MANAGER_SYSTEM, TASK_CREATION_WORKFLOW, TEAM_TASK_POLICY
 from boardman.agent.runner import iter_tool_agent, run_tool_agent
 from boardman.agent.guardrails import has_confirm_token, looks_like_board_organize_request
 from boardman.agent.task_draft import format_task_draft_for_prompt, load_task_draft
@@ -324,7 +324,9 @@ async def run_agent_chat(
     # agent turn would die with "database is locked" after the busy timeout.
     await session.commit()
 
-    intake_extra = TASK_CREATION_WORKFLOW
+    # The Plaky create/patch protocol is dead weight when writes are off — the agent cannot
+    # act on it. Team policy stays either way so it can still EXPLAIN the conventions.
+    intake_extra = TEAM_TASK_POLICY + (TASK_CREATION_WORKFLOW if allow_writes else "")
     draft_md, plaky_suffix = await asyncio.gather(
         _load_draft_markdown(session, ag.id),
         _plaky_system_suffix(plaky_board_id, plaky_group_id),
@@ -484,7 +486,9 @@ async def iter_agent_chat_sse(
     # agent turn would die with "database is locked" after the busy timeout.
     await session.commit()
 
-    intake_extra = TASK_CREATION_WORKFLOW
+    # The Plaky create/patch protocol is dead weight when writes are off — the agent cannot
+    # act on it. Team policy stays either way so it can still EXPLAIN the conventions.
+    intake_extra = TEAM_TASK_POLICY + (TASK_CREATION_WORKFLOW if allow_writes else "")
     draft_md, plaky_suffix = await asyncio.gather(
         _load_draft_markdown(session, ag.id),
         _plaky_system_suffix(plaky_board_id, plaky_group_id),

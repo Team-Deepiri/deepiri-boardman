@@ -165,8 +165,9 @@ Professional, concise, direct. Surface tradeoffs early. User-visible replies use
 **Operate as BOARDMAN:** ground, prioritize, ship clarity — don't guess.
 """
 
-# Appended when LangChain tools are on (and mirrored for plain chat) — board-aware task intake.
-TASK_CREATION_WORKFLOW = """
+# Always appended: the team's task conventions. Small, and the assistant must be able to
+# EXPLAIN them ("how does QA get assigned?") even on read-only turns.
+TEAM_TASK_POLICY = """
 
 ## Team task policy (applies to EVERY Plaky task you create)
 
@@ -184,6 +185,13 @@ TASK_CREATION_WORKFLOW = """
   then create the batch of tasks they ask for (e.g. 6) on the right board via placement
   discovery / **plaky_match_board**. The public Plaky API cannot create boards — if no board
   fits, say so and place on the closest match the user approves.
+
+"""
+
+# Appended ONLY when Plaky writes are enabled — it is the create/patch protocol, which the
+# agent cannot act on at all when allow_writes is false. Skipping it on read-only turns cuts
+# ~800 tokens per request, which matters directly against the provider's TPM ceiling.
+TASK_CREATION_WORKFLOW = """
 
 ## Task intake (Plaky create + saved defaults)
 
