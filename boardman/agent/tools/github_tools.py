@@ -16,6 +16,7 @@ from boardman.github.repo_fetch import (
     fetch_repo_file_text,
     parse_owner_repo,
 )
+from boardman.github.repo_hotspots import fetch_repo_hotspots
 from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.repos_config import list_workspace_repos
 from boardman.settings import settings
@@ -215,12 +216,13 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
         # hot path for "analyze this repo" questions, where serial fetches dominated latency.
         # README is fetched unconditionally (it is the fallback when DIRECTION.md is absent,
         # which is the common case) rather than costing an extra sequential hop.
-        meta, direction, commits, issues, readme_raw = await asyncio.gather(
+        meta, direction, commits, issues, readme_raw, hotspots = await asyncio.gather(
             fetch_repo_metadata(client, owner, repo),
             fetch_direction_md(client, owner, repo),
             fetch_recent_commits(client, owner, repo, limit=lim),
             fetch_open_issues(client, owner, repo),
             fetch_repo_file_text(client, owner, repo, "README.md"),
+            fetch_repo_hotspots(client, owner, repo),
             return_exceptions=True,
         )
 
@@ -240,6 +242,7 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
         readme: Optional[str] = (
             readme_text if readme_text and not readme_text.startswith("(file unavailable") else None
         )
+        code_signals = hotspots if isinstance(hotspots, dict) else None
 
     # Structural summary inline so the model does not need a second github_repo_structure
     # call just to know what the repo is made of.
@@ -261,6 +264,9 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
             "notable_files": notable,
             "max_depth": getattr(meta, "max_depth", 0),
         },
+        # Source-level evidence: largest files, test ratio, and committed-artifact smells.
+        # Doc-and-issue reading alone cannot answer "what's actually wrong with this repo".
+        "code_signals": code_signals,
         "DIRECTION_md": direction,
         "readme_md": readme,
         "recent_commits_markdown": commits,
