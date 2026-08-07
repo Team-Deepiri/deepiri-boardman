@@ -124,6 +124,10 @@ class Settings(BaseSettings):
     ollama_keep_alive: str = "30m"
     # Optional cap on generated tokens (Ollama options.num_predict). Unset = server default (often slow for long replies).
     ollama_num_predict: int | None = None
+    # Provider-side retries for transient failures (429 TPM blips, 5xx). Without this a
+    # momentary rate limit surfaces to the user as "I could not get a reply from the
+    # language model" — i.e. a full outage from a 3-second hiccup.
+    llm_max_retries: int = 4
     openai_api_key: str = ""
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"

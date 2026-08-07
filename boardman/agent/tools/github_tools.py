@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import httpx
 from langchain_core.tools import StructuredTool
@@ -208,24 +208,59 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
     lim = max(5, min(int(commits_limit) if commits_limit else 20, 50))
+    import asyncio
+
     async with httpx.AsyncClient(timeout=90.0) as client:
-        # Existence probe first — a wrong/misspelled repo must return did_you_mean
-        # suggestions, not "(No DIRECTION.md ...)" strings the model reads as a blank repo.
-        meta = await fetch_repo_metadata(client, owner, repo)
+        # Every signal in ONE round trip instead of five sequential ones — this tool is the
+        # hot path for "analyze this repo" questions, where serial fetches dominated latency.
+        # README is fetched unconditionally (it is the fallback when DIRECTION.md is absent,
+        # which is the common case) rather than costing an extra sequential hop.
+        meta, direction, commits, issues, readme_raw = await asyncio.gather(
+            fetch_repo_metadata(client, owner, repo),
+            fetch_direction_md(client, owner, repo),
+            fetch_recent_commits(client, owner, repo, limit=lim),
+            fetch_open_issues(client, owner, repo),
+            fetch_repo_file_text(client, owner, repo, "README.md"),
+            return_exceptions=True,
+        )
+
+        def _text(v: Any, missing: str) -> str:
+            return v if isinstance(v, str) else missing
+
+        meta = meta if not isinstance(meta, BaseException) else None
         if meta is None:
+            # Wrong/misspelled repo: return did_you_mean rather than "(No DIRECTION.md ...)"
+            # strings, which the model otherwise reads as "the repo is empty".
             suggestions = await _workspace_repo_suggestions(client, repo)
             return _repo_not_found_payload(owner, repo, suggestions)
-        direction = await fetch_direction_md(client, owner, repo)
-        commits = await fetch_recent_commits(client, owner, repo, limit=lim)
-        issues = await fetch_open_issues(client, owner, repo)
-        readme: Optional[str] = None
-        if direction.startswith("(No DIRECTION.md"):
-            raw = await fetch_repo_file_text(client, owner, repo, "README.md")
-            if not raw.startswith("(file unavailable"):
-                readme = raw
+        direction = _text(direction, "(DIRECTION.md unavailable)")
+        commits = _text(commits, "(commits unavailable)")
+        issues = _text(issues, "(issues unavailable)")
+        readme_text = _text(readme_raw, "")
+        readme: Optional[str] = (
+            readme_text if readme_text and not readme_text.startswith("(file unavailable") else None
+        )
+
+    # Structural summary inline so the model does not need a second github_repo_structure
+    # call just to know what the repo is made of.
+    notable = sorted(
+        {
+            sig[5:]
+            for sig in getattr(meta, "raw_signals", []) or []
+            if sig.startswith("file:") and sig[5:] in _NOTABLE_FILE_BASENAMES
+        }
+    )
     out = {
         "ok": True,
         "repo": f"{owner}/{repo}",
+        "structure": {
+            "language": getattr(meta, "language", ""),
+            "default_branch": getattr(meta, "default_branch", ""),
+            "size_kb": getattr(meta, "size_kb", 0),
+            "top_level_dirs": getattr(meta, "top_level_dirs", []),
+            "notable_files": notable,
+            "max_depth": getattr(meta, "max_depth", 0),
+        },
         "DIRECTION_md": direction,
         "readme_md": readme,
         "recent_commits_markdown": commits,
