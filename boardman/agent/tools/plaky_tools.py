@@ -28,6 +28,55 @@ from boardman.plaky.task_tag_vocab import canonical_task_priority, plaky_create_
 from boardman.plaky.name_match import rank_plaky_rows
 
 
+def _slim_task(t: dict) -> dict:
+    """Project a Plaky item down to what a PM actually needs, so a full board fits."""
+    if not isinstance(t, dict):
+        return {}
+    out = {
+        "id": t.get("id") or t.get("taskId"),
+        "title": t.get("title") or t.get("name"),
+        "status": t.get("status"),
+    }
+    people: list = []
+    for f in t.get("fields") or []:
+        if not isinstance(f, dict):
+            continue
+        if f.get("type") == "PERSON":
+            v = f.get("value") or {}
+            users = v.get("assignedUsers") if isinstance(v, dict) else None
+            if users:
+                people.append({"field": f.get("title") or f.get("key"), "users": users})
+        elif f.get("type") == "STATUS" and not out.get("status"):
+            out["status"] = f.get("value")
+    if people:
+        out["assignees"] = people
+    return {k: v for k, v in out.items() if v not in (None, "", [])}
+
+
+def _envelope(payload: dict, items: list, *, limit: int = 60) -> str:
+    """Serialize a list result with an explicit count envelope.
+
+    A raw ``json.dumps(...)[:12000]`` cut mid-object and handed the model invalid JSON with
+    no signal that anything was missing — that is how 13 of 37 board items got reported as
+    the whole board. Trim by ITEM COUNT and always state returned/total.
+    """
+    shown = [_slim_task(t) for t in items[:limit]]
+    body = {
+        "ok": payload.get("ok"),
+        "message": payload.get("message"),
+        "returned": len(shown),
+        "total": len(items),
+        "truncated": len(items) > len(shown),
+        "tasks": shown,
+    }
+    if body["truncated"]:
+        body["note"] = (
+            f"Showing {len(shown)} of {len(items)} items. Do NOT state that something is "
+            f"absent from the board based on this partial list."
+        )
+    return json.dumps(body, default=str)
+
+
 async def _plaky_list_boards() -> str:
     """Return all boards (id + name) from Plaky — use when placement is unset or user asks what exists."""
     c = PlakyClient()
@@ -35,12 +84,20 @@ async def _plaky_list_boards() -> str:
     return json.dumps(raw, default=str)[:12000]
 
 
-async def _plaky_list_tasks(status: str = "open", board_id: str = "") -> str:
+async def _plaky_list_tasks(status: str = "all", board_id: str = "") -> str:
+    """List board items. Defaults to ALL statuses: descriptive questions ("what is on this
+    board?") must see finished work too, and the old "open" default silently dropped
+    Completed items, which the model then reported as "nothing is Completed"."""
     from boardman.agent.tool_context import get_context_plaky_board_id
 
     c = PlakyClient()
     bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
     r = await c.get_tasks(status=status, board_id=bid)
+    tasks = r.get("tasks") if isinstance(r, dict) else None
+    if isinstance(tasks, list):
+        payload = dict(r)
+        payload["applied_status_filter"] = status
+        return _envelope(payload, tasks)
     return json.dumps(r, default=str)[:12000]
 
 

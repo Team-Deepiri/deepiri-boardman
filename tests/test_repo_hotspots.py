@@ -85,3 +85,43 @@ async def test_hotspots_returns_none_without_a_token(monkeypatch) -> None:
     monkeypatch.setattr(bs.settings, "github_pat", "")
     async with httpx.AsyncClient(transport=_transport([])) as c:
         assert await fetch_repo_hotspots(c, "o", "r") is None
+
+
+# --- Plaky list projection: a partial board must never look complete -----------------
+
+
+def test_task_envelope_reports_counts_and_never_silently_truncates() -> None:
+    from boardman.agent.tools.plaky_tools import _envelope
+
+    items = [{"id": i, "title": f"task {i}", "status": "NEEDS ASSIGNED"} for i in range(100)]
+    import json
+
+    out = json.loads(_envelope({"ok": True, "message": ""}, items, limit=60))
+    assert out["returned"] == 60 and out["total"] == 100 and out["truncated"] is True
+    assert "60 of 100" in out["note"]
+    # Must still be VALID json (the old char-slice cut mid-object).
+    assert len(out["tasks"]) == 60
+
+
+def test_task_projection_keeps_status_and_assignees_only() -> None:
+    from boardman.agent.tools.plaky_tools import _slim_task
+
+    slim = _slim_task(
+        {
+            "id": 7,
+            "title": "Fix retry crash",
+            "fields": [
+                {"key": "status-6", "type": "STATUS", "title": "Status", "value": "In QA"},
+                {
+                    "key": "person-4",
+                    "type": "PERSON",
+                    "title": "QA Engineer Assigned",
+                    "value": {"assignedUsers": [476634]},
+                },
+            ],
+        }
+    )
+    assert slim["id"] == 7 and slim["title"] == "Fix retry crash"
+    assert slim["status"] == "In QA"
+    assert slim["assignees"][0]["users"] == [476634]
+    assert "fields" not in slim  # the bulk that used to blow the size budget
