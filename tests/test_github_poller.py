@@ -386,3 +386,59 @@ async def test_push_event_comments_on_linked_task(monkeypatch: pytest.MonkeyPatc
     task_id, body = comments[0]
     assert task_id == "task-9"
     assert "Blasted-ctrl" in body and "abc1234" in body
+
+
+# --- real-time issue state transitions (close / reopen) ---------------------------
+
+
+@pytest.mark.asyncio
+async def test_direct_poll_detects_close_and_reopen(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The `since` list returns recently UPDATED issues, so a close shows up as an already
+    known issue whose state flipped. Before state tracking the poller only ever emitted
+    'opened' and tasks never reached Completed."""
+    from datetime import datetime, timedelta, timezone
+
+    poller = gp.GitHubEventPoller()
+    seen: list[str] = []
+
+    async def fake_run_handler(payload):
+        seen.append(payload.action)
+        return {"ok": True}
+
+    monkeypatch.setattr(poller, "_run_handler", fake_run_handler)
+
+    baseline = datetime.now(timezone.utc) - timedelta(minutes=5)
+    proc = {"issues_opened": set(), "issue_state": {}, "prs_opened": set(),
+            "prs_closed": set(), "commits": set()}
+    created = (baseline + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def issue(state: str) -> dict:
+        return {
+            "number": 501, "title": "T", "body": "", "html_url": "u",
+            "state": state, "user": {}, "created_at": created, "labels": [],
+        }
+
+    class Resp:
+        def __init__(self, payload): self._p = payload; self.status_code = 200
+        def json(self): return self._p
+
+    class Client:
+        queue: list = []
+        async def get(self, url, headers=None):
+            return Resp(Client.queue.pop(0))
+
+    c = Client()
+    # 1) first sight of a brand-new issue -> opened
+    Client.queue = [[issue("open")]]
+    await poller._poll_issues(c, "o/r", baseline, "since", proc)
+    # 2) same issue now closed -> closed
+    Client.queue = [[issue("closed")]]
+    await poller._poll_issues(c, "o/r", baseline, "since", proc)
+    # 3) reopened -> reopened
+    Client.queue = [[issue("open")]]
+    await poller._poll_issues(c, "o/r", baseline, "since", proc)
+    # 4) unchanged -> nothing new
+    Client.queue = [[issue("open")]]
+    await poller._poll_issues(c, "o/r", baseline, "since", proc)
+
+    assert seen == ["opened", "closed", "reopened"]

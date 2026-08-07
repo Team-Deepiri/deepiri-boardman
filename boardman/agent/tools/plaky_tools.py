@@ -387,6 +387,20 @@ async def _plaky_create_task(
         inf_tags = infer_plaky_field_keys_from_normalized(normalized) if normalized else {}
         repo_k = (cfg.plaky_field_repo or inf_tags.get("repo") or "").strip()
         gh_k = (cfg.plaky_field_github_repos or inf_tags.get("github_repos") or "").strip()
+        # Drop configured keys the board does not actually have. team_assignments.yml is
+        # global but field keys are per-board (e.g. repo tag-2 exists on some boards and not
+        # on 269031), and sending an unknown key makes Plaky reject the whole create with
+        # "Item field doesn't exist" — which surfaced to the user as a failed task creation.
+        if normalized:
+            board_keys = {
+                str(f.get("key") or "").strip()
+                for f in (normalized.get("fields") or [])
+                if isinstance(f, dict) and f.get("key")
+            }
+            if repo_k and repo_k not in board_keys:
+                repo_k = ""
+            if gh_k and gh_k not in board_keys:
+                gh_k = ""
         repo_fmt = plaky_repo_field_value_format(normalized, repo_k)
         gh_fmt = plaky_repo_field_value_format(normalized, gh_k)
         if repo_k == gh_k and repo_k and (repo_fmt == "short" or gh_fmt == "short"):

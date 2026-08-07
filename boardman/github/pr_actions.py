@@ -19,6 +19,16 @@ _SCOPE_HINT = (
     "GITHUB_PAT lacks write access (needs Issues: write + Pull requests: write on the repo/org) — "
     "QA was still assigned in Plaky, but the GitHub @mention/reviewer request was skipped."
 )
+_NOT_FOUND_HINT = (
+    "target not found on GitHub (the PR/issue number does not exist in this repo) — "
+    "QA was still assigned in Plaky."
+)
+
+
+def _failure_hint(status: int) -> str:
+    """404 is ambiguous: it means 'no such PR' OR 'token cannot see it'. Saying 'lacks write
+    access' for a nonexistent number sends people to re-issue a perfectly good token."""
+    return _NOT_FOUND_HINT if status == 404 else _SCOPE_HINT
 
 
 def _headers() -> dict[str, str]:
@@ -40,8 +50,9 @@ async def comment_on_pr(full_name: str, pr_number: int, body: str) -> dict[str, 
         _log.warning("pr comment on %s#%s failed: %s", full_name, pr_number, e)
         return {"ok": False, "message": str(e)}
     if r.status_code in (401, 403, 404):
-        _log.warning("pr comment on %s#%s -> HTTP %s. %s", full_name, pr_number, r.status_code, _SCOPE_HINT)
-        return {"ok": False, "status": r.status_code, "message": _SCOPE_HINT}
+        hint = _failure_hint(r.status_code)
+        _log.warning("pr comment on %s#%s -> HTTP %s. %s", full_name, pr_number, r.status_code, hint)
+        return {"ok": False, "status": r.status_code, "message": hint}
     return {"ok": 200 <= r.status_code < 300, "status": r.status_code}
 
 
@@ -60,10 +71,11 @@ async def request_reviewers(full_name: str, pr_number: int, logins: list[str]) -
         _log.warning("reviewer request on %s#%s failed: %s", full_name, pr_number, e)
         return {"ok": False, "message": str(e)}
     if r.status_code in (401, 403, 404):
+        hint = _failure_hint(r.status_code)
         _log.warning(
-            "reviewer request on %s#%s -> HTTP %s. %s", full_name, pr_number, r.status_code, _SCOPE_HINT
+            "reviewer request on %s#%s -> HTTP %s. %s", full_name, pr_number, r.status_code, hint
         )
-        return {"ok": False, "status": r.status_code, "message": _SCOPE_HINT}
+        return {"ok": False, "status": r.status_code, "message": hint}
     if r.status_code == 422:
         # e.g. reviewer == PR author, or not a collaborator — comment already carries the @mention.
         _log.info("reviewer request on %s#%s -> 422 (%s)", full_name, pr_number, r.text[:120])

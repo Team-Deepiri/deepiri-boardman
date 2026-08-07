@@ -171,6 +171,8 @@ class GitHubEventPoller:
             self._baseline_dt[full_name] = baseline
             self._processed[full_name] = {
                 "issues_opened": set(),
+                # number -> last seen state ("open"/"closed"), so close/reopen are detected.
+                "issue_state": {},
                 "prs_opened": set(),
                 "prs_closed": set(),
                 "commits": set(),
@@ -212,25 +214,44 @@ class GitHubEventPoller:
                 continue  # PRs are handled by _poll_pulls
             num = it.get("number")
             created = _parse_iso(str(it.get("created_at") or ""))
-            if num is None or created is None or created < baseline:
+            if num is None:
                 continue
-            if num in proc["issues_opened"]:
+            state = str(it.get("state") or "open").casefold()
+
+            # The `since` filter returns recently UPDATED issues, so state changes land here
+            # too. Without state tracking the poller only ever emitted "opened" and closes /
+            # reopens were invisible to the real-time path — tasks never reached Completed.
+            issue_state = proc.setdefault("issue_state", {})
+            prev = issue_state.get(num)
+            issue_state[num] = state
+            is_new = created is not None and created >= baseline and num not in proc["issues_opened"]
+
+            action = ""
+            if is_new:
+                proc["issues_opened"].add(num)
+                action = "opened"
+            elif prev is not None and prev != state:
+                action = "closed" if state == "closed" else "reopened"
+            elif prev is None and num in proc["issues_opened"] and state == "closed":
+                action = "closed"
+            if not action:
                 continue
-            proc["issues_opened"].add(num)
+
             payload = IssueEventPayload(
-                action="opened",
+                action=action,
                 issue={
                     "number": it["number"],
                     "title": it.get("title") or "",
                     "body": it.get("body") or "",
                     "html_url": it.get("html_url") or "",
-                    "state": it.get("state") or "open",
+                    "state": state,
                     "user": it.get("user"),
+                    "labels": it.get("labels") or [],
                 },
                 repository={"full_name": full_name, "name": name},
             )
             result = await self._run_handler(payload)
-            _log.info("poller: issue #%s opened -> %s", num, (result or {}).get("message") or result)
+            _log.info("poller: issue #%s %s -> %s", num, action, (result or {}).get("message") or result)
 
     async def _poll_pulls(self, client, full_name, baseline, proc) -> None:
         name = full_name.partition("/")[2]
