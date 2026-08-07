@@ -50,7 +50,10 @@ async def test_hotspots_ranks_largest_source_and_counts_tests(monkeypatch) -> No
     assert out["test_to_source_ratio"] == 1.0
     top = out["largest_source_files"][0]
     assert top["path"] == "boardman/plaky/client.py"
-    assert top["approx_lines"] > 1000
+    # Size only — never a fabricated line count (bytes/35 was 25%+ off real LOC).
+    assert top["size_kb"] > 60
+    assert "approx_lines" not in top
+    assert "line" in out["size_note"].lower()
     assert all("node_modules" not in f["path"] for f in out["largest_source_files"])
 
 

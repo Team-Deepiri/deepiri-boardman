@@ -12,6 +12,7 @@ from boardman.github.repo_fetch import (
     fetch_default_branch,
     fetch_direction_md,
     fetch_open_issues,
+    fetch_open_pull_requests,
     fetch_recent_commits,
     fetch_repo_file_text,
     parse_owner_repo,
@@ -216,13 +217,14 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
         # hot path for "analyze this repo" questions, where serial fetches dominated latency.
         # README is fetched unconditionally (it is the fallback when DIRECTION.md is absent,
         # which is the common case) rather than costing an extra sequential hop.
-        meta, direction, commits, issues, readme_raw, hotspots = await asyncio.gather(
+        meta, direction, commits, issues, readme_raw, hotspots, open_prs = await asyncio.gather(
             fetch_repo_metadata(client, owner, repo),
             fetch_direction_md(client, owner, repo),
             fetch_recent_commits(client, owner, repo, limit=lim),
             fetch_open_issues(client, owner, repo),
             fetch_repo_file_text(client, owner, repo, "README.md"),
             fetch_repo_hotspots(client, owner, repo),
+            fetch_open_pull_requests(client, owner, repo),
             return_exceptions=True,
         )
 
@@ -243,6 +245,7 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
             readme_text if readme_text and not readme_text.startswith("(file unavailable") else None
         )
         code_signals = hotspots if isinstance(hotspots, dict) else None
+        prs_md = _text(open_prs, "(pull requests unavailable)")
 
     # Structural summary inline so the model does not need a second github_repo_structure
     # call just to know what the repo is made of.
@@ -271,6 +274,7 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
         "readme_md": readme,
         "recent_commits_markdown": commits,
         "open_issues_markdown": issues,
+        "open_pull_requests_markdown": prs_md,
     }
     return json.dumps(out, default=str)[:24000]
 

@@ -1421,30 +1421,59 @@ class PlakyClient:
             original_count = len(rows)
             status_in = (status or "").strip().casefold()
             if status_in and status_in not in ("all", "*"):
+                # "open" is not a label on real boards (they use NEEDS ASSIGNED / In QA /
+                # Completed / ...). Treat it as "not finished" instead of literal equality,
+                # otherwise the default filter matches nothing and the board looks empty.
+                done_markers = [
+                    m.strip().casefold()
+                    for m in (settings.plaky_reorder_done_status_markers or "").split(",")
+                    if m.strip()
+                ] + ["qa verified", "qa approved"]
+                semantic_open = status_in in ("open", "active", "todo", "to do", "not done")
+
                 filtered: List[Dict[str, Any]] = []
+                seen_labels: List[str] = []
                 numeric_only_statuses = True
                 for row in rows:
                     resolved = _status_text(row)
                     if resolved and not resolved.isdigit():
                         numeric_only_statuses = False
-                    if resolved and resolved.casefold() == status_in:
+                        if resolved not in seen_labels:
+                            seen_labels.append(resolved)
+                    low = (resolved or "").casefold()
+                    if semantic_open:
+                        match = bool(resolved) and not any(m in low for m in done_markers)
+                    else:
+                        match = bool(resolved) and low == status_in
+                    if match:
                         if not str(row.get("status") or "").strip():
                             row["status"] = resolved
                         filtered.append(row)
                 if filtered:
                     rows = filtered
-                elif original_count > 0 and numeric_only_statuses:
+                elif original_count > 0:
+                    # A filter that matches nothing must never be reported as an empty board —
+                    # that reads to the user (and to the agent) as "there is no work here".
+                    for row in rows:
+                        if not str(row.get("status") or "").strip():
+                            resolved = _status_text(row)
+                            if resolved:
+                                row["status"] = resolved
+                    reason = (
+                        "item statuses are numeric ids"
+                        if numeric_only_statuses
+                        else f"this board's statuses are: {', '.join(seen_labels[:12]) or 'unknown'}"
+                    )
                     return {
                         "ok": True,
                         "status": 200,
                         "tasks": rows,
                         "message": (
-                            f"Loaded from board items on board_id={bid}. "
-                            f"Status filter '{status}' could not be matched because item statuses are numeric ids."
+                            f"Loaded all {original_count} item(s) from board_id={bid}. "
+                            f"Status filter '{status}' matched none of them, so no filter was "
+                            f"applied ({reason})."
                         ),
                     }
-                else:
-                    rows = filtered
             else:
                 for row in rows:
                     if not str(row.get("status") or "").strip():

@@ -128,10 +128,18 @@ async def fetch_repo_hotspots(
         "source_files": src_count,
         "test_files": tests,
         "test_to_source_ratio": round(tests / src_count, 2) if src_count else 0.0,
-        # Size in bytes; ~35 bytes/line is a decent LOC proxy across these languages.
+        # Report SIZE, never a derived "line count": the tree API gives bytes, and a
+        # bytes/35 estimate was being quoted verbatim as "~2,273 lines" when the file had
+        # 1,792 — real files with invented precision. Size ranking answers the same
+        # question ("which modules are oversized?") without asserting a number we lack.
         "largest_source_files": [
-            {"path": p, "bytes": s, "approx_lines": max(1, s // 35)} for p, s in source[:top_n]
+            {"path": p, "size_kb": round(s / 1024, 1), "rank": i + 1}
+            for i, (p, s) in enumerate(source[:top_n])
         ],
+        "size_note": (
+            "Sizes are bytes from the git tree. Do NOT convert them to line counts or quote "
+            "a line number you have not read; say 'largest module (~N KB)' instead."
+        ),
         "files_by_top_dir": dict(sorted(dir_counts.items(), key=lambda kv: -kv[1])[:12]),
         "tracked_artifacts": artifacts[:20],
     }

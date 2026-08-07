@@ -176,6 +176,25 @@ async def fetch_open_issues(client: httpx.AsyncClient, owner: str, repo: str) ->
     return "\n".join(lines) if lines else "(no open issues)"
 
 
+async def fetch_open_pull_requests(client: httpx.AsyncClient, owner: str, repo: str) -> str:
+    """Open PRs with draft/author. Work in flight is stronger PM signal than a filed issue —
+    a repo with 8 open PRs and 0 issues is busy, not idle, and the assistant must see that."""
+    r = await github_request(client, f"/repos/{owner}/{repo}/pulls?state=open&per_page=50")
+    if r.status_code != 200:
+        return f"(pull requests unavailable: {r.status_code})"
+    prs = r.json()
+    if not isinstance(prs, list):
+        return "(pull requests: unexpected response)"
+    lines: List[str] = []
+    for p in prs:
+        if not isinstance(p, dict):
+            continue
+        author = ((p.get("user") or {}) if isinstance(p.get("user"), dict) else {}).get("login", "")
+        draft = " [draft]" if p.get("draft") else ""
+        lines.append(f"- #{p.get('number')}: {p.get('title', '')} (by {author}){draft}")
+    return chr(10).join(lines) if lines else "(no open pull requests)"
+
+
 async def fetch_pr_assignees_and_reviewers_logins(full_name: str, pr_number: int) -> set[str]:
     """
     GitHub assignees + requested_reviewers for a PR (lowercased logins).
