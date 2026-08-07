@@ -17,6 +17,7 @@ from boardman.github.repo_fetch import (
     fetch_repo_file_text,
     parse_owner_repo,
 )
+from boardman.github.code_search import scan_repo_defects, search_repo_code
 from boardman.github.repo_hotspots import fetch_repo_hotspots
 from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.repos_config import list_workspace_repos
@@ -279,6 +280,46 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
     return json.dumps(out, default=str)[:24000]
 
 
+async def _github_search_code(owner_repo: str, query: str) -> str:
+    """Grep a GitHub repo for a literal string / symbol and return matching lines."""
+    if not settings.github_pat:
+        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    raw = (owner_repo or "").strip()
+    parsed = parse_owner_repo(raw)
+    if not parsed and raw and "/" not in raw:
+        from boardman.assignment.qa_picker import ensure_github_owner_repo
+
+        parsed = parse_owner_repo(ensure_github_owner_repo(raw))
+    if not parsed:
+        return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
+    owner, repo = parsed
+    async with httpx.AsyncClient(timeout=45.0) as client:
+        out = await search_repo_code(client, owner, repo, query)
+    if out is None:
+        return json.dumps({"ok": False, "message": "code search unavailable"})
+    return json.dumps(out, default=str)[:12000]
+
+
+async def _github_scan_defects(owner_repo: str) -> str:
+    """Read the repo's largest source files and report real defect lines."""
+    if not settings.github_pat:
+        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    raw = (owner_repo or "").strip()
+    parsed = parse_owner_repo(raw)
+    if not parsed and raw and "/" not in raw:
+        from boardman.assignment.qa_picker import ensure_github_owner_repo
+
+        parsed = parse_owner_repo(ensure_github_owner_repo(raw))
+    if not parsed:
+        return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
+    owner, repo = parsed
+    async with httpx.AsyncClient(timeout=90.0) as client:
+        out = await scan_repo_defects(client, owner, repo)
+    if out is None:
+        return json.dumps({"ok": False, "message": "could not read repo source"})
+    return json.dumps(out, default=str)[:14000]
+
+
 def github_list_workspace_repos_tool() -> StructuredTool:
     return StructuredTool.from_function(
         coroutine=_github_list_workspace_repos,
@@ -346,11 +387,39 @@ def github_repo_structure_tool() -> StructuredTool:
     )
 
 
+def github_search_code_tool() -> StructuredTool:
+    return StructuredTool.from_function(
+        coroutine=_github_search_code,
+        name="github_search_code",
+        description=(
+            "Grep a GitHub repo for a literal string, symbol, or pattern and get the matching "
+            "lines with file paths. Use this to turn a suspicion into evidence — e.g. search "
+            "'except Exception', 'TODO', a function name, or a hardcoded id. "
+            "Args: owner_repo, query."
+        ),
+    )
+
+
+def github_scan_defects_tool() -> StructuredTool:
+    return StructuredTool.from_function(
+        coroutine=_github_scan_defects,
+        name="github_scan_defects",
+        description=(
+            "Run standard defect probes over a repo (bare excepts, broad exception handlers, "
+            "TODO/FIXME/HACK markers, stray prints) and return real matching lines with counts. "
+            "Call this for 'find the problems / audit this repo' questions so findings cite "
+            "actual code instead of file sizes. Args: owner_repo."
+        ),
+    )
+
+
 def build_github_tools() -> List[StructuredTool]:
     return [
         github_list_workspace_repos_tool(),
         github_repo_planning_context_tool(),
         github_repo_structure_tool(),
+        github_search_code_tool(),
+        github_scan_defects_tool(),
         github_fetch_direction_tool(),
         github_fetch_file_tool(),
         github_list_open_issues_tool(),

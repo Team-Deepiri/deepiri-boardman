@@ -523,6 +523,8 @@ _GITHUB_TOOL_NAMES = frozenset(
         "github_fetch_file",
         "github_repo_planning_context",
         "github_repo_structure",
+        "github_search_code",
+        "github_scan_defects",
     }
 )
 
