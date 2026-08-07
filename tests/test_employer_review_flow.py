@@ -367,3 +367,26 @@ def test_type_candidates_prefer_exact_match_first() -> None:
     cands = type_field_patch_candidates("Feature")
     assert cands[0].casefold() == "feature"
     assert "story" in [c.casefold() for c in cands]
+
+
+# --- unfulfilled-preamble detection -----------------------------------------------
+
+
+def test_preamble_detector_flags_promises_not_answers() -> None:
+    from boardman.agent.runner import _looks_like_unfulfilled_preamble as p
+
+    # The exact shape the audit caught being returned as a final answer:
+    assert p("Here's what I'll do: I'll list all current tasks. Let me fetch this information now.")
+    assert p("Let me check the repo and get back to you.")
+    assert p("One moment while I pull the board schema.")
+
+
+def test_preamble_detector_leaves_real_answers_alone() -> None:
+    from boardman.agent.runner import _looks_like_unfulfilled_preamble as p
+
+    # Structured answers are never preamble, even when they mention checking things.
+    assert not p("## Findings\n- boardman/main.py: startup guard missing\n- Let me check later")
+    assert not p("The repo has 4 open issues: #74, #66, #62, #61.")
+    assert not p("")
+    # Long prose answers are not preamble either.
+    assert not p("Let me check " + ("the details of this repository in depth. " * 30))
