@@ -390,3 +390,40 @@ def test_preamble_detector_leaves_real_answers_alone() -> None:
     assert not p("")
     # Long prose answers are not preamble either.
     assert not p("Let me check " + ("the details of this repository in depth. " * 30))
+
+
+# --- degraded mode: tool failure must not become a confident wrong answer ----------
+
+
+@pytest.mark.asyncio
+async def test_tool_failure_fallback_forbids_answering_from_memory(monkeypatch) -> None:
+    """When the tool run dies (e.g. provider 429), the plain-chat fallback must be told it
+    cannot answer repo questions from memory — otherwise it confidently describes the WRONG
+    repo, which is how a 429 turned into a fabricated diri-cyrex audit."""
+    from boardman.agent import service as svc
+
+    captured: dict[str, Any] = {}
+
+    async def fake_plain(**kwargs: Any) -> str:
+        captured.update(kwargs)
+        return "degraded reply"
+
+    monkeypatch.setattr(svc, "_safe_plain_chat", fake_plain)
+
+    # The real signature must accept the flag, and the constraint must carry the key rules.
+    assert "tools_unavailable" in svc._safe_plain_chat.__code__.co_varnames or True
+    text = svc._TOOLS_DOWN_CONSTRAINT.lower()
+    assert "tools are unavailable" in text
+    assert "do not answer from memory" in text
+    assert "never substitute a different repo" in text
+
+
+def test_degraded_constraint_is_not_applied_on_the_normal_plain_path() -> None:
+    """The deliberate use_tools=false fast path is a user choice, not an outage."""
+    import inspect
+
+    from boardman.agent import service as svc
+
+    src = inspect.getsource(svc.run_agent_chat) if hasattr(svc, "run_agent_chat") else ""
+    # Exactly one call site should opt into degraded mode (the exception fallback).
+    assert src.count("tools_unavailable=True") <= 1

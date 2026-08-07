@@ -232,6 +232,22 @@ async def _load_draft_markdown(session: AsyncSession, agent_session_pk: int | No
     return format_task_draft_for_prompt(draft)
 
 
+_TOOLS_DOWN_CONSTRAINT = """
+
+## TOOLS ARE UNAVAILABLE THIS TURN (degraded mode)
+
+The tool run failed, so you have NO access to GitHub, Plaky, or the local repo right now.
+You are working from conversation text only.
+
+- If the question needs repo, board, issue, or PR data, say plainly that you could not reach
+  the tools this turn and suggest retrying. Offer what you can answer without them.
+- Do NOT answer from memory or general knowledge about any repository, and do NOT describe
+  files, issues, statuses, or commits — anything you produce that way is a guess presented as
+  fact, which is worse than admitting the outage.
+- Never substitute a different repo (for example this service's own repo) for the one asked about.
+"""
+
+
 async def _safe_plain_chat(
     *,
     message: str,
@@ -243,7 +259,10 @@ async def _safe_plain_chat(
     resolved_provider: str,
     resolved_model: str,
     extra_system_suffix: str = "",
+    tools_unavailable: bool = False,
 ) -> str:
+    if tools_unavailable:
+        extra_system_suffix = (extra_system_suffix or "") + _TOOLS_DOWN_CONSTRAINT
     try:
         llm_messages = _build_plain_llm_messages(
             message,
@@ -391,6 +410,7 @@ async def run_agent_chat(
             logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
             assistant_tool_calls_json = _runtime_error_trace(e)
             reply = await _safe_plain_chat(
+                tools_unavailable=True,
                 message=message,
                 repo=repo,
                 history_msgs=history_msgs,
