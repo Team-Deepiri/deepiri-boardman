@@ -450,10 +450,173 @@ async def run_once(*, keep: bool) -> tuple[int, int, list[str]]:
     return passed_n, len(rows), failures
 
 
+async def run_edge_cases(*, keep: bool) -> tuple[int, int, list[str]]:
+    """Guard rails that are easy to regress and invisible in the happy path."""
+    n = random.randint(800_000, 899_999)
+    pr_a, pr_b = n + 1, n + 2
+    iss_url = f"https://github.com/{REPO['full_name']}/issues/{n}"
+    rows: list[tuple[str, str, bool]] = []
+    failures: list[str] = []
+
+    def check(step: str, got: Any, want: str) -> None:
+        passed = str(got) == str(want)
+        rows.append((step, f"{got}", passed))
+        if not passed:
+            failures.append(f"{step}: got {got!r}, want {want!r}")
+
+    def pr(num: int, **over: Any) -> dict:
+        base = {
+            "number": num,
+            "title": "Fix retry",
+            "body": f"Fixes #{n}",
+            "html_url": f"https://github.com/{REPO['full_name']}/pull/{num}",
+            "state": "open",
+            "merged": False,
+            "draft": False,
+            "user": {"login": "Blasted-ctrl"},
+            "head": {"ref": f"fix/{n}-x"},
+            "labels": [],
+        }
+        base.update(over)
+        return base
+
+    async with httpx.AsyncClient(timeout=180.0) as c:
+        r = await _post(
+            c,
+            "issues",
+            f"edge-{n}-open",
+            {
+                "action": "opened",
+                "issue": {
+                    "number": n,
+                    "title": f"[matrix-edge] retry {n}",
+                    "body": "b",
+                    "html_url": iss_url,
+                    "labels": [],
+                },
+                "repository": REPO,
+            },
+        )
+        task_id = str(r.get("plaky_task_id") or "")
+        if not task_id:
+            return 0, 1, [f"edge issue-open failed: {json.dumps(r)[:200]}"]
+
+        # 1. duplicate webhook delivery must not create a second task
+        dup = await _post(
+            c,
+            "issues",
+            f"edge-{n}-open",
+            {
+                "action": "opened",
+                "issue": {"number": n, "title": "dup", "body": "b", "html_url": iss_url},
+                "repository": REPO,
+            },
+        )
+        check("E1 duplicate delivery ignored", "Duplicate" in str(dup.get("message") or ""), "True")
+
+        # 2. same issue re-sent with a NEW delivery id must still not duplicate the task
+        again = await _post(
+            c,
+            "issues",
+            f"edge-{n}-open2",
+            {
+                "action": "opened",
+                "issue": {"number": n, "title": "dup2", "body": "b", "html_url": iss_url},
+                "repository": REPO,
+            },
+        )
+        check(
+            "E2 issue re-open dedupes by mapping",
+            "already mapped" in str(again.get("message") or "").lower(),
+            "True",
+        )
+
+        # 3. two PRs on one task: merging only the first must NOT complete it
+        await _post(
+            c,
+            "pull_request",
+            f"edge-{n}-prA",
+            {"action": "opened", "pull_request": pr(pr_a), "repository": REPO},
+        )
+        await _post(
+            c,
+            "pull_request",
+            f"edge-{n}-prB",
+            {"action": "opened", "pull_request": pr(pr_b), "repository": REPO},
+        )
+        await _post(
+            c,
+            "pull_request",
+            f"edge-{n}-mergeA",
+            {
+                "action": "closed",
+                "pull_request": pr(pr_a, state="closed", merged=True),
+                "repository": REPO,
+            },
+        )
+        f = await _read(task_id)
+        check("E3 1st of 2 PRs merged -> NOT Completed", f.get("Status") != "Completed", "True")
+
+        # 4. a review from someone who is NOT the assigned QA must not reject the task
+        before = (await _read(task_id)).get("Status")
+        await _post(
+            c,
+            "pull_request_review",
+            f"edge-{n}-badrej",
+            {
+                "action": "submitted",
+                "review": {
+                    "state": "changes_requested",
+                    "user": {"login": "definitely-not-the-qa"},
+                },
+                "pull_request": pr(pr_b),
+                "repository": REPO,
+            },
+        )
+        after = (await _read(task_id)).get("Status")
+        check("E4 non-assigned QA rejection ignored", after == before, "True")
+
+        # 5. merging the LAST open PR completes the task
+        await _post(
+            c,
+            "pull_request",
+            f"edge-{n}-mergeB",
+            {
+                "action": "closed",
+                "pull_request": pr(pr_b, state="closed", merged=True),
+                "repository": REPO,
+            },
+        )
+        check(
+            "E5 all PRs merged -> Completed",
+            (await _status(task_id, "Completed")).get("Status"),
+            "Completed",
+        )
+
+        # 6. an unknown event type is refused, not silently accepted
+        unknown = await _post(
+            c, "workflow_run", f"edge-{n}-unknown", {"action": "completed", "repository": REPO}
+        )
+        check("E6 unsupported event refused", unknown.get("ok") is False, "True")
+
+    width = max(len(s) for s, _, _ in rows)
+    for step, got, passed in rows:
+        print(f"  {'PASS' if passed else 'FAIL'}  {step:<{width}}  = {got}")
+
+    if not keep:
+        from boardman.plaky.client import PlakyClient
+
+        await PlakyClient().delete_board_item(BOARD, task_id)
+        print(f"  cleaned up Plaky item {task_id}")
+
+    return sum(1 for _, _, p in rows if p), len(rows), failures
+
+
 async def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--loop", type=int, default=1)
     ap.add_argument("--keep", action="store_true")
+    ap.add_argument("--edge", action="store_true", help="run the edge-case guards instead")
     a = ap.parse_args()
 
     total_p = total_n = 0
@@ -461,7 +624,7 @@ async def main() -> int:
     for i in range(1, a.loop + 1):
         print(f"\n=== automation matrix run {i}/{a.loop} ===")
         t0 = time.time()
-        p, n, fails = await run_once(keep=a.keep)
+        p, n, fails = await (run_edge_cases(keep=a.keep) if a.edge else run_once(keep=a.keep))
         total_p += p
         total_n += n
         all_failures.extend(f"run{i} {x}" for x in fails)
