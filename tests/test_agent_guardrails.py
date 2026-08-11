@@ -34,7 +34,7 @@ def test_is_write_tool_classification():
 def test_write_tools_matches_build_all_tools_delta():
     ro = frozenset(t.name for t in build_all_tools(allow_writes=False))
     rw = frozenset(t.name for t in build_all_tools(allow_writes=True))
-    assert WRITE_TOOLS == frozenset(rw - ro)
+    assert frozenset(rw - ro) == WRITE_TOOLS
     assert WRITE_TOOLS.isdisjoint(ro)
 
 

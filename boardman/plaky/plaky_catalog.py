@@ -30,7 +30,7 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from boardman.plaky.client import PlakyClient
 from boardman.settings import settings
@@ -195,7 +195,7 @@ class PlakyGroupEntry:
     name: str
 
     @classmethod
-    def from_row(cls, row: dict[str, Any]) -> Optional[PlakyGroupEntry]:
+    def from_row(cls, row: dict[str, Any]) -> PlakyGroupEntry | None:
         if not isinstance(row, dict):
             return None
         gid = str(row.get("id") or row.get("groupId") or row.get("group_id") or "").strip()
@@ -210,10 +210,12 @@ class PlakyBoardEntry:
     id: str
     name: str
     space_id: str = ""
-    groups: List[PlakyGroupEntry] = field(default_factory=list)
+    groups: list[PlakyGroupEntry] = field(default_factory=list)
 
     @classmethod
-    def from_row(cls, row: dict[str, Any], groups: Optional[List[PlakyGroupEntry]] = None) -> Optional[PlakyBoardEntry]:
+    def from_row(
+        cls, row: dict[str, Any], groups: list[PlakyGroupEntry] | None = None
+    ) -> PlakyBoardEntry | None:
         if not isinstance(row, dict):
             return None
         bid = str(row.get("id") or "").strip()
@@ -235,7 +237,7 @@ class PlakyBoardEntry:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Optional[PlakyBoardEntry]:
+    def from_dict(cls, data: dict[str, Any]) -> PlakyBoardEntry | None:
         if not isinstance(data, dict):
             return None
         bid = str(data.get("id") or "").strip()
@@ -258,7 +260,7 @@ class PlakyBoardEntry:
 class PlakyCatalogCache:
     fetched_at: float
     source: str
-    boards: List[PlakyBoardEntry]
+    boards: list[PlakyBoardEntry]
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -269,11 +271,11 @@ class PlakyCatalogCache:
         }
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> Optional[PlakyCatalogCache]:
+    def from_dict(cls, data: dict[str, Any]) -> PlakyCatalogCache | None:
         if not isinstance(data, dict):
             return None
         boards_raw = data.get("boards") or []
-        boards: List[PlakyBoardEntry] = []
+        boards: list[PlakyBoardEntry] = []
         if isinstance(boards_raw, list):
             for row in boards_raw:
                 if isinstance(row, dict):
@@ -294,7 +296,7 @@ def catalog_cache_path() -> Path:
     return Path.cwd() / p
 
 
-def load_cached_catalog() -> Optional[PlakyCatalogCache]:
+def load_cached_catalog() -> PlakyCatalogCache | None:
     path = catalog_cache_path()
     if not path.is_file():
         return None
@@ -314,12 +316,14 @@ def save_catalog_cache(cache: PlakyCatalogCache) -> Path:
     return path
 
 
-async def _fetch_board_groups(client: PlakyClient, board_row: dict[str, Any]) -> Optional[PlakyBoardEntry]:
+async def _fetch_board_groups(
+    client: PlakyClient, board_row: dict[str, Any]
+) -> PlakyBoardEntry | None:
     bid = str(board_row.get("id") or "").strip()
     if not bid:
         return None
     gr = await client.list_groups(bid)
-    groups: List[PlakyGroupEntry] = []
+    groups: list[PlakyGroupEntry] = []
     if gr.get("ok"):
         for row in gr.get("groups") or []:
             g = PlakyGroupEntry.from_row(row if isinstance(row, dict) else {})
@@ -328,7 +332,7 @@ async def _fetch_board_groups(client: PlakyClient, board_row: dict[str, Any]) ->
     return PlakyBoardEntry.from_row(board_row, groups)
 
 
-async def fetch_live_catalog(client: Optional[PlakyClient] = None) -> tuple[PlakyCatalogCache, str]:
+async def fetch_live_catalog(client: PlakyClient | None = None) -> tuple[PlakyCatalogCache, str]:
     """Pull all boards + groups from Plaky; scope to categorical boards before caching."""
     c = client or PlakyClient()
     boards_result = await c.list_boards()
@@ -341,7 +345,7 @@ async def fetch_live_catalog(client: Optional[PlakyClient] = None) -> tuple[Plak
 
     tasks = [_fetch_board_groups(c, row) for row in raw_boards if isinstance(row, dict)]
     gathered = await asyncio.gather(*tasks, return_exceptions=True)
-    boards: List[PlakyBoardEntry] = []
+    boards: list[PlakyBoardEntry] = []
     for item in gathered:
         if isinstance(item, PlakyBoardEntry):
             boards.append(item)
@@ -356,7 +360,7 @@ async def fetch_live_catalog(client: Optional[PlakyClient] = None) -> tuple[Plak
 async def refresh_plaky_catalog(
     *,
     force: bool = False,
-    client: Optional[PlakyClient] = None,
+    client: PlakyClient | None = None,
 ) -> tuple[PlakyCatalogCache, str]:
     """Return catalog from disk if fresh; otherwise refresh from Plaky API (falls back to stale cache)."""
     ttl = float(settings.plaky_catalog_ttl_seconds or DEFAULT_TTL_SECONDS)

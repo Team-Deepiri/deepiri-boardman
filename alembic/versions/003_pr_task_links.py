@@ -5,9 +5,10 @@ Revises: 002_agent_scan
 Create Date: 2026-04-16
 
 """
-from alembic import op
+
 import sqlalchemy as sa
 
+from alembic import op
 
 revision = "003_pr_task_links"
 down_revision = "002_agent_scan"
@@ -35,9 +36,14 @@ def upgrade() -> None:
             name="uq_pr_task_links_repo_pr_issue",
         ),
     )
-    op.create_index(op.f("ix_pr_task_links_github_repo"), "pr_task_links", ["github_repo"], unique=False)
     op.create_index(
-        op.f("ix_pr_task_links_github_pr_number"), "pr_task_links", ["github_pr_number"], unique=False
+        op.f("ix_pr_task_links_github_repo"), "pr_task_links", ["github_repo"], unique=False
+    )
+    op.create_index(
+        op.f("ix_pr_task_links_github_pr_number"),
+        "pr_task_links",
+        ["github_pr_number"],
+        unique=False,
     )
     op.create_index(
         op.f("ix_pr_task_links_plaky_task_id"), "pr_task_links", ["plaky_task_id"], unique=False

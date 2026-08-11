@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -106,7 +106,7 @@ def _cfg_for_route() -> TeamAssignmentsConfig:
 @pytest.mark.asyncio
 async def test_post_tasks_accepts_legacy_top_level_repo(monkeypatch: pytest.MonkeyPatch) -> None:
     """Older live tests and scripts POST ``repo`` without ``github_repos``; route must merge into filters."""
-    captured: Dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     async def _noop_sync(_board_id: str):
         return {"ok": True}
@@ -125,7 +125,9 @@ async def test_post_tasks_accepts_legacy_top_level_repo(monkeypatch: pytest.Monk
             captured["create_kwargs"] = dict(kwargs)
             return {"ok": True, "task": {"id": "item-42"}, "task_id": "item-42"}
 
-        async def patch_item_field_values(self, board_id: str, item_id: str, values: dict, **kwargs: Any) -> dict:
+        async def patch_item_field_values(
+            self, board_id: str, item_id: str, values: dict, **kwargs: Any
+        ) -> dict:
             return {"ok": True, "patched_keys": list(values)}
 
         async def get_board_item_public(self, board_id: str, item_id: str) -> dict:
@@ -134,10 +136,16 @@ async def test_post_tasks_accepts_legacy_top_level_repo(monkeypatch: pytest.Monk
         async def list_board_items(self, *a: Any, **k: Any) -> dict:
             return {"ok": True, "items": []}
 
-    monkeypatch.setattr("boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync)
-    monkeypatch.setattr("boardman.services.task_mutations.fetch_board_schema_bundle", _empty_schema_bundle)
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync
+    )
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.fetch_board_schema_bundle", _empty_schema_bundle
+    )
     monkeypatch.setattr("boardman.services.task_mutations.PlakyClient", FakePlaky)
-    monkeypatch.setattr("boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route())
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route()
+    )
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -160,8 +168,10 @@ async def test_post_tasks_accepts_legacy_top_level_repo(monkeypatch: pytest.Monk
 
 
 @pytest.mark.asyncio
-async def test_post_tasks_passes_board_to_plaky_and_patches_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: Dict[str, Any] = {}
+async def test_post_tasks_passes_board_to_plaky_and_patches_assignments(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
 
     async def _noop_sync(_board_id: str):
         return {"ok": True}
@@ -180,7 +190,9 @@ async def test_post_tasks_passes_board_to_plaky_and_patches_assignments(monkeypa
             captured["create_kwargs"] = dict(kwargs)
             return {"ok": True, "task": {"id": "item-42"}, "task_id": "item-42"}
 
-        async def patch_item_field_values(self, board_id: str, item_id: str, values: dict, **kwargs: Any) -> dict:
+        async def patch_item_field_values(
+            self, board_id: str, item_id: str, values: dict, **kwargs: Any
+        ) -> dict:
             captured["patch"] = (board_id, item_id, dict(values))
             return {"ok": True, "mode": "bulk", "patched_keys": list(values)}
 
@@ -190,10 +202,16 @@ async def test_post_tasks_passes_board_to_plaky_and_patches_assignments(monkeypa
         async def list_board_items(self, *a: Any, **k: Any) -> dict:
             return {"ok": True, "items": []}
 
-    monkeypatch.setattr("boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync)
-    monkeypatch.setattr("boardman.services.task_mutations.fetch_board_schema_bundle", _empty_schema_bundle)
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync
+    )
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.fetch_board_schema_bundle", _empty_schema_bundle
+    )
     monkeypatch.setattr("boardman.services.task_mutations.PlakyClient", FakePlaky)
-    monkeypatch.setattr("boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route())
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route()
+    )
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -234,7 +252,7 @@ async def test_post_tasks_passes_board_to_plaky_and_patches_assignments(monkeypa
 async def test_post_tasks_scrubs_placeholder_yaml_keys_and_infers_real_columns(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: Dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     async def _noop_sync(_board_id: str):
         return {"ok": True}
@@ -260,7 +278,9 @@ async def test_post_tasks_scrubs_placeholder_yaml_keys_and_infers_real_columns(
             captured["create_kwargs"] = dict(kwargs)
             return {"ok": True, "task": {"id": "item-42"}, "task_id": "item-42"}
 
-        async def patch_item_field_values(self, board_id: str, item_id: str, values: dict, **kwargs: Any) -> dict:
+        async def patch_item_field_values(
+            self, board_id: str, item_id: str, values: dict, **kwargs: Any
+        ) -> dict:
             captured["patch"] = (board_id, item_id, dict(values))
             return {"ok": True, "mode": "bulk", "patched_keys": list(values)}
 
@@ -270,10 +290,17 @@ async def test_post_tasks_scrubs_placeholder_yaml_keys_and_infers_real_columns(
         async def list_board_items(self, *a: Any, **k: Any) -> dict:
             return {"ok": True, "items": []}
 
-    monkeypatch.setattr("boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync)
-    monkeypatch.setattr("boardman.services.task_mutations.fetch_board_schema_bundle", _schema_with_person_columns)
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync
+    )
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.fetch_board_schema_bundle", _schema_with_person_columns
+    )
     monkeypatch.setattr("boardman.services.task_mutations.PlakyClient", FakePlaky)
-    monkeypatch.setattr("boardman.services.task_mutations.load_team_assignments", lambda: _cfg_placeholder_yaml_keys())
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.load_team_assignments",
+        lambda: _cfg_placeholder_yaml_keys(),
+    )
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -304,7 +331,7 @@ async def test_post_tasks_keeps_native_plaky_keys_when_they_appear_on_board_sche
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Plaky uses ids like person-1 / status-1; YAML may legitimately match those keys."""
-    captured: Dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     async def _noop_sync(_board_id: str):
         return {"ok": True}
@@ -331,7 +358,9 @@ async def test_post_tasks_keeps_native_plaky_keys_when_they_appear_on_board_sche
             captured["create_kwargs"] = dict(kwargs)
             return {"ok": True, "task": {"id": "item-42"}, "task_id": "item-42"}
 
-        async def patch_item_field_values(self, board_id: str, item_id: str, values: dict, **kwargs: Any) -> dict:
+        async def patch_item_field_values(
+            self, board_id: str, item_id: str, values: dict, **kwargs: Any
+        ) -> dict:
             captured["patch"] = (board_id, item_id, dict(values))
             return {"ok": True, "mode": "bulk", "patched_keys": list(values)}
 
@@ -341,10 +370,17 @@ async def test_post_tasks_keeps_native_plaky_keys_when_they_appear_on_board_sche
         async def list_board_items(self, *a: Any, **k: Any) -> dict:
             return {"ok": True, "items": []}
 
-    monkeypatch.setattr("boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync)
-    monkeypatch.setattr("boardman.services.task_mutations.fetch_board_schema_bundle", _schema_native_keys)
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync
+    )
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.fetch_board_schema_bundle", _schema_native_keys
+    )
     monkeypatch.setattr("boardman.services.task_mutations.PlakyClient", FakePlaky)
-    monkeypatch.setattr("boardman.services.task_mutations.load_team_assignments", lambda: _cfg_native_plaky_yaml_keys())
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.load_team_assignments",
+        lambda: _cfg_native_plaky_yaml_keys(),
+    )
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -370,8 +406,10 @@ async def test_post_tasks_keeps_native_plaky_keys_when_they_appear_on_board_sche
 
 
 @pytest.mark.asyncio
-async def test_post_tasks_merges_default_status_type_priority_from_schema(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: Dict[str, Any] = {}
+async def test_post_tasks_merges_default_status_type_priority_from_schema(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
 
     async def _noop_sync(_board_id: str):
         return {"ok": True}
@@ -416,7 +454,9 @@ async def test_post_tasks_merges_default_status_type_priority_from_schema(monkey
             captured["create_kwargs"] = dict(kwargs)
             return {"ok": True, "task": {"id": "item-42"}, "task_id": "item-42"}
 
-        async def patch_item_field_values(self, board_id: str, item_id: str, values: dict, **kwargs: Any) -> dict:
+        async def patch_item_field_values(
+            self, board_id: str, item_id: str, values: dict, **kwargs: Any
+        ) -> dict:
             captured["patch"] = (board_id, item_id, dict(values))
             return {"ok": True, "mode": "bulk", "patched_keys": list(values)}
 
@@ -426,10 +466,16 @@ async def test_post_tasks_merges_default_status_type_priority_from_schema(monkey
         async def list_board_items(self, *a: Any, **k: Any) -> dict:
             return {"ok": True, "items": []}
 
-    monkeypatch.setattr("boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync)
-    monkeypatch.setattr("boardman.services.task_mutations.fetch_board_schema_bundle", _schema_bundle)
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync
+    )
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.fetch_board_schema_bundle", _schema_bundle
+    )
     monkeypatch.setattr("boardman.services.task_mutations.PlakyClient", FakePlaky)
-    monkeypatch.setattr("boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route())
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route()
+    )
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -464,7 +510,7 @@ async def test_post_tasks_merges_default_status_type_priority_from_schema(monkey
 async def test_post_tasks_accepts_status_type_priority_tags_and_type_json_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: Dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     async def _noop_sync(_board_id: str):
         return {"ok": True}
@@ -512,7 +558,9 @@ async def test_post_tasks_accepts_status_type_priority_tags_and_type_json_key(
             captured["create_kwargs"] = dict(kwargs)
             return {"ok": True, "task": {"id": "item-99"}, "task_id": "item-99"}
 
-        async def patch_item_field_values(self, board_id: str, item_id: str, values: dict, **kwargs: Any) -> dict:
+        async def patch_item_field_values(
+            self, board_id: str, item_id: str, values: dict, **kwargs: Any
+        ) -> dict:
             captured["patch"] = (board_id, item_id, dict(values))
             return {"ok": True, "mode": "bulk", "patched_keys": list(values)}
 
@@ -522,10 +570,16 @@ async def test_post_tasks_accepts_status_type_priority_tags_and_type_json_key(
         async def list_board_items(self, *a: Any, **k: Any) -> dict:
             return {"ok": True, "items": []}
 
-    monkeypatch.setattr("boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync)
-    monkeypatch.setattr("boardman.services.task_mutations.fetch_board_schema_bundle", _schema_bundle)
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync
+    )
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.fetch_board_schema_bundle", _schema_bundle
+    )
     monkeypatch.setattr("boardman.services.task_mutations.PlakyClient", FakePlaky)
-    monkeypatch.setattr("boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route())
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route()
+    )
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -595,8 +649,10 @@ def test_select_field_patch_pair_from_schema_matches_option_id():
 
 
 @pytest.mark.asyncio
-async def test_post_tasks_uses_board_from_create_when_patch_board_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
-    captured: Dict[str, Any] = {}
+async def test_post_tasks_uses_board_from_create_when_patch_board_unknown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, Any] = {}
 
     async def _noop_sync(_board_id: str):
         return {"ok": True}
@@ -618,7 +674,9 @@ async def test_post_tasks_uses_board_from_create_when_patch_board_unknown(monkey
                 "task_id": "item-99",
             }
 
-        async def patch_item_field_values(self, board_id: str, item_id: str, values: dict, **kwargs: Any) -> dict:
+        async def patch_item_field_values(
+            self, board_id: str, item_id: str, values: dict, **kwargs: Any
+        ) -> dict:
             captured["patch_board"] = board_id
             return {"ok": True, "mode": "bulk"}
 
@@ -628,10 +686,16 @@ async def test_post_tasks_uses_board_from_create_when_patch_board_unknown(monkey
         async def list_board_items(self, *a: Any, **k: Any) -> dict:
             return {"ok": True, "items": []}
 
-    monkeypatch.setattr("boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync)
-    monkeypatch.setattr("boardman.services.task_mutations.fetch_board_schema_bundle", _empty_schema_bundle)
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync
+    )
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.fetch_board_schema_bundle", _empty_schema_bundle
+    )
     monkeypatch.setattr("boardman.services.task_mutations.PlakyClient", FakePlaky)
-    monkeypatch.setattr("boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route())
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route()
+    )
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -653,7 +717,7 @@ async def test_post_tasks_uses_board_from_create_when_patch_board_unknown(monkey
 async def test_patch_tasks_create_then_update_status_type_priority_qa(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    captured: Dict[str, Any] = {}
+    captured: dict[str, Any] = {}
 
     async def _noop_sync(_board_id: str):
         return {"ok": True}
@@ -669,7 +733,10 @@ async def test_patch_tasks_create_then_update_status_type_priority_qa(
                         "name": "Status",
                         "key": "fld_status",
                         "type": "SELECT",
-                        "options": [{"name": "In Progress", "id": 20}, {"name": "Needs QA", "id": 30}],
+                        "options": [
+                            {"name": "In Progress", "id": 20},
+                            {"name": "Needs QA", "id": 30},
+                        ],
                     },
                     {
                         "name": "Type",
@@ -681,7 +748,10 @@ async def test_patch_tasks_create_then_update_status_type_priority_qa(
                         "name": "Priority",
                         "key": "fld_pri",
                         "type": "SELECT",
-                        "options": [{"name": "Medium", "id": 3}, {"name": "Very Important", "id": 9}],
+                        "options": [
+                            {"name": "Medium", "id": 3},
+                            {"name": "Very Important", "id": 9},
+                        ],
                     },
                 ]
             }
@@ -712,7 +782,9 @@ async def test_patch_tasks_create_then_update_status_type_priority_qa(
             captured["comment"] = {"task_id": task_id, "body": body}
             return {"ok": True, "comment": {"id": "c1"}}
 
-        async def patch_item_field_values(self, board_id: str, item_id: str, values: dict, **kwargs: Any) -> dict:
+        async def patch_item_field_values(
+            self, board_id: str, item_id: str, values: dict, **kwargs: Any
+        ) -> dict:
             captured.setdefault("patches", []).append(
                 {"board_id": board_id, "item_id": item_id, "values": dict(values)}
             )
@@ -721,10 +793,16 @@ async def test_patch_tasks_create_then_update_status_type_priority_qa(
         async def get_task(self, task_id: str) -> dict:
             return {"ok": True, "task": {"id": task_id, "boardId": "board-from-task"}}
 
-    monkeypatch.setattr("boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync)
-    monkeypatch.setattr("boardman.services.task_mutations.fetch_board_schema_bundle", _schema_bundle)
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.sync_team_assignment_field_keys_from_board", _noop_sync
+    )
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.fetch_board_schema_bundle", _schema_bundle
+    )
     monkeypatch.setattr("boardman.services.task_mutations.PlakyClient", FakePlaky)
-    monkeypatch.setattr("boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route())
+    monkeypatch.setattr(
+        "boardman.services.task_mutations.load_team_assignments", lambda: _cfg_for_route()
+    )
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:

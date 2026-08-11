@@ -1,13 +1,15 @@
+import json
+from collections.abc import AsyncIterator
 
-import pytest
 import httpx
+import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
 from boardman.database.models import Base
 from boardman.database.session import get_db
 from boardman.main import create_app
-from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
-import json
-from typing import AsyncIterator
+
 
 @pytest.fixture
 async def memory_db():
@@ -18,11 +20,12 @@ async def memory_db():
     yield factory
     await engine.dispose()
 
+
 @pytest.mark.asyncio
 async def test_agent_chat_stream_with_tools_mocked(monkeypatch, memory_db):
     import boardman.agent.service as agent_svc
     import boardman.settings as bs
-    
+
     # Enable tools
     monkeypatch.setattr(bs.settings, "agent_langchain_tools", True)
 
@@ -48,31 +51,27 @@ async def test_agent_chat_stream_with_tools_mocked(monkeypatch, memory_db):
     import boardman.routes.agent as agent_routes
 
     monkeypatch.setattr(agent_routes, "async_session", memory_db)
-    
+
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         # We use a POST to /agent/chat/stream with use_tools=True
         response = await client.post(
             "/api/v1/agent/chat/stream",
-            json={
-                "message": "hello tools",
-                "use_tools": True,
-                "allow_writes": False
-            }
+            json={"message": "hello tools", "use_tools": True, "allow_writes": False},
         )
         assert response.status_code == 200
-        
+
         events = []
         async for line in response.aiter_lines():
             if line.startswith("data: "):
                 events.append(json.loads(line[6:]))
-        
+
         # We expect: session, token (tool-), token (output), done
         types = [e["type"] for e in events]
         assert "session" in types
         assert "token" in types
         assert "done" in types
-        
+
         tokens = "".join([e["text"] for e in events if e["type"] == "token"])
         assert tokens == "tool-output"
 

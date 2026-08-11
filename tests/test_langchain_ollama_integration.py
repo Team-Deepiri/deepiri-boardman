@@ -46,5 +46,3 @@ async def test_langchain_chataollama_ainvoke(require_ollama, require_ollama_mode
     assert "error" not in text.lower()[:200]
     upper = text.upper()
     assert "LANGCHAIN" in upper or "PING" in upper or "OLLAMA" in upper or len(text) < 500
-
-

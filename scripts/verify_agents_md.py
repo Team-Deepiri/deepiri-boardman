@@ -25,7 +25,9 @@ SKIP_PATHS = {
 def _looks_like_repo_path(raw: str) -> bool:
     if not raw or " " in raw or "://" in raw or raw.startswith("..."):
         return False
-    if raw.startswith(("boardman/", "docs/", "scripts/", "tests/", "alembic/", "deploy/", "worker/")):
+    if raw.startswith(
+        ("boardman/", "docs/", "scripts/", "tests/", "alembic/", "deploy/", "worker/")
+    ):
         return True
     if "/" in raw:
         return True

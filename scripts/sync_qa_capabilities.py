@@ -30,7 +30,7 @@ import logging
 import math
 import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -39,7 +39,7 @@ import yaml
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
-from boardman.assignment.tier_classifier import classify_repo_tier, compute_structural_complexity_score
+from boardman.assignment.tier_classifier import compute_structural_complexity_score
 from boardman.github.org_repos import fetch_org_repository_full_names
 from boardman.github.qa_activity_inference import infer_qa_tier_from_pr_activity
 from boardman.github.qa_tier_teams import fetch_login_max_qa_tier_from_org_teams
@@ -53,13 +53,14 @@ _log = logging.getLogger("sync")
 TOKEN = settings.github_pat
 ORG = settings.github_org
 SIGNALS_PATH = settings.repo_signals_json_path
-_RESOLVED_ORG: str = ""   # set in build_idf_model after auto-discovery
+_RESOLVED_ORG: str = ""  # set in build_idf_model after auto-discovery
 TEAM_PATH = "worker_team.json"
 YAML_PATH = settings.team_assignments_yml_path
 
 # ═══════════════════════════════════════════════════════════════════
 # Phase 0 — IDF model
 # ═══════════════════════════════════════════════════════════════════
+
 
 async def build_idf_model(client: httpx.AsyncClient) -> None:
     """
@@ -108,7 +109,7 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
             owner, repo = fn.split("/", 1)
             tasks.append(fetch_repo_metadata(client, owner, repo))
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        for fn, result in zip(batch, results):
+        for fn, result in zip(batch, results, strict=False):
             if isinstance(result, Exception) or result is None:
                 repo_signals[fn] = []
             else:
@@ -119,15 +120,11 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
     # Document frequency: how many repos contain each signal
     df: dict[str, int] = {}
     for signals in repo_signals.values():
-        for sig in set(signals):   # set: each repo counts once per signal
+        for sig in set(signals):  # set: each repo counts once per signal
             df[sig] = df.get(sig, 0) + 1
 
     # IDF: log(N / df)
-    idf: dict[str, float] = {
-        sig: math.log(N / count)
-        for sig, count in df.items()
-        if count > 0
-    }
+    idf: dict[str, float] = {sig: math.log(N / count) for sig, count in df.items() if count > 0}
 
     # Score every repo (same blend as boardman.assignment.tier_classifier.classify_repo_tier)
     repo_scores: dict[str, float] = {}
@@ -137,10 +134,10 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
         struct = compute_structural_complexity_score(meta) if meta is not None else 0.0
         repo_scores[fn] = idf_part + 0.2 * struct
 
-# Use percentiles: T1=bottom ~25%, T2=middle, T3=top rest
+    # Use percentiles: T1=bottom ~25%, T2=middle, T3=top rest
     sorted_scores = sorted(repo_scores.values())
     n = len(sorted_scores)
-    
+
     if n < 6:
         p50 = sorted_scores[n // 2]
         p80 = sorted_scores[-1]
@@ -149,7 +146,7 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
         p80 = sorted_scores[int(n * 0.7)]
 
     output: dict[str, Any] = {
-        "computed_at": datetime.now(timezone.utc).isoformat(),
+        "computed_at": datetime.now(UTC).isoformat(),
         "total_repos": N,
         "idf": idf,
         "percentiles": {"p50": p50, "p80": p80},
@@ -161,7 +158,10 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
 
     _log.info(
         "Phase 0 done: %d signals, p50=%.2f, p80=%.2f → %s",
-        len(idf), p50, p80, SIGNALS_PATH,
+        len(idf),
+        p50,
+        p80,
+        SIGNALS_PATH,
     )
 
     # Log tier distribution
@@ -174,6 +174,7 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
 # ═══════════════════════════════════════════════════════════════════
 # Phase 1 — QA capability sync
 # ═══════════════════════════════════════════════════════════════════
+
 
 def load_yaml_overrides() -> tuple[dict, dict]:
     if not os.path.exists(YAML_PATH):
@@ -203,8 +204,8 @@ async def sync_qa_team(client: httpx.AsyncClient) -> None:
     }
 
     # Fetch Plaky users for identity matching
-    from boardman.plaky.client import PlakyClient
     from boardman.assignment.identity_match import best_plaky_match_for_github
+    from boardman.plaky.client import PlakyClient
 
     plaky_users: list[dict] = []
     pr = PlakyClient().list_workspace_users_sync()
@@ -264,22 +265,28 @@ async def sync_qa_team(client: httpx.AsyncClient) -> None:
                 tier2_min_distinct_t2plus_repos=settings.github_qa_activity_tier2_min_distinct_t2plus_repos,
                 tier2_min_weighted_score=settings.github_qa_activity_tier2_min_weighted_score,
             )
-            team_tier = team_login_tier.get(login) if settings.github_qa_tier_team_scan_enabled else None
+            team_tier = (
+                team_login_tier.get(login) if settings.github_qa_tier_team_scan_enabled else None
+            )
             if team_tier is not None:
                 qa_tier = team_tier
             else:
                 qa_tier = activity_tier
 
-        worker_members.append({
-            "id": plaky_id,
-            "display": ov.get("display") or m.get("name") or login,
-            "github_login": login,
-            "roles": ov.get("roles") or defaults.get("roles") or ["engineer", "qa"],
-            "qaTier": qa_tier,
-            "repoGlobs": ov.get("repo_globs") or defaults.get("repo_globs") or [f"{ORG}/*", "Team-Deepiri/*"],
-            "weight": float(ov.get("weight") or defaults.get("weight") or 1.0),
-            "tier": ov.get("tier") or defaults.get("tier") or "standard",
-        })
+        worker_members.append(
+            {
+                "id": plaky_id,
+                "display": ov.get("display") or m.get("name") or login,
+                "github_login": login,
+                "roles": ov.get("roles") or defaults.get("roles") or ["engineer", "qa"],
+                "qaTier": qa_tier,
+                "repoGlobs": ov.get("repo_globs")
+                or defaults.get("repo_globs")
+                or [f"{ORG}/*", "Team-Deepiri/*"],
+                "weight": float(ov.get("weight") or defaults.get("weight") or 1.0),
+                "tier": ov.get("tier") or defaults.get("tier") or "standard",
+            }
+        )
         if "qa_tier" not in ov:
             _log.info(
                 "  %s → qa_tier=%d plaky_id=%s (activity_debug=%s team_hit=%s)",
@@ -301,6 +308,7 @@ async def sync_qa_team(client: httpx.AsyncClient) -> None:
 # ═══════════════════════════════════════════════════════════════════
 # Entry point
 # ═══════════════════════════════════════════════════════════════════
+
 
 async def main() -> None:
     if not TOKEN:

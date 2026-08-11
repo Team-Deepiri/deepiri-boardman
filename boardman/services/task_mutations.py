@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any
 
 from boardman.agent.tool_context import get_context_plaky_board_id, get_context_plaky_group_id
 from boardman.assignment.config import (
@@ -9,7 +9,11 @@ from boardman.assignment.config import (
     load_team_assignments,
     sync_team_assignment_field_keys_from_board,
 )
-from boardman.assignment.qa_picker import build_repo_field_map, ensure_github_owner_repo, pick_qa_for_repo
+from boardman.assignment.qa_picker import (
+    build_repo_field_map,
+    ensure_github_owner_repo,
+    pick_qa_for_repo,
+)
 from boardman.plaky.board_aware import resolve_group_for_repo
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
@@ -22,8 +26,8 @@ from boardman.plaky.board_schema import (
     select_field_patch_pair_from_schema,
 )
 from boardman.plaky.client import PlakyClient
-from boardman.plaky.task_payload_ids import board_id_from_plaky_task as _board_id_from_task_payload
 from boardman.plaky.placement import plaky_placement_context
+from boardman.plaky.task_payload_ids import board_id_from_plaky_task as _board_id_from_task_payload
 from boardman.plaky.task_tag_vocab import (
     canonical_task_priority,
     canonical_task_status,
@@ -89,7 +93,7 @@ class CreateSubtaskInput:
     plaky_group_id: str | None = None
 
 
-def _allowed_item_field_keys_from_schema(schema_normalized: Optional[dict]) -> set[str]:
+def _allowed_item_field_keys_from_schema(schema_normalized: dict | None) -> set[str]:
     out: set[str] = set()
     if not isinstance(schema_normalized, dict):
         return out
@@ -115,7 +119,7 @@ def _scrub_placeholder_field_key(key: str, *, allowed_board_keys: set[str]) -> s
     return k
 
 
-def _person_item_field_keys_from_normalized(schema_normalized: Optional[dict]) -> set[str]:
+def _person_item_field_keys_from_normalized(schema_normalized: dict | None) -> set[str]:
     out: set[str] = set()
     if not isinstance(schema_normalized, dict):
         return out
@@ -145,7 +149,11 @@ def _merge_github_repo_inputs(
             return
         # Accept either repeated values or one combined value:
         # "owner/a owner/b", "owner/a,owner/b", or newline-separated.
-        tokens = [p.strip() for p in raw.replace("\n", ",").replace("\t", " ").replace(",", " ").split(" ") if p.strip()]
+        tokens = [
+            p.strip()
+            for p in raw.replace("\n", ",").replace("\t", " ").replace(",", " ").split(" ")
+            if p.strip()
+        ]
         for t in tokens:
             canon = ensure_github_owner_repo(t)
             if not canon:
@@ -175,7 +183,7 @@ async def _infer_plaky_person_column_keys(
     engineer_field_key: str,
     qa_field_key: str,
     *,
-    normalized: Optional[dict] = None,
+    normalized: dict | None = None,
 ) -> tuple[str, str]:
     eng = (engineer_field_key or "").strip()
     qa = (qa_field_key or "").strip()
@@ -207,7 +215,10 @@ async def _infer_plaky_person_column_keys(
             for k, n in person_fields:
                 if k == qa:
                     continue
-                if any(tok in n for tok in ("engineer", "developer", "dev", "contributor", "owner", "assignee")):
+                if any(
+                    tok in n
+                    for tok in ("engineer", "developer", "dev", "contributor", "owner", "assignee")
+                ):
                     eng = k
                     break
         if not qa and person_fields:
@@ -223,8 +234,18 @@ async def _infer_plaky_person_column_keys(
 
 
 def _extract_created_task_id(result: dict) -> str:
-    task = result.get("task") if isinstance(result, dict) and isinstance(result.get("task"), dict) else {}
-    candidates = [result.get("task_id"), task.get("id"), task.get("itemId"), task.get("taskId"), task.get("_id")]
+    task = (
+        result.get("task")
+        if isinstance(result, dict) and isinstance(result.get("task"), dict)
+        else {}
+    )
+    candidates = [
+        result.get("task_id"),
+        task.get("id"),
+        task.get("itemId"),
+        task.get("taskId"),
+        task.get("_id"),
+    ]
     for raw in candidates:
         val = str(raw or "").strip()
         if val:
@@ -252,7 +273,11 @@ async def _run_post_create_assignments(
     if not field_values:
         return {"ok": True, "skipped": True, "message": "No assignment fields provided"}
     if not board_id:
-        return {"ok": False, "skipped": True, "message": "Cannot patch assignments without board_id"}
+        return {
+            "ok": False,
+            "skipped": True,
+            "message": "Cannot patch assignments without board_id",
+        }
 
     item_id = _extract_created_task_id(result)
     id_source = "create_response" if item_id else ""
@@ -265,13 +290,19 @@ async def _run_post_create_assignments(
             for row in reversed(rows):
                 if not isinstance(row, dict):
                     continue
-                rid = str(row.get("id") or row.get("itemId") or row.get("taskId") or row.get("_id") or "").strip()
+                rid = str(
+                    row.get("id") or row.get("itemId") or row.get("taskId") or row.get("_id") or ""
+                ).strip()
                 if not rid:
                     continue
                 row_group = str(
                     row.get("groupId")
                     or row.get("group_id")
-                    or ((row.get("group") or {}).get("id") if isinstance(row.get("group"), dict) else "")
+                    or (
+                        (row.get("group") or {}).get("id")
+                        if isinstance(row.get("group"), dict)
+                        else ""
+                    )
                     or ""
                 ).strip()
                 row_title = str(row.get("name") or row.get("title") or "").strip().lower()
@@ -286,7 +317,13 @@ async def _run_post_create_assignments(
                 for row in reversed(rows):
                     if not isinstance(row, dict):
                         continue
-                    rid = str(row.get("id") or row.get("itemId") or row.get("taskId") or row.get("_id") or "").strip()
+                    rid = str(
+                        row.get("id")
+                        or row.get("itemId")
+                        or row.get("taskId")
+                        or row.get("_id")
+                        or ""
+                    ).strip()
                     if rid:
                         item_id = rid
                         id_source = "list_latest_fallback"
@@ -300,7 +337,9 @@ async def _run_post_create_assignments(
             "field_values_attempted": dict(field_values),
         }
 
-    patched = await plaky.patch_item_field_values(board_id, item_id, field_values, person_field_keys=person_field_keys)
+    patched = await plaky.patch_item_field_values(
+        board_id, item_id, field_values, person_field_keys=person_field_keys
+    )
     if isinstance(patched, dict):
         patched["item_id"] = item_id
         patched["item_id_source"] = id_source
@@ -312,7 +351,11 @@ async def _run_post_create_assignments(
                     patched["board_item"] = refreshed["item"]
             except Exception:
                 pass
-    return patched if isinstance(patched, dict) else {"ok": False, "message": "Unexpected patch response"}
+    return (
+        patched
+        if isinstance(patched, dict)
+        else {"ok": False, "message": "Unexpected patch response"}
+    )
 
 
 def _http_placement_ids(req: CreateTaskInput) -> tuple[str, str]:
@@ -345,7 +388,9 @@ def _board_id_from_create_result(result: dict | None) -> str:
     return ""
 
 
-def _schema_field_maps(schema_normalized: Optional[dict]) -> tuple[dict[str, str], dict[str, dict[Any, str]]]:
+def _schema_field_maps(
+    schema_normalized: dict | None,
+) -> tuple[dict[str, str], dict[str, dict[Any, str]]]:
     labels: dict[str, str] = {}
     option_labels: dict[str, dict[Any, str]] = {}
     if not isinstance(schema_normalized, dict):
@@ -415,21 +460,29 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
     filters = req.filters if isinstance(req.filters, dict) else {}
 
     raw_title = (req.title or "").strip() or str(filters.get("title") or "").strip()
-    raw_description = (req.description or "").strip() or str(filters.get("description") or "").strip()
+    raw_description = (req.description or "").strip() or str(
+        filters.get("description") or ""
+    ).strip()
     raw_status = (req.status or "").strip() or str(filters.get("status") or "").strip()
-    raw_task_type = (req.task_type or "").strip() or str(filters.get("type") or filters.get("task_type") or "").strip()
+    raw_task_type = (req.task_type or "").strip() or str(
+        filters.get("type") or filters.get("task_type") or ""
+    ).strip()
     raw_priority = (req.priority or "").strip() or str(filters.get("priority") or "").strip()
     canon_status = canonical_task_status(raw_status)
     canon_type = canonical_task_type(raw_task_type)
     canon_priority = canonical_task_priority(raw_priority)
-    engineer_plaky_id = (req.engineer_plaky_id or "").strip() or str(filters.get("engineer_plaky_id") or "").strip()
+    engineer_plaky_id = (req.engineer_plaky_id or "").strip() or str(
+        filters.get("engineer_plaky_id") or ""
+    ).strip()
     qa_plaky_id = (req.qa_plaky_id or "").strip() or str(filters.get("qa_plaky_id") or "").strip()
     if not raw_title:
         return {"ok": False, "status": 400, "message": "title is required"}
 
     title = raw_title
     primary_repo = str(filters.get("repo") or "").strip()
-    merged_repos = _merge_github_repo_inputs(primary_repo=primary_repo, extra_repos=req.github_repos, filters=filters)
+    merged_repos = _merge_github_repo_inputs(
+        primary_repo=primary_repo, extra_repos=req.github_repos, filters=filters
+    )
     repo_full = merged_repos[0] if merged_repos else ""
     repo_display = repo_full
     qa_field_fallback = (settings.plaky_qa_item_field_key or "").strip()
@@ -447,7 +500,11 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
                 gr = await plaky.list_groups(effective_board_id)
                 groups = gr.get("groups") if isinstance(gr, dict) else []
                 if isinstance(groups, list) and groups:
-                    gid0 = str(groups[0].get("id") or "").strip() if isinstance(groups[0], dict) else ""
+                    gid0 = (
+                        str(groups[0].get("id") or "").strip()
+                        if isinstance(groups[0], dict)
+                        else ""
+                    )
                     if gid0:
                         effective_group_id = gid0
         except Exception:
@@ -471,13 +528,21 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
 
     allowed_board_keys = _allowed_item_field_keys_from_schema(schema_normalized)
     cfg = load_team_assignments()
-    cfg_engineer_key = _scrub_placeholder_field_key((cfg.plaky_field_engineer or "").strip(), allowed_board_keys=allowed_board_keys)
-    cfg_qa_key = _scrub_placeholder_field_key((cfg.plaky_field_qa or "").strip(), allowed_board_keys=allowed_board_keys)
-    cfg_repo_key = _scrub_placeholder_field_key((cfg.plaky_field_repo or "").strip(), allowed_board_keys=allowed_board_keys)
+    cfg_engineer_key = _scrub_placeholder_field_key(
+        (cfg.plaky_field_engineer or "").strip(), allowed_board_keys=allowed_board_keys
+    )
+    cfg_qa_key = _scrub_placeholder_field_key(
+        (cfg.plaky_field_qa or "").strip(), allowed_board_keys=allowed_board_keys
+    )
+    cfg_repo_key = _scrub_placeholder_field_key(
+        (cfg.plaky_field_repo or "").strip(), allowed_board_keys=allowed_board_keys
+    )
     cfg_github_repos_key = _scrub_placeholder_field_key(
         (cfg.plaky_field_github_repos or "").strip(), allowed_board_keys=allowed_board_keys
     )
-    qa_env_fallback = _scrub_placeholder_field_key((qa_field_fallback or "").strip(), allowed_board_keys=allowed_board_keys)
+    qa_env_fallback = _scrub_placeholder_field_key(
+        (qa_field_fallback or "").strip(), allowed_board_keys=allowed_board_keys
+    )
     # Board schema wins over global config: category boards use different person
     # keys per board (e.g. Assignee is person-2 on one board, person-4 on another),
     # and a global key can exist on the target board while naming the wrong column.
@@ -495,13 +560,21 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
         engineer_field_key, qa_field_key = await _infer_plaky_person_column_keys(
             effective_board_id, engineer_field_key, qa_field_key, normalized=schema_normalized
         )
-    engineer_field_key = _scrub_placeholder_field_key(engineer_field_key, allowed_board_keys=allowed_board_keys)
+    engineer_field_key = _scrub_placeholder_field_key(
+        engineer_field_key, allowed_board_keys=allowed_board_keys
+    )
     qa_field_key = _scrub_placeholder_field_key(qa_field_key, allowed_board_keys=allowed_board_keys)
 
     repo_plaky_key = (cfg_repo_key or inferred_from_schema.get("repo") or "").strip()
-    github_repos_plaky_key = (cfg_github_repos_key or inferred_from_schema.get("github_repos") or "").strip()
-    repo_plaky_key = _scrub_placeholder_field_key(repo_plaky_key, allowed_board_keys=allowed_board_keys)
-    github_repos_plaky_key = _scrub_placeholder_field_key(github_repos_plaky_key, allowed_board_keys=allowed_board_keys)
+    github_repos_plaky_key = (
+        cfg_github_repos_key or inferred_from_schema.get("github_repos") or ""
+    ).strip()
+    repo_plaky_key = _scrub_placeholder_field_key(
+        repo_plaky_key, allowed_board_keys=allowed_board_keys
+    )
+    github_repos_plaky_key = _scrub_placeholder_field_key(
+        github_repos_plaky_key, allowed_board_keys=allowed_board_keys
+    )
 
     repo_val_fmt = plaky_repo_field_value_format(schema_normalized, repo_plaky_key)
     gh_repos_val_fmt = plaky_repo_field_value_format(schema_normalized, github_repos_plaky_key)
@@ -554,7 +627,9 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
     tag_keys = {k.strip() for k in (repo_plaky_key, github_repos_plaky_key) if (k or "").strip()}
     tag_resolution_warnings: list[dict[str, Any]] = []
     if tag_keys and isinstance(schema_normalized, dict):
-        _, tag_resolution_warnings = resolve_repo_tag_field_values_from_schema(field_values, schema_normalized, keys=tag_keys)
+        _, tag_resolution_warnings = resolve_repo_tag_field_values_from_schema(
+            field_values, schema_normalized, keys=tag_keys
+        )
 
     person_keys = _person_item_field_keys_from_normalized(schema_normalized)
     async with plaky_placement_context(effective_board_id or None, effective_group_id or None):
@@ -612,7 +687,9 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
         return {"ok": False, "status": 400, "message": "parent_task_id is required"}
     if not title:
         return {"ok": False, "status": 400, "message": "title is required"}
-    merged_repos = _merge_github_repo_inputs(primary_repo="", extra_repos=req.github_repos, filters={})
+    merged_repos = _merge_github_repo_inputs(
+        primary_repo="", extra_repos=req.github_repos, filters={}
+    )
     repo_full = merged_repos[0] if merged_repos else ""
 
     schema_normalized: dict[str, Any] | None = None
@@ -633,9 +710,15 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
 
     allowed_board_keys = _allowed_item_field_keys_from_schema(schema_normalized)
     cfg = load_team_assignments()
-    cfg_engineer_key = _scrub_placeholder_field_key((cfg.plaky_field_engineer or "").strip(), allowed_board_keys=allowed_board_keys)
-    cfg_qa_key = _scrub_placeholder_field_key((cfg.plaky_field_qa or "").strip(), allowed_board_keys=allowed_board_keys)
-    cfg_repo_key = _scrub_placeholder_field_key((cfg.plaky_field_repo or "").strip(), allowed_board_keys=allowed_board_keys)
+    cfg_engineer_key = _scrub_placeholder_field_key(
+        (cfg.plaky_field_engineer or "").strip(), allowed_board_keys=allowed_board_keys
+    )
+    cfg_qa_key = _scrub_placeholder_field_key(
+        (cfg.plaky_field_qa or "").strip(), allowed_board_keys=allowed_board_keys
+    )
+    cfg_repo_key = _scrub_placeholder_field_key(
+        (cfg.plaky_field_repo or "").strip(), allowed_board_keys=allowed_board_keys
+    )
     cfg_github_repos_key = _scrub_placeholder_field_key(
         (cfg.plaky_field_github_repos or "").strip(), allowed_board_keys=allowed_board_keys
     )
@@ -652,13 +735,21 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
         engineer_field_key, qa_field_key = await _infer_plaky_person_column_keys(
             board_id, engineer_field_key, qa_field_key, normalized=schema_normalized
         )
-    engineer_field_key = _scrub_placeholder_field_key(engineer_field_key, allowed_board_keys=allowed_board_keys)
+    engineer_field_key = _scrub_placeholder_field_key(
+        engineer_field_key, allowed_board_keys=allowed_board_keys
+    )
     qa_field_key = _scrub_placeholder_field_key(qa_field_key, allowed_board_keys=allowed_board_keys)
 
     repo_plaky_key = (cfg_repo_key or inferred_from_schema.get("repo") or "").strip()
-    github_repos_plaky_key = (cfg_github_repos_key or inferred_from_schema.get("github_repos") or "").strip()
-    repo_plaky_key = _scrub_placeholder_field_key(repo_plaky_key, allowed_board_keys=allowed_board_keys)
-    github_repos_plaky_key = _scrub_placeholder_field_key(github_repos_plaky_key, allowed_board_keys=allowed_board_keys)
+    github_repos_plaky_key = (
+        cfg_github_repos_key or inferred_from_schema.get("github_repos") or ""
+    ).strip()
+    repo_plaky_key = _scrub_placeholder_field_key(
+        repo_plaky_key, allowed_board_keys=allowed_board_keys
+    )
+    github_repos_plaky_key = _scrub_placeholder_field_key(
+        github_repos_plaky_key, allowed_board_keys=allowed_board_keys
+    )
     repo_val_fmt = plaky_repo_field_value_format(schema_normalized, repo_plaky_key)
     gh_repos_val_fmt = plaky_repo_field_value_format(schema_normalized, github_repos_plaky_key)
 
@@ -783,7 +874,9 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
     needs_board_lookup = wants_board_patch
     if needs_board_lookup and not board_id:
         got = await plaky.get_task(task_id)
-        task = got.get("task") if isinstance(got, dict) and isinstance(got.get("task"), dict) else {}
+        task = (
+            got.get("task") if isinstance(got, dict) and isinstance(got.get("task"), dict) else {}
+        )
         board_id = _board_id_from_task_payload(task)
     if needs_board_lookup and not board_id:
         board_id = (get_context_plaky_board_id() or "").strip()
@@ -806,7 +899,9 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
 
         allowed_board_keys = _allowed_item_field_keys_from_schema(schema_normalized)
         cfg = load_team_assignments()
-        qa_field_key = _scrub_placeholder_field_key((cfg.plaky_field_qa or "").strip(), allowed_board_keys=allowed_board_keys)
+        qa_field_key = _scrub_placeholder_field_key(
+            (cfg.plaky_field_qa or "").strip(), allowed_board_keys=allowed_board_keys
+        )
         engineer_field_key = _scrub_placeholder_field_key(
             update_engineer_key_raw or (cfg.plaky_field_engineer or "").strip(),
             allowed_board_keys=allowed_board_keys,
@@ -814,8 +909,12 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
         engineer_field_key, qa_field_key = await _infer_plaky_person_column_keys(
             board_id, engineer_field_key, qa_field_key, normalized=schema_normalized
         )
-        qa_field_key = _scrub_placeholder_field_key(qa_field_key, allowed_board_keys=allowed_board_keys)
-        engineer_field_key = _scrub_placeholder_field_key(engineer_field_key, allowed_board_keys=allowed_board_keys)
+        qa_field_key = _scrub_placeholder_field_key(
+            qa_field_key, allowed_board_keys=allowed_board_keys
+        )
+        engineer_field_key = _scrub_placeholder_field_key(
+            engineer_field_key, allowed_board_keys=allowed_board_keys
+        )
 
         field_values: dict[str, Any] = {}
         if update_qa and qa_field_key:
@@ -843,21 +942,25 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
             )
         pairs = (
             status_pair,
-            select_field_patch_pair_from_schema(
-                schema_normalized,
-                column_name_substrings=("type", "issue type", "category", "kind"),
-                value_label_candidates=type_field_patch_candidates(canon_type),
-                exclude_name_substrings=("subtype",),
-            )
-            if canon_type
-            else None,
-            select_field_patch_pair_from_schema(
-                schema_normalized,
-                column_name_substrings=("priority", "prio"),
-                value_label_candidates=priority_field_patch_candidates(canon_priority),
-            )
-            if canon_priority
-            else None,
+            (
+                select_field_patch_pair_from_schema(
+                    schema_normalized,
+                    column_name_substrings=("type", "issue type", "category", "kind"),
+                    value_label_candidates=type_field_patch_candidates(canon_type),
+                    exclude_name_substrings=("subtype",),
+                )
+                if canon_type
+                else None
+            ),
+            (
+                select_field_patch_pair_from_schema(
+                    schema_normalized,
+                    column_name_substrings=("priority", "prio"),
+                    value_label_candidates=priority_field_patch_candidates(canon_priority),
+                )
+                if canon_priority
+                else None
+            ),
         )
         for pair in pairs:
             if pair:
@@ -875,9 +978,16 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
             patch["field_values_attempted"] = dict(field_values)
             ops["field_patch"] = patch
         else:
-            ops["field_patch"] = {"ok": True, "skipped": True, "message": "No board fields requested"}
+            ops["field_patch"] = {
+                "ok": True,
+                "skipped": True,
+                "message": "No board fields requested",
+            }
     elif wants_board_patch:
-        ops["field_patch"] = {"ok": False, "message": "Board id required for QA/status/type/priority updates"}
+        ops["field_patch"] = {
+            "ok": False,
+            "message": "Board id required for QA/status/type/priority updates",
+        }
 
     if update_status_raw and not status_added_to_field_values:
         legacy = await plaky.update_task_fields(task_id, status=update_status_raw)

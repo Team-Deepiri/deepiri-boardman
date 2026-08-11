@@ -145,8 +145,12 @@ async def test_build_assignment_field_map_empty_override_disables_qa(monkeypatch
         ],
         random_jitter=0.0,
     )
-    m = await build_assignment_field_map("Team-Deepiri/deepiri-platform", cfg, plaky_field_qa_key="")
+    m = await build_assignment_field_map(
+        "Team-Deepiri/deepiri-platform", cfg, plaky_field_qa_key=""
+    )
     assert "person-4" not in m  # global key must not leak through
 
-    m2 = await build_assignment_field_map("Team-Deepiri/deepiri-platform", cfg, plaky_field_qa_key=None)
+    m2 = await build_assignment_field_map(
+        "Team-Deepiri/deepiri-platform", cfg, plaky_field_qa_key=None
+    )
     assert m2.get("person-4") == "plaky-qa-1"  # None keeps legacy behavior

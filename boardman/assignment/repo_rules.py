@@ -9,13 +9,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
-from typing import List
 
 
 @dataclass
 class QaRepoRules:
-    tier2_excluded_patterns: List[str] = field(default_factory=list)
-    tier1_only_patterns: List[str] = field(default_factory=list)
+    tier2_excluded_patterns: list[str] = field(default_factory=list)
+    tier1_only_patterns: list[str] = field(default_factory=list)
 
 
 def default_qa_repo_rules() -> QaRepoRules:
@@ -40,7 +39,7 @@ def _norm_fn(full: str) -> str:
     return (full or "").strip().lower()
 
 
-def repo_matches_any_pattern(full_name: str, patterns: List[str]) -> bool:
+def repo_matches_any_pattern(full_name: str, patterns: list[str]) -> bool:
     fn = _norm_fn(full_name)
     if not fn or not patterns:
         return False

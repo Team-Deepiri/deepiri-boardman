@@ -1,8 +1,5 @@
-from alembic.config import Config
 from alembic import command
-from alembic.script import ScriptDirectory
-
-from boardman.settings import settings
+from alembic.config import Config
 
 
 def get_revision() -> str:

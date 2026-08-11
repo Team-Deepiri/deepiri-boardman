@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-from typing import Any, List, Optional, Tuple
 
 import httpx
 
@@ -11,18 +10,24 @@ from boardman.settings import settings
 
 
 async def github_request(client: httpx.AsyncClient, path: str) -> httpx.Response:
-    headers = {"Authorization": f"Bearer {settings.github_pat}", "Accept": "application/vnd.github+json"}
+    headers = {
+        "Authorization": f"Bearer {settings.github_pat}",
+        "Accept": "application/vnd.github+json",
+    }
     # follow_redirects: renamed repos return 301 to the new owner/name; without this every
     # helper sees the bare 301 and reports the repo as inaccessible.
     return await client.get(f"https://api.github.com{path}", headers=headers, follow_redirects=True)
 
 
 def github_request_sync(client: httpx.Client, path: str) -> httpx.Response:
-    headers = {"Authorization": f"Bearer {settings.github_pat}", "Accept": "application/vnd.github+json"}
+    headers = {
+        "Authorization": f"Bearer {settings.github_pat}",
+        "Accept": "application/vnd.github+json",
+    }
     return client.get(f"https://api.github.com{path}", headers=headers, follow_redirects=True)
 
 
-def _parse_owner_repo(owner_repo: str) -> Optional[Tuple[str, str]]:
+def _parse_owner_repo(owner_repo: str) -> tuple[str, str] | None:
     s = (owner_repo or "").strip()
     if "/" not in s:
         return None
@@ -47,14 +52,16 @@ async def fetch_direction_md(client: httpx.AsyncClient, owner: str, repo: str) -
     return "(Could not decode DIRECTION.md)"
 
 
-async def fetch_recent_commits(client: httpx.AsyncClient, owner: str, repo: str, limit: int = 20) -> str:
+async def fetch_recent_commits(
+    client: httpx.AsyncClient, owner: str, repo: str, limit: int = 20
+) -> str:
     r = await github_request(client, f"/repos/{owner}/{repo}/commits?per_page={limit}")
     if r.status_code != 200:
         return f"(commits unavailable: {r.status_code})"
     commits = r.json()
     if not isinstance(commits, list):
         return "(commits: unexpected response)"
-    lines: List[str] = []
+    lines: list[str] = []
     for c in commits[:limit]:
         sha = (c.get("sha") or "")[:7]
         msg = (c.get("commit") or {}).get("message", "").split("\n")[0]
@@ -69,7 +76,7 @@ async def fetch_open_issues(client: httpx.AsyncClient, owner: str, repo: str) ->
     issues = r.json()
     if not isinstance(issues, list):
         return "(issues: unexpected response)"
-    lines: List[str] = []
+    lines: list[str] = []
     for i in issues:
         if "pull_request" in i:
             continue
@@ -147,5 +154,5 @@ async def fetch_default_branch(client: httpx.AsyncClient, owner: str, repo: str)
     return "main"
 
 
-def parse_owner_repo(owner_repo: str) -> Optional[Tuple[str, str]]:
+def parse_owner_repo(owner_repo: str) -> tuple[str, str] | None:
     return _parse_owner_repo(owner_repo)

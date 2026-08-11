@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from typing import Any, List
+from datetime import UTC, datetime
+from typing import Any
 
 import pytest
 
@@ -11,7 +11,7 @@ from boardman.github.qa_activity_inference import infer_qa_tier_from_pr_activity
 
 
 class _FakeResponse:
-    def __init__(self, items: List[dict[str, Any]]):
+    def __init__(self, items: list[dict[str, Any]]):
         self.status_code = 200
         self._items = items
 
@@ -22,9 +22,9 @@ class _FakeResponse:
 class _FakeClient:
     """Returns PRs for author query page 1, empty for other pages/queries."""
 
-    def __init__(self, author_items: List[dict[str, Any]]):
+    def __init__(self, author_items: list[dict[str, Any]]):
         self._author_items = author_items
-        self.urls: List[str] = []
+        self.urls: list[str] = []
 
     async def get(self, url: str, headers: dict | None = None) -> _FakeResponse:
         self.urls.append(url)
@@ -35,7 +35,7 @@ class _FakeClient:
 
 
 def _pr_item(repo: str = "org/heavy", num: int = 1, updated: str | None = None) -> dict[str, Any]:
-    now = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    now = datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     return {
         "repository_url": f"https://api.github.com/repos/{repo}",
         "number": num,

@@ -12,7 +12,9 @@ from boardman.plaky.dynamic_qa_status import (
 
 
 @pytest.mark.asyncio
-async def test_resolve_github_approve_prefers_qa_verified_phrase(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_github_approve_prefers_qa_verified_phrase(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     normalized = {
         "fields": [
             {
@@ -43,7 +45,9 @@ async def test_resolve_github_approve_prefers_qa_verified_phrase(monkeypatch: py
 
 
 @pytest.mark.asyncio
-async def test_resolve_changes_requested_prefers_qa_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_changes_requested_prefers_qa_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     normalized = {
         "fields": [
             {
@@ -144,7 +148,9 @@ async def test_resolve_new_workflow_intents(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 @pytest.mark.asyncio
-async def test_resolve_github_user_prefers_plaky_github_link(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_github_user_prefers_plaky_github_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     users = [
         {"id": "by-github", "name": "Other", "email": "other@x.com", "github_login": "DevLogin"},
         {"id": "by-email", "name": "Dev Person", "email": "dev@company.com"},
@@ -162,7 +168,9 @@ async def test_resolve_github_user_prefers_plaky_github_link(monkeypatch: pytest
 
 
 @pytest.mark.asyncio
-async def test_resolve_github_user_fuzzy_when_no_github_link(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_resolve_github_user_fuzzy_when_no_github_link(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     users = [
         {
             "id": "plaky-jane",

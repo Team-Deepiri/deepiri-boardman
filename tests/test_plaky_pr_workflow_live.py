@@ -38,14 +38,19 @@ from boardman.github.webhooks import (
     PullRequestReviewCommentEventPayload,
     PullRequestReviewEventPayload,
 )
+from boardman.main import create_app
 from boardman.plaky.client import PlakyClient, _headers
-from boardman.plaky.dynamic_qa_status import discover_qa_assignee_field_key, resolve_plaky_status_patch
+from boardman.plaky.dynamic_qa_status import (
+    discover_qa_assignee_field_key,
+    resolve_plaky_status_patch,
+)
 from boardman.repos_config import RepoRouting
 from boardman.services.pr_handler import handle_pr_opened, handle_pr_review_comment
-from boardman.services.pr_review_handler import handle_issue_comment_on_pr, handle_pull_request_review
+from boardman.services.pr_review_handler import (
+    handle_issue_comment_on_pr,
+    handle_pull_request_review,
+)
 from boardman.settings import settings
-from boardman.main import create_app
-
 from tests.plaky_test_board import resolve_boardman_test_board_id, resolve_boardman_test_group_id
 
 pytestmark = [pytest.mark.plaky_live, pytest.mark.plaky_pr_workflow_live]
@@ -135,7 +140,9 @@ async def _create_live_task(_plaky: PlakyClient, board_id: str, group_id: str, t
     cr = r.json()
     assert cr.get("ok") is True, cr
     task = cr.get("task") or {}
-    task_id = str(task.get("id") or task.get("taskId") or task.get("itemId") or cr.get("task_id") or "").strip()
+    task_id = str(
+        task.get("id") or task.get("taskId") or task.get("itemId") or cr.get("task_id") or ""
+    ).strip()
     assert task_id, f"could not resolve task id from create_task: {task!r}"
     return task_id
 
@@ -255,7 +262,9 @@ async def test_live_issue_comment_by_plaky_assigned_qa_sets_in_qa(
     if not qa_field:
         qa_field = (await discover_qa_assignee_field_key(board_id)) or ""
     if not qa_field:
-        pytest.skip("Set PLAKY_QA_ITEM_FIELD_KEY or use a board with a discoverable QA person column")
+        pytest.skip(
+            "Set PLAKY_QA_ITEM_FIELD_KEY or use a board with a discoverable QA person column"
+        )
 
     rp = await resolve_plaky_status_patch(board_id, intent="workflow_in_qa")
     if not rp:
@@ -298,7 +307,9 @@ async def test_live_issue_comment_by_plaky_assigned_qa_sets_in_qa(
 
     payload = IssueCommentEventPayload(
         action="created",
-        issue=IssueCommentIssuePayload(number=pr_number, pull_request={"url": "http://api.github.com"}),
+        issue=IssueCommentIssuePayload(
+            number=pr_number, pull_request={"url": "http://api.github.com"}
+        ),
         comment={"user": {"login": member_login}, "body": "live test: QA on thread"},
         repository=GitHubRepository(full_name=f"deepiri-org/{repo_short}", name=repo_short),
     )
@@ -312,7 +323,9 @@ async def test_live_issue_comment_by_plaky_assigned_qa_sets_in_qa(
     assert updated and all(u.get("plaky", {}).get("ok") for u in updated), out
 
     blob = (await _public_item_blob(c, board_id, task_id)).casefold()
-    assert in_qa_option_id.casefold() in blob, f"expected status option {in_qa_option_id!r} on task {task_id}; snippet={blob[:800]}"
+    assert (
+        in_qa_option_id.casefold() in blob
+    ), f"expected status option {in_qa_option_id!r} on task {task_id}; snippet={blob[:800]}"
 
     await engine.dispose()
 
@@ -390,9 +403,9 @@ async def test_live_pull_request_review_submitted_approved_on_plaky(
     assert updated and all(u.get("plaky", {}).get("ok") for u in updated), out
 
     blob = (await _public_item_blob(c, board_id, task_id)).casefold()
-    assert approved_option_id.casefold() in blob, (
-        f"expected status option {approved_option_id!r} on task {task_id}; snippet={blob[:800]}"
-    )
+    assert (
+        approved_option_id.casefold() in blob
+    ), f"expected status option {approved_option_id!r} on task {task_id}; snippet={blob[:800]}"
 
     await engine.dispose()
 
@@ -420,7 +433,9 @@ async def test_live_pr_review_comment_by_assigned_qa_sets_in_qa(
     if not qa_field:
         qa_field = (await discover_qa_assignee_field_key(board_id)) or ""
     if not qa_field:
-        pytest.skip("Set PLAKY_QA_ITEM_FIELD_KEY or use a board with a discoverable QA person column")
+        pytest.skip(
+            "Set PLAKY_QA_ITEM_FIELD_KEY or use a board with a discoverable QA person column"
+        )
 
     rp = await resolve_plaky_status_patch(board_id, intent="workflow_in_qa")
     if not rp:
@@ -480,7 +495,11 @@ async def test_live_pr_review_comment_by_assigned_qa_sets_in_qa(
     assert upd, out
 
     blob = (await _public_item_blob(c, board_id, task_id)).casefold()
-    assert in_qa_option_id.casefold() in blob, f"expected {in_qa_option_id!r} on task {task_id}; snippet={blob[:800]}"
-    assert "pr comment" in blob, f"expected Plaky note comment on task {task_id}; snippet={blob[:800]}"
+    assert (
+        in_qa_option_id.casefold() in blob
+    ), f"expected {in_qa_option_id!r} on task {task_id}; snippet={blob[:800]}"
+    assert (
+        "pr comment" in blob
+    ), f"expected Plaky note comment on task {task_id}; snippet={blob[:800]}"
 
     await engine.dispose()

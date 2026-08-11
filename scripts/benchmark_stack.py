@@ -24,12 +24,11 @@ Env:
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 import httpx
 
@@ -58,13 +57,13 @@ def _fmt_ms(seconds: float) -> str:
     return f"{seconds * 1000.0:.1f} ms"
 
 
-async def _time(coro) -> Tuple[Any, float]:
+async def _time(coro) -> tuple[Any, float]:
     t0 = time.perf_counter()
     out = await coro
     return out, time.perf_counter() - t0
 
 
-async def ollama_tags(base: str) -> Tuple[Optional[dict], float]:
+async def ollama_tags(base: str) -> tuple[dict | None, float]:
     url = f"{base.rstrip('/')}/api/tags"
     async with httpx.AsyncClient(timeout=10.0) as client:
         return await _time(client.get(url))
@@ -76,9 +75,9 @@ async def ollama_chat(
     *,
     num_predict: int = 24,
     keep_alive: str = "",
-) -> Tuple[Any, float]:
+) -> tuple[Any, float]:
     url = f"{base.rstrip('/')}/api/chat"
-    body: Dict[str, Any] = {
+    body: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": "Reply with exactly one word: OK"}],
         "stream": False,
@@ -90,7 +89,7 @@ async def ollama_chat(
         return await _time(client.post(url, json=body))
 
 
-def _pick_model(tags_json: Optional[dict]) -> Optional[str]:
+def _pick_model(tags_json: dict | None) -> str | None:
     if not tags_json:
         return None
     models = (tags_json.get("models") or []) if isinstance(tags_json, dict) else []
@@ -106,13 +105,13 @@ def _pick_model(tags_json: Optional[dict]) -> Optional[str]:
     return names[0]
 
 
-async def boardman_health(url: str) -> Tuple[Optional[httpx.Response], float]:
+async def boardman_health(url: str) -> tuple[httpx.Response | None, float]:
     h = url.rstrip("/")
     async with httpx.AsyncClient(timeout=15.0) as client:
         return await _time(client.get(f"{h}/api/v1/health"))
 
 
-async def boardman_agent_ping(url: str) -> Tuple[Optional[httpx.Response], float]:
+async def boardman_agent_ping(url: str) -> tuple[httpx.Response | None, float]:
     h = url.rstrip("/")
     payload = {
         "message": "Reply with exactly the word PING and nothing else.",
@@ -129,9 +128,9 @@ async def amain() -> int:
     from boardman.llm.completion import chat_complete
     from boardman.settings import settings
 
-    ollama_base = (os.environ.get("OLLAMA_BASE_URL") or settings.ollama_base_url or "http://127.0.0.1:11434").rstrip(
-        "/"
-    )
+    ollama_base = (
+        os.environ.get("OLLAMA_BASE_URL") or settings.ollama_base_url or "http://127.0.0.1:11434"
+    ).rstrip("/")
     boardman_url = (os.environ.get("BOARDMAN_API_URL") or "http://127.0.0.1:8090").rstrip("/")
     nginx_url = (os.environ.get("BOARDMAN_NGINX_URL") or "").strip().rstrip("/")
     skip_agent = (os.environ.get("SKIP_AGENT_HTTP") or "").strip() in ("1", "true", "yes")
@@ -140,7 +139,7 @@ async def amain() -> int:
     cold = os.environ.get("BOARDMAN_STACK_COLD_START", "").strip().lower() in ("1", "true", "yes")
     ka = (settings.ollama_keep_alive or "").strip()
 
-    lines: List[str] = []
+    lines: list[str] = []
     lines.append("=== Boardman stack latency probe ===")
     lines.append(f"Ollama:     {ollama_base}")
     lines.append(f"Boardman:   {boardman_url}")
@@ -150,7 +149,9 @@ async def amain() -> int:
 
     # --- Ollama ---
     r_tags, t_tags = await ollama_tags(ollama_base)
-    lines.append(f"[Ollama] GET /api/tags     {_fmt_ms(t_tags)}  HTTP {getattr(r_tags, 'status_code', '?')}")
+    lines.append(
+        f"[Ollama] GET /api/tags     {_fmt_ms(t_tags)}  HTTP {getattr(r_tags, 'status_code', '?')}"
+    )
     if r_tags is None or r_tags.status_code != 200:
         lines.append("  → Ollama unreachable; stop here for GPU/API checks.")
         print("\n".join(lines), flush=True)
@@ -174,7 +175,7 @@ async def amain() -> int:
         lines.append(f"[Ollama] POST /api/chat #2 warm                        {_fmt_ms(t2)}")
         if t1 > 0 and t2 > 0 and t1 > t2 * 2.5:
             lines.append(
-                f"  → #1 >> #2: model/GPU load. Use OLLAMA_KEEP_ALIVE; compose OLLAMA_KEEP_ALIVE=30m."
+                "  → #1 >> #2: model/GPU load. Use OLLAMA_KEEP_ALIVE; compose OLLAMA_KEEP_ALIVE=30m."
             )
     else:
         await ollama_chat(ollama_base, model, num_predict=np_b, keep_alive=ka)
@@ -208,12 +209,16 @@ async def amain() -> int:
         sn = rn.status_code if rn is not None else None
         lines.append(f"[HTTP] GET {nginx_url}/api/v1/health (via nginx)  {_fmt_ms(tn)}  HTTP {sn}")
         if sc == 200 and sn == 200 and abs(tn - th) > 0.05:
-            lines.append(f"  → Direct vs nginx health delta {_fmt_ms(abs(tn - th))} (usually tiny).")
+            lines.append(
+                f"  → Direct vs nginx health delta {_fmt_ms(abs(tn - th))} (usually tiny)."
+            )
 
     if not skip_agent and sc == 200:
         ra, ta = await boardman_agent_ping(boardman_url)
         sa = ra.status_code if ra is not None else None
-        lines.append(f"[HTTP] POST .../agent/chat (plain, use_tools=false)  {_fmt_ms(ta)}  HTTP {sa}")
+        lines.append(
+            f"[HTTP] POST .../agent/chat (plain, use_tools=false)  {_fmt_ms(ta)}  HTTP {sa}"
+        )
         if ra is not None and ra.status_code == 200:
             try:
                 body = ra.json()
@@ -267,7 +272,7 @@ def main() -> None:
         raise SystemExit(asyncio.run(amain()))
     except KeyboardInterrupt:
         print("\nInterrupted.", file=sys.stderr)
-        raise SystemExit(130)
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":

@@ -5,7 +5,7 @@ issue comments (assignee/reviewer), fuzzy-linked PR task ids.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -13,22 +13,25 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember
 from boardman.database.models import Base, PullRequestTaskLink
 from boardman.github.webhooks import (
-    IssueCommentEventPayload,
-    IssueCommentIssuePayload,
     GitHubPullRequest,
     GitHubRepository,
+    GitHubReview,
+    IssueCommentEventPayload,
+    IssueCommentIssuePayload,
     PullRequestEventPayload,
     PullRequestReviewCommentEventPayload,
     PullRequestReviewEventPayload,
-    GitHubReview,
 )
+from boardman.repos_config import RepoRouting
 from boardman.services.pr_handler import (
     handle_pr_merged,
     handle_pr_review_comment,
     handle_pr_review_requested,
 )
-from boardman.services.pr_review_handler import handle_issue_comment_on_pr, handle_pull_request_review
-from boardman.repos_config import RepoRouting
+from boardman.services.pr_review_handler import (
+    handle_issue_comment_on_pr,
+    handle_pull_request_review,
+)
 from boardman.settings import settings
 
 
@@ -55,11 +58,11 @@ class RecordingPlaky:
     def __init__(self, *, qa_field: str = "fld_qa", qa_plaky_id: str = "qa-plaky-1"):
         self.qa_field = qa_field
         self.qa_plaky_id = qa_plaky_id
-        self.status_calls: List[tuple[str, str]] = []
-        self.comments: List[tuple[str, str]] = []
+        self.status_calls: list[tuple[str, str]] = []
+        self.comments: list[tuple[str, str]] = []
         self.board_id = "board-1"
 
-    async def get_board_item_public(self, board_id: str, item_id: str) -> Dict[str, Any]:
+    async def get_board_item_public(self, board_id: str, item_id: str) -> dict[str, Any]:
         return {
             "ok": True,
             "item": {
@@ -68,21 +71,23 @@ class RecordingPlaky:
             },
         }
 
-    async def get_task(self, task_id: str) -> Dict[str, Any]:
+    async def get_task(self, task_id: str) -> dict[str, Any]:
         return {"ok": True, "task": {"boardId": self.board_id, "id": task_id}}
 
-    async def update_task_fields(self, task_id: str, **kwargs: Any) -> Dict[str, Any]:
+    async def update_task_fields(self, task_id: str, **kwargs: Any) -> dict[str, Any]:
         st = kwargs.get("status")
         if st is not None:
             self.status_calls.append((task_id, str(st)))
         return {"ok": True}
 
-    async def patch_item_field_values(self, board_id: str, item_id: str, values: dict) -> Dict[str, Any]:
+    async def patch_item_field_values(
+        self, board_id: str, item_id: str, values: dict
+    ) -> dict[str, Any]:
         st = next(iter(values.values()), "")
         self.status_calls.append((item_id, str(st)))
         return {"ok": True}
 
-    async def add_comment(self, task_id: str, body: str, **kwargs: Any) -> Dict[str, Any]:
+    async def add_comment(self, task_id: str, body: str, **kwargs: Any) -> dict[str, Any]:
         self.comments.append((task_id, body))
         return {"ok": True}
 

@@ -1,11 +1,11 @@
 import json
 from pathlib import Path
 
-import boardman.plaky.client
-import boardman.settings as boardman_settings
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+import boardman.plaky.client
+import boardman.settings as boardman_settings
 from boardman.main import create_app
 
 
@@ -51,6 +51,7 @@ class TestPlakyClient:
     @pytest.mark.asyncio
     async def test_create_task_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
+
         c = PlakyClient(api_key=None)
         result = await c.create_task(title="Test", description="Desc")
         assert result["ok"] is False
@@ -59,6 +60,7 @@ class TestPlakyClient:
     @pytest.mark.asyncio
     async def test_get_tasks_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
+
         c = PlakyClient(api_key=None)
         result = await c.get_tasks()
         assert result["ok"] is False
@@ -67,6 +69,7 @@ class TestPlakyClient:
     @pytest.mark.asyncio
     async def test_get_task_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
+
         c = PlakyClient(api_key=None)
         result = await c.get_task("123")
         assert result["ok"] is False
@@ -75,6 +78,7 @@ class TestPlakyClient:
     @pytest.mark.asyncio
     async def test_add_comment_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
+
         c = PlakyClient(api_key=None)
         result = await c.add_comment("123", "comment")
         assert result["ok"] is False
@@ -130,13 +134,16 @@ class TestPlakyClient:
 
         from boardman.plaky.client import PlakyClient
 
-        r = await PlakyClient(api_key="x", base_url="https://api.plaky.com/v1/public").add_comment("99", "hi")
+        r = await PlakyClient(api_key="x", base_url="https://api.plaky.com/v1/public").add_comment(
+            "99", "hi"
+        )
         assert r["ok"] is True
         assert calls == ["board-found"]
 
     @pytest.mark.asyncio
     async def test_update_task_fields_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
+
         c = PlakyClient(api_key=None)
         result = await c.update_task_fields("123", title="New")
         assert result["ok"] is False
@@ -145,6 +152,7 @@ class TestPlakyClient:
     @pytest.mark.asyncio
     async def test_create_subtask_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
+
         c = PlakyClient(api_key=None)
         result = await c.create_subtask("123", "subtask")
         assert result["ok"] is False
@@ -153,6 +161,7 @@ class TestPlakyClient:
     @pytest.mark.asyncio
     async def test_get_board_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
+
         c = PlakyClient(api_key=None)
         result = await c.get_board("b1")
         assert result["ok"] is False
@@ -269,7 +278,9 @@ class TestPlakyTools:
         assert req.plaky_board_id == "board-from-context"
         assert req.plaky_group_id == "group-from-context"
 
-        await _plaky_create_subtask("task-2", "Write tests", board_id="explicit-board", group_id="explicit-group")
+        await _plaky_create_subtask(
+            "task-2", "Write tests", board_id="explicit-board", group_id="explicit-group"
+        )
         req2 = captured["req"]
         assert req2.parent_task_id == "task-2"
         assert req2.plaky_board_id == "explicit-board"
@@ -301,7 +312,9 @@ class TestPlakyTools:
             plaky_field_repo = ""
             plaky_field_github_repos = ""
 
-        monkeypatch.setattr("boardman.agent.tools.plaky_tools.fetch_board_schema_bundle", fake_bundle)
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.fetch_board_schema_bundle", fake_bundle
+        )
         monkeypatch.setattr("boardman.agent.tools.plaky_tools.create_task_internal", stub_create)
         monkeypatch.setattr(
             "boardman.agent.tools.plaky_tools.load_team_assignments", lambda: _StubCfg()
@@ -313,15 +326,9 @@ class TestPlakyTools:
         monkeypatch.setattr(
             "boardman.agent.tool_context.get_context_plaky_board_id", lambda: "board-x"
         )
-        monkeypatch.setattr(
-            "boardman.agent.tool_context.get_context_plaky_group_id", lambda: ""
-        )
-        monkeypatch.setattr(
-            "boardman.agent.tool_context.get_tool_db_session", lambda: None
-        )
-        monkeypatch.setattr(
-            "boardman.agent.tool_context.get_agent_session_pk", lambda: None
-        )
+        monkeypatch.setattr("boardman.agent.tool_context.get_context_plaky_group_id", lambda: "")
+        monkeypatch.setattr("boardman.agent.tool_context.get_tool_db_session", lambda: None)
+        monkeypatch.setattr("boardman.agent.tool_context.get_agent_session_pk", lambda: None)
 
         from boardman.agent.tools.plaky_tools import _plaky_create_task
 
@@ -383,7 +390,9 @@ class TestPlakyTools:
             plaky_field_repo = ""
             plaky_field_github_repos = ""
 
-        monkeypatch.setattr("boardman.agent.tools.plaky_tools.fetch_board_schema_bundle", fake_bundle)
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.fetch_board_schema_bundle", fake_bundle
+        )
         monkeypatch.setattr(
             "boardman.agent.tools.plaky_tools.load_team_assignments", lambda: _StubCfg()
         )
@@ -398,9 +407,7 @@ class TestPlakyTools:
 
         from boardman.agent.tools.plaky_tools import _plaky_patch_item_fields
 
-        raw = await _plaky_patch_item_fields(
-            "board-x", "item-1", '{"priority-key": "High"}'
-        )
+        raw = await _plaky_patch_item_fields("board-x", "item-1", '{"priority-key": "High"}')
         out = json.loads(raw)
         assert out["ok"] is True
         assert len(calls) == 1
@@ -436,7 +443,9 @@ class TestPlakyTools:
             plaky_field_repo = ""
             plaky_field_github_repos = ""
 
-        monkeypatch.setattr("boardman.agent.tools.plaky_tools.fetch_board_schema_bundle", fake_bundle)
+        monkeypatch.setattr(
+            "boardman.agent.tools.plaky_tools.fetch_board_schema_bundle", fake_bundle
+        )
         monkeypatch.setattr(
             "boardman.agent.tools.plaky_tools.load_team_assignments", lambda: _StubCfg()
         )
@@ -451,9 +460,7 @@ class TestPlakyTools:
 
         from boardman.agent.tools.plaky_tools import _plaky_patch_item_fields
 
-        raw = await _plaky_patch_item_fields(
-            "board-x", "item-1", '{"priority-key": "urgent"}'
-        )
+        raw = await _plaky_patch_item_fields("board-x", "item-1", '{"priority-key": "urgent"}')
         out = json.loads(raw)
         assert out["ok"] is False
         errors_text = " ".join(out.get("errors") or [])
@@ -492,12 +499,8 @@ class TestPlakyTools:
             "boardman.agent.tools.plaky_tools.PlakyClient.list_board_items",
             fake_list_items,
         )
-        monkeypatch.setattr(
-            "boardman.agent.tool_context.get_context_plaky_board_id", lambda: ""
-        )
-        monkeypatch.setattr(
-            "boardman.agent.tool_context.get_context_plaky_group_id", lambda: ""
-        )
+        monkeypatch.setattr("boardman.agent.tool_context.get_context_plaky_board_id", lambda: "")
+        monkeypatch.setattr("boardman.agent.tool_context.get_context_plaky_group_id", lambda: "")
 
         from boardman.agent.tools.plaky_tools import _plaky_review_board
 
@@ -510,9 +513,7 @@ class TestPlakyTools:
         clusters = out.get("duplicate_clusters") or []
         assert clusters and clusters[0]["title_key"] == "refactor agent runner"
         assert out["missing_acceptance_count"] >= 2
-        assert any(
-            "duplicate" in s.lower() for s in (out.get("recommended_actions") or [])
-        )
+        assert any("duplicate" in s.lower() for s in (out.get("recommended_actions") or []))
 
 
 _GITHUB_TOOL_NAMES = frozenset(
@@ -599,7 +600,11 @@ class TestRepoConfig:
         assert routing is None
 
     def test_get_routing_short_yaml_key(self, tmp_path, monkeypatch):
-        from boardman.repos_config import get_routing, reload_repos_config, repos_yaml_canonical_repo_key
+        from boardman.repos_config import (
+            get_routing,
+            reload_repos_config,
+            repos_yaml_canonical_repo_key,
+        )
         from boardman.settings import settings
 
         yml = tmp_path / "repos.yml"

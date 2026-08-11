@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Optional
+from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,9 +28,9 @@ from boardman.services.pr_task_registry import (
     mark_pr_withdrawn,
     upsert_pr_task_link,
 )
+from boardman.services.pr_tracker import remove_pr_row, upsert_pr_row
 from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
-from boardman.services.pr_tracker import upsert_pr_row, remove_pr_row
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -41,7 +41,7 @@ async def _update_plaky_task_status(
     status_value: str,
     board_id: str,
     *,
-    status_field_key: Optional[str] = None,
+    status_field_key: str | None = None,
 ) -> dict:
     """Apply status via the same path as PATCH /tasks (schema-aware field patch + legacy /tasks fallback)."""
     return await update_task_internal(
@@ -192,9 +192,7 @@ async def _maybe_set_needs_qa(
         return
     if is_draft and settings.plaky_skip_needs_qa_for_draft:
         return
-    await _update_plaky_task_status(
-        task_id, st, bid, status_field_key=status_field_key
-    )
+    await _update_plaky_task_status(task_id, st, bid, status_field_key=status_field_key)
     await maybe_enqueue_plaky_reorder_after_task(plaky, task_id)
 
 
@@ -288,6 +286,7 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
     linked_issues = await get_linked_issue_numbers(payload.pull_request.body)
 
     from boardman.repos_config import get_routing_async
+
     routing = await get_routing_async(full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
@@ -370,9 +369,11 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                         "score": pipe.score,
                         "reason": pipe.reason,
                         "detail": pipe.log_detail,
-                        "triage_comment": format_triage_comment(pipe.top_scored)
-                        if pipe.decision == "triage"
-                        else None,
+                        "triage_comment": (
+                            format_triage_comment(pipe.top_scored)
+                            if pipe.decision == "triage"
+                            else None
+                        ),
                     },
                     default=str,
                 ),
@@ -500,7 +501,11 @@ async def handle_pr_review_requested(
         if rp:
             in_qa_field_key, in_qa = rp[0], rp[1]
     if not in_qa:
-        return {"ok": True, "skipped": True, "message": "in_qa status not configured or discoverable"}
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "in_qa status not configured or discoverable",
+        }
 
     plaky = PlakyClient()
     for tid in task_ids:
@@ -627,12 +632,16 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
 
     from boardman.repos_config import get_routing_async
 
-    merge_routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
-    board_id_merge = (merge_routing.plaky_board_id if merge_routing and merge_routing.plaky_board_id else "") or ""
+    merge_routing = await get_routing_async(
+        payload.repository.full_name, repo_name, settings.github_org
+    )
+    board_id_merge = (
+        merge_routing.plaky_board_id if merge_routing and merge_routing.plaky_board_id else ""
+    ) or ""
 
     # Merged → Completed. Explicit env wins; otherwise resolve "Completed" from the live board.
     merge_status = (settings.plaky_pr_merge_status or "").strip()
-    merge_status_field_key: Optional[str] = None
+    merge_status_field_key: str | None = None
     if not merge_status and board_id_merge:
         from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
@@ -678,7 +687,9 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
     return {"ok": True, "updated": results}
 
 
-async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload, session: AsyncSession) -> dict:
+async def handle_pr_review_comment(
+    payload: PullRequestReviewCommentEventPayload, session: AsyncSession
+) -> dict:
     """Handle PR review comment events - mark as In QA if commenter is assigned QA."""
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number if payload.pull_request else 0
@@ -694,9 +705,11 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
     if not commenter_login:
         return {"ok": False, "message": "No commenter login found"}
 
-    linked_issues = await get_linked_issue_numbers(payload.pull_request.body if payload.pull_request else None)
+    linked_issues = await get_linked_issue_numbers(
+        payload.pull_request.body if payload.pull_request else None
+    )
 
-    task_ids_with_issue: list[tuple[str, Optional[int]]] = []
+    task_ids_with_issue: list[tuple[str, int | None]] = []
     for issue_num in linked_issues:
         mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
         if mapping:
@@ -705,7 +718,9 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
     if not task_ids_with_issue:
         from boardman.services.pr_task_registry import distinct_task_ids_for_pr
 
-        for tid in await distinct_task_ids_for_pr(session, github_repo=repo_name, github_pr_number=pr_number):
+        for tid in await distinct_task_ids_for_pr(
+            session, github_repo=repo_name, github_pr_number=pr_number
+        ):
             task_ids_with_issue.append((tid, None))
 
     if not task_ids_with_issue:
@@ -725,7 +740,11 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
 
     qa_field = await resolve_qa_assignee_field_key(board_id, cfg.plaky_field_qa)
     if not qa_field:
-        return {"ok": True, "skipped": True, "message": "QA field not configured or discoverable on board"}
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "QA field not configured or discoverable on board",
+        }
 
     plaky = PlakyClient()
     results = []
@@ -753,7 +772,9 @@ async def handle_pr_review_comment(payload: PullRequestReviewCommentEventPayload
 
         if assigned_qa_id and reviewer_plaky_id and assigned_qa_id == reviewer_plaky_id:
             status_field_key: str | None = None
-            status_to_set = (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
+            status_to_set = (
+                settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or ""
+            ).strip()
             if not status_to_set and board_id:
                 rp = await resolve_plaky_status_patch(board_id, intent="workflow_in_qa")
                 if rp:

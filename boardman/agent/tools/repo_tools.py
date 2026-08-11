@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import os
 import re
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any
 
 from langchain_core.tools import StructuredTool
 
@@ -56,7 +57,7 @@ MANIFEST_NAMES = (
 )
 
 
-def _iter_repo_files(root: Path) -> Iterator[Tuple[Path, str]]:
+def _iter_repo_files(root: Path) -> Iterator[tuple[Path, str]]:
     for cur_dir, dirs, files in os.walk(root):
         dirs[:] = sorted(d for d in dirs if d not in SKIP_DIRS)
         rel_dir = Path(cur_dir).relative_to(root)
@@ -87,10 +88,10 @@ def _scan_local_repo(path: str, max_files: int = 40) -> str:
     if not root.is_dir():
         return json.dumps({"ok": False, "message": f"Not a directory: {root}"})
 
-    docs: List[Dict[str, str]] = []
-    manifests: List[Dict[str, str]] = []
+    docs: list[dict[str, str]] = []
+    manifests: list[dict[str, str]] = []
     top_dirs: set[str] = set()
-    top_files: List[str] = []
+    top_files: list[str] = []
     todo_lines = 0
     fixme_lines = 0
     scanned_text_files = 0
@@ -99,9 +100,7 @@ def _scan_local_repo(path: str, max_files: int = 40) -> str:
     for p, rel in _iter_repo_files(root):
         parts = Path(rel).parts
         if parts:
-            if len(parts) > 1:
-                top_dirs.add(parts[0])
-            elif "." not in parts[0]:
+            if len(parts) > 1 or "." not in parts[0]:
                 top_dirs.add(parts[0])
         if len(parts) == 1 and len(top_files) < 50:
             top_files.append(rel)
@@ -118,7 +117,9 @@ def _scan_local_repo(path: str, max_files: int = 40) -> str:
         is_todo_sample = _is_textish(p) and scanned_text_files < 220
 
         if is_doc or is_manifest or is_todo_sample:
-            need = 6000 if is_todo_sample else max(4000 if is_doc else 0, 2000 if is_manifest else 0)
+            need = (
+                6000 if is_todo_sample else max(4000 if is_doc else 0, 2000 if is_manifest else 0)
+            )
             if need <= 0:
                 need = 4000
             raw = _read_file_once(p, need)
@@ -140,7 +141,7 @@ def _scan_local_repo(path: str, max_files: int = 40) -> str:
     has_direction = any(d["path"].lower().endswith("direction.md") for d in docs)
     has_readme = any(d["path"].lower().endswith("readme.md") for d in docs)
 
-    out: Dict[str, Any] = {
+    out: dict[str, Any] = {
         "ok": True,
         "root": str(root),
         "repo_map": {

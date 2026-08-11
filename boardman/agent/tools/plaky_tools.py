@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from langchain_core.tools import StructuredTool
 
 from boardman.assignment.config import infer_plaky_field_keys_from_normalized, load_team_assignments
 from boardman.assignment.qa_picker import build_repo_field_map, normalize_github_repo_inputs
+from boardman.plaky.board_schema import (
+    fetch_board_schema_bundle,
+    plaky_repo_field_value_format,
+    resolve_repo_tag_field_values_from_schema,
+    validate_field_values_detailed,
+)
+from boardman.plaky.client import PlakyClient
+from boardman.plaky.name_match import rank_plaky_rows
+from boardman.plaky.task_tag_vocab import (
+    canonical_task_priority,
+)
 from boardman.services.task_mutations import (
     CreateSubtaskInput,
     CreateTaskInput,
@@ -17,15 +28,6 @@ from boardman.services.task_mutations import (
     create_task_internal,
     update_task_internal,
 )
-from boardman.plaky.board_schema import (
-    fetch_board_schema_bundle,
-    plaky_repo_field_value_format,
-    resolve_repo_tag_field_values_from_schema,
-    validate_field_values_detailed,
-)
-from boardman.plaky.client import PlakyClient
-from boardman.plaky.task_tag_vocab import canonical_task_priority, plaky_create_legacy_priority_param
-from boardman.plaky.name_match import rank_plaky_rows
 
 
 async def _plaky_list_boards() -> str:
@@ -66,7 +68,12 @@ async def _plaky_match_board(name_query: str) -> str:
         boards = []
     matches, best = rank_plaky_rows(boards, name_query)
     return json.dumps(
-        {"list_ok": raw.get("ok"), "message": raw.get("message"), "matches": matches[:25], "best": best},
+        {
+            "list_ok": raw.get("ok"),
+            "message": raw.get("message"),
+            "matches": matches[:25],
+            "best": best,
+        },
         default=str,
     )[:12000]
 
@@ -94,7 +101,12 @@ async def _plaky_match_group(board_id: str, name_query: str) -> str:
         groups = []
     matches, best = rank_plaky_rows(groups, name_query)
     return json.dumps(
-        {"list_ok": raw.get("ok"), "message": raw.get("message"), "matches": matches[:25], "best": best},
+        {
+            "list_ok": raw.get("ok"),
+            "message": raw.get("message"),
+            "matches": matches[:25],
+            "best": best,
+        },
         default=str,
     )[:12000]
 
@@ -123,7 +135,7 @@ async def _plaky_list_workspace_users(name_query: str = "") -> str:
     )[:12000]
 
 
-def _field_text(item: Dict[str, Any], *keys: str) -> str:
+def _field_text(item: dict[str, Any], *keys: str) -> str:
     for k in keys:
         v = item.get(k)
         if isinstance(v, str) and v.strip():
@@ -169,7 +181,7 @@ async def _plaky_review_board(board_id: str = "", group_id: str = "", max_items:
     if not isinstance(items, list):
         items = []
     if gid:
-        filtered: List[Dict[str, Any]] = []
+        filtered: list[dict[str, Any]] = []
         for it in items:
             if not isinstance(it, dict):
                 continue
@@ -180,9 +192,9 @@ async def _plaky_review_board(board_id: str = "", group_id: str = "", max_items:
         items = filtered
     items = [it for it in items if isinstance(it, dict)][:lim]
 
-    by_title: Dict[str, List[Dict[str, Any]]] = {}
-    missing_acceptance: List[Dict[str, Any]] = []
-    stale_candidates: List[Dict[str, Any]] = []
+    by_title: dict[str, list[dict[str, Any]]] = {}
+    missing_acceptance: list[dict[str, Any]] = []
+    stale_candidates: list[dict[str, Any]] = []
     done_like = 0
     for it in items:
         title = _field_text(it, "name", "title", "summary")
@@ -193,9 +205,7 @@ async def _plaky_review_board(board_id: str = "", group_id: str = "", max_items:
             done_like += 1
         tkey = _normalize_title_key(title)
         if tkey:
-            by_title.setdefault(tkey, []).append(
-                {"id": item_id, "title": title, "status": status}
-            )
+            by_title.setdefault(tkey, []).append({"id": item_id, "title": title, "status": status})
         if title and not _has_acceptance_content(desc):
             missing_acceptance.append({"id": item_id, "title": title, "status": status})
         updated = _field_text(
@@ -211,9 +221,9 @@ async def _plaky_review_board(board_id: str = "", group_id: str = "", max_items:
         for k, vals in by_title.items()
         if len(vals) > 1 and k not in {"", "task"}
     ]
-    duplicate_clusters = sorted(
-        duplicate_clusters, key=lambda x: len(x["items"]), reverse=True
-    )[:20]
+    duplicate_clusters = sorted(duplicate_clusters, key=lambda x: len(x["items"]), reverse=True)[
+        :20
+    ]
 
     summary = {
         "ok": True,
@@ -299,15 +309,22 @@ async def _plaky_create_task(
     gid = group_id.strip() or get_context_plaky_group_id() or None
     repo_tokens = normalize_github_repo_inputs(extra_repo_text=repo_tag)
 
-    parsed: Dict[str, Any] = {}
+    parsed: dict[str, Any] = {}
     raw_f = (field_values_json or "").strip()
     if raw_f:
         try:
             loaded = json.loads(raw_f)
         except json.JSONDecodeError:
-            return json.dumps({"ok": False, "message": "field_values_json must be valid JSON object"})
+            return json.dumps(
+                {"ok": False, "message": "field_values_json must be valid JSON object"}
+            )
         if not isinstance(loaded, dict):
-            return json.dumps({"ok": False, "message": "field_values_json must be a JSON object of fieldKey -> value"})
+            return json.dumps(
+                {
+                    "ok": False,
+                    "message": "field_values_json must be a JSON object of fieldKey -> value",
+                }
+            )
         parsed = loaded
 
     db = get_tool_db_session()
@@ -319,11 +336,13 @@ async def _plaky_create_task(
         merged = dict(parsed)
 
     effective_board = (bid or get_context_plaky_board_id() or "").strip() or None
-    normalized: Optional[Dict[str, Any]] = None
-    bundle: Optional[Dict[str, Any]] = None
+    normalized: dict[str, Any] | None = None
+    bundle: dict[str, Any] | None = None
     if effective_board and (repo_tokens or merged):
         bundle = await fetch_board_schema_bundle(effective_board)
-        normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+        normalized = (
+            bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+        )
 
     if repo_tokens:
         cfg = load_team_assignments()
@@ -345,11 +364,13 @@ async def _plaky_create_task(
             if key not in parsed:
                 merged[key] = value
 
-    field_validation_warnings: List[str] = []
+    field_validation_warnings: list[str] = []
     if merged:
         if normalized is None and effective_board:
             bundle = await fetch_board_schema_bundle(effective_board)
-            normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+            normalized = (
+                bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+            )
         if normalized:
             cfg_tags = load_team_assignments()
             inf_tags = infer_plaky_field_keys_from_normalized(normalized)
@@ -416,10 +437,12 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
     if not isinstance(parsed, dict):
         return json.dumps({"ok": False, "message": "fields_json must be a JSON object"})
     bid = board_id.strip()
-    field_validation_warnings: List[str] = []
+    field_validation_warnings: list[str] = []
     if parsed:
         bundle = await fetch_board_schema_bundle(bid)
-        normalized = bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+        normalized = (
+            bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+        )
         if normalized:
             cfg_tags = load_team_assignments()
             inf_tags = infer_plaky_field_keys_from_normalized(normalized)
@@ -465,12 +488,12 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
 
 async def _plaky_update_task(
     task_id: str,
-    status: Optional[str] = None,
-    task_type: Optional[str] = None,
-    priority: Optional[str] = None,
-    qa_plaky_id: Optional[str] = None,
+    status: str | None = None,
+    task_type: str | None = None,
+    priority: str | None = None,
+    qa_plaky_id: str | None = None,
     auto_assign_qa: bool = False,
-    github_repo: Optional[str] = None,
+    github_repo: str | None = None,
     board_id: str = "",
 ) -> str:
     from boardman.agent.tool_context import get_context_plaky_board_id
@@ -516,7 +539,9 @@ async def _plaky_link_prs(task_id: str, pr_urls: str, board_id: str = "") -> str
     parts = [p for p in re.split(r"[\s,]+", raw) if p.strip()]
     urls = collect_pr_urls(pr_url=None, pr_urls=parts or None)
     if not urls:
-        return json.dumps({"ok": False, "status": 400, "message": "supply at least one PR URL"}, default=str)
+        return json.dumps(
+            {"ok": False, "status": 400, "message": "supply at least one PR URL"}, default=str
+        )
 
     c = PlakyClient()
     bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
@@ -566,8 +591,8 @@ async def _plaky_create_subtask(
     return json.dumps(r, default=str)
 
 
-def build_plaky_tools(*, allow_writes: bool) -> List[StructuredTool]:
-    tools: List[StructuredTool] = [
+def build_plaky_tools(*, allow_writes: bool) -> list[StructuredTool]:
+    tools: list[StructuredTool] = [
         StructuredTool.from_function(
             coroutine=_plaky_list_boards,
             name="plaky_list_boards",

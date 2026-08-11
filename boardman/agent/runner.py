@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage
 
@@ -15,6 +15,7 @@ from boardman.llm.factory import get_chat_model
 from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
+
 
 def _recursion_limit() -> int:
     n = int(getattr(settings, "agent_recursion_limit", 22) or 22)
@@ -44,8 +45,8 @@ def _final_ai_text(messages: list[AnyMessage]) -> str:
     return ""
 
 
-def _tool_call_records(m: AIMessage) -> List[Dict[str, Any]]:
-    tcalls: List[Dict[str, Any]] = []
+def _tool_call_records(m: AIMessage) -> list[dict[str, Any]]:
+    tcalls: list[dict[str, Any]] = []
     raw = getattr(m, "tool_calls", None)
     if isinstance(raw, list) and raw:
         for t in raw:
@@ -82,9 +83,9 @@ def _normalize_trace_args(args: Any) -> Any:
     return args
 
 
-def _extract_tool_trace(messages: List[AnyMessage]) -> List[Dict[str, Any]]:
-    traces: List[Dict[str, Any]] = []
-    index_by_id: Dict[str, int] = {}
+def _extract_tool_trace(messages: list[AnyMessage]) -> list[dict[str, Any]]:
+    traces: list[dict[str, Any]] = []
+    index_by_id: dict[str, int] = {}
     for m in messages:
         if isinstance(m, AIMessage):
             for t in _tool_call_records(m):
@@ -137,7 +138,7 @@ async def run_tool_agent(
     allow_writes: bool,
     system_extra: str = "",
     return_trace: bool = False,
-) -> str | Tuple[str, List[Dict[str, Any]]]:
+) -> str | tuple[str, list[dict[str, Any]]]:
     from langchain.agents import create_agent
 
     llm = get_chat_model()
@@ -176,7 +177,7 @@ async def iter_tool_agent(
     chat_history: list[BaseMessage],
     allow_writes: bool,
     system_extra: str = "",
-    trace_out: Optional[List[Dict[str, Any]]] = None,
+    trace_out: list[dict[str, Any]] | None = None,
 ) -> AsyncIterator[str]:
     """Stream assistant tokens from the tool-calling agent.
 
