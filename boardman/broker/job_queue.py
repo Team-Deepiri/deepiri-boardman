@@ -94,8 +94,7 @@ def _db_status_to_api(db_status: str) -> JobApiStatus:
     return "queued"
 
 
-CLAIM_SQL = text(
-    """
+CLAIM_SQL = text("""
 WITH picked AS (
   SELECT id FROM background_jobs
   WHERE status = 'pending'
@@ -106,8 +105,7 @@ UPDATE background_jobs
 SET status = 'running', started_at = :started
 WHERE id IN (SELECT id FROM picked)
 RETURNING id, kind, payload_json
-"""
-)
+""")
 
 
 async def claim_next_job_row() -> tuple[str, str, dict[str, Any]] | None:

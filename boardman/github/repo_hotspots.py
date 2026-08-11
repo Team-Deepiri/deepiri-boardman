@@ -9,7 +9,7 @@ cheap enough to run on every audit-style question.
 from __future__ import annotations
 
 import logging
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -18,8 +18,25 @@ from boardman.settings import settings
 _log = logging.getLogger(__name__)
 
 _SOURCE_EXTS = {
-    ".py", ".ts", ".tsx", ".js", ".jsx", ".go", ".rs", ".java", ".rb", ".php",
-    ".c", ".h", ".cpp", ".hpp", ".cs", ".swift", ".kt", ".scala", ".sh",
+    ".py",
+    ".ts",
+    ".tsx",
+    ".js",
+    ".jsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".rb",
+    ".php",
+    ".c",
+    ".h",
+    ".cpp",
+    ".hpp",
+    ".cs",
+    ".swift",
+    ".kt",
+    ".scala",
+    ".sh",
 }
 _TEST_MARKERS = ("test_", "_test.", "/tests/", "/test/", ".spec.", ".test.")
 _VENDOR_MARKERS = ("node_modules/", "vendor/", "site-packages/", "dist/", "build/", ".venv/")
@@ -56,7 +73,7 @@ async def fetch_repo_hotspots(
     *,
     branch: str = "",
     top_n: int = 15,
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Largest source files, test ratio, directory weight, and tracked-artifact smells."""
     token = (settings.github_pat or "").strip()
     if not token:
@@ -67,7 +84,9 @@ async def fetch_repo_hotspots(
     if not ref:
         try:
             r = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}", headers=headers, follow_redirects=True
+                f"https://api.github.com/repos/{owner}/{repo}",
+                headers=headers,
+                follow_redirects=True,
             )
             if r.status_code != 200:
                 return None

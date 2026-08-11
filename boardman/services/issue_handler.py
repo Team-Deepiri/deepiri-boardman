@@ -1,21 +1,20 @@
 import json
 import re
-from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.qa_picker import build_repo_field_map
 from boardman.database.models import IssueTaskMap, SyncLog
-from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names as issue_label_names
+from boardman.github.pr_signals import infer_task_type_from_pr
+from boardman.github.pr_signals import pr_label_names as issue_label_names
 from boardman.github.webhooks import IssueEventPayload
-from boardman.services.priority_rules import infer_priority_from_text
 from boardman.plaky.board_aware import resolve_group_for_repo
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing_async
+from boardman.services.priority_rules import infer_priority_from_text
 from boardman.settings import settings
-
 
 ISSUE_LINK_RE = re.compile(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", re.IGNORECASE)
 
@@ -45,9 +44,7 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
             f"**Category:** {routing.category}\n**GitHub:** {full_name}\n"
         )
         if routing.plaky_board_id or routing.plaky_group_id:
-            routing_footer += (
-                f"**board_id:** `{routing.plaky_board_id}` **group_id:** `{routing.plaky_group_id}`\n"
-            )
+            routing_footer += f"**board_id:** `{routing.plaky_board_id}` **group_id:** `{routing.plaky_group_id}`\n"
     description = f"{payload.issue.body or ''}\n\n{payload.issue.html_url}{routing_footer}"
 
     bid, gid = effective_plaky_placement(routing)
@@ -123,7 +120,7 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     return {"ok": True, "plaky_task_id": task_id, "plaky_task_url": task_url}
 
 
-async def get_linked_issue_numbers(pr_body: Optional[str]) -> list[int]:
+async def get_linked_issue_numbers(pr_body: str | None) -> list[int]:
     if not pr_body:
         return []
     return [int(m.group(1)) for m in ISSUE_LINK_RE.finditer(pr_body)]
@@ -131,7 +128,7 @@ async def get_linked_issue_numbers(pr_body: Optional[str]) -> list[int]:
 
 async def find_plaky_task_by_issue(
     repo_name: str, issue_number: int, session: AsyncSession
-) -> Optional[IssueTaskMap]:
+) -> IssueTaskMap | None:
     result = await session.execute(
         select(IssueTaskMap).where(
             IssueTaskMap.github_repo == repo_name,

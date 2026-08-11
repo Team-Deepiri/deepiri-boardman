@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -32,7 +32,11 @@ DEFECT_PROBES: tuple[tuple[str, str, str], ...] = (
     ("broad_except", r"^\s*except Exception", "broad handler that can hide real failures"),
     ("todo", r"\b(TODO|FIXME|HACK|XXX)\b", "unfinished or known-broken work left in code"),
     ("debug_print", r"^\s*print\(", "debug print outside the logging system"),
-    ("blocking_sleep", r"^\s*time\.sleep\(", "blocking sleep (freezes the event loop in async code)"),
+    (
+        "blocking_sleep",
+        r"^\s*time\.sleep\(",
+        "blocking sleep (freezes the event loop in async code)",
+    ),
     ("silent_pass", r"^\s*except[^\n]*:\s*\n\s*pass\s*$", "exception silently discarded"),
 )
 
@@ -62,7 +66,7 @@ async def search_repo_code(
     query: str,
     *,
     limit: int = 12,
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Grep the repo's largest source files for `query` (literal, case-insensitive)."""
     if not (settings.github_pat or "").strip() or not (query or "").strip():
         return None
@@ -97,7 +101,7 @@ async def search_repo_code(
 
 async def scan_repo_defects(
     client: httpx.AsyncClient, owner: str, repo: str
-) -> Optional[dict[str, Any]]:
+) -> dict[str, Any] | None:
     """Run every defect probe over the repo's largest source files, with real line numbers."""
     if not (settings.github_pat or "").strip():
         return None

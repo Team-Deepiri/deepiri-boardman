@@ -23,21 +23,20 @@ import logging
 import random
 import re
 from fnmatch import fnmatchcase
-from typing import Dict, List, Optional, Set, Tuple
 
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, load_team_assignments
 from boardman.assignment.repo_rules import qa_tier_allows_repo
-from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.assignment.tier_classifier import classify_repo_tier
+from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.repos_config import get_routing
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
 # Blend weights for the GitHub-fit score (sum to 1.0).
-FIT_WEIGHT_DIRECT = 0.45   # decayed contributions to the target repo itself
-FIT_WEIGHT_LANGUAGE = 0.30 # cosine over language distributions
-FIT_WEIGHT_TOKENS = 0.25   # cosine over repo-name/topic/description token bags
+FIT_WEIGHT_DIRECT = 0.45  # decayed contributions to the target repo itself
+FIT_WEIGHT_LANGUAGE = 0.30  # cosine over language distributions
+FIT_WEIGHT_TOKENS = 0.25  # cosine over repo-name/topic/description token bags
 # Every eligible member keeps a base score so a zero-fit candidate can still win
 # on weight when nobody has relevant history.
 FIT_BASE_SCORE = 0.15
@@ -52,18 +51,19 @@ async def _auto_classify_repo_tier(full_name: str) -> int:
     """
     if "/" not in full_name:
         return 2
-    
+
     owner, repo = full_name.split("/", 1)
-    
+
     import httpx
+
     async with httpx.AsyncClient(timeout=30.0) as client:
         meta = await fetch_repo_metadata(client, owner, repo)
-    
+
     if meta:
         tier, _ = classify_repo_tier(meta)
         _log.info("Auto-classified repo %s as tier %d", full_name, tier)
         return tier
-    
+
     _log.warning("Could not fetch metadata for %s, defaulting to tier 2", full_name)
     return 2
 
@@ -89,7 +89,7 @@ def repo_matches_member(full_name: str, m: TeamMember) -> bool:
     return False
 
 
-def repo_is_heavy(full_name: str, patterns: List[str]) -> bool:
+def repo_is_heavy(full_name: str, patterns: list[str]) -> bool:
     key = (full_name or "").strip().lower()
     for p in patterns:
         if fnmatchcase(key, p.lower()):
@@ -104,8 +104,8 @@ def _tier_bias(cfg: TeamAssignmentsConfig, tier_name: str) -> float:
     return 1.0
 
 
-def _owners_from_member(m: TeamMember) -> Set[str]:
-    owners: Set[str] = set()
+def _owners_from_member(m: TeamMember) -> set[str]:
+    owners: set[str] = set()
     for ex in m.explicit_repos:
         if "/" in ex:
             owners.add(ex.split("/")[0])
@@ -131,8 +131,8 @@ def _same_owner_glob_overlap(a: TeamMember, b: TeamMember) -> bool:
 
 
 def _overlap_component(
-    eligible: List[TeamMember],
-) -> List[TeamMember]:
+    eligible: list[TeamMember],
+) -> list[TeamMember]:
     """
     Partition `eligible` into connected components by edges:
     explicit repo set intersection OR shared GitHub owner in patterns.
@@ -161,7 +161,7 @@ def _overlap_component(
             if _explicit_overlap(a, b) or _same_owner_glob_overlap(a, b):
                 union(i, j)
 
-    buckets: Dict[int, List[int]] = {}
+    buckets: dict[int, list[int]] = {}
     for i in range(n):
         r = find(i)
         buckets.setdefault(r, []).append(i)
@@ -170,13 +170,13 @@ def _overlap_component(
     return [eligible[i] for i in best]
 
 
-def _weighted_choice(members: List[TeamMember], cfg: TeamAssignmentsConfig) -> Optional[TeamMember]:
+def _weighted_choice(members: list[TeamMember], cfg: TeamAssignmentsConfig) -> TeamMember | None:
     if not members:
         return None
     if len(members) == 1:
         return members[0]
     jitter = cfg.random_jitter
-    weights: List[float] = []
+    weights: list[float] = []
     for m in members:
         w = max(0.05, m.weight)
         w *= _tier_bias(cfg, m.tier)
@@ -189,8 +189,8 @@ def _weighted_choice(members: List[TeamMember], cfg: TeamAssignmentsConfig) -> O
 
 
 async def _github_fit_scores(
-    candidates: List[TeamMember], full_name: str
-) -> Optional[Dict[str, Tuple[float, str]]]:
+    candidates: list[TeamMember], full_name: str
+) -> dict[str, tuple[float, str]] | None:
     """member.id -> (fit 0..1, detail) from GitHub contribution profiles vs the target repo.
 
     Returns None when the target repo info or every member profile is unavailable
@@ -234,21 +234,25 @@ async def _github_fit_scores(
                     profile = await asyncio.wait_for(
                         fetch_contribution_profile(client, login, search_org), timeout=20.0
                     )
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     profile = None
             if profile is None:
                 return m.id, None
             direct = direct_contribution_score(profile, full_name)
             lang_cos = cosine_similarity(profile.language_weights, target_lang)
             tok_cos = cosine_similarity(profile.token_weights, target_tokens)
-            fit = FIT_WEIGHT_DIRECT * direct + FIT_WEIGHT_LANGUAGE * lang_cos + FIT_WEIGHT_TOKENS * tok_cos
+            fit = (
+                FIT_WEIGHT_DIRECT * direct
+                + FIT_WEIGHT_LANGUAGE * lang_cos
+                + FIT_WEIGHT_TOKENS * tok_cos
+            )
             top = ", ".join(profile.top_repos(2)) or "no org PRs"
             detail = f"direct={direct:.2f} lang={lang_cos:.2f} tokens={tok_cos:.2f} top:[{top}]"
             return m.id, (fit, detail)
 
         results = await asyncio.gather(*(_one(m) for m in candidates), return_exceptions=True)
 
-    out: Dict[str, Tuple[float, str]] = {}
+    out: dict[str, tuple[float, str]] = {}
     for res in results:
         if isinstance(res, BaseException):
             continue
@@ -259,11 +263,11 @@ async def _github_fit_scores(
 
 
 def _ranked_choice(
-    qas: List[TeamMember], cfg: TeamAssignmentsConfig, fits: Dict[str, Tuple[float, str]]
-) -> Tuple[Optional[TeamMember], str]:
+    qas: list[TeamMember], cfg: TeamAssignmentsConfig, fits: dict[str, tuple[float, str]]
+) -> tuple[TeamMember | None, str]:
     """Rank by (base + fit) * weight * hardware bias * jitter; return winner + ranking text."""
     jitter = cfg.random_jitter
-    rows: List[Tuple[float, TeamMember, str]] = []
+    rows: list[tuple[float, TeamMember, str]] = []
     for m in qas:
         fit, detail = fits.get(m.id, (0.0, "no GitHub profile"))
         score = (FIT_BASE_SCORE + fit) * max(0.05, m.weight) * _tier_bias(cfg, m.tier)
@@ -278,7 +282,9 @@ def _ranked_choice(
     return winner, f"fit[{detail}] ranking[{ranking}]"
 
 
-async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] = None) -> Tuple[Optional[str], str]:
+async def pick_qa_for_repo(
+    full_name: str, cfg: TeamAssignmentsConfig | None = None
+) -> tuple[str | None, str]:
     """
     Returns (plaky_person_id_or_value, reason_summary).
     Uses tier from repos.yml, or auto-classifies if not found.
@@ -356,12 +362,17 @@ async def pick_qa_for_repo(full_name: str, cfg: Optional[TeamAssignmentsConfig] 
     if repo_is_heavy(fn, cfg.heavy_repo_patterns):
         qas = [m for m in qas if m.tier.lower() not in ("light", "minimal", "low")]
         if not qas:
-            return None, "heavy repo: no QA after legacy hardware tier filter (light/minimal/low dropped)"
+            return (
+                None,
+                "heavy repo: no QA after legacy hardware tier filter (light/minimal/low dropped)",
+            )
 
     # GitHub-fit scored ranking; legacy overlap-pool weighted-random as the fallback.
-    fits: Optional[Dict[str, Tuple[float, str]]] = None
+    fits: dict[str, tuple[float, str]] | None = None
     try:
-        fits = await asyncio.wait_for(_github_fit_scores(qas, fn), timeout=FIT_SCORING_TIMEOUT_SECONDS)
+        fits = await asyncio.wait_for(
+            _github_fit_scores(qas, fn), timeout=FIT_SCORING_TIMEOUT_SECONDS
+        )
     except Exception as e:  # noqa: BLE001 — never block assignment on scoring (incl. timeout)
         _log.warning("qa_picker: GitHub fit scoring unavailable for %s: %s", fn, e)
 
@@ -402,9 +413,9 @@ def ensure_github_owner_repo(slug: str) -> str:
     return s
 
 
-def _tokenize_repo_slugs(text: str) -> List[str]:
+def _tokenize_repo_slugs(text: str) -> list[str]:
     """Split comma/newline/whitespace-separated repo tokens (CLI ``--github-repo a b`` / agent ``repo_tag``)."""
-    out: List[str] = []
+    out: list[str] = []
     for chunk in (text or "").replace("\n", ",").split(","):
         for p in chunk.replace("\t", " ").split():
             if p.strip():
@@ -412,8 +423,8 @@ def _tokenize_repo_slugs(text: str) -> List[str]:
     return out
 
 
-def _dedupe_repo_list(repos: Optional[List[str]]) -> List[str]:
-    out: List[str] = []
+def _dedupe_repo_list(repos: list[str] | None) -> list[str]:
+    out: list[str] = []
     seen_set: set[str] = set()
     if not repos:
         return out
@@ -431,12 +442,12 @@ def _dedupe_repo_list(repos: Optional[List[str]]) -> List[str]:
 
 def normalize_github_repo_inputs(
     primary_repo: str = "",
-    github_repos: Optional[List[str]] = None,
+    github_repos: list[str] | None = None,
     *,
     extra_repo_text: str = "",
-) -> List[str]:
+) -> list[str]:
     """Return ordered unique owner/repo values from list and comma/newline text."""
-    tokens: List[str] = []
+    tokens: list[str] = []
     if primary_repo and primary_repo.strip():
         tokens.extend(_tokenize_repo_slugs(primary_repo))
     if isinstance(github_repos, list):
@@ -448,11 +459,11 @@ def normalize_github_repo_inputs(
     return _dedupe_repo_list(tokens)
 
 
-def _format_repo_tokens_for_plaky(tokens: List[str], fmt: str) -> List[str]:
+def _format_repo_tokens_for_plaky(tokens: list[str], fmt: str) -> list[str]:
     """``fmt`` ``short`` = repo name only (for TAG columns); ``full`` = keep ``owner/repo``."""
     if fmt != "short" or not tokens:
         return list(tokens)
-    out: List[str] = []
+    out: list[str] = []
     seen: set[str] = set()
     for t in tokens:
         sh = github_repo_suffix_name(t)
@@ -466,22 +477,22 @@ def _format_repo_tokens_for_plaky(tokens: List[str], fmt: str) -> List[str]:
 
 
 def build_repo_field_map(
-    cfg: Optional[TeamAssignmentsConfig] = None,
+    cfg: TeamAssignmentsConfig | None = None,
     *,
-    repo_value: Optional[str] = None,
-    github_repos: Optional[List[str]] = None,
-    plaky_field_repo_key: Optional[str] = None,
-    plaky_field_github_repos_key: Optional[str] = None,
+    repo_value: str | None = None,
+    github_repos: list[str] | None = None,
+    plaky_field_repo_key: str | None = None,
+    plaky_field_github_repos_key: str | None = None,
     repo_value_format: str = "full",
     github_repos_value_format: str = "full",
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Map configured repo-related Plaky field keys to one or more GitHub repos.
 
     Use ``repo_value_format`` / ``github_repos_value_format`` of ``short`` for Plaky TAG columns
     (values are repo names only, e.g. ``deepiri-platform``).
     """
     cfg = cfg or load_team_assignments()
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     repo_key = (plaky_field_repo_key or cfg.plaky_field_repo or "").strip()
     repos_multi_key = (plaky_field_github_repos_key or cfg.plaky_field_github_repos or "").strip()
     repo_label = (repo_value or "").strip()
@@ -508,24 +519,24 @@ def build_repo_field_map(
 
 async def build_assignment_field_map(
     full_name: str,
-    cfg: Optional[TeamAssignmentsConfig] = None,
-    field_overrides: Optional[Dict[str, str]] = None,
+    cfg: TeamAssignmentsConfig | None = None,
+    field_overrides: dict[str, str] | None = None,
     *,
-    repo_value: Optional[str] = None,
-    github_repos: Optional[List[str]] = None,
-    plaky_field_repo_key: Optional[str] = None,
-    plaky_field_github_repos_key: Optional[str] = None,
-    plaky_field_qa_key: Optional[str] = None,
+    repo_value: str | None = None,
+    github_repos: list[str] | None = None,
+    plaky_field_repo_key: str | None = None,
+    plaky_field_github_repos_key: str | None = None,
+    plaky_field_qa_key: str | None = None,
     repo_value_format: str = "full",
     github_repos_value_format: str = "full",
-) -> Dict[str, str]:
+) -> dict[str, str]:
     """Map Plaky field key -> QA person id or repo label(s) for create/patch. Overrides win for same keys.
 
     ``plaky_field_qa_key``: ``None`` uses the global team_assignments key; an empty
     string disables the QA field entirely (board schema known but has no QA column).
     """
     cfg = cfg or load_team_assignments()
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
     if plaky_field_qa_key is None:
         qa_key = (cfg.plaky_field_qa or "").strip()
     else:

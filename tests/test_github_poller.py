@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import json
+from datetime import UTC
 from typing import Any
 
-import httpx
 import pytest
 
 from boardman.services import github_poller as gp
@@ -175,7 +174,9 @@ class _FakeClient:
 
 
 @pytest.mark.asyncio
-async def test_first_poll_sets_baseline_and_replays_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_first_poll_sets_baseline_and_replays_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     dispatched: list[dict] = []
 
     async def fake_dispatch(full_name, event):
@@ -189,8 +190,18 @@ async def test_first_poll_sets_baseline_and_replays_nothing(monkeypatch: pytest.
 
     # Events feed only handles review/comment types now (issues/PRs come from the direct poll).
     events_page = [
-        {"id": "205", "type": "IssueCommentEvent", "payload": {}, "created_at": "2026-07-07T02:00:00Z"},
-        {"id": "204", "type": "IssueCommentEvent", "payload": {}, "created_at": "2026-07-07T01:00:00Z"},
+        {
+            "id": "205",
+            "type": "IssueCommentEvent",
+            "payload": {},
+            "created_at": "2026-07-07T02:00:00Z",
+        },
+        {
+            "id": "204",
+            "type": "IssueCommentEvent",
+            "payload": {},
+            "created_at": "2026-07-07T01:00:00Z",
+        },
     ]
     # First poll: baseline only, nothing dispatched.
     _FakeClient.responses = [_FakeResponse(200, events_page)]
@@ -199,7 +210,14 @@ async def test_first_poll_sets_baseline_and_replays_nothing(monkeypatch: pytest.
     assert poller._seen_ids["o/r"] == {"205", "204"}
 
     # Second poll: one newer event -> dispatched exactly once.
-    newer = [{"id": "207", "type": "IssueCommentEvent", "payload": {}, "created_at": "2026-07-07T03:00:00Z"}] + events_page
+    newer = [
+        {
+            "id": "207",
+            "type": "IssueCommentEvent",
+            "payload": {},
+            "created_at": "2026-07-07T03:00:00Z",
+        }
+    ] + events_page
     _FakeClient.responses = [_FakeResponse(200, newer)]
     await poller._poll_repo("o/r")
     assert [e["id"] for e in dispatched] == ["207"]
@@ -221,14 +239,26 @@ async def test_novelty_is_by_set_not_numeric_id(monkeypatch: pytest.MonkeyPatch)
     poller = gp.GitHubEventPoller()
     monkeypatch.setattr(poller, "_dispatch_event", fake_dispatch)
 
-    baseline = [{"id": "14458784314", "type": "IssueCommentEvent", "payload": {}, "created_at": "2026-07-07T02:39:10Z"}]
+    baseline = [
+        {
+            "id": "14458784314",
+            "type": "IssueCommentEvent",
+            "payload": {},
+            "created_at": "2026-07-07T02:39:10Z",
+        }
+    ]
     _FakeClient.responses = [_FakeResponse(200, baseline)]
     await poller._poll_repo("o/r")
     assert dispatched == []
 
     # New comment: LOWER numeric id, LATER timestamp — still fresh.
     newer = [
-        {"id": "11439882581", "type": "IssueCommentEvent", "payload": {"action": "created"}, "created_at": "2026-07-07T04:10:21Z"},
+        {
+            "id": "11439882581",
+            "type": "IssueCommentEvent",
+            "payload": {"action": "created"},
+            "created_at": "2026-07-07T04:10:21Z",
+        },
     ] + baseline
     _FakeClient.responses = [_FakeResponse(200, newer)]
     await poller._poll_repo("o/r")
@@ -236,15 +266,17 @@ async def test_novelty_is_by_set_not_numeric_id(monkeypatch: pytest.MonkeyPatch)
 
 
 @pytest.mark.asyncio
-async def test_catchup_window_processes_recent_events_on_first_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_catchup_window_processes_recent_events_on_first_poll(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     dispatched: list[dict] = []
 
     async def fake_dispatch(full_name, event):
         dispatched.append(event)
 
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     recent = (now - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ")
     old = (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -255,8 +287,18 @@ async def test_catchup_window_processes_recent_events_on_first_poll(monkeypatch:
     monkeypatch.setattr(poller, "_dispatch_event", fake_dispatch)
 
     events = [
-        {"id": "900", "type": "IssueCommentEvent", "payload": {"action": "created"}, "created_at": recent},
-        {"id": "800", "type": "IssueCommentEvent", "payload": {"action": "created"}, "created_at": old},
+        {
+            "id": "900",
+            "type": "IssueCommentEvent",
+            "payload": {"action": "created"},
+            "created_at": recent,
+        },
+        {
+            "id": "800",
+            "type": "IssueCommentEvent",
+            "payload": {"action": "created"},
+            "created_at": old,
+        },
     ]
     _FakeClient.responses = [_FakeResponse(200, events)]
     await poller._poll_repo("o/r")
@@ -267,7 +309,7 @@ async def test_catchup_window_processes_recent_events_on_first_poll(monkeypatch:
 class _SimpleClient:
     """Fake httpx client for the direct-poll unit tests (returns one canned response)."""
 
-    def __init__(self, resp: "_FakeResponse"):
+    def __init__(self, resp: _FakeResponse):
         self._resp = resp
 
     async def get(self, url, headers=None):
@@ -280,7 +322,7 @@ def _fresh_proc() -> dict:
 
 @pytest.mark.asyncio
 async def test_direct_poll_issue_opened_and_dedupes(monkeypatch: pytest.MonkeyPatch) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     handled: list = []
 
@@ -292,29 +334,45 @@ async def test_direct_poll_issue_opened_and_dedupes(monkeypatch: pytest.MonkeyPa
     poller = gp.GitHubEventPoller()
     monkeypatch.setattr(poller, "_run_handler", fake_run)
 
-    baseline = datetime(2026, 7, 7, 0, 0, tzinfo=timezone.utc)
+    baseline = datetime(2026, 7, 7, 0, 0, tzinfo=UTC)
     proc = _fresh_proc()
     issues = [
-        {"number": 61, "title": "Test: Polling", "body": "b", "html_url": "u", "state": "open",
-         "user": {"login": "Blasted-ctrl"}, "created_at": "2026-07-07T04:10:20Z"},
+        {
+            "number": 61,
+            "title": "Test: Polling",
+            "body": "b",
+            "html_url": "u",
+            "state": "open",
+            "user": {"login": "Blasted-ctrl"},
+            "created_at": "2026-07-07T04:10:20Z",
+        },
         # A PR shows up in /issues but must be skipped here (handled by _poll_pulls):
-        {"number": 60, "title": "a PR", "pull_request": {"url": "x"}, "created_at": "2026-07-07T05:00:00Z"},
+        {
+            "number": 60,
+            "title": "a PR",
+            "pull_request": {"url": "x"},
+            "created_at": "2026-07-07T05:00:00Z",
+        },
         # Created before baseline -> ignored:
         {"number": 10, "title": "old", "created_at": "2026-07-06T00:00:00Z"},
     ]
     client = _SimpleClient(_FakeResponse(200, issues))
-    await poller._poll_issues(client, "Team-Deepiri/deepiri-boardman", baseline, "2026-07-07T00:00:00Z", proc)
+    await poller._poll_issues(
+        client, "Team-Deepiri/deepiri-boardman", baseline, "2026-07-07T00:00:00Z", proc
+    )
     assert len(handled) == 1
     assert handled[0].issue.number == 61
     assert handled[0].action == "opened"
     # Second poll: same issue must not be reprocessed.
-    await poller._poll_issues(client, "Team-Deepiri/deepiri-boardman", baseline, "2026-07-07T00:00:00Z", proc)
+    await poller._poll_issues(
+        client, "Team-Deepiri/deepiri-boardman", baseline, "2026-07-07T00:00:00Z", proc
+    )
     assert len(handled) == 1
 
 
 @pytest.mark.asyncio
 async def test_direct_poll_pr_merged_and_opened(monkeypatch: pytest.MonkeyPatch) -> None:
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     handled: list = []
 
@@ -326,16 +384,32 @@ async def test_direct_poll_pr_merged_and_opened(monkeypatch: pytest.MonkeyPatch)
     poller = gp.GitHubEventPoller()
     monkeypatch.setattr(poller, "_run_handler", fake_run)
 
-    baseline = datetime(2026, 7, 7, 0, 0, tzinfo=timezone.utc)
+    baseline = datetime(2026, 7, 7, 0, 0, tzinfo=UTC)
     proc = _fresh_proc()
     pulls = [
         # Opened after baseline AND still open:
-        {"number": 70, "title": "new pr", "body": "Fixes #61", "html_url": "u", "state": "open",
-         "draft": False, "created_at": "2026-07-07T03:00:00Z", "updated_at": "2026-07-07T03:00:00Z"},
+        {
+            "number": 70,
+            "title": "new pr",
+            "body": "Fixes #61",
+            "html_url": "u",
+            "state": "open",
+            "draft": False,
+            "created_at": "2026-07-07T03:00:00Z",
+            "updated_at": "2026-07-07T03:00:00Z",
+        },
         # Created before baseline but merged after -> merged (not opened):
-        {"number": 49, "title": "lints", "body": "", "html_url": "u", "state": "closed",
-         "merged_at": "2026-07-07T06:00:00Z", "draft": False,
-         "created_at": "2026-07-06T00:00:00Z", "updated_at": "2026-07-07T06:00:00Z"},
+        {
+            "number": 49,
+            "title": "lints",
+            "body": "",
+            "html_url": "u",
+            "state": "closed",
+            "merged_at": "2026-07-07T06:00:00Z",
+            "draft": False,
+            "created_at": "2026-07-06T00:00:00Z",
+            "updated_at": "2026-07-07T06:00:00Z",
+        },
     ]
     client = _SimpleClient(_FakeResponse(200, pulls))
     await poller._poll_pulls(client, "Team-Deepiri/deepiri-boardman", baseline, proc)
@@ -396,7 +470,7 @@ async def test_direct_poll_detects_close_and_reopen(monkeypatch: pytest.MonkeyPa
     """The `since` list returns recently UPDATED issues, so a close shows up as an already
     known issue whose state flipped. Before state tracking the poller only ever emitted
     'opened' and tasks never reached Completed."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timedelta
 
     poller = gp.GitHubEventPoller()
     seen: list[str] = []
@@ -407,23 +481,39 @@ async def test_direct_poll_detects_close_and_reopen(monkeypatch: pytest.MonkeyPa
 
     monkeypatch.setattr(poller, "_run_handler", fake_run_handler)
 
-    baseline = datetime.now(timezone.utc) - timedelta(minutes=5)
-    proc = {"issues_opened": set(), "issue_state": {}, "prs_opened": set(),
-            "prs_closed": set(), "commits": set()}
+    baseline = datetime.now(UTC) - timedelta(minutes=5)
+    proc = {
+        "issues_opened": set(),
+        "issue_state": {},
+        "prs_opened": set(),
+        "prs_closed": set(),
+        "commits": set(),
+    }
     created = (baseline + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
     def issue(state: str) -> dict:
         return {
-            "number": 501, "title": "T", "body": "", "html_url": "u",
-            "state": state, "user": {}, "created_at": created, "labels": [],
+            "number": 501,
+            "title": "T",
+            "body": "",
+            "html_url": "u",
+            "state": state,
+            "user": {},
+            "created_at": created,
+            "labels": [],
         }
 
     class Resp:
-        def __init__(self, payload): self._p = payload; self.status_code = 200
-        def json(self): return self._p
+        def __init__(self, payload):
+            self._p = payload
+            self.status_code = 200
+
+        def json(self):
+            return self._p
 
     class Client:
         queue: list = []
+
         async def get(self, url, headers=None):
             return Resp(Client.queue.pop(0))
 

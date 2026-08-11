@@ -51,7 +51,9 @@ async def comment_on_pr(full_name: str, pr_number: int, body: str) -> dict[str, 
         return {"ok": False, "message": str(e)}
     if r.status_code in (401, 403, 404):
         hint = _failure_hint(r.status_code)
-        _log.warning("pr comment on %s#%s -> HTTP %s. %s", full_name, pr_number, r.status_code, hint)
+        _log.warning(
+            "pr comment on %s#%s -> HTTP %s. %s", full_name, pr_number, r.status_code, hint
+        )
         return {"ok": False, "status": r.status_code, "message": hint}
     return {"ok": 200 <= r.status_code < 300, "status": r.status_code}
 
@@ -79,5 +81,9 @@ async def request_reviewers(full_name: str, pr_number: int, logins: list[str]) -
     if r.status_code == 422:
         # e.g. reviewer == PR author, or not a collaborator — comment already carries the @mention.
         _log.info("reviewer request on %s#%s -> 422 (%s)", full_name, pr_number, r.text[:120])
-        return {"ok": False, "status": 422, "message": "GitHub refused reviewer (author/permissions)"}
+        return {
+            "ok": False,
+            "status": 422,
+            "message": "GitHub refused reviewer (author/permissions)",
+        }
     return {"ok": 200 <= r.status_code < 300, "status": r.status_code}

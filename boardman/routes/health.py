@@ -2,9 +2,8 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from boardman.database.session import get_db
 from boardman.database.models import IssueTaskMap, SyncLog
-
+from boardman.database.session import get_db
 
 router = APIRouter()
 
@@ -41,13 +40,13 @@ async def list_logs(limit: int = 50, session: AsyncSession = Depends(get_db)):
         "ok": True,
         "logs": [
             {
-                "action": l.action,
-                "github_repo": l.github_repo,
-                "github_ref": l.github_ref,
-                "plaky_task_id": l.plaky_task_id,
-                "detail": l.detail,
-                "created_at": l.created_at.isoformat() if l.created_at else None,
+                "action": log_entry.action,
+                "github_repo": log_entry.github_repo,
+                "github_ref": log_entry.github_ref,
+                "plaky_task_id": log_entry.plaky_task_id,
+                "detail": log_entry.detail,
+                "created_at": log_entry.created_at.isoformat() if log_entry.created_at else None,
             }
-            for l in logs
+            for log_entry in logs
         ],
     }

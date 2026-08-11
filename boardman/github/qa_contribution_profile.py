@@ -18,8 +18,7 @@ import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Dict, List, Optional
+from datetime import UTC, datetime
 from urllib.parse import quote
 
 import httpx
@@ -42,12 +41,12 @@ _TOKEN_RE = re.compile(r"[a-z0-9]+")
 class RepoInfo:
     full_name: str
     language: str = ""
-    topics: List[str] = field(default_factory=list)
+    topics: list[str] = field(default_factory=list)
     description: str = ""
 
-    def tokens(self) -> Dict[str, float]:
+    def tokens(self) -> dict[str, float]:
         """Word bag from the repo name, topics, and description."""
-        bag: Dict[str, float] = defaultdict(float)
+        bag: dict[str, float] = defaultdict(float)
         name = self.full_name.split("/", 1)[-1]
         for t in _TOKEN_RE.findall(name.lower()):
             bag[t] += 2.0  # name tokens are the strongest identity signal
@@ -63,14 +62,14 @@ class RepoInfo:
 class QaContributionProfile:
     login: str
     # owner/repo -> recency-decayed contribution weight (authored + reviewed PRs)
-    repo_weights: Dict[str, float] = field(default_factory=dict)
+    repo_weights: dict[str, float] = field(default_factory=dict)
     # language -> aggregated weight across contributed repos
-    language_weights: Dict[str, float] = field(default_factory=dict)
+    language_weights: dict[str, float] = field(default_factory=dict)
     # token -> aggregated weight from contributed repo names/topics/descriptions
-    token_weights: Dict[str, float] = field(default_factory=dict)
+    token_weights: dict[str, float] = field(default_factory=dict)
     pr_sample_count: int = 0
 
-    def top_repos(self, n: int = 3) -> List[str]:
+    def top_repos(self, n: int = 3) -> list[str]:
         return [fn for fn, _ in sorted(self.repo_weights.items(), key=lambda kv: -kv[1])[:n]]
 
 
@@ -181,7 +180,7 @@ def _gh_headers() -> dict[str, str]:
     }
 
 
-async def fetch_repo_info(client: httpx.AsyncClient, full_name: str) -> Optional[RepoInfo]:
+async def fetch_repo_info(client: httpx.AsyncClient, full_name: str) -> RepoInfo | None:
     """GET /repos/{full_name} → language + topics + description (24h cache, disk-backed)."""
     _maybe_load_disk_cache()
     now = time.time()
@@ -213,8 +212,8 @@ async def fetch_contribution_profile(
     login: str,
     search_org: str,
     *,
-    half_life_days: Optional[float] = None,
-) -> Optional[QaContributionProfile]:
+    half_life_days: float | None = None,
+) -> QaContributionProfile | None:
     """Search PRs authored/reviewed by ``login`` in ``search_org``; aggregate into a profile.
 
     Returns None when GitHub is unreachable or unauthorized (callers fall back to
@@ -229,9 +228,11 @@ async def fetch_contribution_profile(
     if hit and hit[0] > now:
         return hit[1]
 
-    hl = half_life_days if half_life_days is not None else settings.github_qa_activity_half_life_days
-    now_dt = datetime.now(timezone.utc)
-    repo_weights: Dict[str, float] = defaultdict(float)
+    hl = (
+        half_life_days if half_life_days is not None else settings.github_qa_activity_half_life_days
+    )
+    now_dt = datetime.now(UTC)
+    repo_weights: dict[str, float] = defaultdict(float)
     seen_pr: set[str] = set()
     any_response = False
 
@@ -288,10 +289,12 @@ async def fetch_contribution_profile(
     top = dict(sorted(repo_weights.items(), key=lambda kv: -kv[1])[:PROFILE_MAX_DISTINCT_REPOS])
     profile = QaContributionProfile(login=login, repo_weights=top, pr_sample_count=len(seen_pr))
 
-    infos = await asyncio.gather(*(fetch_repo_info(client, fn) for fn in top), return_exceptions=True)
-    lang: Dict[str, float] = defaultdict(float)
-    toks: Dict[str, float] = defaultdict(float)
-    for fn, info in zip(top, infos):
+    infos = await asyncio.gather(
+        *(fetch_repo_info(client, fn) for fn in top), return_exceptions=True
+    )
+    lang: dict[str, float] = defaultdict(float)
+    toks: dict[str, float] = defaultdict(float)
+    for fn, info in zip(top, infos, strict=False):
         w = top[fn]
         if not isinstance(info, RepoInfo):
             continue
@@ -307,7 +310,7 @@ async def fetch_contribution_profile(
     return profile
 
 
-def cosine_similarity(a: Dict[str, float], b: Dict[str, float]) -> float:
+def cosine_similarity(a: dict[str, float], b: dict[str, float]) -> float:
     """Cosine similarity of two sparse weight vectors (0.0 when either is empty)."""
     if not a or not b:
         return 0.0

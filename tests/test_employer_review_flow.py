@@ -9,9 +9,14 @@ import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from boardman.assignment.config import DEFAULT_QA_EXCLUDED, TeamAssignmentsConfig, TeamMember, TierSpec
-from boardman.assignment.repo_rules import QaRepoRules
 from boardman.assignment import qa_picker as qp
+from boardman.assignment.config import (
+    DEFAULT_QA_EXCLUDED,
+    TeamAssignmentsConfig,
+    TeamMember,
+    TierSpec,
+)
+from boardman.assignment.repo_rules import QaRepoRules
 from boardman.database.models import Base
 from boardman.github.webhooks import IssueEventPayload
 from boardman.services import issue_handler as ih
@@ -253,9 +258,7 @@ async def test_member_override_beats_fuzzy_identity(monkeypatch: pytest.MonkeyPa
     from boardman.plaky import dynamic_qa_status as dqs
 
     bridged = _member("481106", display="Ali Ferris", login="Blasted-ctrl")
-    monkeypatch.setattr(
-        "boardman.assignment.config.load_team_assignments", lambda: _cfg([bridged])
-    )
+    monkeypatch.setattr("boardman.assignment.config.load_team_assignments", lambda: _cfg([bridged]))
 
     class NoNetworkPlaky:
         def __init__(self) -> None:
@@ -301,9 +304,7 @@ async def test_assign_qa_for_pr_full_path(monkeypatch: pytest.MonkeyPatch) -> No
 
     worker = _member("plaky-42", display="Regular QA", login="regular-qa")
     monkeypatch.setattr("boardman.assignment.qa_picker.pick_qa_for_repo", fake_pick)
-    monkeypatch.setattr(
-        "boardman.plaky.dynamic_qa_status.resolve_qa_assignee_field_key", fake_key
-    )
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_qa_assignee_field_key", fake_key)
     monkeypatch.setattr(ph, "_current_person_field_value", fake_current)
     monkeypatch.setattr(ph, "update_task_internal", fake_update)
     monkeypatch.setattr("boardman.github.pr_actions.comment_on_pr", fake_comment)
@@ -325,16 +326,16 @@ async def test_assign_qa_for_pr_full_path(monkeypatch: pytest.MonkeyPatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_assign_qa_for_pr_skips_when_already_assigned(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_assign_qa_for_pr_skips_when_already_assigned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     async def fake_key(bid: str, fallback: str) -> str:
         return "person-4"
 
     async def fake_current(plaky: Any, bid: str, tid: str, key: str) -> str:
         return "existing-qa"
 
-    monkeypatch.setattr(
-        "boardman.plaky.dynamic_qa_status.resolve_qa_assignee_field_key", fake_key
-    )
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_qa_assignee_field_key", fake_key)
     monkeypatch.setattr(ph, "_current_person_field_value", fake_current)
     monkeypatch.setattr(ph, "load_team_assignments", lambda: _cfg([]))
 
@@ -355,7 +356,15 @@ def test_type_candidates_resolve_on_a_board_without_feature() -> None:
     from boardman.plaky.task_tag_vocab import type_field_patch_candidates
 
     board = {"story", "task", "bug", "research"}
-    for canonical in ("Feature", "Bug", "Research", "Refactoring", "Documentation", "Chore", "Tests"):
+    for canonical in (
+        "Feature",
+        "Bug",
+        "Research",
+        "Refactoring",
+        "Documentation",
+        "Chore",
+        "Tests",
+    ):
         cands = type_field_patch_candidates(canonical)
         assert any(c.casefold() in board for c in cands), f"{canonical} resolves to nothing"
 
@@ -408,10 +417,11 @@ async def test_tool_failure_fallback_forbids_answering_from_memory(monkeypatch) 
         captured.update(kwargs)
         return "degraded reply"
 
+    # Capture the REAL signature before monkeypatching shadows it — the previous
+    # "... or True" made this assertion vacuous.
+    assert "tools_unavailable" in svc._safe_plain_chat.__code__.co_varnames
     monkeypatch.setattr(svc, "_safe_plain_chat", fake_plain)
 
-    # The real signature must accept the flag, and the constraint must carry the key rules.
-    assert "tools_unavailable" in svc._safe_plain_chat.__code__.co_varnames or True
     text = svc._TOOLS_DOWN_CONSTRAINT.lower()
     assert "tools are unavailable" in text
     assert "do not answer from memory" in text

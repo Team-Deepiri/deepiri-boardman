@@ -6,9 +6,9 @@ Create Date: 2026-05-22
 
 """
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 revision = "004_github_webhook_deliveries"
 down_revision = "003_pr_task_links"
@@ -41,6 +41,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_github_webhook_deliveries_created_at"), table_name="github_webhook_deliveries")
-    op.drop_index(op.f("ix_github_webhook_deliveries_event_type"), table_name="github_webhook_deliveries")
+    op.drop_index(
+        op.f("ix_github_webhook_deliveries_created_at"), table_name="github_webhook_deliveries"
+    )
+    op.drop_index(
+        op.f("ix_github_webhook_deliveries_event_type"), table_name="github_webhook_deliveries"
+    )
     op.drop_table("github_webhook_deliveries")

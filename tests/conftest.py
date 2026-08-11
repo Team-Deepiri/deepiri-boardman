@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Set
 
 
 def _load_dotenv_file_into_environ() -> None:
@@ -51,6 +50,7 @@ async def _aclose_ollama_http_client_after_async_test() -> None:
 
     await aclose_ollama_http_client()
 
+
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 
 
@@ -62,7 +62,7 @@ def ollama_http_reachable(timeout: float = 3.0) -> bool:
         return False
 
 
-def ollama_model_names() -> Set[str]:
+def ollama_model_names() -> set[str]:
     try:
         r = httpx.get(f"{OLLAMA_BASE}/api/tags", timeout=3.0)
         r.raise_for_status()
@@ -140,9 +140,7 @@ def ollama_model_resolved(require_ollama, monkeypatch) -> str:
     if override and not ollama_has_model(override):
         have = sorted(ollama_model_names())
         if not have:
-            pytest.skip(
-                f"LLM_MODEL={override!r} is not pulled and no other models exist in Ollama"
-            )
+            pytest.skip(f"LLM_MODEL={override!r} is not pulled and no other models exist in Ollama")
         monkeypatch.setattr(bs.settings, "llm_model", have[0])
         return have[0]
 

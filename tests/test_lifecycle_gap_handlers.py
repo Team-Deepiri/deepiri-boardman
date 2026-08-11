@@ -97,12 +97,8 @@ def fake_plaky(monkeypatch: pytest.MonkeyPatch) -> type[_FakePlaky]:
 
 
 @pytest.mark.asyncio
-async def test_issue_closed_completes_mapped_task(
-    db_session, monkeypatch, fake_plaky
-) -> None:
-    db_session.add(
-        IssueTaskMap(github_repo="r", github_issue_number=5, plaky_task_id="task-1")
-    )
+async def test_issue_closed_completes_mapped_task(db_session, monkeypatch, fake_plaky) -> None:
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=5, plaky_task_id="task-1"))
     await db_session.flush()
 
     updates: list[tuple[str, Any]] = []
@@ -142,9 +138,7 @@ async def test_issue_reopened_skips_without_resolvable_status(
     db_session, monkeypatch, fake_plaky
 ) -> None:
     """No board id and no literal fallback → reopen is a safe no-op."""
-    db_session.add(
-        IssueTaskMap(github_repo="r", github_issue_number=5, plaky_task_id="task-1")
-    )
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=5, plaky_task_id="task-1"))
     await db_session.flush()
 
     async def fake_routing(*a: Any, **kw: Any) -> None:
@@ -235,9 +229,7 @@ async def test_converted_to_draft_reverts_needs_qa(db_session, monkeypatch) -> N
 
     monkeypatch.setattr(ph, "distinct_task_ids_for_pr", linked)
     monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
-    monkeypatch.setattr(
-        "boardman.plaky.dynamic_qa_status.resolve_plaky_status_patch", fake_resolve
-    )
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_plaky_status_patch", fake_resolve)
     monkeypatch.setattr(ph, "_current_status_value", fake_current)
     monkeypatch.setattr(ph, "_update_plaky_task_status", fake_update)
 
@@ -306,9 +298,7 @@ async def test_review_dismissed_reverts_approved_to_in_qa(db_session, monkeypatc
 
 @pytest.mark.asyncio
 async def test_plain_issue_comment_lands_on_task(db_session, monkeypatch, fake_plaky) -> None:
-    db_session.add(
-        IssueTaskMap(github_repo="r", github_issue_number=5, plaky_task_id="task-9")
-    )
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=5, plaky_task_id="task-9"))
     await db_session.flush()
 
     async def fake_routing(*a: Any, **kw: Any) -> None:

@@ -81,9 +81,13 @@ async def test_chat_complete_ollama_parses_message(monkeypatch):
     import boardman.settings as bs
 
     monkeypatch.setattr(bs.settings, "ollama_base_url", "http://127.0.0.1:11434")
-    monkeypatch.setattr("boardman.llm.completion.effective_ollama_model", lambda model: model or "llama3:8b")
+    monkeypatch.setattr(
+        "boardman.llm.completion.effective_ollama_model", lambda model: model or "llama3:8b"
+    )
 
-    out = await chat_complete([{"role": "user", "content": "hi"}], provider="ollama", model="llama3:8b")
+    out = await chat_complete(
+        [{"role": "user", "content": "hi"}], provider="ollama", model="llama3:8b"
+    )
     assert out == "hello from model"
 
 
@@ -93,7 +97,9 @@ async def test_chat_complete_ollama_legacy_response_field(monkeypatch):
     import boardman.settings as bs
 
     monkeypatch.setattr(bs.settings, "ollama_base_url", "http://127.0.0.1:11434")
-    monkeypatch.setattr("boardman.llm.completion.effective_ollama_model", lambda model: model or "m")
+    monkeypatch.setattr(
+        "boardman.llm.completion.effective_ollama_model", lambda model: model or "m"
+    )
 
     out = await chat_complete([{"role": "user", "content": "hi"}], provider="ollama", model="m")
     assert out == "legacy"
@@ -102,7 +108,9 @@ async def test_chat_complete_ollama_legacy_response_field(monkeypatch):
 @pytest.mark.asyncio
 async def test_chat_complete_unknown_provider():
     with pytest.raises(ValueError, match="Unknown LLM_PROVIDER"):
-        await chat_complete([{"role": "user", "content": "x"}], provider="not-a-real-provider", model="m")
+        await chat_complete(
+            [{"role": "user", "content": "x"}], provider="not-a-real-provider", model="m"
+        )
 
 
 @pytest.mark.asyncio
@@ -111,7 +119,9 @@ async def test_chat_complete_anthropic_requires_api_key(monkeypatch):
 
     monkeypatch.setattr(bs.settings, "anthropic_api_key", "")
     with pytest.raises(ValueError, match="ANTHROPIC_API_KEY"):
-        await chat_complete([{"role": "user", "content": "x"}], provider="anthropic", model="claude-3-haiku")
+        await chat_complete(
+            [{"role": "user", "content": "x"}], provider="anthropic", model="claude-3-haiku"
+        )
 
 
 @pytest.mark.asyncio
@@ -120,7 +130,9 @@ async def test_chat_complete_openai_requires_api_key(monkeypatch):
 
     monkeypatch.setattr(bs.settings, "openai_api_key", "")
     with pytest.raises(ValueError, match="OPENAI_API_KEY"):
-        await chat_complete([{"role": "user", "content": "x"}], provider="openai", model="gpt-4o-mini")
+        await chat_complete(
+            [{"role": "user", "content": "x"}], provider="openai", model="gpt-4o-mini"
+        )
 
 
 @pytest.mark.asyncio
@@ -129,7 +141,9 @@ async def test_chat_complete_gemini_requires_api_key(monkeypatch):
 
     monkeypatch.setattr(bs.settings, "gemini_api_key", "")
     with pytest.raises(ValueError, match="GEMINI_API_KEY"):
-        await chat_complete([{"role": "user", "content": "x"}], provider="gemini", model="gemini-2.0-flash")
+        await chat_complete(
+            [{"role": "user", "content": "x"}], provider="gemini", model="gemini-2.0-flash"
+        )
 
 
 @pytest.mark.asyncio
@@ -213,7 +227,7 @@ async def test_ollama_live_chat_complete():
 
     model = effective_ollama_model(None)
     text = await chat_complete(
-        [{"role": "user", "content": 'Reply with exactly: OK'}],
+        [{"role": "user", "content": "Reply with exactly: OK"}],
         provider="ollama",
         model=model,
         timeout=120.0,

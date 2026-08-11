@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 import logging
+import shutil
+import time
 from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
-import shutil
-import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import yaml
 
 from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.assignment.llm_identity_match import clear_identity_llm_cache
 from boardman.assignment.repo_rules import QaRepoRules, default_qa_repo_rules
+from boardman.github.team_roster import clear_support_team_cache, get_cached_support_team_roster
+from boardman.plaky.board_schema import (
+    field_likely_github_repo_column,
+    field_likely_person_column,
+    field_row_item_key,
+    plaky_field_row_label,
+)
+from boardman.plaky.client import PlakyClient
+from boardman.settings import settings
 
 # QA leads/managers who must NEVER be auto-assigned to review PRs (employer requirement).
 # Matching is case-insensitive against member display name AND GitHub login.
@@ -26,18 +35,9 @@ DEFAULT_QA_EXCLUDED: tuple[str, ...] = (
     "Sean San",
     "Nathan Adams",
 )
-from boardman.github.team_roster import clear_support_team_cache, get_cached_support_team_roster
-from boardman.plaky.board_schema import (
-    field_likely_github_repo_column,
-    field_likely_person_column,
-    field_row_item_key,
-    plaky_field_row_label,
-)
-from boardman.plaky.client import PlakyClient
-from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
-_last_field_sync_by_board: Dict[str, float] = {}
+_last_field_sync_by_board: dict[str, float] = {}
 
 
 @dataclass
@@ -51,11 +51,11 @@ class TeamMember:
     id: str
     display: str = ""
     github_login: str = ""  # GitHub login from org team roster (cross-reference)
-    roles: List[str] = field(default_factory=list)
+    roles: list[str] = field(default_factory=list)
     tier: str = "standard"  # light|standard|heavy — hardware weight bias, not QA repo tier
     qa_tier: int = 3  # 1 = web/core only, 2 = all except AI/heavy repos, 3 = all repos
-    repo_globs: List[str] = field(default_factory=list)
-    explicit_repos: List[str] = field(default_factory=list)
+    repo_globs: list[str] = field(default_factory=list)
+    explicit_repos: list[str] = field(default_factory=list)
     weight: float = 1.0
 
 
@@ -73,14 +73,14 @@ class TeamAssignmentsConfig:
     plaky_field_engineer: str = ""
     plaky_field_qa: str = ""
     plaky_field_repo: str = ""
-    plaky_field_github_repos: str = "" # for use if more than one repo connected to the task
-    tiers: Dict[str, TierSpec] = field(default_factory=dict)
-    members: List[TeamMember] = field(default_factory=list)
-    heavy_repo_patterns: List[str] = field(default_factory=list)
+    plaky_field_github_repos: str = ""  # for use if more than one repo connected to the task
+    tiers: dict[str, TierSpec] = field(default_factory=dict)
+    members: list[TeamMember] = field(default_factory=list)
+    heavy_repo_patterns: list[str] = field(default_factory=list)
     qa_repo_rules: QaRepoRules = field(default_factory=default_qa_repo_rules)
     random_jitter: float = 0.12
     ambiguous_pr: AmbiguousPRConfig = field(default_factory=AmbiguousPRConfig)
-    qa_excluded: List[str] = field(default_factory=lambda: list(DEFAULT_QA_EXCLUDED))
+    qa_excluded: list[str] = field(default_factory=lambda: list(DEFAULT_QA_EXCLUDED))
 
 
 def _path() -> Path:
@@ -96,7 +96,7 @@ def _example_path() -> Path:
 
 
 @lru_cache
-def _raw() -> Dict[str, Any]:
+def _raw() -> dict[str, Any]:
     path = _path()
     if not path.is_file():
         return {}
@@ -122,19 +122,22 @@ def ensure_team_assignments_file_exists() -> Path:
     if ex.is_file():
         shutil.copyfile(ex, path)
     else:
-        path.write_text("plaky_field_keys:\n  engineer: \"\"\n  qa: \"\"\n  repo: \"\"\n  github_repos: \"\"\n", encoding="utf-8")
+        path.write_text(
+            'plaky_field_keys:\n  engineer: ""\n  qa: ""\n  repo: ""\n  github_repos: ""\n',
+            encoding="utf-8",
+        )
     reload_team_assignments()
     return path
 
 
-def infer_plaky_field_keys_from_normalized(normalized: Optional[Dict[str, Any]]) -> Dict[str, str]:
+def infer_plaky_field_keys_from_normalized(normalized: dict[str, Any] | None) -> dict[str, str]:
     """Infer likely team_assignments `plaky_field_keys` entries from board schema field names/types."""
     fields = normalized.get("fields") if isinstance(normalized, dict) else None
     if not isinstance(fields, list):
         return {}
 
-    person_fields: List[tuple[str, str]] = []
-    repo_like_fields: List[tuple[str, str]] = []
+    person_fields: list[tuple[str, str]] = []
+    repo_like_fields: list[tuple[str, str]] = []
     for raw in fields:
         if not isinstance(raw, dict):
             continue
@@ -148,13 +151,16 @@ def infer_plaky_field_keys_from_normalized(normalized: Optional[Dict[str, Any]])
         if field_likely_github_repo_column(raw):
             repo_like_fields.append((key, name))
 
-    out: Dict[str, str] = {}
+    out: dict[str, str] = {}
 
     for key, name in person_fields:
         if "qa" in name or "quality" in name:
             out.setdefault("qa", key)
             continue
-        if any(tok in name for tok in ("engineer", "developer", "dev", "contributor", "owner", "assignee")):
+        if any(
+            tok in name
+            for tok in ("engineer", "developer", "dev", "contributor", "owner", "assignee")
+        ):
             out.setdefault("engineer", key)
 
     if "engineer" not in out:
@@ -178,11 +184,13 @@ def infer_plaky_field_keys_from_normalized(normalized: Optional[Dict[str, Any]])
     if "repo" not in out and repo_like_fields:
         out["repo"] = repo_like_fields[0][0]
     if "github_repos" not in out and len(repo_like_fields) >= 2:
-        out["github_repos"] = next((k for k, _ in repo_like_fields if k != out.get("repo")), repo_like_fields[1][0])
+        out["github_repos"] = next(
+            (k for k, _ in repo_like_fields if k != out.get("repo")), repo_like_fields[1][0]
+        )
     return out
 
 
-async def sync_team_assignment_field_keys_from_board(board_id: str) -> Dict[str, Any]:
+async def sync_team_assignment_field_keys_from_board(board_id: str) -> dict[str, Any]:
     """
     Fill blank `plaky_field_keys` entries in team_assignments.yml from the default board schema.
     Existing non-empty values are preserved.
@@ -205,7 +213,11 @@ async def sync_team_assignment_field_keys_from_board(board_id: str) -> Dict[str,
 
     path = ensure_team_assignments_file_exists()
     if not path.is_file():
-        return {"ok": False, "skipped": True, "message": f"team_assignments path is not a file: {path}"}
+        return {
+            "ok": False,
+            "skipped": True,
+            "message": f"team_assignments path is not a file: {path}",
+        }
 
     from boardman.plaky.board_schema import fetch_board_schema_bundle
 
@@ -214,16 +226,21 @@ async def sync_team_assignment_field_keys_from_board(board_id: str) -> Dict[str,
     inferred = infer_plaky_field_keys_from_normalized(normalized)
     if not inferred:
         _last_field_sync_by_board[bid] = now
-        return {"ok": False, "skipped": True, "message": "No field keys inferred from board schema", "bundle": bundle}
+        return {
+            "ok": False,
+            "skipped": True,
+            "message": "No field keys inferred from board schema",
+            "bundle": bundle,
+        }
 
     current = _raw()
-    data: Dict[str, Any] = dict(current) if isinstance(current, dict) else {}
+    data: dict[str, Any] = dict(current) if isinstance(current, dict) else {}
     keys = data.get("plaky_field_keys")
     if not isinstance(keys, dict):
         keys = {}
         data["plaky_field_keys"] = keys
 
-    updated: Dict[str, str] = {}
+    updated: dict[str, str] = {}
     for name, inferred_key in inferred.items():
         cur = str(keys.get(name) or "").strip()
         if cur or not inferred_key:
@@ -233,7 +250,12 @@ async def sync_team_assignment_field_keys_from_board(board_id: str) -> Dict[str,
 
     if not updated:
         _last_field_sync_by_board[bid] = now
-        return {"ok": True, "updated": {}, "skipped": True, "message": "No blank field keys needed updating"}
+        return {
+            "ok": True,
+            "updated": {},
+            "skipped": True,
+            "message": "No blank field keys needed updating",
+        }
 
     with path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, sort_keys=False, allow_unicode=False)
@@ -242,7 +264,7 @@ async def sync_team_assignment_field_keys_from_board(board_id: str) -> Dict[str,
     return {"ok": True, "updated": updated, "path": str(path)}
 
 
-def _parse_roles(val: Any) -> List[str]:
+def _parse_roles(val: Any) -> list[str]:
     if isinstance(val, str) and val.strip():
         return [val.strip().lower()]
     if isinstance(val, list):
@@ -250,7 +272,7 @@ def _parse_roles(val: Any) -> List[str]:
     return []
 
 
-def _parse_glob_list(val: Any) -> List[str]:
+def _parse_glob_list(val: Any) -> list[str]:
     if isinstance(val, str) and val.strip():
         return [val.strip()]
     if isinstance(val, list):
@@ -258,7 +280,7 @@ def _parse_glob_list(val: Any) -> List[str]:
     return []
 
 
-def _parse_explicit_repos(val: Any) -> List[str]:
+def _parse_explicit_repos(val: Any) -> list[str]:
     if isinstance(val, str) and val.strip():
         return [val.strip().lower()]
     if isinstance(val, list):
@@ -266,10 +288,10 @@ def _parse_explicit_repos(val: Any) -> List[str]:
     return []
 
 
-def _augment_repo_globs_with_github_org(globs: List[str]) -> List[str]:
+def _augment_repo_globs_with_github_org(globs: list[str]) -> list[str]:
     """Append owner/* globs from github_bare_repo_owner and github_org when missing (roster matching)."""
     seen = {g.strip().lower() for g in globs if g and str(g).strip()}
-    out: List[str] = list(globs)
+    out: list[str] = list(globs)
     for raw in (
         (settings.github_bare_repo_owner or "").strip(),
         (settings.github_org or "").strip(),
@@ -293,7 +315,7 @@ def _parse_qa_tier(val: Any) -> int:
     return t if t in (1, 2, 3) else 3
 
 
-def _members_from_github_roster(data: Dict[str, Any]) -> List[TeamMember]:
+def _members_from_github_roster(data: dict[str, Any]) -> list[TeamMember]:
     """
     Roster = GitHub org team (e.g. Team-Deepiri/support-team). Names/logins from API;
     Plaky field ids and roles come from member_overrides[github_login] (+ member_defaults).
@@ -305,7 +327,7 @@ def _members_from_github_roster(data: Dict[str, Any]) -> List[TeamMember]:
     ov_raw = data.get("member_overrides") or {}
     if not isinstance(ov_raw, dict):
         ov_raw = {}
-    overrides: Dict[str, Dict[str, Any]] = {}
+    overrides: dict[str, dict[str, Any]] = {}
     for k, v in ov_raw.items():
         key = str(k).strip().lower()
         if key and isinstance(v, dict):
@@ -338,7 +360,7 @@ def _members_from_github_roster(data: Dict[str, Any]) -> List[TeamMember]:
         except (TypeError, ValueError):
             pass
 
-    plaky_users: List[Dict[str, Any]] = []
+    plaky_users: list[dict[str, Any]] = []
     if auto_match:
         pr = PlakyClient().list_workspace_users_sync()
         if pr.get("ok"):
@@ -349,7 +371,7 @@ def _members_from_github_roster(data: Dict[str, Any]) -> List[TeamMember]:
                 pr.get("message"),
             )
 
-    members: List[TeamMember] = []
+    members: list[TeamMember] = []
     for gh in roster.get("members") or []:
         if not isinstance(gh, dict):
             continue
@@ -399,9 +421,7 @@ def _members_from_github_roster(data: Dict[str, Any]) -> List[TeamMember]:
         explicit = _parse_explicit_repos(ex_src)
 
         qt = _parse_qa_tier(ov.get("qa_tier") if "qa_tier" in ov else defaults.get("qa_tier"))
-        tier = str(
-            ov.get("tier") if "tier" in ov else defaults.get("tier") or "standard"
-        ).lower()
+        tier = str(ov.get("tier") if "tier" in ov else defaults.get("tier") or "standard").lower()
         weight = float(ov.get("weight") if "weight" in ov else defaults.get("weight", 1.0))
 
         display = str(ov.get("display") or ov.get("name") or gh.get("name") or login)
@@ -429,7 +449,7 @@ def load_team_assignments() -> TeamAssignmentsConfig:
     if not isinstance(keys, dict):
         keys = {}
 
-    tiers_out: Dict[str, TierSpec] = {}
+    tiers_out: dict[str, TierSpec] = {}
     tiers_block = data.get("hardware_tiers") or data.get("tiers") or {}
     if isinstance(tiers_block, dict):
         for name, spec in tiers_block.items():
@@ -446,13 +466,13 @@ def load_team_assignments() -> TeamAssignmentsConfig:
         isinstance(x, dict) for x in raw_members
     )
 
-    def _members_from_yaml() -> List[TeamMember]:
+    def _members_from_yaml() -> list[TeamMember]:
         # Entries inherit member_defaults for anything they omit, same as roster members —
         # otherwise a terse fallback list ends up with no roles and picks nobody.
         defaults = data.get("member_defaults") or {}
         if not isinstance(defaults, dict):
             defaults = {}
-        parsed: List[TeamMember] = []
+        parsed: list[TeamMember] = []
         for m in raw_members or []:
             if not isinstance(m, dict):
                 continue
@@ -494,7 +514,7 @@ def load_team_assignments() -> TeamAssignmentsConfig:
     #   members_fallback_only: true -> the live GitHub support team is the source of truth and
     #   `members:` is used ONLY when that call fails (PAT missing org read, token pending org
     #   approval, GitHub down) so QA assignment never goes dark.
-    members: List[TeamMember] = []
+    members: list[TeamMember] = []
     use_roster = data.get("use_github_support_team_roster", True) is not False
     fallback_only = bool(data.get("members_fallback_only", False))
 
@@ -512,7 +532,7 @@ def load_team_assignments() -> TeamAssignmentsConfig:
             )
 
     req = data.get("repo_requirements") or {}
-    heavy: List[str] = []
+    heavy: list[str] = []
     if isinstance(req, dict):
         hp = req.get("heavy_repo_patterns") or []
         if isinstance(hp, list):
@@ -552,7 +572,9 @@ def load_team_assignments() -> TeamAssignmentsConfig:
     return TeamAssignmentsConfig(
         plaky_field_engineer=str(keys.get("engineer") or keys.get("assignee_dev") or ""),
         plaky_field_qa=str(keys.get("qa") or keys.get("qa_engineer") or ""),
-        plaky_field_repo=str(keys.get("repo") or keys.get("repository") or keys.get("github_repo") or ""),
+        plaky_field_repo=str(
+            keys.get("repo") or keys.get("repository") or keys.get("github_repo") or ""
+        ),
         plaky_field_github_repos=str(
             keys.get("github_repos") or keys.get("repos") or keys.get("repositories") or ""
         ),

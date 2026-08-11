@@ -24,8 +24,8 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import httpx
 
@@ -38,23 +38,28 @@ from boardman.github.webhooks import (
     PullRequestReviewEventPayload,
     parse_webhook_payload,
 )
-from boardman.services.issue_handler import handle_issue_opened, find_plaky_task_by_issue
+from boardman.services.issue_handler import find_plaky_task_by_issue, handle_issue_opened
 from boardman.services.pr_handler import (
     handle_pr_closed_without_merge,
     handle_pr_merged,
     handle_pr_opened,
     handle_pr_review_comment,
 )
-from boardman.services.pr_review_handler import handle_issue_comment_on_pr, handle_pull_request_review
+from boardman.services.pr_review_handler import (
+    handle_issue_comment_on_pr,
+    handle_pull_request_review,
+)
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
 # Commit messages referencing issues: "Fixes #12", "closes #3", or a bare "#12".
-_COMMIT_ISSUE_RE = re.compile(r"(?:(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+)?#(\d+)", re.IGNORECASE)
+_COMMIT_ISSUE_RE = re.compile(
+    r"(?:(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+)?#(\d+)", re.IGNORECASE
+)
 
 
-def _parse_iso(value: str) -> Optional[datetime]:
+def _parse_iso(value: str) -> datetime | None:
     if not value:
         return None
     s = value.strip()
@@ -65,8 +70,9 @@ def _parse_iso(value: str) -> Optional[datetime]:
     except ValueError:
         return None
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     return dt
+
 
 # Events-feed type -> webhook event name understood by parse_webhook_payload.
 _EVENT_TYPE_TO_WEBHOOK = {
@@ -96,7 +102,7 @@ def poller_repos() -> list[str]:
 
 class GitHubEventPoller:
     def __init__(self) -> None:
-        self._task: Optional[asyncio.Task] = None
+        self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
         # repo full_name -> set of event ids already processed. GitHub event ids are NOT
         # comparable across event types (PushEvent ids live in a different, higher number
@@ -145,18 +151,22 @@ class GitHubEventPoller:
                 try:
                     await self._poll_direct(repo)
                 except httpx.HTTPError as e:
-                    _log.warning("poller: direct poll of %s failed (transient network): %s", repo, e)
+                    _log.warning(
+                        "poller: direct poll of %s failed (transient network): %s", repo, e
+                    )
                 except Exception:
                     _log.exception("poller: unexpected error in direct poll of %s", repo)
                 try:
                     await self._poll_repo(repo)
                 except httpx.HTTPError as e:
-                    _log.warning("poller: events poll of %s failed (transient network): %s", repo, e)
+                    _log.warning(
+                        "poller: events poll of %s failed (transient network): %s", repo, e
+                    )
                 except Exception:
                     _log.exception("poller: unexpected error polling events of %s", repo)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 pass
         _log.info("TESTING_LIVE_PLAKY: GitHub poller stopped")
 
@@ -167,7 +177,7 @@ class GitHubEventPoller:
         baseline = self._baseline_dt.get(full_name)
         if baseline is None:
             catchup = max(0.0, float(settings.testing_live_plaky_catchup_minutes or 0.0))
-            baseline = datetime.now(timezone.utc) - timedelta(minutes=catchup)
+            baseline = datetime.now(UTC) - timedelta(minutes=catchup)
             self._baseline_dt[full_name] = baseline
             self._processed[full_name] = {
                 "issues_opened": set(),
@@ -195,7 +205,9 @@ class GitHubEventPoller:
                 try:
                     await coro
                 except httpx.HTTPError as e:
-                    _log.warning("poller: %s poll of %s failed (transient network): %s", label, full_name, e)
+                    _log.warning(
+                        "poller: %s poll of %s failed (transient network): %s", label, full_name, e
+                    )
                 except Exception:
                     _log.exception("poller: %s poll of %s errored", label, full_name)
 
@@ -224,7 +236,9 @@ class GitHubEventPoller:
             issue_state = proc.setdefault("issue_state", {})
             prev = issue_state.get(num)
             issue_state[num] = state
-            is_new = created is not None and created >= baseline and num not in proc["issues_opened"]
+            is_new = (
+                created is not None and created >= baseline and num not in proc["issues_opened"]
+            )
 
             action = ""
             if is_new:
@@ -251,10 +265,11 @@ class GitHubEventPoller:
                 repository={"full_name": full_name, "name": name},
             )
             result = await self._run_handler(payload)
-            _log.info("poller: issue #%s %s -> %s", num, action, (result or {}).get("message") or result)
+            _log.info(
+                "poller: issue #%s %s -> %s", num, action, (result or {}).get("message") or result
+            )
 
     async def _poll_pulls(self, client, full_name, baseline, proc) -> None:
-        name = full_name.partition("/")[2]
         url = (
             f"https://api.github.com/repos/{full_name}/pulls"
             f"?state=all&sort=updated&direction=desc&per_page=30"
@@ -276,7 +291,9 @@ class GitHubEventPoller:
             if created is not None and created >= baseline and num not in proc["prs_opened"]:
                 proc["prs_opened"].add(num)
                 result = await self._run_handler(self._pr_payload(pr, full_name, "opened"))
-                _log.info("poller: PR #%s opened -> %s", num, (result or {}).get("message") or result)
+                _log.info(
+                    "poller: PR #%s opened -> %s", num, (result or {}).get("message") or result
+                )
             if pr.get("state") == "closed" and num not in proc["prs_closed"]:
                 proc["prs_closed"].add(num)
                 merged = bool(pr.get("merged_at"))
@@ -290,7 +307,9 @@ class GitHubEventPoller:
                     (result or {}).get("message") or result,
                 )
 
-    def _pr_payload(self, pr: dict, full_name: str, action: str, *, merged: bool = False) -> PullRequestEventPayload:
+    def _pr_payload(
+        self, pr: dict, full_name: str, action: str, *, merged: bool = False
+    ) -> PullRequestEventPayload:
         name = full_name.partition("/")[2]
         prd = dict(pr)
         # REST list omits the boolean `merged`; derive it from merged_at.
@@ -372,7 +391,7 @@ class GitHubEventPoller:
             catchup = max(0.0, float(settings.testing_live_plaky_catchup_minutes or 0.0))
             fresh: list[dict[str, Any]] = []
             if catchup > 0:
-                cutoff = datetime.now(timezone.utc) - timedelta(minutes=catchup)
+                cutoff = datetime.now(UTC) - timedelta(minutes=catchup)
                 for e in events:
                     dt = _parse_iso(_etime(e))
                     if dt is not None and dt >= cutoff:
@@ -413,7 +432,9 @@ class GitHubEventPoller:
             try:
                 await self._dispatch_event(full_name, event)
             except Exception:
-                _log.exception("poller: failed handling %s event %s", event.get("type"), event.get("id"))
+                _log.exception(
+                    "poller: failed handling %s event %s", event.get("type"), event.get("id")
+                )
 
     async def _dispatch_event(self, full_name: str, event: dict[str, Any]) -> None:
         etype = str(event.get("type") or "")
@@ -450,11 +471,11 @@ class GitHubEventPoller:
                 result.get("message") or result.get("action") or result,
             )
 
-    async def _run_handler(self, parsed: Any) -> Optional[dict[str, Any]]:
+    async def _run_handler(self, parsed: Any) -> dict[str, Any] | None:
         """Mirror of the dispatch in routes/github_events.py, with a poller-owned DB session."""
         async with async_session() as session:
             try:
-                result: Optional[dict[str, Any]] = None
+                result: dict[str, Any] | None = None
                 if isinstance(parsed, IssueEventPayload):
                     if parsed.action == "opened":
                         result = await handle_issue_opened(parsed, session)
@@ -498,7 +519,9 @@ class GitHubEventPoller:
                 await session.rollback()
                 raise
 
-    async def _handle_push(self, full_name: str, event: dict[str, Any], payload: dict[str, Any]) -> None:
+    async def _handle_push(
+        self, full_name: str, event: dict[str, Any], payload: dict[str, Any]
+    ) -> None:
         """Events-feed PushEvent path (kept for completeness/tests). Delegates to _comment_commits."""
         commits = payload.get("commits")
         if not isinstance(commits, list) or not commits:
@@ -545,16 +568,18 @@ class GitHubEventPoller:
             await session.commit()
 
 
-_poller: Optional[GitHubEventPoller] = None
+_poller: GitHubEventPoller | None = None
 
 
-def start_github_poller_if_enabled() -> Optional[GitHubEventPoller]:
+def start_github_poller_if_enabled() -> GitHubEventPoller | None:
     """Start the poller when TESTING_LIVE_PLAKY is on. Called from the app lifespan."""
     global _poller
     if not settings.testing_live_plaky:
         return None
     if not poller_repos():
-        _log.warning("TESTING_LIVE_PLAKY=true but TESTING_LIVE_PLAKY_REPOS is empty — poller not started")
+        _log.warning(
+            "TESTING_LIVE_PLAKY=true but TESTING_LIVE_PLAKY_REPOS is empty — poller not started"
+        )
         return None
     if _poller is None:
         _poller = GitHubEventPoller()

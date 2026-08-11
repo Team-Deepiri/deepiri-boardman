@@ -9,7 +9,7 @@ Override discovery with:
 from __future__ import annotations
 
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from boardman.plaky.client import PlakyClient
 
@@ -26,10 +26,12 @@ def _group_id_override() -> str:
 
 
 def _configured_group_name() -> str:
-    return (os.environ.get("PLAKY_BOARDMAN_TEST_GROUP_NAME") or "").strip() or _DEFAULT_TEST_GROUP_NAME
+    return (
+        os.environ.get("PLAKY_BOARDMAN_TEST_GROUP_NAME") or ""
+    ).strip() or _DEFAULT_TEST_GROUP_NAME
 
 
-def find_row_by_name(rows: List[Dict[str, Any]], name: str) -> Optional[Dict[str, Any]]:
+def find_row_by_name(rows: list[dict[str, Any]], name: str) -> dict[str, Any] | None:
     """First row whose name/title matches ``name`` (case-insensitive, stripped)."""
     key = name.strip().casefold()
     if not key:

@@ -15,6 +15,7 @@ Usage:
 
 Requires Boardman running with PLAKY_API_KEY and a working LLM (e.g. Ollama).
 """
+
 from __future__ import annotations
 
 import json

@@ -17,7 +17,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import List, Optional
 
 import httpx
 
@@ -28,12 +27,12 @@ from boardman.settings import settings
 class RepoMetadata:
     full_name: str
     language: str = ""
-    topics: List[str] = field(default_factory=list)   # kept for compat; not used for classification
+    topics: list[str] = field(default_factory=list)  # kept for compat; not used for classification
     size_kb: int = 0
     default_branch: str = "main"
-    raw_signals: List[str] = field(default_factory=list)  # file:X  dir:X  lang:X  name:X
+    raw_signals: list[str] = field(default_factory=list)  # file:X  dir:X  lang:X  name:X
     max_depth: int = 0
-    top_level_dirs: List[str] = field(default_factory=list)
+    top_level_dirs: list[str] = field(default_factory=list)
     signal_counts: dict[str, int] = field(default_factory=dict)
 
 
@@ -43,7 +42,7 @@ async def _fetch_file_tree_signals(
     repo: str,
     branch: str,
     headers: dict,
-) -> tuple[List[str], int, List[str], dict[str, int]]:
+) -> tuple[list[str], int, list[str], dict[str, int]]:
     """
     Call GitHub git/trees API (recursive) and emit one signal per unique
     file basename and directory name. No file content is read.
@@ -58,7 +57,7 @@ async def _fetch_file_tree_signals(
     except Exception:
         return [], 0, [], {}
 
-    signals: List[str] = []
+    signals: list[str] = []
     seen: set[str] = set()
     counts: dict[str, int] = {}
     max_depth = 0
@@ -99,14 +98,14 @@ async def _fetch_file_tree_signals(
     return signals, max_depth, sorted(list(top_level_dirs)), counts
 
 
-def _name_signals(repo_full_name: str) -> List[str]:
+def _name_signals(repo_full_name: str) -> list[str]:
     """Split repo name into raw tokens. No semantic mapping — IDF handles meaning."""
     name = repo_full_name.split("/")[-1].lower()
     tokens = [t for t in re.split(r"[-_.]", name) if len(t) > 1]
     return [f"name:{t}" for t in tokens]
 
 
-def _parse_next_url(link_header: Optional[str]) -> Optional[str]:
+def _parse_next_url(link_header: str | None) -> str | None:
     if not link_header:
         return None
     for part in link_header.split(","):
@@ -123,7 +122,7 @@ async def fetch_repo_metadata(
     client: httpx.AsyncClient,
     owner: str,
     repo: str,
-) -> Optional[RepoMetadata]:
+) -> RepoMetadata | None:
     """Fetch language + size from GitHub API. Derive raw signals from file tree + repo name."""
     token = settings.github_pat
     if not token:
@@ -163,7 +162,7 @@ async def fetch_repo_metadata(
 
 async def fetch_repos_metadata(
     client: httpx.AsyncClient,
-    repo_full_names: List[str],
+    repo_full_names: list[str],
 ) -> dict[str, RepoMetadata]:
     """Fetch metadata for multiple repos concurrently."""
     import asyncio

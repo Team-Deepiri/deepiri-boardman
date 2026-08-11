@@ -65,9 +65,13 @@ async def test_assignment_sync_field_keys_route(monkeypatch):
     async def _fake_sync(_board_id: str):
         return {"ok": True, "updated": {"repo": "repo_key"}, "path": "/tmp/ta.yml"}
 
-    monkeypatch.setattr("boardman.routes.assignment.sync_team_assignment_field_keys_from_board", _fake_sync)
+    monkeypatch.setattr(
+        "boardman.routes.assignment.sync_team_assignment_field_keys_from_board", _fake_sync
+    )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        r = await client.post("/api/v1/assignment/sync-field-keys", params={"board_id": "board-123"})
+        r = await client.post(
+            "/api/v1/assignment/sync-field-keys", params={"board_id": "board-123"}
+        )
         assert r.status_code == 200
         body = r.json()
         assert body["ok"] is True

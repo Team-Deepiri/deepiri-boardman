@@ -31,9 +31,18 @@ REPO = {"full_name": "Team-Deepiri/deepiri-boardman", "name": "deepiri-boardman"
 # Status map is how "Bug" reads as "Continuous". Keyed by column title.
 OPTION_NAMES = {
     "Status": {
-        "0": "NEEDS ASSIGNED", "8": "Assigned", "2": "In Progress", "3": "Paused",
-        "4": "Needs QA", "11": "Needs QA Again", "5": "In QA", "6": "QA Verified",
-        "7": "QA Rejected", "1": "Completed", "9": "Deployed", "10": "Continuous",
+        "0": "NEEDS ASSIGNED",
+        "8": "Assigned",
+        "2": "In Progress",
+        "3": "Paused",
+        "4": "Needs QA",
+        "11": "Needs QA Again",
+        "5": "In QA",
+        "6": "QA Verified",
+        "7": "QA Rejected",
+        "1": "Completed",
+        "9": "Deployed",
+        "10": "Continuous",
     },
     "Type": {"0": "Story", "9": "Task", "10": "Bug", "12": "Research"},
     "Priority": {"0": "VERY IMPORTANT", "1": "High", "2": "Medium", "3": "Low"},
@@ -43,8 +52,11 @@ OPTION_NAMES = {
 async def _post(client: httpx.AsyncClient, event: str, delivery: str, payload: dict) -> dict:
     r = await client.post(
         API,
-        headers={"X-GitHub-Event": event, "X-GitHub-Delivery": delivery,
-                 "Content-Type": "application/json"},
+        headers={
+            "X-GitHub-Event": event,
+            "X-GitHub-Delivery": delivery,
+            "Content-Type": "application/json",
+        },
         content=json.dumps(payload),
     )
     try:
@@ -85,7 +97,7 @@ async def _read_item_fields(task_id: str) -> dict[str, Any]:
 
 
 async def run_once(*, keep: bool) -> bool:
-    n = random.randint(900_000, 999_999)          # synthetic issue/PR number
+    n = random.randint(900_000, 999_999)  # synthetic issue/PR number
     pr_n = n + 1
     issue_url = f"https://github.com/{REPO['full_name']}/issues/{n}"
     pr_url = f"https://github.com/{REPO['full_name']}/pull/{pr_n}"
@@ -100,13 +112,22 @@ async def run_once(*, keep: bool) -> bool:
 
     async with httpx.AsyncClient(timeout=180.0) as c:
         # 1. issue opened -> task created, NEEDS ASSIGNED, no QA yet
-        r = await _post(c, "issues", f"lc-{n}-open", {
-            "action": "opened",
-            "issue": {"number": n, "title": f"[lifecycle-smoke] payment retry crash {n}",
-                      "body": "Crash in the retry handler.", "html_url": issue_url,
-                      "labels": [{"name": "bug"}]},
-            "repository": REPO,
-        })
+        r = await _post(
+            c,
+            "issues",
+            f"lc-{n}-open",
+            {
+                "action": "opened",
+                "issue": {
+                    "number": n,
+                    "title": f"[lifecycle-smoke] payment retry crash {n}",
+                    "body": "Crash in the retry handler.",
+                    "html_url": issue_url,
+                    "labels": [{"name": "bug"}],
+                },
+                "repository": REPO,
+            },
+        )
         task_id = str(r.get("plaky_task_id") or "")
         if not task_id:
             print(f"FAILED at issue-open: {json.dumps(r)[:200]}")
@@ -117,14 +138,26 @@ async def run_once(*, keep: bool) -> bool:
         check("issue opened", "Priority", f.get("Priority"), "High")
         check("issue opened", "QA (must be empty)", f.get("QA Engineer Assigned"), "[]")
 
-        pr_body = {"number": pr_n, "title": "Fix payment retry crash",
-                   "body": f"Fixes #{n}", "html_url": pr_url, "state": "open",
-                   "merged": False, "draft": False, "user": {"login": "Blasted-ctrl"},
-                   "head": {"ref": f"fix/{n}-retry"}, "labels": []}
+        pr_body = {
+            "number": pr_n,
+            "title": "Fix payment retry crash",
+            "body": f"Fixes #{n}",
+            "html_url": pr_url,
+            "state": "open",
+            "merged": False,
+            "draft": False,
+            "user": {"login": "Blasted-ctrl"},
+            "head": {"ref": f"fix/{n}-retry"},
+            "labels": [],
+        }
 
         # 2. PR opened -> dev assigned, QA picked, Needs QA
-        await _post(c, "pull_request", f"lc-{n}-pr", {"action": "opened",
-                                                      "pull_request": pr_body, "repository": REPO})
+        await _post(
+            c,
+            "pull_request",
+            f"lc-{n}-pr",
+            {"action": "opened", "pull_request": pr_body, "repository": REPO},
+        )
         f = await _item_fields(task_id, expect="QA Engineer Assigned")
         check("PR opened", "Status", f.get("Status"), "Needs QA")
         check("PR opened", "Assignee set", bool(f.get("Assignee")), "True")
@@ -139,45 +172,85 @@ async def run_once(*, keep: bool) -> bool:
             (m.github_login for m in cfg.members if str(m.id) in {str(x) for x in qa_ids}), ""
         )
         review = {"state": "changes_requested", "user": {"login": qa_login or "unknown"}}
-        await _post(c, "pull_request_review", f"lc-{n}-rej", {
-            "action": "submitted", "review": review,
-            "pull_request": {**pr_body, "state": "open"}, "repository": REPO})
+        await _post(
+            c,
+            "pull_request_review",
+            f"lc-{n}-rej",
+            {
+                "action": "submitted",
+                "review": review,
+                "pull_request": {**pr_body, "state": "open"},
+                "repository": REPO,
+            },
+        )
         f = await _item_fields(task_id)
         check("QA rejects", "Status", f.get("Status"), "QA Rejected")
 
         # 4. dev pushes a fix -> In Progress
-        await _post(c, "pull_request", f"lc-{n}-sync", {"action": "synchronize",
-                                                        "pull_request": pr_body, "repository": REPO})
+        await _post(
+            c,
+            "pull_request",
+            f"lc-{n}-sync",
+            {"action": "synchronize", "pull_request": pr_body, "repository": REPO},
+        )
         f = await _item_fields(task_id)
         check("dev pushes fix", "Status", f.get("Status"), "In Progress")
 
         # 5. QA comments -> In QA
-        await _post(c, "pull_request_review", f"lc-{n}-cmt", {
-            "action": "submitted", "review": {"state": "commented", "user": {"login": qa_login}},
-            "pull_request": pr_body, "repository": REPO})
+        await _post(
+            c,
+            "pull_request_review",
+            f"lc-{n}-cmt",
+            {
+                "action": "submitted",
+                "review": {"state": "commented", "user": {"login": qa_login}},
+                "pull_request": pr_body,
+                "repository": REPO,
+            },
+        )
         f = await _item_fields(task_id)
         check("QA comments", "Status", f.get("Status"), "In QA")
 
         # 6. approval -> QA Verified
-        await _post(c, "pull_request_review", f"lc-{n}-apr", {
-            "action": "submitted", "review": {"state": "approved", "user": {"login": qa_login}},
-            "pull_request": pr_body, "repository": REPO})
+        await _post(
+            c,
+            "pull_request_review",
+            f"lc-{n}-apr",
+            {
+                "action": "submitted",
+                "review": {"state": "approved", "user": {"login": qa_login}},
+                "pull_request": pr_body,
+                "repository": REPO,
+            },
+        )
         f = await _item_fields(task_id)
         check("QA approves", "Status", f.get("Status"), "QA Verified")
 
         # 7. merge -> Completed
-        await _post(c, "pull_request", f"lc-{n}-merge", {
-            "action": "closed",
-            "pull_request": {**pr_body, "state": "closed", "merged": True},
-            "repository": REPO})
+        await _post(
+            c,
+            "pull_request",
+            f"lc-{n}-merge",
+            {
+                "action": "closed",
+                "pull_request": {**pr_body, "state": "closed", "merged": True},
+                "repository": REPO,
+            },
+        )
         f = await _item_fields(task_id)
         check("PR merged", "Status", f.get("Status"), "Completed")
 
         # 8. issue reopened -> back to In Progress
-        await _post(c, "issues", f"lc-{n}-reopen", {
-            "action": "reopened",
-            "issue": {"number": n, "title": "x", "html_url": issue_url},
-            "repository": REPO})
+        await _post(
+            c,
+            "issues",
+            f"lc-{n}-reopen",
+            {
+                "action": "reopened",
+                "issue": {"number": n, "title": "x", "html_url": issue_url},
+                "repository": REPO,
+            },
+        )
         f = await _item_fields(task_id)
         check("issue reopened", "Status", f.get("Status"), "In Progress")
 

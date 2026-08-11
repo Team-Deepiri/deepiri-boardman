@@ -2,10 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Optional
 
-
-def plaky_placement_markdown(board_id: Optional[str], group_id: Optional[str]) -> str:
+def plaky_placement_markdown(board_id: str | None, group_id: str | None) -> str:
     """Tell the model which board/group to use so it does not re-ask the user."""
     bid = (board_id or "").strip() or None
     gid = (group_id or "").strip() or None
@@ -22,7 +20,9 @@ def plaky_placement_markdown(board_id: Optional[str], group_id: Optional[str]) -
     if bid:
         lines.append(f"- **board_id**: `{bid}`")
     else:
-        lines.append("- **board_id**: not set — use **plaky_list_boards** / **plaky_match_board** if you need one.")
+        lines.append(
+            "- **board_id**: not set — use **plaky_list_boards** / **plaky_match_board** if you need one."
+        )
     if gid:
         lines.append(f"- **group_id** (section): `{gid}`")
     else:

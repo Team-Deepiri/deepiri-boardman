@@ -12,14 +12,13 @@ Tests (in order):
   8.  Write a real test task to Plaky (test group) + verify it appears
   9.  Worker route wiring check (QA assignment, repo tier, fuzzy matching, assignee matching)
 """
+
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import sys
 import traceback
-from typing import Any
 
 import httpx
 
@@ -27,15 +26,15 @@ import httpx
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
-from boardman.settings import settings
-from boardman.plaky.client import PlakyClient
-from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
-from boardman.github.team_roster import get_cached_support_team_roster
 from boardman.assignment.config import load_team_assignments
+from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.assignment.qa_picker import pick_qa_for_repo
 from boardman.assignment.tier_classifier import classify_repo_tier
-from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.github.repo_metadata import fetch_repo_metadata
+from boardman.github.team_roster import get_cached_support_team_roster
+from boardman.plaky.client import PlakyClient
+from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
+from boardman.settings import settings
 
 # ─────────────────────────────────────────────────────────────────────────────
 PASS = "\033[92m✓\033[0m"
@@ -94,7 +93,11 @@ async def test_plaky_connectivity():
 
     # find Boardman Test Board for writes
     test_board = next(
-        (b for b in boards if "boardman test" in b["name"].lower() or "test board" in b["name"].lower()),
+        (
+            b
+            for b in boards
+            if "boardman test" in b["name"].lower() or "test board" in b["name"].lower()
+        ),
         None,
     )
     write_board_id = test_board["id"] if test_board else main_board["id"]
@@ -119,7 +122,10 @@ async def test_plaky_connectivity():
         tgroups[0] if tgroups else None,
     )
     if test_board and test_group:
-        ok("find test write target", f"board={test_board['name']!r}  group={test_group['name']!r} id={test_group['id']}")
+        ok(
+            "find test write target",
+            f"board={test_board['name']!r}  group={test_group['name']!r} id={test_group['id']}",
+        )
     else:
         warn("find test board/group", "using main board first group as fallback")
 
@@ -134,7 +140,9 @@ async def test_plaky_users():
     if res.get("ok"):
         ok("list_workspace_users", f"{len(users)} user(s)")
         for u in users[:6]:
-            print(f"      id={u.get('id')}  name={u.get('name') or u.get('fullName')}  email={u.get('email')}")
+            print(
+                f"      id={u.get('id')}  name={u.get('name') or u.get('fullName')}  email={u.get('email')}"
+            )
         if len(users) > 6:
             print(f"      ... +{len(users)-6} more")
     else:
@@ -209,7 +217,10 @@ async def test_repo_tier_classification():
             repo_names = []
         if not repo_names:
             # Discover orgs from PAT and try each
-            headers = {"Authorization": f"Bearer {settings.github_pat}", "Accept": "application/vnd.github+json"}
+            headers = {
+                "Authorization": f"Bearer {settings.github_pat}",
+                "Accept": "application/vnd.github+json",
+            }
             r = await client.get("https://api.github.com/user/orgs", headers=headers)
             orgs = [o["login"] for o in r.json()] if r.status_code == 200 else []
             for candidate in orgs:
@@ -225,7 +236,7 @@ async def test_repo_tier_classification():
         warn("no repos returned", f"tried org={settings.github_org} and user orgs")
         return
 
-    ok(f"fetched org repos", f"{len(repo_names)} repos from {org}")
+    ok("fetched org repos", f"{len(repo_names)} repos from {org}")
     tier_counts = {1: 0, 2: 0, 3: 0}
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -243,7 +254,9 @@ async def test_repo_tier_classification():
                 f"size={meta.size_kb}kb  topics={meta.topics[:3]}  score={score.total}",
             )
 
-    print(f"\n      Tier distribution: T1={tier_counts[1]}  T2={tier_counts[2]}  T3={tier_counts[3]}")
+    print(
+        f"\n      Tier distribution: T1={tier_counts[1]}  T2={tier_counts[2]}  T3={tier_counts[3]}"
+    )
 
 
 async def test_qa_picker():
@@ -255,7 +268,9 @@ async def test_qa_picker():
         return
 
     for m in cfg.members[:5]:
-        print(f"      id={m.id}  display={m.display!r}  qa_tier={m.qa_tier}  roles={m.roles}  globs={m.repo_globs[:2]}")
+        print(
+            f"      id={m.id}  display={m.display!r}  qa_tier={m.qa_tier}  roles={m.roles}  globs={m.repo_globs[:2]}"
+        )
 
     # Pick QA for several repo types
     test_repos = [
@@ -353,7 +368,9 @@ async def test_plaky_write(board_id: str | None, group_id: str | None):
         ok("create test task", f"id={task_id}")
 
         # Add a comment
-        cres = await plaky.add_comment(task_id, "✅ e2e test: task created and comment added by boardman")
+        cres = await plaky.add_comment(
+            task_id, "✅ e2e test: task created and comment added by boardman"
+        )
         if cres.get("ok"):
             ok("add_comment to test task")
         else:
@@ -433,7 +450,11 @@ async def test_worker_wiring():
     # 6. Worker hardcoded patterns check — warn if still hardcoded
     with open(worker_rules) as f:
         rules_src = f.read()
-    if "DEFAULT_TIER2_EXCLUDED" in rules_src and len([l for l in rules_src.splitlines() if "*diva*" in l or "*cyrex*" in l]) > 0:
+    if (
+        "DEFAULT_TIER2_EXCLUDED" in rules_src
+        and len([line for line in rules_src.splitlines() if "*diva*" in line or "*cyrex*" in line])
+        > 0
+    ):
         warn(
             "worker qaTierRules.ts still has hardcoded DEFAULT_TIER2_EXCLUDED patterns",
             "These are used as fallback defaults when no BOARDMAN_URL is set. "
@@ -472,7 +493,9 @@ async def main():
     passed = [r for r in results if r["pass"] is True]
     failed = [r for r in results if r["pass"] is False]
     warned = [r for r in results if r["pass"] is None]
-    print(f"  {PASS} {len(passed)} passed   {FAIL} {len(failed)} failed   {WARN} {len(warned)} warnings")
+    print(
+        f"  {PASS} {len(passed)} passed   {FAIL} {len(failed)} failed   {WARN} {len(warned)} warnings"
+    )
     if failed:
         print("\n  Failed:")
         for r in failed:

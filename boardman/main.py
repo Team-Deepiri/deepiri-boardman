@@ -8,11 +8,20 @@ from boardman.assignment.config import sync_team_assignment_field_keys_from_boar
 from boardman.broker.job_queue import close_job_queue
 from boardman.cache.agent_redis import aclose_agent_redis
 from boardman.database.session import init_db
-from boardman.logging_config import setup_logging
 from boardman.llm.completion import aclose_ollama_http_client
 from boardman.llm.ollama_autodetect import effective_ollama_model
+from boardman.logging_config import setup_logging
 from boardman.ratelimit.leaky_bucket import get_agent_leaky_limiter
-from boardman.routes import agent, assignment, health, github_events, github_team, plaky, tasks, repos
+from boardman.routes import (
+    agent,
+    assignment,
+    github_events,
+    github_team,
+    health,
+    plaky,
+    repos,
+    tasks,
+)
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -31,7 +40,9 @@ async def lifespan(app: FastAPI):
     ws = (settings.github_webhook_secret or "").strip()
     if not ws:
         if settings.testing_live_plaky:
-            _log.info("Webhook signature verification disabled (fine for TESTING_LIVE_PLAKY local mode)")
+            _log.info(
+                "Webhook signature verification disabled (fine for TESTING_LIVE_PLAKY local mode)"
+            )
         else:
             _log.warning(
                 "GITHUB_WEBHOOK_SECRET is EMPTY — webhook signature verification is DISABLED. "
@@ -59,13 +70,22 @@ async def lifespan(app: FastAPI):
             try:
                 synced = await sync_team_assignment_field_keys_from_board(bid)
                 if synced.get("updated"):
-                    _log.info("team_assignments: synced field keys from board %s -> %s", bid, synced.get("updated"))
+                    _log.info(
+                        "team_assignments: synced field keys from board %s -> %s",
+                        bid,
+                        synced.get("updated"),
+                    )
                 else:
-                    _log.info("team_assignments: field-key sync skipped (%s)", synced.get("message", "no changes"))
+                    _log.info(
+                        "team_assignments: field-key sync skipped (%s)",
+                        synced.get("message", "no changes"),
+                    )
             except Exception as e:
                 _log.warning("team_assignments: startup field-key sync failed: %s", e)
         else:
-            _log.info("team_assignments: startup field-key sync skipped (repos.yml defaults.plaky_board_id empty)")
+            _log.info(
+                "team_assignments: startup field-key sync skipped (repos.yml defaults.plaky_board_id empty)"
+            )
     prov = (settings.llm_provider or "ollama").lower()
     if prov == "ollama":
         try:
@@ -87,7 +107,9 @@ async def lifespan(app: FastAPI):
             settings.ollama_base_url,
         )
     if (settings.agent_redis_url or "").strip():
-        _log.info("Agent Redis cache: AGENT_REDIS_URL is set (API-only; worker should leave it empty)")
+        _log.info(
+            "Agent Redis cache: AGENT_REDIS_URL is set (API-only; worker should leave it empty)"
+        )
     from boardman.services.github_poller import start_github_poller_if_enabled, stop_github_poller
 
     start_github_poller_if_enabled()
@@ -140,7 +162,9 @@ def create_app() -> FastAPI:
         app.include_router(agent.router, prefix="/api/v1")
         app.include_router(repos.router, prefix="/api/v1")
     else:
-        _log.info("Agent/UI API routes disabled (BOARDMAN_ENABLE_AGENT_API=false): worker-only mode")
+        _log.info(
+            "Agent/UI API routes disabled (BOARDMAN_ENABLE_AGENT_API=false): worker-only mode"
+        )
 
     return app
 

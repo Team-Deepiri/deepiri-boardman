@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import pytest
 
+from boardman.assignment import qa_picker as qp
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, TierSpec
 from boardman.assignment.repo_rules import QaRepoRules
-from boardman.assignment import qa_picker as qp
 from boardman.github.qa_contribution_profile import (
     QaContributionProfile,
     RepoInfo,
@@ -100,7 +100,9 @@ async def test_pick_uses_scored_ranking(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 @pytest.mark.asyncio
-async def test_pick_falls_back_to_legacy_when_fit_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_pick_falls_back_to_legacy_when_fit_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     a = _member("qa-a")
     cfg = _cfg([a])
 

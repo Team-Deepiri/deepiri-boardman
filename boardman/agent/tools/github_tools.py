@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from typing import Any, List, Optional
+from typing import Any
 
 import httpx
 from langchain_core.tools import StructuredTool
 
+from boardman.github.code_search import scan_repo_defects, search_repo_code
 from boardman.github.repo_fetch import (
     fetch_default_branch,
     fetch_direction_md,
@@ -17,23 +18,39 @@ from boardman.github.repo_fetch import (
     fetch_repo_file_text,
     parse_owner_repo,
 )
-from boardman.github.code_search import scan_repo_defects, search_repo_code
 from boardman.github.repo_hotspots import fetch_repo_hotspots
 from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.repos_config import list_workspace_repos
 from boardman.settings import settings
 
 _NOTABLE_FILE_BASENAMES = {
-    "readme.md", "readme.rst", "readme.txt",
-    "package.json", "pyproject.toml", "setup.py", "setup.cfg", "cargo.toml",
-    "go.mod", "pom.xml", "build.gradle", "gemfile",
-    "dockerfile", "docker-compose.yml", "docker-compose.yaml",
-    "makefile", "justfile",
-    ".github", "direction.md", "contributing.md", "changelog.md",
+    "readme.md",
+    "readme.rst",
+    "readme.txt",
+    "package.json",
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "cargo.toml",
+    "go.mod",
+    "pom.xml",
+    "build.gradle",
+    "gemfile",
+    "dockerfile",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "makefile",
+    "justfile",
+    ".github",
+    "direction.md",
+    "contributing.md",
+    "changelog.md",
 }
 
 
-async def _workspace_repo_suggestions(client: httpx.AsyncClient, requested: str, limit: int = 5) -> List[str]:
+async def _workspace_repo_suggestions(
+    client: httpx.AsyncClient, requested: str, limit: int = 5
+) -> list[str]:
     """Closest workspace repos to a requested name (users say 'deepiri-cyrex' for 'diri-cyrex')."""
     from difflib import SequenceMatcher
 
@@ -45,7 +62,7 @@ async def _workspace_repo_suggestions(client: httpx.AsyncClient, requested: str,
     want = (requested or "").split("/")[-1].strip().lower()
     if not want or not names:
         return []
-    scored: List[tuple[float, str]] = []
+    scored: list[tuple[float, str]] = []
     for fn in names:
         short = fn.split("/")[-1].lower()
         score = SequenceMatcher(None, want, short).ratio()
@@ -56,7 +73,7 @@ async def _workspace_repo_suggestions(client: httpx.AsyncClient, requested: str,
     return [fn for score, fn in scored[:limit] if score >= 0.45]
 
 
-def _repo_not_found_payload(owner: str, repo: str, suggestions: List[str]) -> str:
+def _repo_not_found_payload(owner: str, repo: str, suggestions: list[str]) -> str:
     return json.dumps(
         {
             "ok": False,
@@ -104,7 +121,10 @@ async def _github_list_open_issues(owner_repo: str) -> str:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
     async with httpx.AsyncClient(timeout=30.0) as client:
-        headers = {"Authorization": f"Bearer {settings.github_pat}", "Accept": "application/vnd.github+json"}
+        headers = {
+            "Authorization": f"Bearer {settings.github_pat}",
+            "Accept": "application/vnd.github+json",
+        }
         r = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}/issues?state=open&per_page=30",
             headers=headers,
@@ -131,7 +151,9 @@ async def _github_fetch_direction(owner_repo: str) -> str:
     owner, repo = parsed
     async with httpx.AsyncClient(timeout=45.0) as client:
         text = await fetch_direction_md(client, owner, repo)
-    return json.dumps({"ok": True, "owner": owner, "repo": repo, "DIRECTION_md": text}, default=str)[:14000]
+    return json.dumps(
+        {"ok": True, "owner": owner, "repo": repo, "DIRECTION_md": text}, default=str
+    )[:14000]
 
 
 async def _github_fetch_file(owner_repo: str, path: str, ref: str = "") -> str:
@@ -147,7 +169,9 @@ async def _github_fetch_file(owner_repo: str, path: str, ref: str = "") -> str:
         if not branch:
             branch = await fetch_default_branch(client, owner, repo)
         text = await fetch_repo_file_text(client, owner, repo, path.strip(), ref=branch)
-    return json.dumps({"ok": True, "path": path, "ref": branch, "content": text}, default=str)[:14000]
+    return json.dumps({"ok": True, "path": path, "ref": branch, "content": text}, default=str)[
+        :14000
+    ]
 
 
 async def _github_repo_structure(owner_repo: str) -> str:
@@ -168,7 +192,7 @@ async def _github_repo_structure(owner_repo: str) -> str:
             suggestions = await _workspace_repo_suggestions(client, repo)
             return _repo_not_found_payload(owner, repo, suggestions)
 
-    notable: List[str] = []
+    notable: list[str] = []
     file_count = 0
     for sig in meta.raw_signals:
         if sig.startswith("file:"):
@@ -179,17 +203,20 @@ async def _github_repo_structure(owner_repo: str) -> str:
         elif sig.startswith("dir:"):
             pass
 
-    return json.dumps({
-        "ok": True,
-        "repo": meta.full_name,
-        "language": meta.language,
-        "default_branch": meta.default_branch,
-        "size_kb": meta.size_kb,
-        "top_level_dirs": meta.top_level_dirs,
-        "notable_files": notable,
-        "total_unique_files": file_count,
-        "max_depth": meta.max_depth,
-    }, default=str)
+    return json.dumps(
+        {
+            "ok": True,
+            "repo": meta.full_name,
+            "language": meta.language,
+            "default_branch": meta.default_branch,
+            "size_kb": meta.size_kb,
+            "top_level_dirs": meta.top_level_dirs,
+            "notable_files": notable,
+            "total_unique_files": file_count,
+            "max_depth": meta.max_depth,
+        },
+        default=str,
+    )
 
 
 async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20) -> str:
@@ -242,7 +269,7 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
         commits = _text(commits, "(commits unavailable)")
         issues = _text(issues, "(issues unavailable)")
         readme_text = _text(readme_raw, "")
-        readme: Optional[str] = (
+        readme: str | None = (
             readme_text if readme_text and not readme_text.startswith("(file unavailable") else None
         )
         code_signals = hotspots if isinstance(hotspots, dict) else None
@@ -413,7 +440,7 @@ def github_scan_defects_tool() -> StructuredTool:
     )
 
 
-def build_github_tools() -> List[StructuredTool]:
+def build_github_tools() -> list[StructuredTool]:
     return [
         github_list_workspace_repos_tool(),
         github_repo_planning_context_tool(),

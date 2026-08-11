@@ -47,6 +47,7 @@ REPO_AUDIT_TO_DRAFT = (
     "and suggest which group it should live in based on the files involved."
 )
 
+
 # Helper for f-string style templates
 def get_task_prompt(repo: str, board: str, group: str) -> str:
     return (

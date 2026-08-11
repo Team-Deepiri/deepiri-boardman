@@ -5,9 +5,10 @@ Revises: 001_initial
 Create Date: 2026-04-09
 
 """
-from alembic import op
+
 import sqlalchemy as sa
 
+from alembic import op
 
 revision = "002_agent_scan"
 down_revision = "001_initial"
@@ -42,7 +43,9 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint("session_id"),
     )
-    op.create_index(op.f("ix_agent_sessions_session_id"), "agent_sessions", ["session_id"], unique=False)
+    op.create_index(
+        op.f("ix_agent_sessions_session_id"), "agent_sessions", ["session_id"], unique=False
+    )
 
     op.create_table(
         "agent_messages",
@@ -55,7 +58,9 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["session_pk"], ["agent_sessions.id"], ondelete="CASCADE"),
         sa.PrimaryKeyConstraint("id"),
     )
-    op.create_index(op.f("ix_agent_messages_session_pk"), "agent_messages", ["session_pk"], unique=False)
+    op.create_index(
+        op.f("ix_agent_messages_session_pk"), "agent_messages", ["session_pk"], unique=False
+    )
 
     op.create_table(
         "project_contexts",

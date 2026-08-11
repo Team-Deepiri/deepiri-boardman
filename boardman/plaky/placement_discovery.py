@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
 
 from boardman.plaky.name_match import rank_plaky_rows
 from boardman.plaky.plaky_catalog import (
@@ -59,11 +58,11 @@ def _repo_slug(full_name: str, short_name: str = "") -> str:
 
 
 def _best_group_match(
-    groups: List[PlakyGroupEntry],
+    groups: list[PlakyGroupEntry],
     query: str,
     *,
     min_score: int,
-) -> Tuple[Optional[PlakyGroupEntry], int]:
+) -> tuple[PlakyGroupEntry | None, int]:
     rows = [{"id": g.id, "name": g.name} for g in groups]
     ranked, best = rank_plaky_rows(rows, query)
     if best and int(best.get("score") or 0) >= min_score:
@@ -72,7 +71,9 @@ def _best_group_match(
         return PlakyGroupEntry(id=gid, name=gname), int(best["score"])
     if ranked and int(ranked[0].get("score") or 0) >= min_score:
         top = ranked[0]
-        return PlakyGroupEntry(id=str(top["id"]), name=str(top.get("name") or "")), int(top["score"])
+        return PlakyGroupEntry(id=str(top["id"]), name=str(top.get("name") or "")), int(
+            top["score"]
+        )
     return None, 0
 
 
@@ -82,7 +83,7 @@ def discover_placement_from_catalog(
     short_name: str = "",
     *,
     description: str = "",
-) -> Optional[PlacementResult]:
+) -> PlacementResult | None:
     """Pure resolver for tests; same logic as live path without API/cache I/O."""
     slug = _repo_slug(full_name, short_name)
     if not slug:
@@ -91,7 +92,7 @@ def discover_placement_from_catalog(
     # Re-filter in case catalog was loaded from an older cache that included legacy boards.
     boards = filter_categorical_boards(catalog.boards)
 
-    best_global: Optional[Tuple[PlakyBoardEntry, PlakyGroupEntry, int]] = None
+    best_global: tuple[PlakyBoardEntry, PlakyGroupEntry, int] | None = None
     for board in boards:
         g, score = _best_group_match(board.groups, slug, min_score=min_score)
         if not g:
@@ -126,7 +127,7 @@ async def resolve_placement_for_repo(
     *,
     description: str = "",
     force_catalog_refresh: bool = False,
-) -> Optional[PlacementResult]:
+) -> PlacementResult | None:
     """Load catalog (cached or live) and resolve placement; used by webhook handlers."""
     if not settings.plaky_placement_auto_discover:
         return None
@@ -138,7 +139,9 @@ async def resolve_placement_for_repo(
     except Exception as exc:
         _log.warning("plaky placement: catalog unavailable for %r: %s", full_name, exc)
         return None
-    result = discover_placement_from_catalog(catalog, full_name, short_name, description=description)
+    result = discover_placement_from_catalog(
+        catalog, full_name, short_name, description=description
+    )
     if result:
         _log.info(
             "plaky placement: %r -> board=%r group=%r (%s, cache=%s, score=%s)",

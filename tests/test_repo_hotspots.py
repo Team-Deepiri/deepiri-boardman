@@ -11,9 +11,7 @@ from boardman.github.repo_hotspots import fetch_repo_hotspots
 def _tree_response(paths_sizes: list[tuple[str, int]]) -> dict:
     return {
         "truncated": False,
-        "tree": [
-            {"path": p, "type": "blob", "size": s} for p, s in paths_sizes
-        ],
+        "tree": [{"path": p, "type": "blob", "size": s} for p, s in paths_sizes],
     }
 
 

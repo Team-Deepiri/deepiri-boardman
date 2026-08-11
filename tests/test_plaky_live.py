@@ -23,7 +23,6 @@ from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.name_match import rank_plaky_rows
 from boardman.settings import settings
-
 from tests.plaky_test_board import (
     BOARDMAN_TEST_BOARD_NAME,
     find_row_by_name,
@@ -150,9 +149,7 @@ async def test_live_get_tasks_smoke():
     r = await c.get_tasks(status="open")
     st = r.get("status")
     assert st != 401, "get_tasks returned 401 — PLAKY_API_KEY rejected"
-    assert r.get("ok") is True or st in (404, 422), (
-        f"get_tasks: {r.get('message')!r} status={st}"
-    )
+    assert r.get("ok") is True or st in (404, 422), f"get_tasks: {r.get('message')!r} status={st}"
 
 
 @pytest.mark.asyncio
@@ -217,7 +214,11 @@ async def test_live_create_then_update_task_in_boardman_test_board_sprint_2():
         assert create_body.get("ok") is True, create_body
         task_id = str(
             create_body.get("task_id")
-            or ((create_body.get("task") or {}).get("id") if isinstance(create_body.get("task"), dict) else "")
+            or (
+                (create_body.get("task") or {}).get("id")
+                if isinstance(create_body.get("task"), dict)
+                else ""
+            )
             or ""
         ).strip()
         assert task_id, f"Could not resolve task id from create response: {create_body}"

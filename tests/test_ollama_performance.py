@@ -17,7 +17,6 @@ import asyncio
 import os
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
 
 import httpx
 import pytest
@@ -25,7 +24,7 @@ import pytest
 OLLAMA_BASE = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 
 
-def ollama_models() -> List[str]:
+def ollama_models() -> list[str]:
     """Get list of available Ollama models."""
     try:
         r = httpx.get(f"{OLLAMA_BASE}/api/tags", timeout=5.0)
@@ -65,7 +64,7 @@ class BenchmarkResult:
 
 async def _chat_complete_async(
     model: str,
-    messages: List[Dict[str, str]],
+    messages: list[dict[str, str]],
     timeout: float = 120.0,
     stream: bool = False,
 ) -> BenchmarkResult:
@@ -121,7 +120,9 @@ async def _chat_complete_async(
     )
 
 
-def _chat_complete_sync(model: str, messages: List[Dict[str, str]], timeout: float = 120.0) -> BenchmarkResult:
+def _chat_complete_sync(
+    model: str, messages: list[dict[str, str]], timeout: float = 120.0
+) -> BenchmarkResult:
     """Sync version for simpler benchmarking."""
     url = f"{OLLAMA_BASE}/api/chat"
     payload = {
@@ -161,7 +162,9 @@ class TestOllamaPerformance:
     def setup(self):
         require_ollama_or_skip()
         if not ollama_models():
-            pytest.skip("Ollama has no models; pull one (e.g. ollama pull qwen2.5:7b) for perf tests")
+            pytest.skip(
+                "Ollama has no models; pull one (e.g. ollama pull qwen2.5:7b) for perf tests"
+            )
 
     def test_ollama_reachable_and_has_models(self):
         """Sanity check: Ollama is running with at least one model."""
@@ -177,14 +180,14 @@ class TestOllamaPerformance:
 
         model = effective_ollama_model(None)
         require_model_or_skip(model)
-        
+
         monkeypatch.setattr(bs.settings, "ollama_base_url", OLLAMA_BASE)
 
         messages = [{"role": "user", "content": "Write a short one-sentence response."}]
 
         result = await _chat_complete_async(model, messages, timeout=120.0)
 
-        print(f"\n--- Single Request Benchmark ---")
+        print("\n--- Single Request Benchmark ---")
         print(f"Model: {result.model}")
         print(f"Total time: {result.total_time_sec:.2f}s")
         print(f"Completion tokens (est): {result.completion_tokens}")
@@ -201,7 +204,7 @@ class TestOllamaPerformance:
 
         model = effective_ollama_model(None)
         require_model_or_skip(model)
-        
+
         monkeypatch.setattr(bs.settings, "ollama_base_url", OLLAMA_BASE)
 
         messages = [{"role": "user", "content": "Reply with: OK"}]
@@ -209,10 +212,7 @@ class TestOllamaPerformance:
         num_requests = 4
         start = time.monotonic()
 
-        tasks = [
-            _chat_complete_async(model, messages, timeout=120.0)
-            for _ in range(num_requests)
-        ]
+        tasks = [_chat_complete_async(model, messages, timeout=120.0) for _ in range(num_requests)]
         results = await asyncio.gather(*tasks)
 
         total_time = time.monotonic() - start
@@ -237,7 +237,7 @@ class TestOllamaPerformance:
 
         model = effective_ollama_model(None)
         require_model_or_skip(model)
-        
+
         monkeypatch.setattr(bs.settings, "ollama_base_url", OLLAMA_BASE)
 
         url = f"{OLLAMA_BASE}/api/chat"
@@ -259,7 +259,7 @@ class TestOllamaPerformance:
                         if "content" in line:
                             break
 
-        print(f"\n--- Streaming TTFT ---")
+        print("\n--- Streaming TTFT ---")
         print(f"Time to first token: {ttft:.3f}s")
 
         assert ttft is not None, "Never received response"
@@ -268,7 +268,7 @@ class TestOllamaPerformance:
     def test_model_size_performance_comparison(self):
         """Compare performance across different model sizes."""
         models = ollama_models()
-        
+
         if len(models) < 2:
             pytest.skip("Need at least 2 models for comparison")
 
@@ -284,7 +284,7 @@ class TestOllamaPerformance:
             except Exception as e:
                 print(f"Skipping {model}: {e}")
 
-        print(f"\n--- Model Comparison ---")
+        print("\n--- Model Comparison ---")
         for model, r in results:
             print(f"{model}: {r.total_time_sec:.2f}s, {r.tokens_per_sec:.1f} t/s")
 

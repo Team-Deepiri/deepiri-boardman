@@ -8,8 +8,8 @@ from __future__ import annotations
 import logging
 import math
 from collections import defaultdict
-from datetime import datetime, timezone
-from typing import Any, Dict, Optional, Tuple
+from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import quote
 
 import httpx
@@ -20,7 +20,7 @@ from boardman.github.repo_metadata import fetch_repo_metadata
 _log = logging.getLogger(__name__)
 
 
-def _parse_github_datetime(value: str) -> Optional[datetime]:
+def _parse_github_datetime(value: str) -> datetime | None:
     if not value or not isinstance(value, str):
         return None
     s = value.strip()
@@ -40,7 +40,7 @@ def _decay_weight(updated_at: str, *, now: datetime, half_life_days: float) -> f
     if dt is None:
         return 0.5
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
+        dt = dt.replace(tzinfo=UTC)
     days = max(0.0, (now - dt).total_seconds() / 86400.0)
     return math.pow(0.5, days / half_life_days)
 
@@ -75,13 +75,13 @@ async def infer_qa_tier_from_pr_activity(
     tier3_min_weighted_score: float = 5.0,
     tier2_min_distinct_t2plus_repos: int = 3,
     tier2_min_weighted_score: float = 2.5,
-) -> Tuple[int, Dict[str, Any]]:
+) -> tuple[int, dict[str, Any]]:
     """
     Paginate GitHub search for PRs authored by and reviewed by login.
 
     Returns (qa_tier, debug dict for logging/metrics).
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     seen_pr: set[str] = set()
     repo_max_tier: dict[str, int] = {}
     repo_decay_sum: dict[str, float] = defaultdict(float)
@@ -141,10 +141,13 @@ async def infer_qa_tier_from_pr_activity(
     tier = 1
     if distinct_t3 >= tier3_min_distinct_t3_repos and weighted_score >= tier3_min_weighted_score:
         tier = 3
-    elif distinct_t2p >= tier2_min_distinct_t2plus_repos or weighted_score >= tier2_min_weighted_score:
+    elif (
+        distinct_t2p >= tier2_min_distinct_t2plus_repos
+        or weighted_score >= tier2_min_weighted_score
+    ):
         tier = 2
 
-    debug: Dict[str, Any] = {
+    debug: dict[str, Any] = {
         "distinct_t3_repos": distinct_t3,
         "distinct_t2plus_repos": distinct_t2p,
         "weighted_score": round(weighted_score, 3),

@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import os
-from typing import Optional
-
 import httpx
 from fastapi import APIRouter
 
@@ -24,7 +21,7 @@ async def list_llm_models() -> dict:
     For other providers: returns configured model or empty.
     """
     provider = (settings.llm_provider or "ollama").lower()
-    
+
     if provider == "ollama":
         base_url = (settings.ollama_base_url or "http://localhost:11434").rstrip("/")
         try:
@@ -37,13 +34,16 @@ async def list_llm_models() -> dict:
                     for m in models:
                         name = m.get("name") or m.get("model") or ""
                         if name:
-                            model_list.append({
-                                "name": name,
-                                "size": m.get("size"),
-                                "details": m.get("details", {}),
-                            })
+                            model_list.append(
+                                {
+                                    "name": name,
+                                    "size": m.get("size"),
+                                    "details": m.get("details", {}),
+                                }
+                            )
                     # Get current model
                     from boardman.llm.ollama_autodetect import effective_ollama_model
+
                     current = effective_ollama_model(None)
                     return {
                         "ok": True,
@@ -51,9 +51,14 @@ async def list_llm_models() -> dict:
                         "models": model_list,
                         "current": current,
                     }
-        except Exception as e:
-            return {"ok": False, "provider": "ollama", "models": [], "error": str(e)}
-    
+        except Exception:
+            return {
+                "ok": False,
+                "provider": "ollama",
+                "models": [],
+                "error": "Failed to fetch Ollama models.",
+            }
+
     # Non-Ollama providers
     return {
         "ok": True,
@@ -72,7 +77,13 @@ async def plaky_workspace_users(query: str = "") -> dict:
     if not isinstance(users, list):
         users = []
     if not query.strip():
-        return {"ok": r.get("ok"), "message": r.get("message"), "users": users, "matches": [], "best": None}
+        return {
+            "ok": r.get("ok"),
+            "message": r.get("message"),
+            "users": users,
+            "matches": [],
+            "best": None,
+        }
     matches, best = rank_plaky_rows(users, query)
     return {
         "ok": r.get("ok"),
