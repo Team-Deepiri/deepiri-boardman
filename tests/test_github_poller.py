@@ -532,3 +532,90 @@ async def test_direct_poll_detects_close_and_reopen(monkeypatch: pytest.MonkeyPa
     await poller._poll_issues(c, "o/r", baseline, "since", proc)
 
     assert seen == ["opened", "closed", "reopened"]
+
+
+# --- webhook-only events derived from polling ------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_poll_detects_ready_for_review_and_review_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ready_for_review` and `review_requested` are webhook-only GitHub events, but both
+    states are visible on the /pulls list. We detect the TRANSITION so no webhook endpoint
+    is required for local/as-if-production testing."""
+    from datetime import datetime, timedelta
+
+    poller = gp.GitHubEventPoller()
+    seen: list[str] = []
+
+    async def fake_run_handler(payload):
+        seen.append(payload.action)
+        return {"ok": True}
+
+    monkeypatch.setattr(poller, "_run_handler", fake_run_handler)
+
+    baseline = datetime.now(UTC) - timedelta(minutes=5)
+    proc = {
+        "issues_opened": set(),
+        "issue_state": {},
+        "prs_opened": set(),
+        "prs_closed": set(),
+        "pr_draft": {},
+        "pr_reviewers": {},
+        "commits": set(),
+    }
+    created = (baseline - timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    updated = (baseline + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def pr(draft: bool, reviewers: list[str]) -> dict:
+        return {
+            "number": 77,
+            "title": "t",
+            "body": "",
+            "html_url": "u",
+            "state": "open",
+            "draft": draft,
+            "created_at": created,
+            "updated_at": updated,
+            "user": {"login": "dev"},
+            "head": {"ref": "f"},
+            "labels": [],
+            "requested_reviewers": [{"login": r} for r in reviewers],
+        }
+
+    class Resp:
+        def __init__(self, p):
+            self._p = p
+            self.status_code = 200
+
+        def json(self):
+            return self._p
+
+    class Client:
+        queue: list = []
+
+        async def get(self, url, headers=None):
+            return Resp(Client.queue.pop(0))
+
+    c = Client()
+    # 1) first sight: draft PR, no reviewers -> baseline only, no events
+    Client.queue = [[pr(True, [])]]
+    await poller._poll_pulls(c, "o/r", baseline, proc)
+    assert seen == []
+    # 2) draft -> ready
+    Client.queue = [[pr(False, [])]]
+    await poller._poll_pulls(c, "o/r", baseline, proc)
+    assert seen == ["ready_for_review"]
+    # 3) a reviewer is added
+    Client.queue = [[pr(False, ["qa-person"])]]
+    await poller._poll_pulls(c, "o/r", baseline, proc)
+    assert seen == ["ready_for_review", "review_requested"]
+    # 4) nothing changed -> no duplicate events
+    Client.queue = [[pr(False, ["qa-person"])]]
+    await poller._poll_pulls(c, "o/r", baseline, proc)
+    assert seen == ["ready_for_review", "review_requested"]
+    # 5) back to draft
+    Client.queue = [[pr(True, ["qa-person"])]]
+    await poller._poll_pulls(c, "o/r", baseline, proc)
+    assert seen[-1] == "converted_to_draft"

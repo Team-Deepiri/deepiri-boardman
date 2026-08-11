@@ -185,6 +185,12 @@ class GitHubEventPoller:
                 "issue_state": {},
                 "prs_opened": set(),
                 "prs_closed": set(),
+                # number -> last seen draft flag, and number -> set of requested reviewer
+                # logins. GitHub only sends ready_for_review / review_requested as webhook
+                # events, but both states are visible on the /pulls list, so we detect the
+                # TRANSITION here instead of needing a webhook endpoint at all.
+                "pr_draft": {},
+                "pr_reviewers": {},
                 "commits": set(),
             }
             _log.info(
@@ -294,6 +300,39 @@ class GitHubEventPoller:
                 _log.info(
                     "poller: PR #%s opened -> %s", num, (result or {}).get("message") or result
                 )
+            # draft -> ready_for_review (webhook-only event, derived from the draft flag)
+            draft_now = bool(pr.get("draft"))
+            draft_map = proc.setdefault("pr_draft", {})
+            draft_prev = draft_map.get(num)
+            draft_map[num] = draft_now
+            if draft_prev is not None and draft_prev != draft_now and pr.get("state") == "open":
+                act = "converted_to_draft" if draft_now else "ready_for_review"
+                result = await self._run_handler(self._pr_payload(pr, full_name, act))
+                _log.info(
+                    "poller: PR #%s %s -> %s", num, act, (result or {}).get("message") or result
+                )
+
+            # newly requested reviewers (webhook-only event, derived from requested_reviewers)
+            reviewers_now = {
+                str((u or {}).get("login") or "").strip()
+                for u in (pr.get("requested_reviewers") or [])
+                if isinstance(u, dict) and (u or {}).get("login")
+            }
+            rev_map = proc.setdefault("pr_reviewers", {})
+            reviewers_prev = rev_map.get(num)
+            rev_map[num] = reviewers_now
+            if reviewers_prev is not None and (reviewers_now - reviewers_prev):
+                added = sorted(reviewers_now - reviewers_prev)
+                result = await self._run_handler(
+                    self._pr_payload(pr, full_name, "review_requested")
+                )
+                _log.info(
+                    "poller: PR #%s review_requested %s -> %s",
+                    num,
+                    added,
+                    (result or {}).get("message") or result,
+                )
+
             if pr.get("state") == "closed" and num not in proc["prs_closed"]:
                 proc["prs_closed"].add(num)
                 merged = bool(pr.get("merged_at"))
@@ -501,6 +540,10 @@ class GitHubEventPoller:
                         from boardman.services.pr_handler import handle_pr_ready_for_review
 
                         result = await handle_pr_ready_for_review(parsed, session)
+                    elif parsed.action == "review_requested":
+                        from boardman.services.pr_handler import handle_pr_review_requested
+
+                        result = await handle_pr_review_requested(parsed, session)
                     elif parsed.action == "edited":
                         from boardman.services.pr_handler import handle_pr_edited
 
