@@ -29,18 +29,23 @@ _log = logging.getLogger(__name__)
 # Real defect classes, not style nits. Each pattern is (regex, what it means).
 DEFECT_PROBES: tuple[tuple[str, str, str], ...] = (
     ("bare_except", r"^\s*except\s*:", "bare except — swallows KeyboardInterrupt/SystemExit too"),
-    ("broad_except", r"^\s*except Exception", "broad handler that can hide real failures"),
+    (
+        "broad_except",
+        r"^\s*except Exception",
+        "broad handler — hides real failures when the body only logs or passes",
+    ),
     ("todo", r"\b(TODO|FIXME|HACK|XXX)\b", "unfinished or known-broken work left in code"),
     ("debug_print", r"^\s*print\(", "debug print outside the logging system"),
     (
         "blocking_sleep",
         r"^\s*time\.sleep\(",
-        "blocking sleep (freezes the event loop in async code)",
+        "synchronous sleep — only a defect if the enclosing call path is async; "
+        "CHECK the caller before claiming it blocks an event loop",
     ),
     ("silent_pass", r"^\s*except[^\n]*:\s*\n\s*pass\s*$", "exception silently discarded"),
 )
 
-_MAX_FILES = 8
+_MAX_FILES = 16
 _MAX_BYTES_PER_FILE = 120_000
 
 
@@ -49,7 +54,9 @@ async def _fetch_source_files(
 ) -> list[tuple[str, str]]:
     async def one(path: str) -> tuple[str, str]:
         try:
-            text = await fetch_repo_file_text(client, owner, repo, path)
+            text = await fetch_repo_file_text(
+                client, owner, repo, path, max_chars=_MAX_BYTES_PER_FILE
+            )
         except Exception:  # noqa: BLE001
             return path, ""
         if not isinstance(text, str) or text.startswith("(file unavailable"):
@@ -114,20 +121,31 @@ async def scan_repo_defects(
     findings: list[dict[str, Any]] = []
     for key, pattern, means in DEFECT_PROBES:
         rx = re.compile(pattern, re.MULTILINE)
-        examples: list[dict[str, Any]] = []
-        total = 0
+        per_file: dict[str, list[dict[str, Any]]] = {}
         for path, text in files:
             if not text:
                 continue
             for i, line in enumerate(text.splitlines(), 1):
                 if rx.search(line):
-                    total += 1
-                    if len(examples) < 4:
-                        examples.append({"path": path, "line": i, "text": line.strip()[:200]})
-        if total:
-            findings.append(
-                {"probe": key, "means": means, "occurrences": total, "examples": examples}
-            )
+                    per_file.setdefault(path, []).append(
+                        {"path": path, "line": i, "text": line.strip()[:200]}
+                    )
+        if not per_file:
+            continue
+        # One example per file first, so a finding spans the codebase instead of showing
+        # four hits from a single module.
+        examples = [hits[0] for hits in per_file.values()][:6]
+        findings.append(
+            {
+                "probe": key,
+                "means": means,
+                # A cross-file total presented next to single-file examples was read as
+                # "N occurrences in THAT file" (56 claimed where the file had 46).
+                "total_across_files_read": sum(len(v) for v in per_file.values()),
+                "occurrences_by_file": {p: len(v) for p, v in sorted(per_file.items())},
+                "examples": examples,
+            }
+        )
 
     searched = [p for p, t in files if t]
     return {
@@ -135,12 +153,15 @@ async def scan_repo_defects(
         "repo": f"{owner}/{repo}",
         "files_read": searched,
         "coverage_note": (
-            f"Read the {len(searched)} largest source files (of {hot.get('source_files')} total). "
-            "Counts are for those files only — do not state repo-wide totals."
+            f"Read the {len(searched)} largest source files (of {hot.get('source_files')} total), "
+            f"up to {_MAX_BYTES_PER_FILE:,} chars each. Counts cover only what was read — "
+            'state them as "at least N", never as repo-wide totals.'
         ),
         "findings": findings,
         "guidance": (
             "These are real lines from real files. Cite path + line number and quote the line "
-            "when you turn one into a finding."
+            "when you turn one into a finding. Counts: use occurrences_by_file for a "
+            "per-file number; total_across_files_read is the sum over ALL files read and "
+            "must never be attributed to a single file."
         ),
     }

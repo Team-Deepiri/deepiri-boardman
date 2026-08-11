@@ -245,8 +245,14 @@ async def fetch_repo_file_text(
     path: str,
     *,
     ref: str = "",
+    max_chars: int = 50_000,
 ) -> str:
-    """Fetch a single file from the repo (default branch if ref empty)."""
+    """Fetch a single file from the repo (default branch if ref empty).
+
+    ``max_chars`` caps the returned text. The default keeps prompt payloads small; callers
+    that COUNT things in the file (defect scanning) must raise it, otherwise they silently
+    report an undercount for any file larger than the cap.
+    """
     from urllib.parse import quote
 
     clean = (path or "").strip().lstrip("/")
@@ -259,7 +265,7 @@ async def fetch_repo_file_text(
         return f"(file unavailable: HTTP {r.status_code} for {path})"
     data = r.json()
     if isinstance(data, dict) and data.get("encoding") == "base64" and data.get("content"):
-        return base64.b64decode(data["content"]).decode("utf-8", errors="replace")[:50000]
+        return base64.b64decode(data["content"]).decode("utf-8", errors="replace")[:max_chars]
     if isinstance(data, list):
         return f"(path {path} is a directory, not a file)"
     if isinstance(data, dict) and data.get("message"):
