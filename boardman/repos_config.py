@@ -5,12 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 import yaml
 
 from boardman.settings import settings
+
+if TYPE_CHECKING:
+    from boardman.planning.team_models import PlakyBoardRef
 
 
 @dataclass(frozen=True)
@@ -197,7 +200,7 @@ async def get_routing_async(
 
     When ``plaky_placement_auto_discover`` is enabled (default):
       - Loads cached Plaky catalog (boards + groups).
-      - Fuzzy-matches repo slug → group, or falls back to category → board.
+      - Fuzzy-matches repo slug → Plaky group on repo-catalog boards (no repos.yml IDs).
       - Does not read ``repos.yml`` for board_id / group_id.
 
     Set ``PLAKY_PLACEMENT_AUTO_DISCOVER=false`` to use legacy ``repos.yml`` routing only.
@@ -316,3 +319,73 @@ def update_repo_tiers(tier_map: dict[str, int]) -> None:
     with path.open("w", encoding="utf-8") as f:
         yaml.dump(raw, f, default_flow_style=False, sort_keys=False, allow_unicode=True)
     reload_repos_config()
+
+
+def _normalize_category(category: str) -> str:
+    return category.strip().lower().replace("_", "-")
+
+
+def category_to_team_focus(category: str) -> str | None:
+    """Map repos.yml category labels to planning team slugs."""
+    if not category or not category.strip():
+        return None
+    normalized = _normalize_category(category)
+    aliases: dict[str, str] = {
+        "ai-ml": "ai-ml",
+        "aiml": "ai-ml",
+        "ai": "ai-ml",
+        "ml": "ai-ml",
+        "qa": "qa",
+        "quality": "qa",
+        "testing": "qa",
+        "frontend-backend-infra": "frontend-backend-infra",
+        "frontend": "frontend-backend-infra",
+        "backend": "frontend-backend-infra",
+        "infra": "frontend-backend-infra",
+        "infrastructure": "frontend-backend-infra",
+        "platform": "frontend-backend-infra",
+        "it": "it",
+    }
+    if normalized in aliases:
+        return aliases[normalized]
+    if normalized in {"ai-ml", "qa", "frontend-backend-infra", "it", "all-teams"}:
+        return normalized
+    return None
+
+
+def derive_team_repos_from_repos_yml() -> dict[str, list[str]]:
+    """Build team → repo slug mapping from repos.yml categories."""
+    from boardman.planning.team_models import with_derived_repo_teams
+
+    mapping: dict[str, list[str]] = {}
+    for repo_key, routing in list_registered_repos().items():
+        team = category_to_team_focus(routing.category)
+        if team is None:
+            continue
+        slug = repos_yaml_canonical_repo_key(repo_key)
+        if not slug:
+            continue
+        mapping.setdefault(team, [])
+        if slug not in mapping[team]:
+            mapping[team].append(slug)
+    if not mapping:
+        return {}
+    return with_derived_repo_teams(mapping)
+
+
+def derive_team_boards_from_repos_yml() -> dict[str, PlakyBoardRef]:
+    """Build team → Plaky board mapping from repos.yml placement fields."""
+    from boardman.planning.team_models import PlakyBoardRef, with_derived_board_teams
+
+    mapping: dict[str, PlakyBoardRef] = {}
+    for _repo_key, routing in list_registered_repos().items():
+        team = category_to_team_focus(routing.category)
+        board_id = (routing.plaky_board_id or "").strip()
+        if team is None or not board_id:
+            continue
+        if team in mapping:
+            continue
+        mapping[team] = PlakyBoardRef(board_id=board_id, space_id="")
+    if not mapping:
+        return {}
+    return with_derived_board_teams(mapping)

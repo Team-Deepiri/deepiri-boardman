@@ -63,6 +63,9 @@ boardman.db
 *.log
 logs/
 
+# Generated meeting plans (boardman plan)
+plans/
+
 # Testing
 .pytest_cache/
 .coverage

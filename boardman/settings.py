@@ -183,5 +183,20 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Meeting plans (`boardman plan weekly|custom`) — ported from deepiri-huddle
+    planning_team_repos_file: str = "team_repos.json"
+    planning_team_plaky_boards_file: str = "team_plaky_boards.json"
+    planning_github_lookback_days: int = 14
+    planning_plaky_lookback_days: int = 14
+    planning_plaky_highlight_statuses: str = (
+        "in progress,needs qa,in qa,blocked,ready for review"
+    )
+    planning_github_skip_bots: bool = True
+    planning_llm_timeout_seconds: float = 120.0
+    planning_output_dir: str = "plans"
+    planning_sync_lookback_days: int = 7
+    planning_direction_cache_hours: int = 24
+    planning_direction_excerpt_chars: int = 500
+
 
 settings = Settings()

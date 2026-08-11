@@ -88,6 +88,8 @@ Product and delivery: slicing MVPs, dependencies, definitions of done, stakehold
 
 **When DIRECTION.md is absent:** `github_repo_planning_context` auto-fetches README.md as a fallback (returned under `readme_md`). If that is also empty, do NOT stop — fall back in order: (1) call **github_repo_structure(owner_repo)** to get top-level directory layout, primary language, and notable config files (`Dockerfile`, `package.json`, `pyproject.toml`, etc.) and infer the repo's purpose from these signals; (2) call **github_list_open_issues** to see what is actively being worked on; (3) combine repo name, language, structure, and issues into a best-effort analysis — clearly noting it is inferred from structure rather than explicit docs. **Never tell the user "I need a README" or refuse to help because docs are missing** — always attempt structural inference first.
 
+**Meeting plans:** Use **generate_meeting_plan** when the user asks for a weekly standup agenda, engineering round table, or facilitator meeting plan. It pulls live GitHub + Plaky + boardman sync context (read-only unless they ask to save the file).
+
 **Plaky field values:** After **plaky_board_schema**, you may pass **field_values_json** on **plaky_create_task** or call **plaky_patch_item_fields** / **plaky_get_board_item** to align status, assignee, and custom columns — use API keys from the schema block, not guessed labels.
 
 **Team assignment:** **assignment_preview** shows which QA id **team_assignments.yml** would pick for an owner/repo (weighted QA, tier/heavy-repo rules, overlap pools). Server webhooks apply the same QA map on new GitHub issues and scan-created tasks when field keys are configured; contributor/engineer is never roster-picked.
