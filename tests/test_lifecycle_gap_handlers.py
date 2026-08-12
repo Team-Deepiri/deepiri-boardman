@@ -486,3 +486,71 @@ async def test_label_change_on_unmapped_issue_is_skipped(db_session) -> None:
     )
     res = await handle_issue_labels_changed(payload, db_session)
     assert res.get("skipped") is True
+
+
+@pytest.mark.asyncio
+async def test_pr_label_added_after_open_resyncs_type(db_session, monkeypatch) -> None:
+    """PRs have no native GitHub type — labels ARE their typing. A label added after the
+    PR opened must reach the linked task, same as the issue-side sync."""
+    from boardman.services.pr_handler import handle_pr_labels_changed
+
+    async def linked(session: Any, *, github_repo: str, github_pr_number: int) -> list[str]:
+        return ["t1", "t2"]
+
+    async def fake_routing(*a: Any, **kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(ph, "distinct_task_ids_for_pr", linked)
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+
+    calls: list[tuple[str, str]] = []
+
+    async def fake_update(task_id, inp):
+        calls.append((task_id, inp.task_type))
+        return {"ok": True}
+
+    monkeypatch.setattr(ph, "update_task_internal", fake_update)
+
+    payload = PullRequestEventPayload(
+        action="labeled",
+        pull_request={
+            "number": 9,
+            "title": "x",
+            "html_url": "u",
+            "state": "open",
+            "merged": False,
+            "labels": [{"name": "bug"}],
+            "head": {"ref": "feature/no-number-here"},
+        },
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await handle_pr_labels_changed(payload, db_session)
+    assert res.get("event") == "pr_labels_synced"
+    assert calls == [("t1", "Bug"), ("t2", "Bug")]
+
+
+@pytest.mark.asyncio
+async def test_pr_label_change_without_type_signal_is_skipped(db_session, monkeypatch) -> None:
+    """'NEEDS HELP' carries no type; rewriting Type off it would churn a curated value."""
+    from boardman.services.pr_handler import handle_pr_labels_changed
+
+    async def linked(session: Any, *, github_repo: str, github_pr_number: int) -> list[str]:
+        return ["t1"]
+
+    monkeypatch.setattr(ph, "distinct_task_ids_for_pr", linked)
+
+    payload = PullRequestEventPayload(
+        action="labeled",
+        pull_request={
+            "number": 9,
+            "title": "x",
+            "html_url": "u",
+            "state": "open",
+            "merged": False,
+            "labels": [{"name": "NEEDS HELP"}],
+            "head": {"ref": "feature/no-number-here"},
+        },
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await handle_pr_labels_changed(payload, db_session)
+    assert res.get("skipped") is True

@@ -1019,3 +1019,59 @@ async def handle_pr_review_comment(
         if tid0:
             await maybe_enqueue_plaky_reorder_after_task(plaky, str(tid0))
     return {"ok": True, "updated": results}
+
+
+async def handle_pr_labels_changed(
+    payload: PullRequestEventPayload,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """PR `labeled`/`unlabeled` → re-mirror Type onto the linked task(s).
+
+    PRs have no native GitHub "type" — labels ARE their typing (meeting note: "match
+    labels as well; PRs don't have types, only issues do"). Same shape as the issue-side
+    label sync: labeling after the fact is normal usage, and the creation-time race must
+    not freeze the Type forever. Type only — assignee/QA/status are owned by their own
+    transitions.
+    """
+    from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
+    from boardman.repos_config import get_routing_async
+
+    repo_name = payload.repository.name
+    pr_number = payload.pull_request.number
+    task_ids = await distinct_task_ids_for_pr(
+        session, github_repo=repo_name, github_pr_number=pr_number
+    )
+    if not task_ids:
+        return {"ok": True, "skipped": True, "message": "no Plaky task linked for this PR"}
+
+    # Labels ONLY — no branch fallback. The branch already set Type at link time; the
+    # event firing here is a human changing the labels, and if the branch kept winning
+    # ("feature/x" beats a freshly added "bug" label) this handler could never change
+    # anything, which is exactly the frozen-Type problem it exists to fix.
+    labels = pr_label_names(getattr(payload.pull_request, "labels", None))
+    canon_type = infer_task_type_from_pr(None, labels)
+    if not canon_type:
+        return {"ok": True, "skipped": True, "message": "labels carry no type signal"}
+
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
+    bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()
+
+    updated: list[dict[str, Any]] = []
+    for tid in task_ids:
+        res = await update_task_internal(
+            tid, UpdateTaskInput(task_type=canon_type, plaky_board_id=bid or None)
+        )
+        updated.append({"task_id": tid, "ok": res.get("ok")})
+    session.add(
+        SyncLog(
+            action="pr_labels_synced",
+            github_repo=repo_name,
+            github_ref=str(pr_number),
+            plaky_task_id=task_ids[0],
+            detail=json.dumps(
+                {"labels": labels, "task_type": canon_type, "updated": updated}, default=str
+            ),
+        )
+    )
+    await session.commit()
+    return {"ok": True, "event": "pr_labels_synced", "task_type": canon_type, "updated": updated}

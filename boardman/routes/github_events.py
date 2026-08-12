@@ -147,6 +147,10 @@ async def github_webhook(
             result = await handle_pr_synchronized(payload, session)
         elif payload.action == "reopened":
             result = await handle_pr_opened(payload, session)
+        elif payload.action in ("labeled", "unlabeled"):
+            from boardman.services.pr_handler import handle_pr_labels_changed
+
+            result = await handle_pr_labels_changed(payload, session)
         elif payload.action == "edited":
             result = await handle_pr_edited(payload, session)
         elif payload.action == "converted_to_draft":

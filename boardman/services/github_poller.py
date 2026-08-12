@@ -334,6 +334,27 @@ class GitHubEventPoller:
                     "poller: PR #%s %s -> %s", num, act, (result or {}).get("message") or result
                 )
 
+            # label set changed (PRs have no native type — labels ARE their typing, and
+            # people label after opening; mirror of the issue-side label tracking)
+            labels_sig = tuple(
+                sorted(
+                    str((lb or {}).get("name") or "")
+                    for lb in (pr.get("labels") or [])
+                    if isinstance(lb, dict)
+                )
+            )
+            pr_labels = proc.setdefault("pr_labels", {})
+            labels_prev = pr_labels.get(num)
+            pr_labels[num] = labels_sig
+            if labels_prev is not None and labels_prev != labels_sig:
+                result = await self._run_handler(self._pr_payload(pr, full_name, "labeled"))
+                _log.info(
+                    "poller: PR #%s labeled %s -> %s",
+                    num,
+                    list(labels_sig),
+                    (result or {}).get("message") or result,
+                )
+
             # newly requested reviewers (webhook-only event, derived from requested_reviewers)
             head_ref = str(((pr.get("head") or {}) or {}).get("ref") or "").strip()
             if head_ref and pr.get("state") == "open":
@@ -588,6 +609,10 @@ class GitHubEventPoller:
                         from boardman.services.pr_handler import handle_pr_review_requested
 
                         result = await handle_pr_review_requested(parsed, session)
+                    elif parsed.action in ("labeled", "unlabeled"):
+                        from boardman.services.pr_handler import handle_pr_labels_changed
+
+                        result = await handle_pr_labels_changed(parsed, session)
                     elif parsed.action == "edited":
                         from boardman.services.pr_handler import handle_pr_edited
 
