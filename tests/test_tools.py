@@ -526,6 +526,8 @@ _GITHUB_TOOL_NAMES = frozenset(
         "github_repo_structure",
         "github_search_code",
         "github_scan_defects",
+        "github_list_pull_requests",
+        "github_read_pull_request",
     }
 )
 

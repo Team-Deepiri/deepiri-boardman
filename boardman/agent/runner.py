@@ -10,6 +10,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage
 
 from boardman.agent.prompts import BOARD_MANAGER_SYSTEM
+from boardman.agent.tool_timing import start_turn, turn_timing, with_timing
 from boardman.agent.tools import build_all_tools
 from boardman.llm.factory import get_chat_model
 from boardman.settings import settings
@@ -180,7 +181,8 @@ async def run_tool_agent(
     from langchain.agents import create_agent
 
     llm = get_chat_model()
-    tools = build_all_tools(allow_writes=allow_writes)
+    start_turn()
+    tools = with_timing(build_all_tools(allow_writes=allow_writes))
     verbose = settings.agent_langchain_verbose or logger.isEnabledFor(logging.DEBUG)
     logger.info(
         "LangChain create_agent: %d tools, verbose=%s, provider/model from settings",
@@ -200,6 +202,7 @@ async def run_tool_agent(
         config={"recursion_limit": _recursion_limit()},
     )
     result_messages = result.get("messages", [])
+    logger.info("agent turn tool time: %s", turn_timing())
     out = _final_ai_text(result_messages)
 
     if _looks_like_unfulfilled_preamble(out):
@@ -249,7 +252,8 @@ async def iter_tool_agent(
     from langchain.agents import create_agent
 
     llm = get_chat_model()
-    tools = build_all_tools(allow_writes=allow_writes)
+    start_turn()
+    tools = with_timing(build_all_tools(allow_writes=allow_writes))
     verbose = settings.agent_langchain_verbose or logger.isEnabledFor(logging.DEBUG)
 
     graph = create_agent(

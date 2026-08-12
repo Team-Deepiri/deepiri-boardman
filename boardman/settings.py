@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     plaky_team_assignment_field_sync_cooldown_seconds: float = 60.0
     # Seconds; 0 disables TTL cache for fetch_board_schema_bundle
     plaky_board_schema_cache_ttl_seconds: float = 90.0
+    # Read-only GitHub repo context reuse between questions. 0 disables the cache.
+    github_read_cache_ttl_seconds: float = 300.0
 
     # --- Repo → Plaky placement auto-discovery (replaces repos.yml board/group IDs) ---
     # Catalog: all categorical boards + groups, cached on disk for webhook routing.

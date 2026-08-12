@@ -9,6 +9,7 @@ import httpx
 from langchain_core.tools import StructuredTool
 
 from boardman.github.code_search import scan_repo_defects, search_repo_code
+from boardman.github.read_cache import cached, json_ok
 from boardman.github.repo_fetch import (
     fetch_default_branch,
     fetch_direction_md,
@@ -232,6 +233,15 @@ async def _github_fetch_file(owner_repo: str, path: str, ref: str = "") -> str:
 
 
 async def _github_repo_structure(owner_repo: str) -> str:
+    """Repo shape (tree + metadata). Cached: the file tree does not change mid-conversation."""
+    return await cached(
+        f"structure:{(owner_repo or '').strip().lower()}",
+        lambda: _github_repo_structure_uncached(owner_repo),
+        ok=json_ok,
+    )
+
+
+async def _github_repo_structure_uncached(owner_repo: str) -> str:
     """
     Fetch repo file tree + metadata from GitHub (no file content read).
     Returns language, top-level dirs, notable config/doc files, file count, and depth.
@@ -276,12 +286,69 @@ async def _github_repo_structure(owner_repo: str) -> str:
     )
 
 
+_CONTEXT_BUDGET_CHARS = 24000
+# Longest first: a repo's own docs earn more room than the commit list.
+_TRIMMABLE = (
+    ("DIRECTION_md", 8000),
+    ("readme_md", 8000),
+    ("open_pull_requests_markdown", 3000),
+    ("open_issues_markdown", 3000),
+    ("recent_commits_markdown", 3000),
+)
+
+
+def _budget_json(out: dict[str, Any]) -> str:
+    """Serialize within budget by trimming FIELDS, never the serialized JSON.
+
+    Slicing `json.dumps(...)[:24000]` cuts mid-string: the payload stops being valid JSON
+    and whatever came after it disappears with no trace, so a partial read looks like a
+    complete one. Trim the long text fields instead, mark each cut inline, and keep the
+    envelope parseable.
+    """
+    trimmed: list[str] = []
+    for key, cap in _TRIMMABLE:
+        text = out.get(key)
+        if isinstance(text, str) and len(text) > cap:
+            out[key] = text[:cap] + f"\n\n…[truncated: {len(text) - cap} more characters]"
+            trimmed.append(key)
+
+    payload = json.dumps(out, default=str)
+    if len(payload) > _CONTEXT_BUDGET_CHARS:
+        # Still over: drop the least load-bearing sections outright rather than corrupt
+        # the JSON, and say which ones went.
+        for key, _ in reversed(_TRIMMABLE):
+            if key not in out:
+                continue
+            out[key] = "[omitted to fit the context budget — fetch it directly if needed]"
+            trimmed.append(key)
+            payload = json.dumps(out, default=str)
+            if len(payload) <= _CONTEXT_BUDGET_CHARS:
+                break
+
+    if trimmed:
+        out["truncated_fields"] = sorted(set(trimmed))
+        payload = json.dumps(out, default=str)
+    return payload
+
+
 async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20) -> str:
     """
     One call: DIRECTION.md + recent commits + open issues (same signals as server scan).
     Use before proposing Plaky tasks for a GitHub repo without a local clone.
     Falls back to README.md automatically when DIRECTION.md is absent.
+
+    Cached per repo for a few minutes: follow-up questions about the same repo are the
+    common case, and re-fetching seven endpoints to answer "and what about its tests?"
+    is latency the user pays for nothing.
     """
+    return await cached(
+        f"planning:{(owner_repo or '').strip().lower()}:{commits_limit}",
+        lambda: _github_repo_planning_context_uncached(owner_repo, commits_limit),
+        ok=json_ok,
+    )
+
+
+async def _github_repo_planning_context_uncached(owner_repo: str, commits_limit: int = 20) -> str:
     if not settings.github_pat:
         return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
     raw_name = (owner_repo or "").strip()
@@ -361,7 +428,7 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
         "open_issues_markdown": issues,
         "open_pull_requests_markdown": prs_md,
     }
-    return json.dumps(out, default=str)[:24000]
+    return _budget_json(out)
 
 
 async def _github_search_code(owner_repo: str, query: str) -> str:
@@ -385,6 +452,16 @@ async def _github_search_code(owner_repo: str, query: str) -> str:
 
 
 async def _github_scan_defects(owner_repo: str) -> str:
+    """Defect probes over the largest source files. Cached: it reads many files, and the
+    same audit question is usually asked several ways in one conversation."""
+    return await cached(
+        f"defects:{(owner_repo or '').strip().lower()}",
+        lambda: _github_scan_defects_uncached(owner_repo),
+        ok=json_ok,
+    )
+
+
+async def _github_scan_defects_uncached(owner_repo: str) -> str:
     """Read the repo's largest source files and report real defect lines."""
     if not settings.github_pat:
         return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
