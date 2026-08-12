@@ -865,6 +865,19 @@ body {
   height: 20px;
 }
 
+/* Stop replaces Send while a response streams — distinct colour so the control that
+   halts the assistant is never mistaken for the one that sends. */
+.composer__send--stop,
+.drawer__send--stop {
+  background: #ef4444;
+  color: #fff;
+}
+
+.composer__send--stop:hover,
+.drawer__send--stop:hover {
+  background: #dc2626;
+}
+
 /* ----- FAB + drawer ----- */
 .fab {
   position: fixed;
