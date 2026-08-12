@@ -8,6 +8,7 @@ from boardman.assignment.config import sync_team_assignment_field_keys_from_boar
 from boardman.broker.job_queue import close_job_queue
 from boardman.cache.agent_redis import aclose_agent_redis
 from boardman.database.session import init_db
+from boardman.github.http import aclose_shared_http_clients
 from boardman.llm.completion import aclose_ollama_http_client
 from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.logging_config import setup_logging
@@ -128,6 +129,7 @@ async def lifespan(app: FastAPI):
     await close_job_queue()
     await aclose_agent_redis()
     await aclose_ollama_http_client()
+    await aclose_shared_http_clients()
 
 
 def create_app() -> FastAPI:

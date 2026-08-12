@@ -7,9 +7,35 @@ from typing import Any
 from boardman.llm.ollama_autodetect import effective_ollama_model
 from boardman.settings import settings
 
+# One chat-model instance per (provider, model). Rebuilding per turn constructs a new
+# OpenAI SDK client with its own connection pool, so every answer paid a fresh TLS
+# handshake to the LLM API on top of the GitHub ones. Chat models are stateless across
+# calls; per-request provider/model overrides resolve BEFORE this cache key.
+_model_cache: dict[tuple[str, str], Any] = {}
+
+
+def clear_chat_model_cache() -> None:
+    _model_cache.clear()
+
 
 def get_chat_model() -> Any:
-    """Return a LangChain BaseChatModel for the configured provider."""
+    """Return a LangChain BaseChatModel for the configured provider (cached per model)."""
+    prov = (settings.llm_provider or "ollama").lower()
+    model_id = (settings.llm_model or "").strip()
+    if prov == "ollama" and not model_id:
+        # Autodetect has its own TTL; keying on the RESOLVED id keeps this cache from
+        # freezing the first model it ever saw.
+        model_id = effective_ollama_model(None)
+    key = (prov, model_id)
+    hit = _model_cache.get(key)
+    if hit is not None:
+        return hit
+    model = _build_chat_model()
+    _model_cache[key] = model
+    return model
+
+
+def _build_chat_model() -> Any:
     p = (settings.llm_provider or "ollama").lower()
     if p in ("claude",):
         p = "anthropic"

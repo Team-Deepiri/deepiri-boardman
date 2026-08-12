@@ -82,8 +82,13 @@ async def fetch_pull_request_context(
     base = f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
     n = int(pr_number)
 
-    owns_client = client is None
-    client = client or httpx.AsyncClient(timeout=25)
+    # Injected client (tests) is honored; otherwise the shared keep-alive pool. The pool
+    # client must never be closed here, so owns_client stays False for it.
+    owns_client = False
+    if client is None:
+        from boardman.github.http import github_http_client
+
+        client = github_http_client()
     try:
         pr, pr_err = await _json(client, f"{base}/pulls/{n}", "pull request")
         if pr_err or not isinstance(pr, dict):

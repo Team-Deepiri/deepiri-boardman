@@ -74,7 +74,28 @@ async def fetch_repo_hotspots(
     branch: str = "",
     top_n: int = 15,
 ) -> dict[str, Any] | None:
-    """Largest source files, test ratio, directory weight, and tracked-artifact smells."""
+    """Largest source files, test ratio, directory weight, and tracked-artifact smells.
+
+    Memoized: defect scan + every code search each re-fetched the same repo tree (2
+    requests) before doing their real work. The tree does not change mid-conversation.
+    """
+    from boardman.github.read_cache import cached
+
+    return await cached(
+        f"hotspots:{owner}/{repo}@{branch}:{top_n}",
+        lambda: _fetch_repo_hotspots_uncached(client, owner, repo, branch=branch, top_n=top_n),
+        ok=lambda v: isinstance(v, dict),
+    )
+
+
+async def _fetch_repo_hotspots_uncached(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+    *,
+    branch: str = "",
+    top_n: int = 15,
+) -> dict[str, Any] | None:
     token = (settings.github_pat or "").strip()
     if not token:
         return None

@@ -7,6 +7,7 @@ from typing import Any
 
 import httpx
 
+from boardman.github.http import shared_plaky_client
 from boardman.plaky.placement import context_board_id, context_group_id
 from boardman.settings import settings
 
@@ -418,7 +419,7 @@ class PlakyClient:
 
         root = self._public_root()
         if root:
-            async with httpx.AsyncClient() as client:
+            async with shared_plaky_client() as client:
                 spaces = await self._get_paginated(client, root, "/spaces")
                 boards_out: list[dict[str, Any]] = []
                 for sp in spaces:
@@ -445,7 +446,7 @@ class PlakyClient:
 
         base = self.base_url.rstrip("/")
         last_status = 0
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             for path in ("/boards", "/projects"):
                 url = f"{base}{path}"
                 response = await _request_with_rate_limit_retry(
@@ -491,7 +492,7 @@ class PlakyClient:
                 "users": [],
             }
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             rows = await self._get_paginated(client, root, "/users")
         users: list[dict[str, Any]] = []
         for x in rows:
@@ -595,7 +596,7 @@ class PlakyClient:
         bid = board_id.strip()
         base = self.base_url.rstrip("/")
         last_status = 404
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             candidates = [
                 f"{base}/boards/{bid}/groups",
                 f"{base}/boards/{bid}/sections",
@@ -655,7 +656,7 @@ class PlakyClient:
                     "board": None,
                 }
             url = f"{root.rstrip('/')}/spaces/{sid}/boards/{bid}"
-            async with httpx.AsyncClient() as client:
+            async with shared_plaky_client() as client:
                 response = await _request_with_rate_limit_retry(
                     client, "GET", url, headers=_headers(self.api_key)
                 )
@@ -676,7 +677,7 @@ class PlakyClient:
         base = self.base_url.rstrip("/")
         last_status = 404
         last_snip = ""
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             for path in (
                 f"/boards/{bid}",
                 f"/projects/{bid}",
@@ -727,7 +728,7 @@ class PlakyClient:
         if not sid:
             return {"ok": False, "items": [], "message": "Could not resolve space for board"}
         path = f"/spaces/{sid}/boards/{bid}/items"
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             page = 1
             accum: list[dict[str, Any]] = []
             base = root.rstrip("/")
@@ -778,7 +779,7 @@ class PlakyClient:
             {"fields": {"name": title, "description": description}},
         ]
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             for method in ("PATCH", "PUT"):
                 for body in bodies:
                     r = await _request_with_rate_limit_retry(
@@ -918,7 +919,7 @@ class PlakyClient:
                     "fields": text_fields,
                 },
             ]
-            async with httpx.AsyncClient() as client:
+            async with shared_plaky_client() as client:
                 for body in bodies:
                     response = await _request_with_rate_limit_retry(
                         client, "POST", url, headers=_headers(self.api_key), json=body
@@ -1003,7 +1004,7 @@ class PlakyClient:
             return {"ok": True, "skipped": True, "message": "empty comment"}
         url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}/comments"
         payload = {"text": body}
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             r = await _request_with_rate_limit_retry(
                 client, "POST", url, headers=_headers(self.api_key), json=payload
             )
@@ -1057,7 +1058,7 @@ class PlakyClient:
         if not sid:
             return {"ok": False, "message": "Could not resolve space for board", "item": None}
         url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             r = await _request_with_rate_limit_retry(
                 client, "GET", url, headers=_headers(self.api_key)
             )
@@ -1084,7 +1085,7 @@ class PlakyClient:
         if not sid:
             return {"ok": False, "message": "Could not resolve space for board"}
         url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             r = await _request_with_rate_limit_retry(
                 client, "DELETE", url, headers=_headers(self.api_key)
             )
@@ -1288,7 +1289,7 @@ class PlakyClient:
         bulk_last_status: int | None = None
         bulk_last_parsed: Any = None
         bulk_ok_body: dict[str, Any] | None = None
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             canonical_bulk = dict(bulk_coerced) if bulk_coerced != values else {}
             for body in bulk_bodies:
                 url = f"{base}/fields"
@@ -1475,7 +1476,7 @@ class PlakyClient:
         url = f"{self.base_url.rstrip('/')}/tasks"
         body = {"title": title, "description": description, "priority": priority}
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             response = await _request_with_rate_limit_retry(
                 client, "POST", url, headers=_headers(self.api_key), json=body
             )
@@ -1697,7 +1698,7 @@ class PlakyClient:
         url = f"{self.base_url.rstrip('/')}/tasks"
         params = {"status": status}
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             response = await _request_with_rate_limit_retry(
                 client, "GET", url, headers=_headers(self.api_key), params=params
             )
@@ -1765,7 +1766,7 @@ class PlakyClient:
         url = f"{self.base_url.rstrip('/')}/tasks/{tid}/comments"
         payload = {"body": body or ""}
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             response = await _request_with_rate_limit_retry(
                 client, "POST", url, headers=_headers(self.api_key), json=payload
             )
@@ -1795,7 +1796,7 @@ class PlakyClient:
 
         url = f"{self.base_url.rstrip('/')}/tasks/{task_id}"
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             response = await _request_with_rate_limit_retry(
                 client, "GET", url, headers=_headers(self.api_key)
             )
@@ -1838,7 +1839,7 @@ class PlakyClient:
 
         url = f"{self.base_url.rstrip('/')}/tasks/{task_id}"
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             response = await _request_with_rate_limit_retry(
                 client, "PATCH", url, headers=_headers(self.api_key), json=body
             )
@@ -1882,7 +1883,7 @@ class PlakyClient:
         if (priority or "").strip():
             payload["priority"] = (priority or "").strip()
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             response = await _request_with_rate_limit_retry(
                 client, "POST", url, headers=_headers(self.api_key), json=payload
             )
@@ -2059,7 +2060,7 @@ class PlakyClient:
 
         last_status = 400
         last_snip = ""
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             for body in bodies:
                 r = await _request_with_rate_limit_retry(
                     client, "POST", url, headers=_headers(self.api_key), json=body

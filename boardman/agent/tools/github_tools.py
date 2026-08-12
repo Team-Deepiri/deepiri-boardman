@@ -9,6 +9,7 @@ import httpx
 from langchain_core.tools import StructuredTool
 
 from boardman.github.code_search import scan_repo_defects, search_repo_code
+from boardman.github.http import shared_github_client
 from boardman.github.read_cache import cached, json_ok
 from boardman.github.repo_fetch import (
     fetch_default_branch,
@@ -98,7 +99,7 @@ async def _github_list_workspace_repos() -> str:
     """List all GitHub repositories in the configured org merged with repos.yml config."""
     if not settings.github_pat:
         return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with shared_github_client() as client:
         repos = await list_workspace_repos(client)
     # Convert RepoRouting objects to dicts for JSON
     out = {
@@ -140,7 +141,7 @@ async def _github_list_pull_requests(owner_repo: str, state: str = "open") -> st
     want = (state or "open").strip().lower()
     if want not in ("open", "closed", "all"):
         want = "open"
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with shared_github_client() as client:
         r = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}/pulls?state={want}&per_page=30",
             headers={
@@ -178,7 +179,7 @@ async def _github_list_open_issues(owner_repo: str) -> str:
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with shared_github_client() as client:
         headers = {
             "Authorization": f"Bearer {settings.github_pat}",
             "Accept": "application/vnd.github+json",
@@ -207,7 +208,7 @@ async def _github_fetch_direction(owner_repo: str) -> str:
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    async with shared_github_client() as client:
         text = await fetch_direction_md(client, owner, repo)
     return json.dumps(
         {"ok": True, "owner": owner, "repo": repo, "DIRECTION_md": text}, default=str
@@ -222,7 +223,7 @@ async def _github_fetch_file(owner_repo: str, path: str, ref: str = "") -> str:
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    async with shared_github_client() as client:
         branch = (ref or "").strip()
         if not branch:
             branch = await fetch_default_branch(client, owner, repo)
@@ -253,7 +254,7 @@ async def _github_repo_structure_uncached(owner_repo: str) -> str:
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with shared_github_client() as client:
         meta = await fetch_repo_metadata(client, owner, repo)
         if not meta:
             suggestions = await _workspace_repo_suggestions(client, repo)
@@ -364,7 +365,7 @@ async def _github_repo_planning_context_uncached(owner_repo: str, commits_limit:
     lim = max(5, min(int(commits_limit) if commits_limit else 20, 50))
     import asyncio
 
-    async with httpx.AsyncClient(timeout=90.0) as client:
+    async with shared_github_client() as client:
         # Every signal in ONE round trip instead of five sequential ones — this tool is the
         # hot path for "analyze this repo" questions, where serial fetches dominated latency.
         # README is fetched unconditionally (it is the fallback when DIRECTION.md is absent,
@@ -444,7 +445,7 @@ async def _github_search_code(owner_repo: str, query: str) -> str:
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
-    async with httpx.AsyncClient(timeout=45.0) as client:
+    async with shared_github_client() as client:
         out = await search_repo_code(client, owner, repo, query)
     if out is None:
         return json.dumps({"ok": False, "message": "code search unavailable"})
@@ -474,7 +475,7 @@ async def _github_scan_defects_uncached(owner_repo: str) -> str:
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
-    async with httpx.AsyncClient(timeout=90.0) as client:
+    async with shared_github_client() as client:
         out = await scan_repo_defects(client, owner, repo)
     if out is None:
         return json.dumps({"ok": False, "message": "could not read repo source"})
