@@ -6,9 +6,26 @@ from datetime import UTC
 from typing import Any
 
 import pytest
+import pytest_asyncio
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
+from boardman.database.models import Base
 from boardman.services import github_poller as gp
 from boardman.settings import settings
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _isolated_poller_db(monkeypatch: pytest.MonkeyPatch):
+    """The poller opens its own session, so without this the suite reads and writes the
+    developer's real boardman.db — leaving rows behind and making dedupe tests pass or
+    fail depending on what a previous run wrote."""
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    monkeypatch.setattr(gp, "async_session", factory)
+    yield factory
+    await engine.dispose()
 
 
 def test_poller_repos_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -460,6 +477,12 @@ async def test_push_event_comments_on_linked_task(monkeypatch: pytest.MonkeyPatc
     task_id, body = comments[0]
     assert task_id == "task-9"
     assert "Blasted-ctrl" in body and "abc1234" in body
+
+    # A restart clears the in-memory seen-sets and the catch-up window replays this
+    # same push. Comments are additive in Plaky, so the dedupe has to be durable.
+    fresh_poller = gp.GitHubEventPoller()
+    await fresh_poller._handle_push("Team-Deepiri/deepiri-boardman", event, event["payload"])
+    assert len(comments) == 1, "restart replayed the push and double-commented the task"
 
 
 # --- real-time issue state transitions (close / reopen) ---------------------------

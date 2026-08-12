@@ -323,6 +323,45 @@ async def test_plain_issue_comment_lands_on_task(db_session, monkeypatch, fake_p
 
 
 @pytest.mark.asyncio
+async def test_plain_issue_comment_synced_only_once(db_session, monkeypatch, fake_plaky) -> None:
+    """Restarting the poller replays recent events from the catch-up window. Status writes
+    are idempotent but comments are additive, so the same GitHub comment must not be
+    mirrored twice — dedupe on the comment url via SyncLog, not an in-memory set."""
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=5, plaky_task_id="task-9"))
+    await db_session.flush()
+
+    async def fake_routing(*a: Any, **kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(prh, "get_routing_async", fake_routing)
+
+    def payload_for(url: str) -> IssueCommentEventPayload:
+        return IssueCommentEventPayload(
+            action="created",
+            issue={"number": 5, "title": "T", "html_url": "https://github.com/o/r/issues/5"},
+            comment={
+                "user": {"login": "Blasted-ctrl"},
+                "body": "QA note: repro steps attached",
+                "html_url": url,
+            },
+            repository={"full_name": "o/r", "name": "r"},
+        )
+
+    base = "https://github.com/o/r/issues/5#issuecomment-123"
+    first = await prh.handle_issue_comment_on_pr(payload_for(base), db_session)
+    assert first.get("event") == "issue_comment_synced"
+
+    replay = await prh.handle_issue_comment_on_pr(payload_for(base), db_session)
+    assert replay.get("skipped") is True
+    assert len(fake_plaky.comments) == 1, "replayed comment was mirrored twice"
+
+    # A longer id must not be swallowed by prefix-matching the shorter one.
+    other = await prh.handle_issue_comment_on_pr(payload_for(base + "4"), db_session)
+    assert other.get("event") == "issue_comment_synced"
+    assert len(fake_plaky.comments) == 2
+
+
+@pytest.mark.asyncio
 async def test_plain_issue_comment_from_bot_ignored(db_session, fake_plaky) -> None:
     payload = IssueCommentEventPayload(
         action="created",

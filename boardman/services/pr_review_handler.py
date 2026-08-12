@@ -21,6 +21,7 @@ from boardman.plaky.dynamic_qa_status import (
     resolve_qa_assignee_field_key,
 )
 from boardman.repos_config import get_routing_async
+from boardman.services.comment_dedupe import comment_already_synced
 from boardman.services.pr_handler import _update_plaky_task_status
 from boardman.services.pr_task_registry import distinct_task_ids_for_pr
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
@@ -329,6 +330,14 @@ async def _sync_plain_issue_comment(
     mapping = await find_plaky_task_by_issue(repo_name, issue_number, session)
     if not mapping or not mapping.plaky_task_id:
         return {"ok": True, "skipped": True, "message": "no Plaky task mapped for this issue"}
+
+    if await comment_already_synced(session, "issue_comment_synced", comment_url):
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "comment already mirrored to Plaky",
+            "plaky_task_id": mapping.plaky_task_id,
+        }
 
     routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()

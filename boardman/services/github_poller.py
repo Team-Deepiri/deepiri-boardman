@@ -22,6 +22,7 @@ registered GitHub webhook delivers events instead.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import re
 from datetime import UTC, datetime, timedelta
@@ -29,6 +30,7 @@ from typing import Any
 
 import httpx
 
+from boardman.database.models import SyncLog
 from boardman.database.session import async_session
 from boardman.github.webhooks import (
     IssueCommentEventPayload,
@@ -38,6 +40,7 @@ from boardman.github.webhooks import (
     PullRequestReviewEventPayload,
     parse_webhook_payload,
 )
+from boardman.services.comment_dedupe import comment_already_synced
 from boardman.services.issue_handler import find_plaky_task_by_issue, handle_issue_opened
 from boardman.services.pr_handler import (
     handle_pr_closed_without_merge,
@@ -618,11 +621,26 @@ class GitHubEventPoller:
                     mapping = await find_plaky_task_by_issue(short, num, session)
                     if not mapping:
                         continue
+                    marker = f"{sha}:{num}"
+                    if await comment_already_synced(session, "commit_comment_synced", marker):
+                        continue
                     if settings.plaky_pr_comment_links_as_html:
                         body = f'Commit by @{actor}: {first_line} (<a href="{url}">{sha[:7]}</a>)'
                     else:
                         body = f"Commit by @{actor}: {first_line} ({url})"
                     res = await plaky.add_comment(mapping.plaky_task_id, body)
+                    session.add(
+                        SyncLog(
+                            action="commit_comment_synced",
+                            github_repo=short,
+                            github_ref=str(num),
+                            plaky_task_id=mapping.plaky_task_id,
+                            detail=json.dumps(
+                                {"marker": marker, "commit_url": url, "plaky_ok": res.get("ok")},
+                                default=str,
+                            ),
+                        )
+                    )
                     _log.info(
                         "poller: commit %s -> comment on Plaky task %s (issue #%s): ok=%s",
                         sha[:7],
