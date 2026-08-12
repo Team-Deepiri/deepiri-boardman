@@ -191,6 +191,10 @@ class GitHubEventPoller:
                 # TRANSITION here instead of needing a webhook endpoint at all.
                 "pr_draft": {},
                 "pr_reviewers": {},
+                # Head branches of open PRs. GET /commits defaults to the DEFAULT branch, so
+                # without these a developer's "Fixes #12" commit on a feature branch is never
+                # seen — which is where essentially all real work happens.
+                "pr_branches": set(),
                 "commits": set(),
             }
             _log.info(
@@ -313,6 +317,10 @@ class GitHubEventPoller:
                 )
 
             # newly requested reviewers (webhook-only event, derived from requested_reviewers)
+            head_ref = str(((pr.get("head") or {}) or {}).get("ref") or "").strip()
+            if head_ref and pr.get("state") == "open":
+                proc.setdefault("pr_branches", set()).add(head_ref)
+
             reviewers_now = {
                 str((u or {}).get("login") or "").strip()
                 for u in (pr.get("requested_reviewers") or [])
@@ -360,29 +368,43 @@ class GitHubEventPoller:
         )
 
     async def _poll_commits(self, client, full_name, since, proc) -> None:
-        url = f"https://api.github.com/repos/{full_name}/commits?since={since}&per_page=30"
-        r = await client.get(url, headers=self._gh_headers())
-        if r.status_code != 200:
-            return
-        commits = r.json()
-        if not isinstance(commits, list):
-            return
+        """Poll the default branch AND every open PR's head branch.
+
+        GET /commits without `sha` returns only the default branch. Real work happens on
+        feature branches, so polling just the default meant commit->task comments almost
+        never fired outside of direct-to-main pushes. SHA dedupe makes the overlap free.
+        """
+        branches: list[str] = [""]  # "" = repo default branch
+        branches += sorted(proc.get("pr_branches") or set())
+
         normalized: list[dict] = []
         actor = ""
-        for c in commits:
-            if not isinstance(c, dict):
+        for branch in branches:
+            url = f"https://api.github.com/repos/{full_name}/commits?since={since}&per_page=30"
+            if branch:
+                from urllib.parse import quote
+
+                url += f"&sha={quote(branch, safe='')}"
+            r = await client.get(url, headers=self._gh_headers())
+            if r.status_code != 200:
                 continue
-            sha = str(c.get("sha") or "")
-            if not sha or sha in proc["commits"]:
+            commits = r.json()
+            if not isinstance(commits, list):
                 continue
-            proc["commits"].add(sha)
-            actor = ((c.get("author") or {}) or {}).get("login") or actor
-            normalized.append(
-                {
-                    "sha": sha,
-                    "message": str((c.get("commit") or {}).get("message") or ""),
-                }
-            )
+            for c in commits:
+                if not isinstance(c, dict):
+                    continue
+                sha = str(c.get("sha") or "")
+                if not sha or sha in proc["commits"]:
+                    continue
+                proc["commits"].add(sha)
+                actor = ((c.get("author") or {}) or {}).get("login") or actor
+                normalized.append(
+                    {
+                        "sha": sha,
+                        "message": str((c.get("commit") or {}).get("message") or ""),
+                    }
+                )
         if normalized:
             await self._comment_commits(full_name, actor or "someone", normalized)
 

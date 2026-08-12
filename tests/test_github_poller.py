@@ -619,3 +619,64 @@ async def test_poll_detects_ready_for_review_and_review_requested(
     Client.queue = [[pr(True, ["qa-person"])]]
     await poller._poll_pulls(c, "o/r", baseline, proc)
     assert seen[-1] == "converted_to_draft"
+
+
+@pytest.mark.asyncio
+async def test_commit_poll_covers_open_pr_branches(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GET /commits without `sha` returns ONLY the default branch. Real work happens on
+    feature branches, so a developer's "Fixes #12" commit there must still be seen."""
+    urls: list[str] = []
+    commented: list[list[dict]] = []
+
+    poller = gp.GitHubEventPoller()
+
+    async def fake_comment(full_name, actor, commits):
+        commented.append(commits)
+
+    monkeypatch.setattr(poller, "_comment_commits", fake_comment)
+    monkeypatch.setattr(settings, "github_pat", "x" * 10)
+
+    class Resp:
+        def __init__(self, body):
+            self._b = body
+            self.status_code = 200
+
+        def json(self):
+            return self._b
+
+    class Client:
+        async def get(self, url, headers=None):
+            urls.append(url)
+            if "sha=fix%2F78-retry" in url:
+                return Resp(
+                    [
+                        {
+                            "sha": "featuresha",
+                            "commit": {"message": "Fixes #78 guard"},
+                            "author": {"login": "dev"},
+                        }
+                    ]
+                )
+            return Resp(
+                [
+                    {
+                        "sha": "mainsha",
+                        "commit": {"message": "chore: bump"},
+                        "author": {"login": "dev"},
+                    }
+                ]
+            )
+
+    proc = {"commits": set(), "pr_branches": {"fix/78-retry"}}
+    await poller._poll_commits(Client(), "o/r", "2026-01-01T00:00:00Z", proc)
+
+    # Both the default branch and the PR's head branch were queried.
+    assert any("sha=" not in u for u in urls), "default branch not polled"
+    assert any("sha=fix%2F78-retry" in u for u in urls), "PR head branch not polled"
+    seen = {c["sha"] for batch in commented for c in batch}
+    assert {"mainsha", "featuresha"} <= seen
+
+    # Re-polling must not re-comment the same commits.
+    commented.clear()
+    await poller._poll_commits(Client(), "o/r", "2026-01-01T00:00:00Z", proc)
+    assert commented == []
