@@ -175,6 +175,69 @@ async def _apply_pr_type_and_assignee(
     return out
 
 
+def _member_by_name(cfg: Any, name: str) -> Any | None:
+    """Resolve a policy role (e.g. the bug specialist) by display name or GitHub login.
+
+    Checks the live roster first, then the yaml fallback list — the specialist may not be
+    on the GitHub support team the live roster is built from (Hameeda is exactly this
+    case), and a policy the employer stated must not silently stop applying because of
+    team-membership drift.
+    """
+    want = (name or "").strip().casefold()
+    if not want:
+        return None
+    for pool in (cfg.members, getattr(cfg, "fallback_members", []) or []):
+        for m in pool:
+            display = (getattr(m, "display", "") or "").strip().casefold()
+            login = (getattr(m, "github_login", "") or "").strip().casefold()
+            if want in (display, login):
+                return m
+    return None
+
+
+async def _task_type_is_bug(plaky: PlakyClient, board_id: str, task_id: str) -> bool:
+    """Read the task's CURRENT Type off the board and compare to 'Bug'.
+
+    The board value is the merged truth: label-derived at issue creation, possibly
+    overwritten from the PR branch just before QA assignment runs. Inferring from the PR
+    alone would miss a bug-labeled issue fixed from a feature/ branch."""
+    from boardman.plaky.board_schema import fetch_board_schema_bundle, plaky_item_status_id
+
+    bid = (board_id or "").strip()
+    if not bid:
+        return False
+    bundle = await fetch_board_schema_bundle(bid)
+    fields = ((bundle.get("normalized") or {}) if isinstance(bundle, dict) else {}).get(
+        "fields"
+    ) or []
+    row = next(
+        (
+            f
+            for f in fields
+            if isinstance(f, dict)
+            and "type" in str(f.get("name") or "").casefold()
+            and f.get("options")
+        ),
+        None,
+    )
+    if not row:
+        return False
+    info = await plaky.get_board_item_public(bid, task_id)
+    item = info.get("item") if isinstance(info, dict) else None
+    if not item:
+        return False
+    val = str(plaky_item_status_id(item, str(row.get("key") or "")) or "")
+    label = next(
+        (
+            str(o.get("name") or o.get("title") or "")
+            for o in row["options"]
+            if isinstance(o, dict) and str(o.get("id") or o.get("key") or "") == val
+        ),
+        "",
+    )
+    return label.strip().casefold() == "bug"
+
+
 async def _assign_qa_for_pr(
     plaky: PlakyClient,
     *,
@@ -211,7 +274,29 @@ async def _assign_qa_for_pr(
         if current_qa:
             return {"skipped": "qa_already_assigned", "qa_plaky_id": current_qa}
 
-    qid, why = await _pick(repo_full)
+    # Bug-typed tasks always go to the QA bug specialist (employer: "bug - assign to
+    # Hameeda") - unless she authored the PR (self-review) or the role is unset/unresolvable,
+    # in which case the ranked pick applies as usual.
+    qid: str | None = None
+    why = ""
+    specialist_name = (getattr(cfg, "qa_bug_specialist", "") or "").strip()
+    if specialist_name and await _task_type_is_bug(plaky, bid, task_id):
+        sm = _member_by_name(cfg, specialist_name)
+        if sm is None:
+            _log.warning(
+                "qa_bug_specialist %r not in roster or fallback - using ranked pick",
+                specialist_name,
+            )
+        elif (getattr(sm, "github_login", "") or "").casefold() == (
+            pr_author_login or ""
+        ).casefold() and pr_author_login:
+            _log.info("qa_bug_specialist authored PR #%s - using ranked pick", pr_number)
+        else:
+            qid = str(sm.id)
+            why = f"bug task -> QA bug specialist {getattr(sm, 'display', specialist_name)}"
+
+    if not qid:
+        qid, why = await _pick(repo_full)
     if not qid:
         return {"skipped": "no eligible QA", "reason": why}
 

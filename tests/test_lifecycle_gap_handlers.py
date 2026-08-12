@@ -554,3 +554,96 @@ async def test_pr_label_change_without_type_signal_is_skipped(db_session, monkey
     )
     res = await handle_pr_labels_changed(payload, db_session)
     assert res.get("skipped") is True
+
+
+# --- bug tasks -> QA bug specialist ------------------------------------------------
+
+
+class _SpecMember:
+    def __init__(self, display, mid, login):
+        self.display, self.id, self.github_login = display, mid, login
+
+
+class _SpecCfg:
+    plaky_field_qa = "person-4"
+    qa_bug_specialist = "Asheen Hameeda"
+    members = [_SpecMember("Ali F", "481106", "Blasted-ctrl")]
+    fallback_members = [_SpecMember("Asheen Hameeda", "432288", "asheenhameeda8-cpu")]
+
+
+def _wire_specialist_env(monkeypatch, *, is_bug: bool, picked=("481106", "ranked")):
+    """Common monkeypatching for _assign_qa_for_pr: no network, no Plaky."""
+    updates: list[tuple[str, str]] = []
+
+    async def fake_bug(plaky, bid, tid):
+        return is_bug
+
+    async def fake_current(plaky, bid, tid, key):
+        return ""
+
+    async def fake_resolve(bid, fallback):
+        return "person-4"
+
+    async def fake_pick(repo_full):
+        return picked
+
+    async def fake_update(task_id, inp):
+        updates.append((task_id, inp.qa_plaky_id))
+        return {"ok": True}
+
+    async def fake_comment(*a, **kw):
+        return {"ok": True}
+
+    async def fake_reviewers(*a, **kw):
+        return {"ok": True}
+
+    monkeypatch.setattr(ph, "_task_type_is_bug", fake_bug)
+    monkeypatch.setattr(ph, "_current_person_field_value", fake_current)
+    monkeypatch.setattr(ph, "load_team_assignments", lambda: _SpecCfg())
+    monkeypatch.setattr(ph, "update_task_internal", fake_update)
+    monkeypatch.setattr("boardman.assignment.qa_picker.pick_qa_for_repo", fake_pick)
+    monkeypatch.setattr(
+        "boardman.plaky.dynamic_qa_status.resolve_qa_assignee_field_key", fake_resolve
+    )
+    monkeypatch.setattr("boardman.github.pr_actions.comment_on_pr", fake_comment)
+    monkeypatch.setattr("boardman.github.pr_actions.request_reviewers", fake_reviewers)
+    return updates
+
+
+@pytest.mark.asyncio
+async def test_bug_task_qa_goes_to_the_specialist(monkeypatch) -> None:
+    """Employer: 'bug - assign to Hameeda'. She is NOT on the live support-team roster,
+    only in the yaml fallback - the policy must resolve through it, not silently stop
+    applying because of team-membership drift."""
+    updates = _wire_specialist_env(monkeypatch, is_bug=True)
+    res = await ph._assign_qa_for_pr(
+        object(), task_id="t1", board_id="b1", repo_full="o/r", pr_number=9
+    )
+    assert res["plaky_qa"]["id"] == "432288"
+    assert "specialist" in res["plaky_qa"]["reason"]
+    assert updates == [("t1", "432288")]
+
+
+@pytest.mark.asyncio
+async def test_non_bug_task_uses_the_ranked_pick(monkeypatch) -> None:
+    updates = _wire_specialist_env(monkeypatch, is_bug=False)
+    res = await ph._assign_qa_for_pr(
+        object(), task_id="t1", board_id="b1", repo_full="o/r", pr_number=9
+    )
+    assert res["plaky_qa"]["id"] == "481106"
+    assert updates == [("t1", "481106")]
+
+
+@pytest.mark.asyncio
+async def test_specialist_never_reviews_her_own_pr(monkeypatch) -> None:
+    updates = _wire_specialist_env(monkeypatch, is_bug=True)
+    res = await ph._assign_qa_for_pr(
+        object(),
+        task_id="t1",
+        board_id="b1",
+        repo_full="o/r",
+        pr_number=9,
+        pr_author_login="asheenhameeda8-cpu",
+    )
+    assert res["plaky_qa"]["id"] == "481106", "specialist was assigned to QA her own PR"
+    assert updates == [("t1", "481106")]
