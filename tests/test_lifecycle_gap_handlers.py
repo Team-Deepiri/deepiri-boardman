@@ -429,3 +429,60 @@ async def test_triage_is_idempotent_per_pr(db_session, monkeypatch) -> None:
     res = await ph._maybe_triage_ambiguous_pr(_pr_payload("opened"), db_session)
     assert res is not None and res.get("skipped") is True
     assert "already created" in res.get("message", "")
+
+
+# --- label changes after creation ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_label_added_after_creation_resyncs_type(db_session, monkeypatch) -> None:
+    """Issue #80: filed bare (task typed Story via the Feature default), `bug` labeled 75s
+    later. Labels are the team's explicit categorization act — the change must reach the
+    task instead of freezing the creation-time race."""
+    import boardman.services.issue_handler as ih
+    from boardman.services.issue_handler import handle_issue_labels_changed
+
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=80, plaky_task_id="task-80"))
+    await db_session.flush()
+
+    async def fake_routing(*a: Any, **kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(ih, "get_routing_async", fake_routing)
+
+    calls: list[tuple[str, str]] = []
+
+    async def fake_update(task_id, inp):
+        calls.append((task_id, inp.task_type))
+        return {"ok": True}
+
+    import boardman.services.task_mutations as tm
+
+    monkeypatch.setattr(tm, "update_task_internal", fake_update)
+
+    payload = IssueEventPayload(
+        action="labeled",
+        issue={
+            "number": 80,
+            "title": "showcase",
+            "html_url": "https://github.com/o/r/issues/80",
+            "labels": [{"name": "bug"}, {"name": "NEEDS HELP"}],
+        },
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await handle_issue_labels_changed(payload, db_session)
+    assert res.get("event") == "issue_labels_synced"
+    assert calls == [("task-80", "Bug")]
+
+
+@pytest.mark.asyncio
+async def test_label_change_on_unmapped_issue_is_skipped(db_session) -> None:
+    from boardman.services.issue_handler import handle_issue_labels_changed
+
+    payload = IssueEventPayload(
+        action="labeled",
+        issue={"number": 999, "title": "t", "html_url": "u", "labels": [{"name": "bug"}]},
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await handle_issue_labels_changed(payload, db_session)
+    assert res.get("skipped") is True

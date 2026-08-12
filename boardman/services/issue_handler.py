@@ -228,3 +228,54 @@ async def handle_issue_reopened(payload: IssueEventPayload, session: AsyncSessio
         action_name="issue_reopened",
         task_comment=f"**Issue reopened on GitHub:** #{n} — task revived by automation.",
     )
+
+
+async def handle_issue_labels_changed(payload: IssueEventPayload, session: AsyncSession) -> dict:
+    """GitHub `labeled`/`unlabeled` → re-mirror the linked task's Type.
+
+    People label AFTER creating: issue #80 was filed bare and got its `bug` label 75
+    seconds later, so the poller raced it and the task said Story indefinitely. Labels on
+    GitHub are the team's explicit categorization act — the source of truth for Type — so
+    a label change must reach the board instead of freezing whatever the creation-time
+    race produced.
+
+    Only Type is touched. Priority may have been hand-tuned by a lead after triage, and
+    label changes carry no signal about it.
+    """
+    repo_name = payload.repository.name
+    issue_number = payload.issue.number
+    mapping = await find_plaky_task_by_issue(repo_name, issue_number, session)
+    if not mapping or not mapping.plaky_task_id:
+        return {"ok": True, "skipped": True, "message": "no Plaky task mapped for this issue"}
+
+    labels = issue_label_names(payload.issue.labels)
+    task_type = infer_task_type_from_pr(None, labels) or "Feature"
+
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
+    bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()
+
+    from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
+
+    res = await update_task_internal(
+        str(mapping.plaky_task_id),
+        UpdateTaskInput(task_type=task_type, plaky_board_id=bid or None),
+    )
+    session.add(
+        SyncLog(
+            action="issue_labels_synced",
+            github_repo=repo_name,
+            github_ref=str(issue_number),
+            plaky_task_id=mapping.plaky_task_id,
+            detail=json.dumps(
+                {"labels": labels, "task_type": task_type, "plaky_ok": res.get("ok")},
+                default=str,
+            ),
+        )
+    )
+    await session.commit()
+    return {
+        "ok": True,
+        "plaky_task_id": mapping.plaky_task_id,
+        "event": "issue_labels_synced",
+        "task_type": task_type,
+    }

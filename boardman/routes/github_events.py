@@ -18,6 +18,7 @@ from boardman.github.webhooks import (
 )
 from boardman.services.issue_handler import (
     handle_issue_closed,
+    handle_issue_labels_changed,
     handle_issue_opened,
     handle_issue_reopened,
 )
@@ -118,6 +119,8 @@ async def github_webhook(
             result = await handle_issue_closed(payload, session)
         elif payload.action == "reopened":
             result = await handle_issue_reopened(payload, session)
+        elif payload.action in ("labeled", "unlabeled"):
+            result = await handle_issue_labels_changed(payload, session)
 
     elif isinstance(payload, PullRequestReviewEventPayload):
         result = await handle_pull_request_review(payload, session)

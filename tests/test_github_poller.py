@@ -703,3 +703,76 @@ async def test_commit_poll_covers_open_pr_branches(monkeypatch: pytest.MonkeyPat
     commented.clear()
     await poller._poll_commits(Client(), "o/r", "2026-01-01T00:00:00Z", proc)
     assert commented == []
+
+
+@pytest.mark.asyncio
+async def test_direct_poll_detects_label_change(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Issue #80 live: filed bare, `bug` label added 75s later. The poller saw the bare
+    version, typed the task Story, and nothing ever corrected it — labels landing after
+    creation must surface as a 'labeled' action, not vanish."""
+    from datetime import datetime, timedelta
+
+    poller = gp.GitHubEventPoller()
+    seen: list[tuple[str, list[str]]] = []
+
+    async def fake_run_handler(payload):
+        names = [
+            (lb or {}).get("name") for lb in (payload.issue.labels or []) if isinstance(lb, dict)
+        ]
+        seen.append((payload.action, names))
+        return {"ok": True}
+
+    monkeypatch.setattr(poller, "_run_handler", fake_run_handler)
+
+    baseline = datetime.now(UTC) - timedelta(minutes=5)
+    proc = {
+        "issues_opened": set(),
+        "issue_state": {},
+        "prs_opened": set(),
+        "prs_closed": set(),
+        "commits": set(),
+    }
+    created = (baseline + timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    def issue(labels: list[str]) -> dict:
+        return {
+            "number": 502,
+            "title": "showcase",
+            "body": "",
+            "html_url": "u",
+            "state": "open",
+            "user": {},
+            "created_at": created,
+            "labels": [{"name": n} for n in labels],
+        }
+
+    class Resp:
+        def __init__(self, payload):
+            self._p = payload
+            self.status_code = 200
+
+        def json(self):
+            return self._p
+
+    class Client:
+        queue: list = []
+
+        async def get(self, url, headers=None):
+            return Resp(Client.queue.pop(0))
+
+    c = Client()
+    # 1) filed bare -> opened
+    Client.queue = [[issue([])]]
+    await poller._poll_issues(c, "o/r", baseline, "since", proc)
+    # 2) label added later -> labeled, carrying the new label set
+    Client.queue = [[issue(["bug", "NEEDS HELP"])]]
+    await poller._poll_issues(c, "o/r", baseline, "since", proc)
+    # 3) unchanged labels -> nothing
+    Client.queue = [[issue(["bug", "NEEDS HELP"])]]
+    await poller._poll_issues(c, "o/r", baseline, "since", proc)
+    # 4) label removed -> labeled again
+    Client.queue = [[issue(["NEEDS HELP"])]]
+    await poller._poll_issues(c, "o/r", baseline, "since", proc)
+
+    assert [a for a, _ in seen] == ["opened", "labeled", "labeled"]
+    assert seen[1][1] == ["bug", "NEEDS HELP"]

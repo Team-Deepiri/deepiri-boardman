@@ -253,6 +253,19 @@ class GitHubEventPoller:
                 created is not None and created >= baseline and num not in proc["issues_opened"]
             )
 
+            # Labels land AFTER creation (issue #80: `bug` arrived 75s late; the task said
+            # Story indefinitely). Track the label set so a change re-syncs the task Type.
+            labels_sig = tuple(
+                sorted(
+                    str((lb or {}).get("name") or "")
+                    for lb in (it.get("labels") or [])
+                    if isinstance(lb, dict)
+                )
+            )
+            issue_labels = proc.setdefault("issue_labels", {})
+            labels_prev = issue_labels.get(num)
+            issue_labels[num] = labels_sig
+
             action = ""
             if is_new:
                 proc["issues_opened"].add(num)
@@ -261,6 +274,8 @@ class GitHubEventPoller:
                 action = "closed" if state == "closed" else "reopened"
             elif prev is None and num in proc["issues_opened"] and state == "closed":
                 action = "closed"
+            elif labels_prev is not None and labels_prev != labels_sig:
+                action = "labeled"
             if not action:
                 continue
 
@@ -551,6 +566,10 @@ class GitHubEventPoller:
                         from boardman.services.issue_handler import handle_issue_reopened
 
                         result = await handle_issue_reopened(parsed, session)
+                    elif parsed.action in ("labeled", "unlabeled"):
+                        from boardman.services.issue_handler import handle_issue_labels_changed
+
+                        result = await handle_issue_labels_changed(parsed, session)
                 elif isinstance(parsed, PullRequestReviewEventPayload):
                     result = await handle_pull_request_review(parsed, session)
                 elif isinstance(parsed, PullRequestReviewCommentEventPayload):
