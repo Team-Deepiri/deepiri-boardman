@@ -16,6 +16,7 @@ from boardman.plaky.board_schema import (
     validate_field_values_detailed,
 )
 from boardman.plaky.client import PlakyClient
+from boardman.plaky.field_coercion import coerce_field_values
 from boardman.plaky.name_match import rank_plaky_rows
 from boardman.plaky.task_tag_vocab import (
     canonical_task_priority,
@@ -457,6 +458,10 @@ async def _plaky_create_task(
             }
             if tag_keys:
                 resolve_repo_tag_field_values_from_schema(merged, normalized, keys=tag_keys)
+        # Resolve near-miss labels ("Feature" on a board whose Type options are
+        # Story/Task/Bug/Research) the same way the GitHub automation does, so the
+        # assistant is not rejected for a word the rest of the service accepts.
+        merged, coercion_notes = coerce_field_values(merged, normalized)
         cleaned, errors, warnings = validate_field_values_detailed(
             merged,
             normalized,
@@ -469,9 +474,10 @@ async def _plaky_create_task(
             return json.dumps(
                 {
                     "ok": False,
-                    "message": "field_values_json contains invalid keys/values for board schema",
+                    "message": "; ".join(errors),
                     "errors": errors,
                     "warnings": warnings,
+                    "next_step": "Fix the values and call this tool again in this same turn. Do NOT report failure or ask the user to choose - the allowed options are listed here.",
                 },
                 default=str,
             )
@@ -529,6 +535,7 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
             }
             if tag_keys:
                 resolve_repo_tag_field_values_from_schema(parsed, normalized, keys=tag_keys)
+        parsed, coercion_notes = coerce_field_values(parsed, normalized)
         cleaned, errors, warnings = validate_field_values_detailed(
             parsed,
             normalized,
@@ -541,9 +548,10 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
             return json.dumps(
                 {
                     "ok": False,
-                    "message": "fields_json contains invalid keys/values for board schema",
+                    "message": "; ".join(errors),
                     "errors": errors,
                     "warnings": warnings,
+                    "next_step": "Fix the values and call this tool again in this same turn. Do NOT report failure or ask the user to choose - the allowed options are listed here.",
                 },
                 default=str,
             )
