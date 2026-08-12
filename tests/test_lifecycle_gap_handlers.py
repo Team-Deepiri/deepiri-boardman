@@ -362,6 +362,37 @@ async def test_plain_issue_comment_synced_only_once(db_session, monkeypatch, fak
 
 
 @pytest.mark.asyncio
+async def test_boardman_does_not_react_to_its_own_comment(db_session, fake_plaky) -> None:
+    """Boardman comments as the PAT owner — a real teammate, not a '[bot]' login. Its
+    QA-assignment comment came back through the event feed as "a support-team member
+    commented on the PR" and pushed the task to In QA before QA had opened it."""
+    from boardman.github.pr_actions import with_marker
+
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=5, plaky_task_id="task-9"))
+    await db_session.flush()
+
+    payload = IssueCommentEventPayload(
+        action="created",
+        issue={
+            "number": 5,
+            "title": "T",
+            "html_url": "https://github.com/o/r/issues/5",
+            "pull_request": {"url": "https://api.github.com/repos/o/r/pulls/5"},
+        },
+        comment={
+            "user": {"login": "Blasted-ctrl"},
+            "body": with_marker("@Blasted-ctrl you've been assigned as **QA reviewer**"),
+            "html_url": "https://github.com/o/r/issues/5#issuecomment-9",
+        },
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await prh.handle_issue_comment_on_pr(payload, db_session)
+    assert res.get("skipped") is True
+    assert "own comment" in res.get("message", "")
+    assert not fake_plaky.comments
+
+
+@pytest.mark.asyncio
 async def test_plain_issue_comment_from_bot_ignored(db_session, fake_plaky) -> None:
     payload = IssueCommentEventPayload(
         action="created",

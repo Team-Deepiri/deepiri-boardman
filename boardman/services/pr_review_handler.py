@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import TeamAssignmentsConfig, load_team_assignments
 from boardman.database.models import SyncLog
+from boardman.github.pr_actions import is_boardman_comment
 from boardman.github.repo_fetch import fetch_pr_assignees_and_reviewers_logins
 from boardman.github.support_qa import support_team_logins_casefold
 from boardman.github.webhooks import IssueCommentEventPayload, PullRequestReviewEventPayload
@@ -374,6 +375,15 @@ async def handle_issue_comment_on_pr(
 ) -> dict[str, Any]:
     if payload.action != "created":
         return {"ok": True, "message": "ignored non-created comment"}
+
+    # Boardman's own comments must never drive the state machine. It posts as the PAT
+    # owner — usually a support-team member — so without this its QA-assignment comment
+    # comes back as "support team commented on the PR" and moves the task to In QA
+    # before the assigned QA has opened it.
+    if isinstance(payload.comment, dict) and is_boardman_comment(
+        str(payload.comment.get("body") or "")
+    ):
+        return {"ok": True, "skipped": True, "message": "ignored Boardman's own comment"}
 
     if not payload.issue.pull_request:
         return await _sync_plain_issue_comment(payload, session)

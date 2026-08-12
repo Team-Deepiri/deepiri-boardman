@@ -38,6 +38,21 @@ def _headers() -> dict[str, str]:
     }
 
 
+# Boardman comments on GitHub as the PAT owner — a real teammate account, not a "[bot]"
+# login. Without a marker it reads its own QA-assignment comment back through the event
+# feed, sees a support-team member commenting on a PR, and moves the task to In QA before
+# QA has looked at anything. An HTML comment is invisible in rendered markdown.
+BOARDMAN_COMMENT_MARKER = "<!-- boardman:automation -->"
+
+
+def with_marker(body: str) -> str:
+    return body if BOARDMAN_COMMENT_MARKER in body else f"{body}\n\n{BOARDMAN_COMMENT_MARKER}"
+
+
+def is_boardman_comment(body: str) -> bool:
+    return BOARDMAN_COMMENT_MARKER in (body or "")
+
+
 async def comment_on_pr(full_name: str, pr_number: int, body: str) -> dict[str, Any]:
     """POST an issue comment on the PR (PRs share the issues comment API)."""
     if not (settings.github_pat or "").strip():
@@ -45,7 +60,7 @@ async def comment_on_pr(full_name: str, pr_number: int, body: str) -> dict[str, 
     url = f"https://api.github.com/repos/{full_name}/issues/{pr_number}/comments"
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(url, headers=_headers(), json={"body": body})
+            r = await client.post(url, headers=_headers(), json={"body": with_marker(body)})
     except Exception as e:  # noqa: BLE001 — network failure must not break the webhook
         _log.warning("pr comment on %s#%s failed: %s", full_name, pr_number, e)
         return {"ok": False, "message": str(e)}
