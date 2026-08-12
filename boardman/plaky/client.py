@@ -234,6 +234,46 @@ def _public_api_root_from_base_url(base_url: str) -> str | None:
     return None
 
 
+# Board -> space map shared by every PlakyClient in the process. See
+# resolve_space_for_board for why this cannot be per-instance.
+_SPACE_CACHE: dict[str, str] = {}
+_SPACE_CACHE_AT: float = 0.0
+_SPACE_CACHE_TTL_S = 900.0
+# One lock per event loop. A module-level asyncio.Lock is bound to whichever loop first
+# awaits it, so anything that runs a second loop in the same process (a CLI command, the
+# test suite's per-test loops) would wait on a lock owned by a dead one.
+_SPACE_CACHE_LOCKS: dict[Any, asyncio.Lock] = {}
+
+
+def _space_cache_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _SPACE_CACHE_LOCKS.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _SPACE_CACHE_LOCKS[loop] = lock
+    return lock
+
+
+def _space_cache_get(board_id: str) -> str | None:
+    if not _SPACE_CACHE or (time.monotonic() - _SPACE_CACHE_AT) > _SPACE_CACHE_TTL_S:
+        return None
+    return _SPACE_CACHE.get(board_id)
+
+
+def _space_cache_put(mapping: dict[str, str]) -> None:
+    global _SPACE_CACHE_AT
+    _SPACE_CACHE.update(mapping)
+    _SPACE_CACHE_AT = time.monotonic()
+
+
+def clear_space_cache() -> None:
+    """Drop the cache — for tests, and after a board is created or moved."""
+    global _SPACE_CACHE_AT
+    _SPACE_CACHE.clear()
+    _SPACE_CACHE_LOCKS.clear()
+    _SPACE_CACHE_AT = 0.0
+
+
 class PlakyClient:
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
         self.api_key = api_key or settings.plaky_api_key
@@ -336,10 +376,34 @@ class PlakyClient:
         return accum
 
     async def resolve_space_for_board(self, board_id: str) -> str | None:
+        """Board -> space id, cached process-wide.
+
+        Almost every Plaky call needs this, and callers construct PlakyClient() fresh, so
+        with a per-instance cache each one re-listed every space and every board first:
+        seconds of latency per tool call, and one transient failure anywhere in that walk
+        surfaced to the user as "Could not resolve space for board" — i.e. "the assistant
+        cannot create tasks". The map changes only when a board is created or moved, so a
+        short TTL is safe, and the lock keeps concurrent tool calls to a single refresh.
+        """
         bid = board_id.strip()
+        if not bid:
+            return None
         if bid in self._board_to_space:
             return self._board_to_space[bid]
-        await self.list_boards()
+
+        cached = _space_cache_get(bid)
+        if cached:
+            self._board_to_space[bid] = cached
+            return cached
+
+        async with _space_cache_lock():
+            cached = _space_cache_get(bid)  # another task may have refreshed while we waited
+            if cached:
+                self._board_to_space[bid] = cached
+                return cached
+            await self.list_boards()
+            if self._board_to_space:
+                _space_cache_put(self._board_to_space)
         return self._board_to_space.get(bid)
 
     async def list_boards(self) -> dict[str, Any]:
@@ -1326,6 +1390,42 @@ class PlakyClient:
 
         bid = (board_id or "").strip() or context_board_id()
         gid = (group_id or "").strip() or context_group_id()
+
+        # Without a board there is nowhere to put the item. The legacy fallback below
+        # POSTs to a bare /tasks path, which the public API does not have — the caller
+        # got a 404 about a missing static resource and no idea a board was the problem.
+        if not bid:
+            return {
+                "ok": False,
+                "status": 400,
+                "message": (
+                    "No Plaky board selected, so there is nowhere to create this task. "
+                    "Pass board_id (and group_id), or pick a board in the UI. "
+                    "Use plaky_list_boards / plaky_match_board to find the id."
+                ),
+                "needs_board": True,
+            }
+
+        # A board with no group named: items live in groups, so pick the board's first
+        # one rather than dropping to the legacy /tasks path (which the public API does
+        # not serve). Asking the user to name a section they did not mention is friction
+        # for the common case of "make me 5 tasks on this board".
+        if bid and not gid:
+            groups = await self.list_groups(bid)
+            rows = groups.get("groups") or []
+            if rows:
+                gid = str(rows[0].get("id") or "").strip()
+            if not gid:
+                return {
+                    "ok": False,
+                    "status": 404,
+                    "message": (
+                        f"Board {bid} has no group to create the item in "
+                        f"({groups.get('message') or 'no groups returned'}). "
+                        "Create a group in Plaky, or pass group_id."
+                    ),
+                    "needs_group": True,
+                }
 
         if bid and gid:
             res = await self._create_item_hierarchy(bid, gid, title, description, priority)
