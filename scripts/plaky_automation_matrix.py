@@ -184,6 +184,38 @@ async def run_once(*, keep: bool) -> tuple[int, int, list[str]]:
         f = await _read(task_id)
         check("5  issue comment -> mirrored", (f.get("comments") or 0) > before, "True")
 
+        # ---- PR with NO "Fixes #n": the fuzzy-link pipeline ------------------
+        # Every other PR here says "Fixes #n", so the regex always matched and the whole
+        # auto_link/llm_link path never ran — yet that is how most real PRs arrive. If
+        # fuzzy linking breaks, PRs silently stop reaching their task and nobody notices,
+        # because the PRs that DO carry a closing keyword keep working.
+        fuzzy_pr = pr_n + 5000
+        link_res = await _post(
+            c,
+            "pull_request",
+            f"mx-{n}-fuzzy",
+            {
+                "action": "opened",
+                "pull_request": pr(
+                    number=fuzzy_pr,
+                    title=f"[matrix] payment retry crash {n}",
+                    body="Refactors the retry handler. No issue reference on purpose.",
+                    html_url=f"https://github.com/{REPO['full_name']}/pull/{fuzzy_pr}",
+                ),
+                "repository": REPO,
+            },
+        )
+        linked_ids = [str(x.get("task_id")) for x in (link_res.get("linked") or [])]
+        check("5a  PR without 'Fixes #n' still links", task_id in linked_ids, "True")
+        check(
+            "5b  linked by title/branch, not regex",
+            str(link_res.get("pipeline") or "") in ("auto_link", "llm_link"),
+            "True",
+        )
+        f = await _status(task_id, "Needs QA")
+        check("5c  fuzzy-linked PR -> Needs QA", f.get("Status"), "Needs QA")
+        check("5d  fuzzy-linked PR -> QA assigned", bool(f.get("QA Engineer Assigned")), "True")
+
         # ---- PR opens as DRAFT: QA assigned, but NOT moved to Needs QA -------
         await _post(
             c,
@@ -263,6 +295,38 @@ async def run_once(*, keep: bool) -> tuple[int, int, list[str]]:
         )
         check(
             "13 review_requested -> In QA", (await _status(task_id, "In QA")).get("Status"), "In QA"
+        )
+
+        # Editing an already-linked PR (retitle, checklist added) must be a no-op. Rerunning
+        # the open pipeline would drag the task back from In QA and re-post the "PR Opened"
+        # comment every time someone fixes a typo in their description.
+        before_edit = await _read(task_id)
+        edited = await _post(
+            c,
+            "pull_request",
+            f"mx-{n}-edited",
+            {
+                "action": "edited",
+                "pull_request": pr(
+                    title="Fix payment retry crash (typo fix)",
+                    body=f"Fixes #{n}\n\nAdded a checklist.",
+                ),
+                "repository": REPO,
+            },
+        )
+        await asyncio.sleep(2)
+        after_edit = await _read(task_id)
+        check("13b edit on a linked PR is skipped", edited.get("skipped") is True, "True")
+        check("13c edit did not churn status", after_edit.get("Status"), "In QA")
+        check(
+            "13d edit did not re-comment",
+            (after_edit.get("comments") or 0) == (before_edit.get("comments") or 0),
+            "True",
+        )
+        check(
+            "13e edit did not churn QA",
+            str(after_edit.get("QA Engineer Assigned")),
+            str(before_edit.get("QA Engineer Assigned")),
         )
 
         # ---- QA rejects / dev resumes ---------------------------------------
@@ -538,12 +602,39 @@ async def run_edge_cases(*, keep: bool) -> tuple[int, int, list[str]]:
             f"edge-{n}-prA",
             {"action": "opened", "pull_request": pr(pr_a), "repository": REPO},
         )
+
+        # A second PR on the same task must not re-pick QA or steal the assignee. Both
+        # fields are curated once and then relied on: silently swapping the QA mid-review
+        # sends the work to someone who never agreed to it, and the board still looks fine.
+        after_a = await _read(task_id)
+        for _ in range(4):
+            if after_a.get("QA Engineer Assigned"):
+                break
+            await asyncio.sleep(1.5)
+            after_a = await _read(task_id)
+        qa_a = after_a.get("QA Engineer Assigned") or []
+        asg_a = after_a.get("Assignee") or []
+        status_a = after_a.get("Status")
+        check("E3a QA assigned on 1st PR", bool(qa_a), "True")
+
         await _post(
             c,
             "pull_request",
             f"edge-{n}-prB",
-            {"action": "opened", "pull_request": pr(pr_b), "repository": REPO},
+            {
+                "action": "opened",
+                # different author: the engineer field must still not be overwritten
+                "pull_request": pr(pr_b, user={"login": "christiankrider1"}),
+                "repository": REPO,
+            },
         )
+        await asyncio.sleep(2)
+        after_b = await _read(task_id)
+        check(
+            "E3b 2nd PR did not re-pick QA", (after_b.get("QA Engineer Assigned") or []), str(qa_a)
+        )
+        check("E3c 2nd PR did not steal the assignee", (after_b.get("Assignee") or []), str(asg_a))
+        check("E3d 2nd PR did not reset Status", after_b.get("Status"), str(status_a))
         await _post(
             c,
             "pull_request",
@@ -598,6 +689,56 @@ async def run_edge_cases(*, keep: bool) -> tuple[int, int, list[str]]:
             c, "workflow_run", f"edge-{n}-unknown", {"action": "completed", "repository": REPO}
         )
         check("E6 unsupported event refused", unknown.get("ok") is False, "True")
+
+        # 7. Boardman's own QA-assignment comment must not drive the state machine.
+        # It comments as the PAT owner (a support-team human, not a "[bot]" login), so
+        # without the marker guard the comment comes straight back through the feed and
+        # moves the task to In QA before the assigned QA has opened anything.
+        from boardman.github.pr_actions import with_marker
+
+        before = (await _read(task_id)).get("Status")
+        own = await _post(
+            c,
+            "issue_comment",
+            f"edge-{n}-selfcomment",
+            {
+                "action": "created",
+                "issue": {"number": pr_b, "title": "t", "html_url": iss_url, "pull_request": {}},
+                "comment": {
+                    "user": {"login": "Blasted-ctrl"},
+                    "body": with_marker("@someone you've been assigned as **QA reviewer**"),
+                    "html_url": f"{iss_url}#issuecomment-edge-self-{n}",
+                },
+                "repository": REPO,
+            },
+        )
+        check("E7 Boardman ignores its own comment", own.get("skipped") is True, "True")
+        check(
+            "E7b own comment did not move status",
+            (await _read(task_id)).get("Status") == before,
+            "True",
+        )
+
+        # 8. a restart replays the catch-up window. Status writes are idempotent, but
+        # comments are additive: the same comment must not be mirrored onto the task twice.
+        replay_url = f"{iss_url}#issuecomment-edge-replay-{n}"
+        replay_body = {
+            "action": "created",
+            "issue": {"number": n, "title": "t", "html_url": iss_url},
+            "comment": {
+                "user": {"login": "Blasted-ctrl"},
+                "body": "QA note: replayed by a restart",
+                "html_url": replay_url,
+            },
+            "repository": REPO,
+        }
+        before_comments = (await _read(task_id)).get("comments") or 0
+        await _post(c, "issue_comment", f"edge-{n}-replay1", replay_body)
+        once = (await _read(task_id)).get("comments") or 0
+        await _post(c, "issue_comment", f"edge-{n}-replay2", replay_body)
+        twice = (await _read(task_id)).get("comments") or 0
+        check("E8 comment mirrored once", once > before_comments, "True")
+        check("E8b replay did not re-post it", twice == once, "True")
 
     width = max(len(s) for s, _, _ in rows)
     for step, got, passed in rows:
