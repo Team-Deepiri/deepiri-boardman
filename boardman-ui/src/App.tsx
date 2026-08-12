@@ -7,6 +7,7 @@ import {
   IconClose,
   IconRepo,
   IconSend,
+  IconStop,
   IconSession,
   IconSpark,
   IconUser,
@@ -51,12 +52,14 @@ async function sendChatStream(
     model?: string;
   },
   onSession: (sessionId: string) => void,
-  onToken: (delta: string) => void
+  onToken: (delta: string) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   const base = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
   const url = `${base}/api/v1/agent/chat/stream`;
   const res = await fetch(url, {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify({
       message,
@@ -84,8 +87,13 @@ async function sendChatStream(
   }
   const reader = res.body?.getReader();
   if (!reader) throw new Error("No response body");
+  // Abort mid-stream: cancel the reader too, otherwise the response body keeps draining in
+  // the background and tokens from a stopped answer land in the next one.
+  const onAbort = () => void reader.cancel().catch(() => {});
+  signal?.addEventListener("abort", onAbort, { once: true });
   const dec = new TextDecoder();
   let buf = "";
+  try {
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -106,6 +114,9 @@ async function sendChatStream(
       else if (j.type === "token") onToken(j.text);
       else if (j.type === "error") throw new Error(j.message || "stream error");
     }
+  }
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -165,6 +176,10 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const drawerScrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Live stream handle, and a run counter so a stopped or superseded run cannot write
+  // tokens (or clear the spinner) for the run that replaced it.
+  const abortRef = useRef<AbortController | null>(null);
+  const runIdRef = useRef(0);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -408,9 +423,21 @@ export default function App() {
     qaPick,
   ]);
 
+  const onStop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
   const onSend = useCallback(async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text) return;
+    // Interrupt: a new message while the assistant is talking stops it and takes over,
+    // instead of being swallowed or queued behind a long tool-calling run.
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const runId = ++runIdRef.current;
+    const isCurrent = () => runIdRef.current === runId;
+
     setInput("");
     setMessages((m) => [...m, { role: "user", content: text }]);
     setLoading(true);
@@ -427,8 +454,11 @@ export default function App() {
           plakyGroupId,
           model: selectedModel || undefined,
         },
-        (sid) => setSessionId(sid),
+        (sid) => {
+          if (isCurrent()) setSessionId(sid);
+        },
         (delta) => {
+          if (!isCurrent()) return;
           if (!acc) {
             // First token: add the assistant message to the list
             setMessages((m) => [...m, { role: "assistant", content: delta }]);
@@ -444,9 +474,27 @@ export default function App() {
             });
           }
           acc += delta;
-        }
+        },
+        controller.signal
       );
     } catch (e: unknown) {
+      // A stop the user asked for is not a failure. Keep whatever was already said and
+      // mark it, so a half-finished answer is never mistaken for a complete one.
+      const stopped =
+        controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError");
+      if (stopped) {
+        if (isCurrent()) {
+          setMessages((m) => {
+            const last = m[m.length - 1];
+            if (!last || last.role !== "assistant") return m;
+            const copy = [...m];
+            copy[copy.length - 1] = { ...last, content: `${last.content}\n\n_(stopped)_` };
+            return copy;
+          });
+        }
+        return;
+      }
+      if (!isCurrent()) return;
       let msg: string;
       if (axios.isAxiosError(e)) {
         const data = e.response?.data as { detail?: unknown; message?: string } | undefined;
@@ -472,12 +520,21 @@ export default function App() {
         return [...m, { role: "assistant", content: `Request failed: ${msg}` }];
       });
     } finally {
-      setLoading(false);
-      textareaRef.current?.focus();
+      // An interrupted run must not clear the spinner for the run that replaced it.
+      if (isCurrent()) {
+        setLoading(false);
+        abortRef.current = null;
+        textareaRef.current?.focus();
+      }
     }
-  }, [input, loading, sessionId, selectedRepos, allowWrites, useTools, plakyBoardId, plakyGroupId, selectedModel]);
+  }, [input, sessionId, selectedRepos, allowWrites, useTools, plakyBoardId, plakyGroupId, selectedModel]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape" && loading) {
+      e.preventDefault();
+      onStop();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       onSend();
@@ -830,18 +887,29 @@ export default function App() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="Message the agent…"
-              disabled={loading}
+              placeholder={loading ? "Type to interrupt — Esc to stop…" : "Message the agent…"}
             />
-            <button
-              type="button"
-              className="composer__send"
-              disabled={loading || !input.trim()}
-              onClick={onSend}
-              aria-label="Send message"
-            >
-              <IconSend className="composer__send-icon" title="Send" />
-            </button>
+            {loading ? (
+              <button
+                type="button"
+                className="composer__send composer__send--stop"
+                onClick={onStop}
+                aria-label="Stop generating"
+                title="Stop generating (Esc)"
+              >
+                <IconStop className="composer__send-icon" title="Stop" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="composer__send"
+                disabled={!input.trim()}
+                onClick={onSend}
+                aria-label="Send message"
+              >
+                <IconSend className="composer__send-icon" title="Send" />
+              </button>
+            )}
           </div>
         </div>
       </main>
@@ -915,18 +983,29 @@ export default function App() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="Reply…"
-              disabled={loading}
+              placeholder={loading ? "Type to interrupt…" : "Reply…"}
             />
-            <button
-              type="button"
-              className="drawer__send"
-              disabled={loading || !input.trim()}
-              onClick={onSend}
-              aria-label="Send"
-            >
-              <IconSend className="drawer__send-icon" title="" />
-            </button>
+            {loading ? (
+              <button
+                type="button"
+                className="drawer__send drawer__send--stop"
+                onClick={onStop}
+                aria-label="Stop generating"
+                title="Stop generating (Esc)"
+              >
+                <IconStop className="drawer__send-icon" title="" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="drawer__send"
+                disabled={!input.trim()}
+                onClick={onSend}
+                aria-label="Send"
+              >
+                <IconSend className="drawer__send-icon" title="" />
+              </button>
+            )}
           </div>
         </div>
       ) : null}

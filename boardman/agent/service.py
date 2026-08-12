@@ -17,7 +17,7 @@ from sqlalchemy.orm import selectinload
 from boardman.agent.guardrails import has_confirm_token, looks_like_board_organize_request
 from boardman.agent.memory_store import db_messages_to_langchain
 from boardman.agent.plaky_prompt_extra import plaky_placement_markdown
-from boardman.agent.prompts import BOARD_MANAGER_SYSTEM, TASK_CREATION_WORKFLOW
+from boardman.agent.prompts import BOARD_MANAGER_SYSTEM, TASK_CREATION_WORKFLOW, TEAM_TASK_POLICY
 from boardman.agent.runner import iter_tool_agent, run_tool_agent
 from boardman.agent.task_draft import format_task_draft_for_prompt, load_task_draft
 from boardman.agent.tool_context import agent_tool_context
@@ -78,7 +78,7 @@ def _default_model_for_provider(provider: str) -> str:
     if provider == "anthropic":
         return "claude-sonnet-4-20250514"
     if provider == "openai":
-        return "gpt-4o-mini"
+        return "gpt-4.1"
     if provider == "openrouter":
         return "anthropic/claude-3.5-sonnet"
     if provider == "gemini":
@@ -238,6 +238,22 @@ async def _load_draft_markdown(session: AsyncSession, agent_session_pk: int | No
     return format_task_draft_for_prompt(draft)
 
 
+_TOOLS_DOWN_CONSTRAINT = """
+
+## TOOLS ARE UNAVAILABLE THIS TURN (degraded mode)
+
+The tool run failed, so you have NO access to GitHub, Plaky, or the local repo right now.
+You are working from conversation text only.
+
+- If the question needs repo, board, issue, or PR data, say plainly that you could not reach
+  the tools this turn and suggest retrying. Offer what you can answer without them.
+- Do NOT answer from memory or general knowledge about any repository, and do NOT describe
+  files, issues, statuses, or commits — anything you produce that way is a guess presented as
+  fact, which is worse than admitting the outage.
+- Never substitute a different repo (for example this service's own repo) for the one asked about.
+"""
+
+
 async def _safe_plain_chat(
     *,
     message: str,
@@ -249,7 +265,10 @@ async def _safe_plain_chat(
     resolved_provider: str,
     resolved_model: str,
     extra_system_suffix: str = "",
+    tools_unavailable: bool = False,
 ) -> str:
+    if tools_unavailable:
+        extra_system_suffix = (extra_system_suffix or "") + _TOOLS_DOWN_CONSTRAINT
     try:
         llm_messages = _build_plain_llm_messages(
             message,
@@ -325,7 +344,14 @@ async def run_agent_chat(
             ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
-    intake_extra = TASK_CREATION_WORKFLOW
+    # Release the SQLite write lock NOW: the session-row insert/update above would otherwise
+    # hold it through the whole (possibly minutes-long) LLM/tool phase, and every concurrent
+    # agent turn would die with "database is locked" after the busy timeout.
+    await session.commit()
+
+    # The Plaky create/patch protocol is dead weight when writes are off — the agent cannot
+    # act on it. Team policy stays either way so it can still EXPLAIN the conventions.
+    intake_extra = TEAM_TASK_POLICY + (TASK_CREATION_WORKFLOW if allow_writes else "")
     draft_md, plaky_suffix = await asyncio.gather(
         _load_draft_markdown(session, ag.id),
         _plaky_system_suffix(plaky_board_id, plaky_group_id),
@@ -390,6 +416,7 @@ async def run_agent_chat(
             logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
             assistant_tool_calls_json = _runtime_error_trace(e)
             reply = await _safe_plain_chat(
+                tools_unavailable=True,
                 message=message,
                 repo=repo,
                 history_msgs=history_msgs,
@@ -480,7 +507,14 @@ async def iter_agent_chat_sse(
             ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
-    intake_extra = TASK_CREATION_WORKFLOW
+    # Release the SQLite write lock NOW: the session-row insert/update above would otherwise
+    # hold it through the whole (possibly minutes-long) LLM/tool phase, and every concurrent
+    # agent turn would die with "database is locked" after the busy timeout.
+    await session.commit()
+
+    # The Plaky create/patch protocol is dead weight when writes are off — the agent cannot
+    # act on it. Team policy stays either way so it can still EXPLAIN the conventions.
+    intake_extra = TEAM_TASK_POLICY + (TASK_CREATION_WORKFLOW if allow_writes else "")
     draft_md, plaky_suffix = await asyncio.gather(
         _load_draft_markdown(session, ag.id),
         _plaky_system_suffix(plaky_board_id, plaky_group_id),

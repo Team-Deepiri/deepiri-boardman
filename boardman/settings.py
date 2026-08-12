@@ -53,6 +53,8 @@ class Settings(BaseSettings):
     plaky_team_assignment_field_sync_cooldown_seconds: float = 60.0
     # Seconds; 0 disables TTL cache for fetch_board_schema_bundle
     plaky_board_schema_cache_ttl_seconds: float = 90.0
+    # Read-only GitHub repo context reuse between questions. 0 disables the cache.
+    github_read_cache_ttl_seconds: float = 300.0
 
     # --- Repo → Plaky placement auto-discovery (replaces repos.yml board/group IDs) ---
     # Catalog: all categorical boards + groups, cached on disk for webhook routing.
@@ -62,6 +64,19 @@ class Settings(BaseSettings):
     plaky_placement_min_score: int = 400  # rank_plaky_rows threshold; see name_match.py
     # Limit search to the five categorical boards (excludes legacy AI Task Board, etc.).
     plaky_catalog_categorical_only: bool = True
+    # Local "as-if-production" mode. When true, this instance polls GitHub for new activity
+    # (issues, PRs, reviews, comments, pushes) on `testing_live_plaky_repos` and routes each
+    # event through the same handlers as POST /api/v1/webhooks/github — so Plaky updates live
+    # ONLY while this process runs. History from before startup is never replayed. Set false
+    # in production, where real GitHub webhooks deliver events instead.
+    testing_live_plaky: bool = False
+    testing_live_plaky_repos: str = "Team-Deepiri/deepiri-boardman"
+    testing_live_plaky_poll_seconds: float = 60.0
+    # On startup the poller baselines existing events (no pre-start history replay). To avoid a
+    # blind spot across restarts while testing, it also processes events created within this many
+    # minutes of startup. 0 = strict baseline only. Duplicate issue tasks are still deduped by
+    # IssueTaskMap. Irrelevant in production (TESTING_LIVE_PLAKY=false; real webhooks deliver events).
+    testing_live_plaky_catchup_minutes: float = 45.0
 
     github_webhook_secret: str = ""
     github_pat: str | None = None
@@ -84,6 +99,9 @@ class Settings(BaseSettings):
     github_qa_activity_tier2_min_weighted_score: float = 2.5
     default_repo_category: str = ""
     default_plaky_table: str = ""
+    # QA pick ranking from GitHub contribution profiles (cosine similarity vs the target
+    # repo). False = legacy overlap-pool weighted-random pick only.
+    qa_github_fit_enabled: bool = True
 
     database_url: str = "sqlite+aiosqlite:///./boardman.db"
 
@@ -108,6 +126,10 @@ class Settings(BaseSettings):
     ollama_keep_alive: str = "30m"
     # Optional cap on generated tokens (Ollama options.num_predict). Unset = server default (often slow for long replies).
     ollama_num_predict: int | None = None
+    # Provider-side retries for transient failures (429 TPM blips, 5xx). Without this a
+    # momentary rate limit surfaces to the user as "I could not get a reply from the
+    # language model" — i.e. a full outage from a 3-second hiccup.
+    llm_max_retries: int = 4
     openai_api_key: str = ""
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"

@@ -39,17 +39,123 @@ def _parse_owner_repo(owner_repo: str) -> tuple[str, str] | None:
 
 
 async def fetch_direction_md(client: httpx.AsyncClient, owner: str, repo: str) -> str:
-    r = await github_request(client, f"/repos/{owner}/{repo}/contents/DIRECTION.md?ref=main")
-    if r.status_code == 404:
-        r = await github_request(client, f"/repos/{owner}/{repo}/contents/DIRECTION.md?ref=master")
-    if r.status_code != 200:
-        return f"(No DIRECTION.md found or inaccessible: HTTP {r.status_code})"
+    # Default branch first (repos whose default is not main/master), then the legacy pair.
+    branches: list[str] = []
+    default = await fetch_default_branch(client, owner, repo)
+    for b in (default, "main", "master"):
+        if b and b not in branches:
+            branches.append(b)
+    r = None
+    for b in branches:
+        r = await github_request(client, f"/repos/{owner}/{repo}/contents/DIRECTION.md?ref={b}")
+        if r.status_code == 200:
+            break
+    if r is None or r.status_code != 200:
+        code = r.status_code if r is not None else "n/a"
+        return f"(No DIRECTION.md found or inaccessible: HTTP {code})"
     data = r.json()
     if isinstance(data, dict) and data.get("encoding") == "base64" and data.get("content"):
         return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
     if isinstance(data, dict) and data.get("message"):
         return f"(GitHub: {data.get('message')})"
     return "(Could not decode DIRECTION.md)"
+
+
+async def fetch_readme_md(client: httpx.AsyncClient, owner: str, repo: str) -> str:
+    """Repo README via GET /repos/{o}/{r}/readme (any filename, default branch)."""
+    r = await github_request(client, f"/repos/{owner}/{repo}/readme")
+    if r.status_code != 200:
+        return f"(No README found or inaccessible: HTTP {r.status_code})"
+    data = r.json()
+    if isinstance(data, dict) and data.get("encoding") == "base64" and data.get("content"):
+        return base64.b64decode(data["content"]).decode("utf-8", errors="replace")[:30000]
+    if isinstance(data, dict) and data.get("message"):
+        return f"(GitHub: {data.get('message')})"
+    return "(Could not decode README)"
+
+
+# Manifest/config files worth surfacing when a repo has no docs.
+MANIFEST_FILENAMES = (
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.py",
+    "go.mod",
+    "cargo.toml",
+    "pom.xml",
+    "build.gradle",
+    "gemfile",
+    "composer.json",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "dockerfile",
+    "makefile",
+)
+
+
+async def fetch_repo_overview(client: httpx.AsyncClient, owner: str, repo: str) -> dict:
+    """Doc-free structural context: metadata + languages + file-tree summary + manifest paths.
+
+    This is the fallback that lets the agent explain a repo with NO markdown files:
+    what it is (description/topics), what it is written in (languages), how it is
+    laid out (tree summary), and where to look next (manifests + entry points).
+    """
+    out: dict = {"full_name": f"{owner}/{repo}"}
+
+    r = await github_request(client, f"/repos/{owner}/{repo}")
+    if r.status_code == 200 and isinstance(r.json(), dict):
+        data = r.json()
+        out["description"] = data.get("description") or ""
+        out["topics"] = data.get("topics") or []
+        out["default_branch"] = data.get("default_branch") or "main"
+        out["pushed_at"] = data.get("pushed_at") or ""
+        out["archived"] = bool(data.get("archived"))
+    else:
+        out["error"] = f"repo metadata unavailable: HTTP {r.status_code}"
+        return out
+
+    rl = await github_request(client, f"/repos/{owner}/{repo}/languages")
+    if rl.status_code == 200 and isinstance(rl.json(), dict):
+        langs = rl.json()
+        total = sum(v for v in langs.values() if isinstance(v, int | float)) or 1
+        out["languages"] = {
+            k: round(100.0 * v / total, 1)
+            for k, v in sorted(langs.items(), key=lambda kv: -kv[1])[:8]
+        }
+
+    branch = out.get("default_branch", "main")
+    rt = await github_request(client, f"/repos/{owner}/{repo}/git/trees/{branch}?recursive=1")
+    if rt.status_code == 200 and isinstance(rt.json(), dict):
+        tree = rt.json().get("tree") or []
+        paths = [t.get("path", "") for t in tree if isinstance(t, dict) and t.get("type") == "blob"]
+        out["file_count"] = len(paths)
+        out["truncated_tree"] = bool(rt.json().get("truncated"))
+
+        top_level: dict[str, int] = {}
+        manifests: list[str] = []
+        entry_points: list[str] = []
+        for p in paths:
+            head = p.split("/", 1)[0]
+            top_level[head] = top_level.get(head, 0) + 1
+            base = p.rsplit("/", 1)[-1].lower()
+            if base in MANIFEST_FILENAMES and len(manifests) < 15:
+                manifests.append(p)
+            if (
+                base
+                in ("main.py", "app.py", "index.ts", "index.js", "main.go", "main.rs", "server.py")
+                and len(entry_points) < 10
+            ):
+                entry_points.append(p)
+        out["top_level"] = dict(sorted(top_level.items(), key=lambda kv: -kv[1])[:25])
+        out["manifests"] = manifests
+        out["entry_points"] = entry_points
+        # A shallow path sample so the model sees real structure, not just counts.
+        shallow = [p for p in paths if p.count("/") <= 1]
+        out["path_sample"] = shallow[:80]
+    else:
+        out["tree_error"] = f"tree unavailable: HTTP {rt.status_code}"
+
+    return out
 
 
 async def fetch_recent_commits(
@@ -82,6 +188,25 @@ async def fetch_open_issues(client: httpx.AsyncClient, owner: str, repo: str) ->
             continue
         lines.append(f"- #{i['number']}: {i.get('title', '')}")
     return "\n".join(lines) if lines else "(no open issues)"
+
+
+async def fetch_open_pull_requests(client: httpx.AsyncClient, owner: str, repo: str) -> str:
+    """Open PRs with draft/author. Work in flight is stronger PM signal than a filed issue —
+    a repo with 8 open PRs and 0 issues is busy, not idle, and the assistant must see that."""
+    r = await github_request(client, f"/repos/{owner}/{repo}/pulls?state=open&per_page=50")
+    if r.status_code != 200:
+        return f"(pull requests unavailable: {r.status_code})"
+    prs = r.json()
+    if not isinstance(prs, list):
+        return "(pull requests: unexpected response)"
+    lines: list[str] = []
+    for p in prs:
+        if not isinstance(p, dict):
+            continue
+        author = ((p.get("user") or {}) if isinstance(p.get("user"), dict) else {}).get("login", "")
+        draft = " [draft]" if p.get("draft") else ""
+        lines.append(f"- #{p.get('number')}: {p.get('title', '')} (by {author}){draft}")
+    return chr(10).join(lines) if lines else "(no open pull requests)"
 
 
 async def fetch_pr_assignees_and_reviewers_logins(full_name: str, pr_number: int) -> set[str]:
@@ -120,8 +245,14 @@ async def fetch_repo_file_text(
     path: str,
     *,
     ref: str = "",
+    max_chars: int = 50_000,
 ) -> str:
-    """Fetch a single file from the repo (default branch if ref empty)."""
+    """Fetch a single file from the repo (default branch if ref empty).
+
+    ``max_chars`` caps the returned text. The default keeps prompt payloads small; callers
+    that COUNT things in the file (defect scanning) must raise it, otherwise they silently
+    report an undercount for any file larger than the cap.
+    """
     from urllib.parse import quote
 
     clean = (path or "").strip().lstrip("/")
@@ -134,7 +265,7 @@ async def fetch_repo_file_text(
         return f"(file unavailable: HTTP {r.status_code} for {path})"
     data = r.json()
     if isinstance(data, dict) and data.get("encoding") == "base64" and data.get("content"):
-        return base64.b64decode(data["content"]).decode("utf-8", errors="replace")[:50000]
+        return base64.b64decode(data["content"]).decode("utf-8", errors="replace")[:max_chars]
     if isinstance(data, list):
         return f"(path {path} is a directory, not a file)"
     if isinstance(data, dict) and data.get("message"):

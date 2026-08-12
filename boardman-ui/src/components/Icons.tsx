@@ -40,6 +40,15 @@ export function IconSend({ className, title }: IconProps) {
   );
 }
 
+export function IconStop({ className, title }: IconProps) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden={title ? undefined : true}>
+      {title ? <title>{title}</title> : null}
+      <rect x="7" y="7" width="10" height="10" rx="2" fill="currentColor" />
+    </svg>
+  );
+}
+
 export function IconChat({ className, title }: IconProps) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden={title ? undefined : true}>

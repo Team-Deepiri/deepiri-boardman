@@ -22,16 +22,21 @@ class GitHubIssue(BaseModel):
     html_url: str
     state: str = "open"
     user: Any | None = None
+    labels: list[Any] = Field(default_factory=list)
+    pull_request: Any | None = None
 
 
 class GitHubPullRequest(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     number: int
-    title: str
+    # title/html_url/state default to "" because GitHub's *events feed* embeds a slimmer
+    # pull_request object inside review events than webhooks do (it omits these). Only `number`
+    # is guaranteed everywhere; the review handlers need the number + review state, not these.
+    title: str = ""
     body: str | None = None
-    html_url: str
-    state: str
+    html_url: str = ""
+    state: str = ""
     merged: bool = False
     draft: bool = False
     user: Any | None = None

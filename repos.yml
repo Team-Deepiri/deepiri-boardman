@@ -12,4 +12,12 @@
 #     plaky_board_id: "..."
 #     plaky_group_id: "..."
 
-repos: {}
+# deepiri-boardman is pinned to its own test board (269031 "deepiri-boardman", group
+# "Open PRs") — all Boardman self-testing tasks land there, and webhook status
+# transitions get an explicit board id. Other repos use placement auto-discovery.
+repos:
+  Team-Deepiri/deepiri-boardman:
+    category: devtools
+    plaky_board_id: "269031"
+    plaky_group_id: "907471"
+    plaky_table: "Open PRs"

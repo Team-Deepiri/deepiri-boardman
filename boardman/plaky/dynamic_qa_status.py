@@ -385,6 +385,20 @@ async def resolve_github_user_to_plaky_user_id(
     if not login:
         return None
     want = login.casefold()
+
+    # Explicit roster mapping wins: team_assignments member_overrides exists precisely
+    # for accounts the fuzzy matcher cannot bridge (login and Plaky email share nothing).
+    try:
+        from boardman.assignment.config import load_team_assignments
+
+        for m in load_team_assignments().members:
+            gl = (getattr(m, "github_login", "") or "").strip().casefold()
+            mid = (getattr(m, "id", "") or "").strip()
+            if gl and mid and gl == want:
+                return mid
+    except Exception:  # noqa: BLE001 — roster trouble must never break identity resolution
+        pass
+
     c = PlakyClient()
     r = await c.list_workspace_users()
     if not r.get("ok"):

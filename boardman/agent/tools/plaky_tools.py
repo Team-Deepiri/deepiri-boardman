@@ -16,6 +16,7 @@ from boardman.plaky.board_schema import (
     validate_field_values_detailed,
 )
 from boardman.plaky.client import PlakyClient
+from boardman.plaky.field_coercion import coerce_field_values
 from boardman.plaky.name_match import rank_plaky_rows
 from boardman.plaky.task_tag_vocab import (
     canonical_task_priority,
@@ -30,6 +31,55 @@ from boardman.services.task_mutations import (
 )
 
 
+def _slim_task(t: dict) -> dict:
+    """Project a Plaky item down to what a PM actually needs, so a full board fits."""
+    if not isinstance(t, dict):
+        return {}
+    out = {
+        "id": t.get("id") or t.get("taskId"),
+        "title": t.get("title") or t.get("name"),
+        "status": t.get("status"),
+    }
+    people: list = []
+    for f in t.get("fields") or []:
+        if not isinstance(f, dict):
+            continue
+        if f.get("type") == "PERSON":
+            v = f.get("value") or {}
+            users = v.get("assignedUsers") if isinstance(v, dict) else None
+            if users:
+                people.append({"field": f.get("title") or f.get("key"), "users": users})
+        elif f.get("type") == "STATUS" and not out.get("status"):
+            out["status"] = f.get("value")
+    if people:
+        out["assignees"] = people
+    return {k: v for k, v in out.items() if v not in (None, "", [])}
+
+
+def _envelope(payload: dict, items: list, *, limit: int = 60) -> str:
+    """Serialize a list result with an explicit count envelope.
+
+    A raw ``json.dumps(...)[:12000]`` cut mid-object and handed the model invalid JSON with
+    no signal that anything was missing — that is how 13 of 37 board items got reported as
+    the whole board. Trim by ITEM COUNT and always state returned/total.
+    """
+    shown = [_slim_task(t) for t in items[:limit]]
+    body = {
+        "ok": payload.get("ok"),
+        "message": payload.get("message"),
+        "returned": len(shown),
+        "total": len(items),
+        "truncated": len(items) > len(shown),
+        "tasks": shown,
+    }
+    if body["truncated"]:
+        body["note"] = (
+            f"Showing {len(shown)} of {len(items)} items. Do NOT state that something is "
+            f"absent from the board based on this partial list."
+        )
+    return json.dumps(body, default=str)
+
+
 async def _plaky_list_boards() -> str:
     """Return all boards (id + name) from Plaky — use when placement is unset or user asks what exists."""
     c = PlakyClient()
@@ -37,12 +87,20 @@ async def _plaky_list_boards() -> str:
     return json.dumps(raw, default=str)[:12000]
 
 
-async def _plaky_list_tasks(status: str = "open", board_id: str = "") -> str:
+async def _plaky_list_tasks(status: str = "all", board_id: str = "") -> str:
+    """List board items. Defaults to ALL statuses: descriptive questions ("what is on this
+    board?") must see finished work too, and the old "open" default silently dropped
+    Completed items, which the model then reported as "nothing is Completed"."""
     from boardman.agent.tool_context import get_context_plaky_board_id
 
     c = PlakyClient()
     bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
     r = await c.get_tasks(status=status, board_id=bid)
+    tasks = r.get("tasks") if isinstance(r, dict) else None
+    if isinstance(tasks, list):
+        payload = dict(r)
+        payload["applied_status_filter"] = status
+        return _envelope(payload, tasks)
     return json.dumps(r, default=str)[:12000]
 
 
@@ -349,6 +407,20 @@ async def _plaky_create_task(
         inf_tags = infer_plaky_field_keys_from_normalized(normalized) if normalized else {}
         repo_k = (cfg.plaky_field_repo or inf_tags.get("repo") or "").strip()
         gh_k = (cfg.plaky_field_github_repos or inf_tags.get("github_repos") or "").strip()
+        # Drop configured keys the board does not actually have. team_assignments.yml is
+        # global but field keys are per-board (e.g. repo tag-2 exists on some boards and not
+        # on 269031), and sending an unknown key makes Plaky reject the whole create with
+        # "Item field doesn't exist" — which surfaced to the user as a failed task creation.
+        if normalized:
+            board_keys = {
+                str(f.get("key") or "").strip()
+                for f in (normalized.get("fields") or [])
+                if isinstance(f, dict) and f.get("key")
+            }
+            if repo_k and repo_k not in board_keys:
+                repo_k = ""
+            if gh_k and gh_k not in board_keys:
+                gh_k = ""
         repo_fmt = plaky_repo_field_value_format(normalized, repo_k)
         gh_fmt = plaky_repo_field_value_format(normalized, gh_k)
         if repo_k == gh_k and repo_k and (repo_fmt == "short" or gh_fmt == "short"):
@@ -386,6 +458,10 @@ async def _plaky_create_task(
             }
             if tag_keys:
                 resolve_repo_tag_field_values_from_schema(merged, normalized, keys=tag_keys)
+        # Resolve near-miss labels ("Feature" on a board whose Type options are
+        # Story/Task/Bug/Research) the same way the GitHub automation does, so the
+        # assistant is not rejected for a word the rest of the service accepts.
+        merged, coercion_notes = coerce_field_values(merged, normalized)
         cleaned, errors, warnings = validate_field_values_detailed(
             merged,
             normalized,
@@ -398,9 +474,10 @@ async def _plaky_create_task(
             return json.dumps(
                 {
                     "ok": False,
-                    "message": "field_values_json contains invalid keys/values for board schema",
+                    "message": "; ".join(errors),
                     "errors": errors,
                     "warnings": warnings,
+                    "next_step": "Fix the values and call this tool again in this same turn. Do NOT report failure or ask the user to choose - the allowed options are listed here.",
                 },
                 default=str,
             )
@@ -458,6 +535,7 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
             }
             if tag_keys:
                 resolve_repo_tag_field_values_from_schema(parsed, normalized, keys=tag_keys)
+        parsed, coercion_notes = coerce_field_values(parsed, normalized)
         cleaned, errors, warnings = validate_field_values_detailed(
             parsed,
             normalized,
@@ -470,9 +548,10 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
             return json.dumps(
                 {
                     "ok": False,
-                    "message": "fields_json contains invalid keys/values for board schema",
+                    "message": "; ".join(errors),
                     "errors": errors,
                     "warnings": warnings,
+                    "next_step": "Fix the values and call this tool again in this same turn. Do NOT report failure or ask the user to choose - the allowed options are listed here.",
                 },
                 default=str,
             )

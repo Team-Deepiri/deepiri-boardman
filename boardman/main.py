@@ -36,6 +36,24 @@ async def lifespan(app: FastAPI):
             await get_agent_leaky_limiter()
         except Exception as e:
             _log.warning("Agent rate limiter init skipped: %s", e)
+    # Webhook signature posture: empty secret = verification disabled (dev only).
+    ws = (settings.github_webhook_secret or "").strip()
+    if not ws:
+        if settings.testing_live_plaky:
+            _log.info(
+                "Webhook signature verification disabled (fine for TESTING_LIVE_PLAKY local mode)"
+            )
+        else:
+            _log.warning(
+                "GITHUB_WEBHOOK_SECRET is EMPTY — webhook signature verification is DISABLED. "
+                "Anyone who can reach this endpoint can forge GitHub events. Set `openssl rand -hex 32` "
+                "here and on the GitHub webhook before production."
+            )
+    elif len(ws) < 16:
+        _log.warning(
+            "GITHUB_WEBHOOK_SECRET is only %d chars — trivially forgeable. Use `openssl rand -hex 32`.",
+            len(ws),
+        )
     pk = (settings.plaky_api_key or "").strip()
     if pk:
         _log.info("Plaky: API key present (length=%d), base=%s", len(pk), settings.plaky_api_base)
@@ -92,8 +110,21 @@ async def lifespan(app: FastAPI):
         _log.info(
             "Agent Redis cache: AGENT_REDIS_URL is set (API-only; worker should leave it empty)"
         )
+    from boardman.services.github_poller import start_github_poller_if_enabled, stop_github_poller
+
+    start_github_poller_if_enabled()
+    warmer_task = None
+    if settings.qa_github_fit_enabled and (settings.github_pat or "").strip():
+        import asyncio
+
+        from boardman.github.qa_contribution_profile import warm_qa_profiles_loop
+
+        warmer_task = asyncio.create_task(warm_qa_profiles_loop(), name="qa-profile-warmer")
     yield
 
+    if warmer_task is not None:
+        warmer_task.cancel()
+    await stop_github_poller()
     await close_job_queue()
     await aclose_agent_redis()
     await aclose_ollama_http_client()

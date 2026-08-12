@@ -10,6 +10,7 @@ from typing import Any
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage
 
 from boardman.agent.prompts import BOARD_MANAGER_SYSTEM
+from boardman.agent.tool_timing import start_turn, turn_timing, with_timing
 from boardman.agent.tools import build_all_tools
 from boardman.llm.factory import get_chat_model
 from boardman.settings import settings
@@ -43,6 +44,44 @@ def _final_ai_text(messages: list[AnyMessage]) -> str:
             if text:
                 return text
     return ""
+
+
+# "Let me fetch that now." shipped as a FINAL answer is a dead end for the user: the model
+# announced a tool call that never landed. Detect that shape so we can force one more round.
+_PREAMBLE_PATTERNS = (
+    "let me fetch",
+    "let me check",
+    "let me look",
+    "let me pull",
+    "let me get",
+    "i'll fetch",
+    "i will fetch",
+    "i'll check",
+    "i will check",
+    "i'll look",
+    "here's what i'll do",
+    "here is what i'll do",
+    "fetching now",
+    "one moment",
+    "stand by",
+)
+
+
+def _looks_like_unfulfilled_preamble(text: str) -> bool:
+    """True when the reply only PROMISES work instead of delivering it.
+
+    Deliberately conservative: long or structured answers (headings, bullets, numbered
+    findings) are never treated as preamble even if they contain a stray "let me check".
+    """
+    t = (text or "").strip()
+    if not t or len(t) > 600:
+        return False
+    low = t.lower()
+    if not any(p in low for p in _PREAMBLE_PATTERNS):
+        return False
+    # Real answers carry structure or substance; a bare promise carries neither.
+    structured = ("\n- " in t) or ("\n* " in t) or ("\n#" in t) or ("\n1." in t) or ("```" in t)
+    return not structured
 
 
 def _tool_call_records(m: AIMessage) -> list[dict[str, Any]]:
@@ -142,7 +181,8 @@ async def run_tool_agent(
     from langchain.agents import create_agent
 
     llm = get_chat_model()
-    tools = build_all_tools(allow_writes=allow_writes)
+    start_turn()
+    tools = with_timing(build_all_tools(allow_writes=allow_writes))
     verbose = settings.agent_langchain_verbose or logger.isEnabledFor(logging.DEBUG)
     logger.info(
         "LangChain create_agent: %d tools, verbose=%s, provider/model from settings",
@@ -162,7 +202,32 @@ async def run_tool_agent(
         config={"recursion_limit": _recursion_limit()},
     )
     result_messages = result.get("messages", [])
+    logger.info("agent turn tool time: %s", turn_timing())
     out = _final_ai_text(result_messages)
+
+    if _looks_like_unfulfilled_preamble(out):
+        # The turn ended on a promise ("Let me fetch this now.") instead of an answer.
+        # Give it exactly one more round to deliver, using everything it already gathered.
+        logger.info("agent returned an unfulfilled preamble; forcing one completion round")
+        nudge = HumanMessage(
+            content=(
+                "You ended your turn by describing what you were going to do instead of "
+                "answering. Produce the FINAL answer now from the tool results you already "
+                "have. If a tool call is still required, make it now. Do not narrate intent."
+            )
+        )
+        try:
+            result = await graph.ainvoke(
+                {"messages": list(result_messages) + [nudge]},
+                config={"recursion_limit": _recursion_limit()},
+            )
+            retry_messages = result.get("messages", [])
+            retry_out = _final_ai_text(retry_messages)
+            if retry_out and not _looks_like_unfulfilled_preamble(retry_out):
+                out, result_messages = retry_out, retry_messages
+        except Exception as e:  # noqa: BLE001 — keep the original reply if the retry fails
+            logger.warning("preamble completion round failed: %s", e)
+
     logger.info("LangChain agent finished (output length=%d)", len(out))
     text = out or "(No assistant text returned.)"
     if return_trace:
@@ -187,7 +252,8 @@ async def iter_tool_agent(
     from langchain.agents import create_agent
 
     llm = get_chat_model()
-    tools = build_all_tools(allow_writes=allow_writes)
+    start_turn()
+    tools = with_timing(build_all_tools(allow_writes=allow_writes))
     verbose = settings.agent_langchain_verbose or logger.isEnabledFor(logging.DEBUG)
 
     graph = create_agent(

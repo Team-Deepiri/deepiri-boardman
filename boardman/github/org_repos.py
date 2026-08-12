@@ -2,9 +2,21 @@
 
 from __future__ import annotations
 
+import time
+
 import httpx
 
 from boardman.settings import settings
+
+# Org repo listing is a hot path: the agent calls it to resolve repo names on almost every
+# turn, and it costs a full paginated crawl (~1.5s for 57 repos). Repos appear rarely, so a
+# short in-process TTL cache removes that latency without going stale in any practical way.
+_ORG_REPOS_TTL_SECONDS = 600.0
+_org_repos_cache: dict[tuple[str, bool], tuple[float, list[str]]] = {}
+
+
+def clear_org_repos_cache() -> None:
+    _org_repos_cache.clear()
 
 
 def _parse_next_url(link_header: str | None) -> str | None:
@@ -29,6 +41,11 @@ async def fetch_org_repository_full_names(
     token = settings.github_pat
     if not token:
         return []
+
+    cache_key = (org.strip().casefold(), bool(skip_archived))
+    hit = _org_repos_cache.get(cache_key)
+    if hit and hit[0] > time.monotonic():
+        return list(hit[1])
 
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
 
@@ -81,4 +98,7 @@ async def fetch_org_repository_full_names(
                 if names:
                     break
 
-    return sorted(set(names))
+    result = sorted(set(names))
+    if result:
+        _org_repos_cache[cache_key] = (time.monotonic() + _ORG_REPOS_TTL_SECONDS, list(result))
+    return result

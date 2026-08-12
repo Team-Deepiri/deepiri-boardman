@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Sequence
 from typing import Any
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import load_team_assignments
@@ -173,6 +175,74 @@ async def _apply_pr_type_and_assignee(
     return out
 
 
+async def _assign_qa_for_pr(
+    plaky: PlakyClient,
+    *,
+    task_id: str,
+    board_id: str,
+    repo_full: str,
+    pr_number: int,
+    pr_author_login: str = "",
+    task_url: str = "",
+) -> dict[str, Any]:
+    """QA assignment happens HERE — when a PR opens — not at task creation (employer flow).
+
+    Pick via the GitHub-fit algorithm (exclusion list applied), @mention the QA on the PR,
+    request them as reviewer, and write their Plaky profile into the task's QA field.
+    Never overwrites an already-assigned QA.
+    """
+    from boardman.assignment.qa_picker import pick_qa_for_repo as _pick
+    from boardman.github.pr_actions import comment_on_pr, request_reviewers
+    from boardman.plaky.dynamic_qa_status import resolve_qa_assignee_field_key
+
+    out: dict[str, Any] = {}
+    bid = (board_id or "").strip()
+    cfg = load_team_assignments()
+    qa_key = (
+        await resolve_qa_assignee_field_key(bid, cfg.plaky_field_qa)
+        if bid
+        else (cfg.plaky_field_qa or "")
+    )
+    if not qa_key:
+        return {"skipped": "no QA field key resolvable for this board"}
+
+    if bid:
+        current_qa = await _current_person_field_value(plaky, bid, task_id, qa_key)
+        if current_qa:
+            return {"skipped": "qa_already_assigned", "qa_plaky_id": current_qa}
+
+    qid, why = await _pick(repo_full)
+    if not qid:
+        return {"skipped": "no eligible QA", "reason": why}
+
+    member = next((m for m in cfg.members if (m.id or "").strip() == str(qid)), None)
+    qa_login = (getattr(member, "github_login", "") or "").strip() if member else ""
+    qa_display = (getattr(member, "display", "") or "").strip() if member else ""
+
+    res = await update_task_internal(
+        task_id,
+        UpdateTaskInput(qa_plaky_id=str(qid), plaky_board_id=bid or None),
+    )
+    out["plaky_qa"] = {
+        "id": str(qid),
+        "display": qa_display,
+        "ok": res.get("ok"),
+        "reason": why[:220],
+    }
+
+    mention = f"@{qa_login}" if qa_login else (qa_display or "QA")
+    task_ref = task_url or f"Plaky task `{task_id}`"
+    body = (
+        f"{mention} you've been assigned as **QA reviewer** for this PR by Boardman.\n\n"
+        f"Linked task: {task_ref}\n"
+        f"Why you: {why[:300]}"
+    )
+    out["github_comment"] = await comment_on_pr(repo_full, pr_number, body)
+    if qa_login and qa_login.casefold() != (pr_author_login or "").casefold():
+        out["github_reviewer"] = await request_reviewers(repo_full, pr_number, [qa_login])
+    return out
+
+
 async def _maybe_set_needs_qa(
     plaky: PlakyClient,
     task_id: str,
@@ -199,10 +269,12 @@ async def _maybe_set_needs_qa(
 async def _maybe_triage_ambiguous_pr(
     payload: PullRequestEventPayload,
     session: AsyncSession,
+    top_scored: Sequence[Any] | None = None,
 ) -> dict[str, Any] | None:
     """
     PRs with no Fixes/Closes issue link: optional Plaky triage task + QA assignee.
-    Configure under `ambiguous_pr` in team_assignments.yml.
+    Configure under `ambiguous_pr` in team_assignments.yml. Idempotent per PR —
+    reopen/edit events must not create a second triage task.
     """
     cfg = load_team_assignments()
     amb = cfg.ambiguous_pr
@@ -221,6 +293,21 @@ async def _maybe_triage_ambiguous_pr(
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
     full_name = payload.repository.full_name
+
+    prior = await session.execute(
+        select(SyncLog).where(
+            SyncLog.action == "pr_ambiguous_triage",
+            SyncLog.github_repo == repo_name,
+            SyncLog.github_ref == str(pr_number),
+        )
+    )
+    if prior.scalars().first() is not None:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "triage task already created for this PR",
+            "ambiguous_triage": True,
+        }
     title = amb.title_template.format(number=pr_number, repo=repo_name, full_name=full_name)
     description = (
         f"GitHub PR (no linked issue): {pr_url}\n\n"
@@ -228,6 +315,10 @@ async def _maybe_triage_ambiguous_pr(
         "This PR did not reference an issue with `Fixes #` / `Closes #` / `Resolves #`. "
         "Triage: link the right issue, add QA plan, or split work.\n"
     )
+    if top_scored:
+        # Surface the fuzzy pipeline's best guesses so a human can link in one click —
+        # previously these only landed in the SyncLog table where nobody saw them.
+        description += "\n" + format_triage_comment(top_scored) + "\n"
 
     field_values: dict[str, str] = {}
     if amb.assign_qa:
@@ -322,6 +413,21 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                 pull_request=payload.pull_request,
                 repo_full=full_name,
             )
+            pr_user0 = payload.pull_request.user or {}
+            qa_res = await _assign_qa_for_pr(
+                plaky,
+                task_id=mapping.plaky_task_id,
+                board_id=board_id,
+                repo_full=full_name,
+                pr_number=pr_number,
+                pr_author_login=(
+                    str(pr_user0.get("login") or "") if isinstance(pr_user0, dict) else ""
+                ),
+                task_url=mapping.plaky_task_url or "",
+            )
+            _log.info(
+                "PR #%s QA assignment: %s", pr_number, {k: qa_res[k] for k in list(qa_res)[:3]}
+            )
             await _maybe_set_needs_qa(plaky, mapping.plaky_task_id, is_draft, board_id)
 
             log = SyncLog(
@@ -335,6 +441,7 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
             results.append({"issue": issue_num, "task_id": mapping.plaky_task_id})
 
     if not linked_issues:
+        pipe_top: Sequence[Any] | None = None
         run_pipe = settings.pr_linking_pipeline_enabled and await should_run_pipeline(
             payload.pull_request.body
         )
@@ -358,6 +465,7 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                 pr_author_email=pr_author_email,
                 pr_author_name=pr_author_name,
             )
+            pipe_top = pipe.top_scored
             plog = SyncLog(
                 action="pr_link_pipeline",
                 github_repo=repo_name,
@@ -402,6 +510,19 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                     pull_request=payload.pull_request,
                     repo_full=full_name,
                 )
+                qa_res2 = await _assign_qa_for_pr(
+                    plaky,
+                    task_id=pipe.task_id,
+                    board_id=board_id,
+                    repo_full=full_name,
+                    pr_number=pr_number,
+                    pr_author_login=str(pr_author_login or ""),
+                )
+                _log.info(
+                    "PR #%s QA assignment (fuzzy link): %s",
+                    pr_number,
+                    {k: qa_res2[k] for k in list(qa_res2)[:3]},
+                )
                 await _maybe_set_needs_qa(plaky, pipe.task_id, is_draft, board_id)
                 log = SyncLog(
                     action="pr_linked_fuzzy",
@@ -423,13 +544,93 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
 
             await session.commit()
 
-        triage = await _maybe_triage_ambiguous_pr(payload, session)
+        triage = await _maybe_triage_ambiguous_pr(payload, session, top_scored=pipe_top)
         if triage is not None:
             return triage
         return {"ok": True, "skipped": True, "message": "No linked issues found"}
 
     await session.commit()
     return {"ok": True, "linked": results}
+
+
+async def handle_pr_edited(
+    payload: PullRequestEventPayload,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """PR title/body edited: an unlinked PR gets one more shot at linking.
+
+    A PR opened without `Fixes #N` that is later edited to include one (or given a
+    clearer title) re-runs the full opened pipeline. Already-linked PRs are left
+    alone — automation must not churn a link a human may have curated.
+    """
+    repo_name = payload.repository.name
+    pr_number = payload.pull_request.number
+    state = (payload.pull_request.state or "").strip().casefold()
+    if state and state != "open":
+        return {"ok": True, "skipped": True, "message": "PR not open; edit ignored"}
+    task_ids = await distinct_task_ids_for_pr(
+        session, github_repo=repo_name, github_pr_number=pr_number
+    )
+    if task_ids:
+        return {"ok": True, "skipped": True, "message": "PR already linked; edit ignored"}
+    return await handle_pr_opened(payload, session)
+
+
+async def handle_pr_converted_to_draft(
+    payload: PullRequestEventPayload,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """Ready-for-review reversed (converted_to_draft): Needs QA tasks go back to In Progress."""
+    repo_name = payload.repository.name
+    pr_number = payload.pull_request.number
+    task_ids = await distinct_task_ids_for_pr(
+        session, github_repo=repo_name, github_pr_number=pr_number
+    )
+    if not task_ids:
+        return {"ok": True, "skipped": True, "message": "no linked Plaky tasks for this PR"}
+
+    from boardman.repos_config import get_routing_async
+
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
+    bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()
+    if not bid:
+        return {"ok": True, "skipped": True, "message": "no board id for repo"}
+
+    from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+    needs_qa = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
+    in_progress = await resolve_plaky_status_patch(bid, intent="workflow_in_progress")
+    if not needs_qa or not in_progress:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "needs-qa / in-progress status not resolvable from board",
+        }
+    nq_key, nq_id = needs_qa
+    ip_key, ip_id = in_progress
+
+    plaky = PlakyClient()
+    reverted: list[dict[str, Any]] = []
+    for tid in task_ids:
+        current = await _current_status_value(plaky, bid, tid, nq_key)
+        if not current or current != str(nq_id):
+            continue
+        res = await _update_plaky_task_status(tid, ip_id, bid, status_field_key=ip_key)
+        session.add(
+            SyncLog(
+                action="pr_converted_to_draft",
+                github_repo=repo_name,
+                github_ref=str(pr_number),
+                plaky_task_id=tid,
+                detail=json.dumps({"from": "needs_qa", "to_status": ip_id}, default=str),
+            )
+        )
+        reverted.append({"task_id": tid, "plaky": res})
+
+    await session.commit()
+    if reverted:
+        await maybe_enqueue_plaky_reorder_after_task(plaky, reverted[0]["task_id"])
+    return {"ok": True, "updated": reverted, "event": "converted_to_draft"}
 
 
 async def handle_pr_ready_for_review(

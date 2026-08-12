@@ -25,6 +25,17 @@ from boardman.plaky.board_schema import (
 from boardman.plaky.client import PlakyClient
 from boardman.settings import settings
 
+# QA leads/managers who must NEVER be auto-assigned to review PRs (employer requirement).
+# Matching is case-insensitive against member display name AND GitHub login.
+# Override the whole list with `qa_excluded:` in team_assignments.yml.
+DEFAULT_QA_EXCLUDED: tuple[str, ...] = (
+    "Joe Black",
+    "Austin Heitzman",
+    "Devin Gamble",
+    "Sean San",
+    "Nathan Adams",
+)
+
 _log = logging.getLogger(__name__)
 _last_field_sync_by_board: dict[str, float] = {}
 
@@ -69,6 +80,7 @@ class TeamAssignmentsConfig:
     qa_repo_rules: QaRepoRules = field(default_factory=default_qa_repo_rules)
     random_jitter: float = 0.12
     ambiguous_pr: AmbiguousPRConfig = field(default_factory=AmbiguousPRConfig)
+    qa_excluded: list[str] = field(default_factory=lambda: list(DEFAULT_QA_EXCLUDED))
 
 
 def _path() -> Path:
@@ -454,42 +466,70 @@ def load_team_assignments() -> TeamAssignmentsConfig:
         isinstance(x, dict) for x in raw_members
     )
 
-    members: list[TeamMember] = []
-    if has_explicit_members:
+    def _members_from_yaml() -> list[TeamMember]:
+        # Entries inherit member_defaults for anything they omit, same as roster members —
+        # otherwise a terse fallback list ends up with no roles and picks nobody.
+        defaults = data.get("member_defaults") or {}
+        if not isinstance(defaults, dict):
+            defaults = {}
+        parsed: list[TeamMember] = []
         for m in raw_members or []:
             if not isinstance(m, dict):
                 continue
             mid = str(m.get("id") or m.get("plaky_id") or "").strip()
             if not mid:
                 continue
-            roles = m.get("roles") or []
+            roles = m.get("roles") or defaults.get("roles") or []
             if isinstance(roles, str):
                 roles = [roles]
-            globs = m.get("repo_globs") or m.get("repos_globs") or []
+            globs = m.get("repo_globs") or m.get("repos_globs") or defaults.get("repo_globs") or []
             if isinstance(globs, str):
                 globs = [globs]
             explicit = m.get("repos") or m.get("explicit_repos") or []
             if isinstance(explicit, str):
                 explicit = [explicit]
-            qa_tier = _parse_qa_tier(m.get("qa_tier"))
+            qa_tier = _parse_qa_tier(
+                m.get("qa_tier") if m.get("qa_tier") is not None else defaults.get("qa_tier")
+            )
 
             gh_login = str(m.get("github_login") or m.get("github") or "").strip()
 
-            members.append(
+            parsed.append(
                 TeamMember(
                     id=mid,
                     display=str(m.get("display") or m.get("name") or mid),
                     github_login=gh_login,
                     roles=[str(r).lower() for r in roles if r],
-                    tier=str(m.get("tier") or "standard").lower(),
+                    tier=str(m.get("tier") or defaults.get("tier") or "standard").lower(),
                     qa_tier=qa_tier,
                     repo_globs=[str(g).strip() for g in globs if str(g).strip()],
                     explicit_repos=[str(r).strip().lower() for r in explicit if str(r).strip()],
-                    weight=float(m.get("weight", 1.0)),
+                    weight=float(m.get("weight", defaults.get("weight", 1.0))),
                 )
             )
-    elif data.get("use_github_support_team_roster", True) is not False:
+        return parsed
+
+    # Roster precedence:
+    #   default            -> an explicit `members:` list is authoritative (GitHub not called);
+    #   members_fallback_only: true -> the live GitHub support team is the source of truth and
+    #   `members:` is used ONLY when that call fails (PAT missing org read, token pending org
+    #   approval, GitHub down) so QA assignment never goes dark.
+    members: list[TeamMember] = []
+    use_roster = data.get("use_github_support_team_roster", True) is not False
+    fallback_only = bool(data.get("members_fallback_only", False))
+
+    if has_explicit_members and not (fallback_only and use_roster):
+        members = _members_from_yaml()
+    elif use_roster:
         members = _members_from_github_roster(data)
+        if not members and has_explicit_members:
+            members = _members_from_yaml()
+            _log.warning(
+                "team_assignments: GitHub roster unavailable - falling back to the static "
+                "members: list in team_assignments.yml (%d member(s)). Restore the PAT's org "
+                "read access to return to the live roster.",
+                len(members),
+            )
 
     req = data.get("repo_requirements") or {}
     heavy: list[str] = []
@@ -524,6 +564,11 @@ def load_team_assignments() -> TeamAssignmentsConfig:
         if isinstance(t1, list) and t1:
             rules.tier1_only_patterns = [str(x) for x in t1]
 
+    excluded = list(DEFAULT_QA_EXCLUDED)
+    exc_raw = data.get("qa_excluded")
+    if isinstance(exc_raw, list):
+        excluded = [str(x).strip() for x in exc_raw if str(x).strip()]
+
     return TeamAssignmentsConfig(
         plaky_field_engineer=str(keys.get("engineer") or keys.get("assignee_dev") or ""),
         plaky_field_qa=str(keys.get("qa") or keys.get("qa_engineer") or ""),
@@ -539,4 +584,5 @@ def load_team_assignments() -> TeamAssignmentsConfig:
         qa_repo_rules=rules,
         random_jitter=max(0.0, min(jitter, 0.5)),
         ambiguous_pr=ambiguous,
+        qa_excluded=excluded,
     )

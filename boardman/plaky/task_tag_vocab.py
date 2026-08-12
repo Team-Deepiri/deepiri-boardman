@@ -125,20 +125,30 @@ def status_field_patch_candidates(canonical_status: str) -> tuple[str, ...]:
     return _unique_cf(tuple(parts))
 
 
+# Ordered fallbacks per canonical Type. Boards differ (one has "Feature", another still
+# has "Task"; few have "Refactoring"), so each type degrades to the nearest label a board
+# is likely to actually have instead of silently leaving Type unset.
+_TYPE_FALLBACKS: dict[str, tuple[str, ...]] = {
+    "feature": ("story", "task", "enhancement"),
+    "story": ("feature", "task"),
+    "bug": ("issue", "defect", "fix"),
+    "issue": ("bug", "defect"),
+    "refactoring": ("refactor", "chore", "task", "story"),
+    "refactor": ("refactoring", "chore", "task", "story"),
+    "research": ("spike", "investigation", "story", "task"),
+    "documentation": ("docs", "chore", "task", "story"),
+    "chore": ("task", "refactor", "story"),
+    "tests": ("test", "qa", "chore", "task"),
+    "task": ("feature", "story"),
+}
+
+
 def type_field_patch_candidates(canonical_type: str) -> tuple[str, ...]:
     s = (canonical_type or "").strip()
     if not s:
         return ()
     parts: list[str] = [s]
-    cf = s.casefold()
-    if cf == "feature":
-        parts.append("story")
-    elif cf == "story":
-        parts.append("feature")
-    elif cf == "issue":
-        parts.append("bug")
-    elif cf == "bug":
-        parts.append("issue")
+    parts.extend(_TYPE_FALLBACKS.get(s.casefold(), ()))
     return _unique_cf(tuple(parts))
 
 
