@@ -113,6 +113,63 @@ async def _github_list_workspace_repos() -> str:
     return json.dumps({"ok": True, "repos": out})
 
 
+async def _github_read_pull_request(owner_repo: str, pr_number: int) -> str:
+    """Open one PR: description, changed files, review verdicts, CI. Text, not JSON —
+    a merge judgement reads better from the rendered summary than from nested objects."""
+    from boardman.github.pr_review_context import (
+        fetch_pull_request_context,
+        render_pull_request_context,
+    )
+
+    try:
+        number = int(pr_number)
+    except (TypeError, ValueError):
+        return "pr_number must be an integer (the number after '#')."
+    ctx = await fetch_pull_request_context(owner_repo, number)
+    return render_pull_request_context(ctx)
+
+
+async def _github_list_pull_requests(owner_repo: str, state: str = "open") -> str:
+    if not settings.github_pat:
+        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    parsed = parse_owner_repo(owner_repo)
+    if not parsed:
+        return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
+    owner, repo = parsed
+    want = (state or "open").strip().lower()
+    if want not in ("open", "closed", "all"):
+        want = "open"
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        r = await client.get(
+            f"https://api.github.com/repos/{owner}/{repo}/pulls?state={want}&per_page=30",
+            headers={
+                "Authorization": f"Bearer {settings.github_pat}",
+                "Accept": "application/vnd.github+json",
+            },
+            follow_redirects=True,
+        )
+    if r.status_code != 200:
+        return json.dumps({"ok": False, "status": r.status_code, "text": r.text[:300]})
+    prs = r.json()
+    if not isinstance(prs, list):
+        return json.dumps({"ok": False, "message": "unexpected response"})
+    slim = [
+        {
+            "number": p.get("number"),
+            "title": p.get("title"),
+            "author": (
+                (p.get("user") or {}).get("login") if isinstance(p.get("user"), dict) else ""
+            ),
+            "draft": bool(p.get("draft")),
+            "state": p.get("state"),
+            "url": p.get("html_url"),
+        }
+        for p in prs
+        if isinstance(p, dict)
+    ]
+    return json.dumps({"ok": True, "state": want, "returned": len(slim), "pull_requests": slim})
+
+
 async def _github_list_open_issues(owner_repo: str) -> str:
     if not settings.github_pat:
         return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
@@ -358,6 +415,35 @@ def github_list_workspace_repos_tool() -> StructuredTool:
     )
 
 
+def github_read_pull_request_tool() -> StructuredTool:
+    return StructuredTool.from_function(
+        coroutine=_github_read_pull_request,
+        name="github_read_pull_request",
+        description=(
+            "Open ONE pull request and read what a reviewer reads: description, changed files "
+            "with per-file +/- counts, each reviewer's latest verdict, requested reviewers, CI "
+            "check results, commit subjects, and the issues it closes. ALWAYS call this before "
+            "answering anything about a specific PR — 'is #12 safe to merge', 'what does this PR "
+            "change', 'who reviewed it', 'why is CI red'. Never judge a PR from its title alone. "
+            "Sections that GitHub refused are labelled UNAVAILABLE: treat those as unknown, not "
+            "as absent — 'reviews: UNAVAILABLE' does NOT mean nobody approved it. "
+            "Args: owner_repo (e.g. Team-Deepiri/deepiri-boardman), pr_number."
+        ),
+    )
+
+
+def github_list_pull_requests_tool() -> StructuredTool:
+    return StructuredTool.from_function(
+        coroutine=_github_list_pull_requests,
+        name="github_list_pull_requests",
+        description=(
+            "List pull requests for owner/repo with number, title, author and draft flag. "
+            "Args: owner_repo, optional state ('open' default, 'closed', or 'all'). "
+            "Use github_read_pull_request for the contents of a specific one."
+        ),
+    )
+
+
 def github_list_open_issues_tool() -> StructuredTool:
     return StructuredTool.from_function(
         coroutine=_github_list_open_issues,
@@ -450,4 +536,6 @@ def build_github_tools() -> list[StructuredTool]:
         github_fetch_direction_tool(),
         github_fetch_file_tool(),
         github_list_open_issues_tool(),
+        github_list_pull_requests_tool(),
+        github_read_pull_request_tool(),
     ]
