@@ -11,8 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import load_team_assignments
-from boardman.assignment.qa_picker import pick_qa_for_repo
-from boardman.database.models import SyncLog
+from boardman.database.models import PullRequestTaskLink, SyncLog
 from boardman.github.webhooks import PullRequestEventPayload, PullRequestReviewCommentEventPayload
 from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status_id
 from boardman.plaky.client import PlakyClient
@@ -356,28 +355,43 @@ async def _maybe_triage_ambiguous_pr(
     session: AsyncSession,
     top_scored: Sequence[Any] | None = None,
 ) -> dict[str, Any] | None:
-    """
-    PRs with no Fixes/Closes issue link: optional Plaky triage task + QA assignee.
-    Configure under `ambiguous_pr` in team_assignments.yml. Idempotent per PR —
-    reopen/edit events must not create a second triage task.
+    """A PR that matches no existing task gets a REAL task, not a triage stub.
+
+    Employer flow: "if a plaky task already exists for a pr then it connects to that
+    pr, else it makes a new one." The old triage stub had no PullRequestTaskLink, so
+    merge/review/synchronize events could never reach it - a dead card. The created
+    task is a first-class citizen: titled after the PR, typed from branch/labels,
+    assignee = the PR author (they are the one writing the code), status Needs QA
+    (an open non-draft PR IS ready for review), linked, and QA-assigned.
+
+    Board/group: explicit ambiguous_pr.triage_* ids win; otherwise the repo's normal
+    routing. Idempotent per PR - reopen/edit must not create a second task.
     """
     cfg = load_team_assignments()
     amb = cfg.ambiguous_pr
     if not amb.enabled:
         return None
-    bid = (amb.triage_board_id or "").strip()
-    gid = (amb.triage_group_id or "").strip()
-    if not bid or not gid:
-        return {
-            "ok": True,
-            "skipped": True,
-            "message": "ambiguous_pr enabled but triage_board_id / triage_group_id missing",
-        }
 
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
     full_name = payload.repository.full_name
+
+    from boardman.repos_config import get_routing_async
+
+    routing = await get_routing_async(full_name, repo_name, settings.github_org)
+    bid = (amb.triage_board_id or "").strip() or (
+        (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
+    ).strip()
+    gid = (amb.triage_group_id or "").strip() or (
+        (routing.plaky_group_id if routing and routing.plaky_group_id else "") or ""
+    ).strip()
+    if not bid:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "no board resolvable for orphan-PR task (routing and triage ids empty)",
+        }
 
     prior = await session.execute(
         select(SyncLog).where(
@@ -390,65 +404,132 @@ async def _maybe_triage_ambiguous_pr(
         return {
             "ok": True,
             "skipped": True,
-            "message": "triage task already created for this PR",
+            "message": "task already created for this PR",
             "ambiguous_triage": True,
         }
-    title = amb.title_template.format(number=pr_number, repo=repo_name, full_name=full_name)
+
+    from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
+    from boardman.plaky.dynamic_qa_status import (
+        github_actor_payload,
+        resolve_github_user_to_plaky_user_id,
+    )
+    from boardman.services.priority_rules import infer_priority_from_text
+    from boardman.services.task_mutations import CreateTaskInput, create_task_internal
+
+    pr_obj = payload.pull_request
+    head = getattr(pr_obj, "head", None)
+    head_ref = str(head.get("ref") or "") if isinstance(head, dict) else ""
+    labels = pr_label_names(getattr(pr_obj, "labels", None))
+    task_type = infer_task_type_from_pr(head_ref, labels) or "Feature"
+    is_draft = bool(getattr(pr_obj, "draft", False))
+
+    pr_user = getattr(pr_obj, "user", None)
+    author_login = ""
+    author_plaky = ""
+    if isinstance(pr_user, dict):
+        author_login = str(pr_user.get("login") or "").strip()
+        author_plaky = (
+            await resolve_github_user_to_plaky_user_id(github_actor_payload(pr_user)) or ""
+        )
+
+    title = str(getattr(pr_obj, "title", "") or "").strip() or amb.title_template.format(
+        number=pr_number, repo=repo_name, full_name=full_name
+    )
+    body_text = str(getattr(pr_obj, "body", "") or "")
+    priority = infer_priority_from_text(title, body_text, labels)
     description = (
-        f"GitHub PR (no linked issue): {pr_url}\n\n"
-        f"**Repo:** `{full_name}`\n\n"
-        "This PR did not reference an issue with `Fixes #` / `Closes #` / `Resolves #`. "
-        "Triage: link the right issue, add QA plan, or split work.\n"
+        f"Auto-created from GitHub PR (no existing task matched): {pr_url}\n\n"
+        f"**Repo:** `{full_name}`  **Branch:** `{head_ref or '?'}`  "
+        f"**Author:** `{author_login or 'unknown'}`\n\n"
+        "The PR did not reference an issue and fuzzy matching found no confident task, "
+        "so this task now represents that work.\n"
     )
     if top_scored:
-        # Surface the fuzzy pipeline's best guesses so a human can link in one click —
-        # previously these only landed in the SyncLog table where nobody saw them.
-        description += "\n" + format_triage_comment(top_scored) + "\n"
+        description += "\nClosest existing candidates considered:\n" + format_triage_comment(
+            top_scored
+        )
 
-    field_values: dict[str, str] = {}
-    if amb.assign_qa:
-        qid, _ = await pick_qa_for_repo(full_name)
-        if qid and cfg.plaky_field_qa:
-            field_values[cfg.plaky_field_qa] = qid
-
-    plaky = PlakyClient()
-    res = await plaky.create_task(
-        title=title,
-        description=description,
-        priority="medium",
-        board_id=bid,
-        group_id=gid,
-        field_values=field_values if field_values else None,
+    res = await create_task_internal(
+        CreateTaskInput(
+            title=title,
+            description=description,
+            priority=priority,
+            # Non-draft PR = the work is up for review NOW. Draft: status follows the
+            # assignee (author present -> Assigned).
+            status="" if is_draft else "Needs QA",
+            task_type=task_type,
+            repo=full_name,
+            plaky_board_id=bid,
+            plaky_group_id=gid or None,
+            engineer_plaky_id=author_plaky or None,
+            auto_assign_team=False,
+        )
     )
     if not res.get("ok"):
         return {"ok": False, "message": res.get("message"), "ambiguous_triage": True}
 
-    task_id = res.get("task", {}).get("id") or res.get("task", {}).get("taskId")
-    if task_id:
-        triage_comment = (
-            format_pr_notice_with_url(
-                headline="**PR opened (no issue link):**",
-                pr_number=pr_number,
-                pr_url=pr_url,
-            )
-            + "\n\nAutomation created this triage task because the PR did not reference an issue."
-        )
-        await plaky.add_comment(str(task_id), triage_comment, board_id=bid)
+    task_id = str(res.get("task", {}).get("id") or res.get("task", {}).get("taskId") or "")
 
-    log = SyncLog(
-        action="pr_ambiguous_triage",
-        github_repo=repo_name,
-        github_ref=str(pr_number),
-        plaky_task_id=task_id,
-        detail=json.dumps({"pr_url": pr_url, "full_name": full_name}),
+    if task_id:
+        session.add(
+            PullRequestTaskLink(
+                github_repo=repo_name,
+                github_pr_number=pr_number,
+                plaky_task_id=task_id,
+                github_issue_number=0,
+                link_source="pr_task_created",
+            )
+        )
+        plaky = PlakyClient()
+        await plaky.add_comment(
+            task_id,
+            format_pr_notice_with_url(headline="**PR opened:**", pr_number=pr_number, pr_url=pr_url)
+            + "\n\nBoardman created this task from the PR because no existing task matched.",
+            board_id=bid,
+        )
+        if amb.assign_qa:
+            qa_res = await _assign_qa_for_pr(
+                plaky,
+                task_id=task_id,
+                board_id=bid,
+                repo_full=full_name,
+                pr_number=pr_number,
+                pr_author_login=author_login,
+                task_url=str(res.get("task_url") or ""),
+            )
+        else:
+            qa_res = {"skipped": "ambiguous_pr.assign_qa is false"}
+    else:
+        qa_res = {"skipped": "task id missing from create result"}
+
+    session.add(
+        SyncLog(
+            action="pr_ambiguous_triage",
+            github_repo=repo_name,
+            github_ref=str(pr_number),
+            plaky_task_id=task_id,
+            detail=json.dumps(
+                {
+                    "pr_url": pr_url,
+                    "full_name": full_name,
+                    "task_type": task_type,
+                    "assignee": author_plaky,
+                    "qa": qa_res,
+                },
+                default=str,
+            ),
+        )
     )
-    session.add(log)
     await session.commit()
     return {
         "ok": True,
         "ambiguous_triage": True,
+        "created_from_pr": True,
         "plaky_task_id": task_id,
         "plaky_task_url": res.get("task_url"),
+        "task_type": task_type,
+        "assignee_plaky_id": author_plaky,
+        "qa": qa_res,
     }
 
 

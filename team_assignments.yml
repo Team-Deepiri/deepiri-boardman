@@ -66,7 +66,7 @@ repo_requirements:
 selection:
   random_jitter: 0.12
 ambiguous_pr:
-  enabled: false
+  enabled: true   # orphan PRs become real, linked tasks on the repo's routed board
   triage_board_id: ''
   triage_group_id: ''
   assign_qa: true

@@ -647,3 +647,106 @@ async def test_specialist_never_reviews_her_own_pr(monkeypatch) -> None:
     )
     assert res["plaky_qa"]["id"] == "481106", "specialist was assigned to QA her own PR"
     assert updates == [("t1", "481106")]
+
+
+# --- orphan PR -> real linked task -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_orphan_pr_becomes_a_real_linked_task(db_session, monkeypatch) -> None:
+    """Employer: "if a plaky task already exists for a pr then it connects to that pr,
+    else it makes a new one." The old stub had no PullRequestTaskLink, so merge/review
+    events could never reach it - a dead card."""
+    from boardman.database.models import PullRequestTaskLink
+
+    class Amb:
+        enabled = True
+        triage_board_id = ""
+        triage_group_id = ""
+        assign_qa = True
+        title_template = "Triage: PR #{number} - {repo}"
+
+    class Cfg:
+        ambiguous_pr = Amb()
+        plaky_field_qa = "person-6"
+
+    monkeypatch.setattr(ph, "load_team_assignments", lambda: Cfg())
+
+    class Routing:
+        plaky_board_id = "269028"
+        plaky_group_id = "933385"
+
+    async def fake_routing(*a: Any, **kw: Any):
+        return Routing()
+
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+
+    created: list[Any] = []
+
+    async def fake_create(inp):
+        created.append(inp)
+        return {"ok": True, "task": {"id": "task-new"}, "task_url": "https://plaky/task-new"}
+
+    monkeypatch.setattr("boardman.services.task_mutations.create_task_internal", fake_create)
+
+    async def fake_resolve(actor):
+        return "481106"
+
+    monkeypatch.setattr(
+        "boardman.plaky.dynamic_qa_status.resolve_github_user_to_plaky_user_id", fake_resolve
+    )
+
+    comments: list[str] = []
+
+    class FakePlaky:
+        async def add_comment(self, tid, body, **kw):
+            comments.append(body)
+            return {"ok": True}
+
+    monkeypatch.setattr(ph, "PlakyClient", FakePlaky)
+
+    qa_calls: list[str] = []
+
+    async def fake_qa(
+        plaky, *, task_id, board_id, repo_full, pr_number, pr_author_login="", task_url=""
+    ):
+        qa_calls.append(task_id)
+        return {"plaky_qa": {"id": "476634"}}
+
+    monkeypatch.setattr(ph, "_assign_qa_for_pr", fake_qa)
+
+    payload = PullRequestEventPayload(
+        action="opened",
+        pull_request={
+            "number": 90,
+            "title": "Add exponential backoff to the retry handler",
+            "body": "No issue reference here.",
+            "html_url": "https://github.com/o/r/pull/90",
+            "state": "open",
+            "merged": False,
+            "draft": False,
+            "user": {"login": "Blasted-ctrl"},
+            "head": {"ref": "feat/retry-backoff"},
+            "labels": [],
+        },
+        repository={"full_name": "Team-Deepiri/deepiri-boardman", "name": "deepiri-boardman"},
+    )
+
+    res = await ph._maybe_triage_ambiguous_pr(payload, db_session)
+    assert res and res.get("created_from_pr") is True and res.get("plaky_task_id") == "task-new"
+
+    inp = created[0]
+    assert inp.title == "Add exponential backoff to the retry handler"
+    assert inp.status == "Needs QA", "an open non-draft PR IS ready for review"
+    assert inp.task_type == "Feature"  # from the feat/ branch
+    assert inp.engineer_plaky_id == "481106"  # the PR author writes the code
+    assert inp.plaky_board_id == "269028" and inp.plaky_group_id == "933385"
+
+    links = (await db_session.execute(select(PullRequestTaskLink))).scalars().all()
+    assert [(x.github_pr_number, x.plaky_task_id) for x in links] == [(90, "task-new")]
+    assert qa_calls == ["task-new"]
+
+    # Idempotent: the same PR must not create a second task on replay/edit.
+    res2 = await ph._maybe_triage_ambiguous_pr(payload, db_session)
+    assert res2.get("skipped") is True
+    assert len(created) == 1
