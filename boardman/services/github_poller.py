@@ -255,7 +255,10 @@ class GitHubEventPoller:
 
             # Labels land AFTER creation (issue #80: `bug` arrived 75s late; the task said
             # Story indefinitely). Track the label set so a change re-syncs the task Type.
-            labels_sig = tuple(
+            type_name = ""
+            if isinstance(it.get("type"), dict):
+                type_name = str(it["type"].get("name") or "")
+            labels_sig = (type_name,) + tuple(
                 sorted(
                     str((lb or {}).get("name") or "")
                     for lb in (it.get("labels") or [])
@@ -289,6 +292,7 @@ class GitHubEventPoller:
                     "state": state,
                     "user": it.get("user"),
                     "labels": it.get("labels") or [],
+                    "type": it.get("type"),
                 },
                 repository={"full_name": full_name, "name": name},
             )

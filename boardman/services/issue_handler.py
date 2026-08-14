@@ -1,5 +1,6 @@
 import json
 import re
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,14 @@ from boardman.services.priority_rules import infer_priority_from_text
 from boardman.settings import settings
 
 ISSUE_LINK_RE = re.compile(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", re.IGNORECASE)
+
+
+def native_issue_type_name(issue: Any) -> str:
+    """GitHub's native issue Type name ('Feature', 'Bug', ...), '' when unset."""
+    t = getattr(issue, "type", None)
+    if isinstance(t, dict):
+        return str(t.get("name") or "").strip()
+    return ""
 
 
 async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession) -> dict:
@@ -74,8 +83,11 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     task_url = result.get("task_url")
 
     # Explicit defaults on the fresh task: status = NEEDS ASSIGNED (board-resolved) and
-    # Type from issue labels (default Feature — the team retired the 'Task' label).
-    task_type = infer_task_type_from_pr(None, labels) or "Feature"
+    # Type precedence: GitHub's native issue Type (the org uses it; it is the
+    # deliberate categorization act) -> labels -> Feature default.
+    task_type = (
+        native_issue_type_name(payload.issue) or infer_task_type_from_pr(None, labels) or "Feature"
+    )
     status_key: str | None = None
     status_val = ""
     if bid and task_id:
@@ -249,7 +261,9 @@ async def handle_issue_labels_changed(payload: IssueEventPayload, session: Async
         return {"ok": True, "skipped": True, "message": "no Plaky task mapped for this issue"}
 
     labels = issue_label_names(payload.issue.labels)
-    task_type = infer_task_type_from_pr(None, labels) or "Feature"
+    task_type = (
+        native_issue_type_name(payload.issue) or infer_task_type_from_pr(None, labels) or "Feature"
+    )
 
     routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()

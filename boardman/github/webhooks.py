@@ -24,6 +24,9 @@ class GitHubIssue(BaseModel):
     user: Any | None = None
     labels: list[Any] = Field(default_factory=list)
     pull_request: Any | None = None
+    # GitHub's native issue Type (org feature): {"name": "Feature", ...} or None.
+    # PRs never have one — for them, labels are the only typing signal.
+    type: Any | None = None
 
 
 class GitHubPullRequest(BaseModel):
