@@ -63,6 +63,10 @@ async def github_webhook(
         if row:
             row.status = status
             row.note = note
+            # Commit BEFORE the response goes out. Riding on session teardown leaves a
+            # window where GitHub's immediate redelivery reads "processing" and the
+            # duplicate is handled twice — caught live by edge guard E1 under load.
+            await session.commit()
 
     if delivery_id:
         already = (
