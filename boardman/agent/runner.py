@@ -17,10 +17,26 @@ from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# PDF plan step 3: process-level immutable tool registry. build_all_tools is memoized,
+# but with_timing used to re-wrap (and re-run pydantic schema inference) every turn.
+_timed_tools_cache: dict[bool, list] = {}
 
-def _recursion_limit() -> int:
-    n = int(getattr(settings, "agent_recursion_limit", 22) or 22)
-    return max(5, min(80, n))
+
+def _timed_tools(allow_writes: bool) -> list:
+    cached = _timed_tools_cache.get(allow_writes)
+    if cached is None:
+        cached = with_timing(build_all_tools(allow_writes=allow_writes))
+        _timed_tools_cache[allow_writes] = cached
+    return cached
+
+
+def _recursion_limit(allow_writes: bool = True) -> int:
+    """PDF plan step 4: bounded loops. Reads get a tight ceiling (they should finish in
+    a few tool rounds); writes get more headroom; the env override still wins."""
+    n = int(getattr(settings, "agent_recursion_limit", 0) or 0)
+    if n:
+        return max(5, min(80, n))
+    return 16 if allow_writes else 10
 
 
 def _message_content_to_text(content: Any) -> str:
@@ -182,7 +198,7 @@ async def run_tool_agent(
 
     llm = get_chat_model()
     start_turn()
-    tools = with_timing(build_all_tools(allow_writes=allow_writes))
+    tools = _timed_tools(allow_writes)
     verbose = settings.agent_langchain_verbose or logger.isEnabledFor(logging.DEBUG)
     logger.info(
         "LangChain create_agent: %d tools, verbose=%s, provider/model from settings",
@@ -199,7 +215,7 @@ async def run_tool_agent(
     messages: list[BaseMessage] = list(chat_history) + [HumanMessage(content=user_input)]
     result = await graph.ainvoke(
         {"messages": messages},
-        config={"recursion_limit": _recursion_limit()},
+        config={"recursion_limit": _recursion_limit(allow_writes)},
     )
     result_messages = result.get("messages", [])
     logger.info("agent turn tool time: %s", turn_timing())
@@ -219,7 +235,7 @@ async def run_tool_agent(
         try:
             result = await graph.ainvoke(
                 {"messages": list(result_messages) + [nudge]},
-                config={"recursion_limit": _recursion_limit()},
+                config={"recursion_limit": _recursion_limit(allow_writes)},
             )
             retry_messages = result.get("messages", [])
             retry_out = _final_ai_text(retry_messages)
@@ -253,7 +269,7 @@ async def iter_tool_agent(
 
     llm = get_chat_model()
     start_turn()
-    tools = with_timing(build_all_tools(allow_writes=allow_writes))
+    tools = _timed_tools(allow_writes)
     verbose = settings.agent_langchain_verbose or logger.isEnabledFor(logging.DEBUG)
 
     graph = create_agent(
@@ -267,7 +283,7 @@ async def iter_tool_agent(
     async for event in graph.astream_events(
         {"messages": messages},
         version="v2",
-        config={"recursion_limit": _recursion_limit()},
+        config={"recursion_limit": _recursion_limit(allow_writes)},
     ):
         kind = event.get("event")
         if trace_out is not None and kind == "on_chain_end":

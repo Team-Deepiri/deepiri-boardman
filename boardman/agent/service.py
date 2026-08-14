@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -537,6 +538,10 @@ async def iter_agent_chat_sse(
             ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
+    # Latency plan step 1: request id + per-stage wall clocks, logged as one line.
+    _req_id = uuid.uuid4().hex[:8]
+    _t0 = time.monotonic()
+
     # The user's message goes into history BEFORE the LLM phase — a provider failure
     # (the TPM 429 in the live transcript) must not erase what the user said.
     session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
@@ -549,10 +554,12 @@ async def iter_agent_chat_sse(
     # The Plaky create/patch protocol is dead weight when writes are off — the agent cannot
     # act on it. Team policy stays either way so it can still EXPLAIN the conventions.
     intake_extra = TEAM_TASK_POLICY + (TASK_CREATION_WORKFLOW if allow_writes else "")
+    _t_hist = time.monotonic()
     draft_md, plaky_suffix = await asyncio.gather(
         _load_draft_markdown(session, ag.id),
         _plaky_system_suffix(plaky_board_id, plaky_group_id),
     )
+    _t_ctx = time.monotonic()
 
     yield _sse_event({"type": "session", "session_id": sid})
 
@@ -634,6 +641,23 @@ async def iter_agent_chat_sse(
             )
         )
         await session.flush()
+        from boardman.agent.tool_timing import latency_percentiles, record_turn_latency
+
+        _total = time.monotonic() - _t0
+        record_turn_latency(_total)
+        pct = latency_percentiles()
+        logger.info(
+            "agent turn %s: db+persist=%.2fs context=%.2fs llm+tools=%.2fs total=%.2fs "
+            "(rolling n=%s p50=%ss p95=%ss)",
+            _req_id,
+            _t_hist - _t0,
+            _t_ctx - _t_hist,
+            _total - (_t_ctx - _t0),
+            _total,
+            pct["count"],
+            pct["p50"],
+            pct["p95"],
+        )
         yield _sse_event({"type": "done"})
 
     except Exception as e:

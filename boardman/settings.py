@@ -143,11 +143,14 @@ class Settings(BaseSettings):
     # routes (no conversational routing / chat in production; UI is deployed separately).
     boardman_enable_agent_api: bool = True
 
-    agent_max_history: int = 50
+    # PDF plan step 6: a tight recent window; 50 messages of prompt stuffing cost more
+    # tokens than they added context. Raise per-deployment if a flow truly needs more.
+    agent_max_history: int = 16
     agent_require_confirm_bulk: bool = True
     agent_langchain_tools: bool = True
     # LangGraph model↔tool steps cap (each step is often a full LLM call — keep low for latency)
-    agent_recursion_limit: int = 60
+    # 0 = mode-based ceiling (10 read / 16 write, PDF latency plan step 4); set to pin.
+    agent_recursion_limit: int = 0
     # When True, LangChain AgentExecutor prints step traces (noisy; dev only)
     agent_langchain_verbose: bool = False
     prompt_version: str = "2026-04-09"
