@@ -123,7 +123,14 @@ async def github_webhook(
             result = await handle_issue_closed(payload, session)
         elif payload.action == "reopened":
             result = await handle_issue_reopened(payload, session)
-        elif payload.action in ("labeled", "unlabeled"):
+        elif payload.action in (
+            "labeled",
+            "unlabeled",
+            "assigned",
+            "unassigned",
+            "typed",
+            "untyped",
+        ):
             result = await handle_issue_labels_changed(payload, session)
 
     elif isinstance(payload, PullRequestReviewEventPayload):

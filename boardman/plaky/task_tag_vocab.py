@@ -25,6 +25,10 @@ TASK_TYPE_TAGS: tuple[str, ...] = (
     "Issue",
     "Story",
     "Feature",
+    # "Task" is a live option on the boards AND a native GitHub issue Type; without it
+    # here, a GitHub Type of "Task" canonicalized to the Feature default and landed as
+    # Story on boards with no Feature option (live issue #82).
+    "Task",
     "Bug",
     "Refactoring",
     "Documentation",

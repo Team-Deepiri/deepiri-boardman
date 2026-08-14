@@ -258,11 +258,22 @@ class GitHubEventPoller:
             type_name = ""
             if isinstance(it.get("type"), dict):
                 type_name = str(it["type"].get("name") or "")
-            labels_sig = (type_name,) + tuple(
+            assignee_sig = tuple(
                 sorted(
-                    str((lb or {}).get("name") or "")
-                    for lb in (it.get("labels") or [])
-                    if isinstance(lb, dict)
+                    str((a or {}).get("login") or "")
+                    for a in (it.get("assignees") or [])
+                    if isinstance(a, dict)
+                )
+            )
+            labels_sig = (
+                (type_name,)
+                + assignee_sig
+                + tuple(
+                    sorted(
+                        str((lb or {}).get("name") or "")
+                        for lb in (it.get("labels") or [])
+                        if isinstance(lb, dict)
+                    )
                 )
             )
             issue_labels = proc.setdefault("issue_labels", {})
@@ -293,6 +304,7 @@ class GitHubEventPoller:
                     "user": it.get("user"),
                     "labels": it.get("labels") or [],
                     "type": it.get("type"),
+                    "assignees": it.get("assignees") or [],
                 },
                 repository={"full_name": full_name, "name": name},
             )
@@ -591,7 +603,7 @@ class GitHubEventPoller:
                         from boardman.services.issue_handler import handle_issue_reopened
 
                         result = await handle_issue_reopened(parsed, session)
-                    elif parsed.action in ("labeled", "unlabeled"):
+                    elif parsed.action in ("labeled", "unlabeled", "assigned", "unassigned"):
                         from boardman.services.issue_handler import handle_issue_labels_changed
 
                         result = await handle_issue_labels_changed(parsed, session)

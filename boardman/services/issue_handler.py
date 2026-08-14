@@ -20,6 +20,18 @@ from boardman.settings import settings
 ISSUE_LINK_RE = re.compile(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", re.IGNORECASE)
 
 
+def _issue_assignee_login(issue: Any) -> str:
+    """First assignee login on the GitHub issue, '' when unassigned."""
+    rows = list(getattr(issue, "assignees", None) or [])
+    one = getattr(issue, "assignee", None)
+    if isinstance(one, dict) and one not in rows:
+        rows.insert(0, one)
+    for a in rows:
+        if isinstance(a, dict) and str(a.get("login") or "").strip():
+            return str(a["login"]).strip()
+    return ""
+
+
 def native_issue_type_name(issue: Any) -> str:
     """GitHub's native issue Type name ('Feature', 'Bug', ...), '' when unset."""
     t = getattr(issue, "type", None)
@@ -88,12 +100,31 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     task_type = (
         native_issue_type_name(payload.issue) or infer_task_type_from_pr(None, labels) or "Feature"
     )
+    # An issue CREATED with an assignee already has an owner — the board must say
+    # Assigned with that person, not NEEDS ASSIGNED with an empty column (verified
+    # live on issue #83: GitHub said Blasted-ctrl, the board said nobody).
+    engineer_plaky_id = ""
+    assignee_login = _issue_assignee_login(payload.issue)
+    if assignee_login:
+        from boardman.plaky.dynamic_qa_status import (
+            github_actor_payload,
+            resolve_github_user_to_plaky_user_id,
+        )
+
+        engineer_plaky_id = (
+            await resolve_github_user_to_plaky_user_id(
+                github_actor_payload({"login": assignee_login})
+            )
+            or ""
+        )
+
     status_key: str | None = None
     status_val = ""
     if bid and task_id:
         from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
-        rp = await resolve_plaky_status_patch(bid, intent="workflow_needs_assigned")
+        intent = "workflow_assigned" if engineer_plaky_id else "workflow_needs_assigned"
+        rp = await resolve_plaky_status_patch(bid, intent=intent)
         if rp:
             status_key, status_val = rp[0], rp[1]
     if task_id:
@@ -106,6 +137,7 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
                 status_plaky_field_key=status_key,
                 task_type=task_type,
                 priority=priority,
+                engineer_plaky_id=engineer_plaky_id or None,
                 plaky_board_id=bid or None,
             ),
         )
@@ -270,9 +302,31 @@ async def handle_issue_labels_changed(payload: IssueEventPayload, session: Async
 
     from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
 
+    # An assignee added AFTER creation flows too (same race as labels: people assign
+    # from the GitHub UI seconds later). Fill-only: an existing Plaky assignee is
+    # curated state and is never overwritten or cleared from here.
+    engineer_plaky_id = ""
+    assignee_login = _issue_assignee_login(payload.issue)
+    if assignee_login:
+        from boardman.plaky.dynamic_qa_status import (
+            github_actor_payload,
+            resolve_github_user_to_plaky_user_id,
+        )
+
+        engineer_plaky_id = (
+            await resolve_github_user_to_plaky_user_id(
+                github_actor_payload({"login": assignee_login})
+            )
+            or ""
+        )
+
     res = await update_task_internal(
         str(mapping.plaky_task_id),
-        UpdateTaskInput(task_type=task_type, plaky_board_id=bid or None),
+        UpdateTaskInput(
+            task_type=task_type,
+            engineer_plaky_id=engineer_plaky_id or None,
+            plaky_board_id=bid or None,
+        ),
     )
     session.add(
         SyncLog(

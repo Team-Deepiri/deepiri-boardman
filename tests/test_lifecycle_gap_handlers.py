@@ -750,3 +750,104 @@ async def test_orphan_pr_becomes_a_real_linked_task(db_session, monkeypatch) -> 
     res2 = await ph._maybe_triage_ambiguous_pr(payload, db_session)
     assert res2.get("skipped") is True
     assert len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_issue_created_with_assignee_lands_assigned(
+    db_session, monkeypatch, fake_plaky
+) -> None:
+    """Live issue #83: created WITH an assignee, the board said NEEDS ASSIGNED with an
+    empty Assignee column. Status follows the assignee from the very first write."""
+    updates: list[Any] = []
+
+    async def fake_update(task_id, inp):
+        updates.append(inp)
+        return {"ok": True}
+
+    async def fake_routing(*a: Any, **kw: Any):
+        class R:
+            plaky_board_id = "269028"
+            plaky_group_id = "933385"
+            plaky_table = ""
+            category = ""
+            description = ""
+
+        return R()
+
+    async def fake_resolve(actor):
+        return "481106"
+
+    async def fake_rp(bid, *, intent):
+        return ("status-8", "8") if intent == "workflow_assigned" else ("status-8", "0")
+
+    class FakeCreatePlaky(fake_plaky):
+        async def create_task(self, **kw):
+            return {"ok": True, "task": {"id": "t-new"}, "task_url": ""}
+
+    monkeypatch.setattr(ih, "PlakyClient", FakeCreatePlaky)
+    monkeypatch.setattr(ih, "get_routing_async", fake_routing)
+    monkeypatch.setattr("boardman.services.task_mutations.update_task_internal", fake_update)
+    monkeypatch.setattr(
+        "boardman.plaky.dynamic_qa_status.resolve_github_user_to_plaky_user_id", fake_resolve
+    )
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_plaky_status_patch", fake_rp)
+
+    payload = IssueEventPayload(
+        action="opened",
+        issue={
+            "number": 83,
+            "title": "[sync test] retry queue drains too slowly",
+            "body": "b",
+            "html_url": "https://github.com/o/r/issues/83",
+            "labels": [{"name": "bug"}],
+            "assignees": [{"login": "Blasted-ctrl"}],
+        },
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await ih.handle_issue_opened(payload, db_session)
+    assert res.get("ok") is True
+    inp = updates[0]
+    assert inp.engineer_plaky_id == "481106"
+    assert inp.status == "8", "status must be Assigned, not NEEDS ASSIGNED"
+
+
+@pytest.mark.asyncio
+async def test_assignee_added_after_creation_fills_engineer(db_session, monkeypatch) -> None:
+    from boardman.services.issue_handler import handle_issue_labels_changed
+
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=90, plaky_task_id="t-90"))
+    await db_session.flush()
+
+    async def fake_routing(*a: Any, **kw: Any):
+        return None
+
+    monkeypatch.setattr(ih, "get_routing_async", fake_routing)
+
+    async def fake_resolve(actor):
+        return "476634"
+
+    monkeypatch.setattr(
+        "boardman.plaky.dynamic_qa_status.resolve_github_user_to_plaky_user_id", fake_resolve
+    )
+    calls: list[Any] = []
+
+    async def fake_update(task_id, inp):
+        calls.append((task_id, inp.engineer_plaky_id, inp.task_type))
+        return {"ok": True}
+
+    monkeypatch.setattr("boardman.services.task_mutations.update_task_internal", fake_update)
+
+    payload = IssueEventPayload(
+        action="assigned",
+        issue={
+            "number": 90,
+            "title": "t",
+            "html_url": "u",
+            "labels": [{"name": "bug"}],
+            "assignees": [{"login": "sergiovargas111"}],
+        },
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await handle_issue_labels_changed(payload, db_session)
+    assert res.get("event") == "issue_labels_synced"
+    assert calls == [("t-90", "476634", "Bug")]
