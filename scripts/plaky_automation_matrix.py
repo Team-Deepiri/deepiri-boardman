@@ -216,6 +216,29 @@ async def run_once(*, keep: bool) -> tuple[int, int, list[str]]:
         check("5c  fuzzy-linked PR -> Needs QA", f.get("Status"), "Needs QA")
         check("5d  fuzzy-linked PR -> QA assigned", bool(f.get("QA Engineer Assigned")), "True")
 
+        # Close the fuzzy PR unmerged so the rest of the matrix runs with ONE open PR
+        # (multi-PR merge gating is E3's job). Close-without-merge -> In Progress.
+        await _post(
+            c,
+            "pull_request",
+            f"mx-{n}-fuzzy-close",
+            {
+                "action": "closed",
+                "pull_request": pr(
+                    number=fuzzy_pr,
+                    state="closed",
+                    merged=False,
+                    html_url=f"https://github.com/{REPO['full_name']}/pull/{fuzzy_pr}",
+                ),
+                "repository": REPO,
+            },
+        )
+        check(
+            "5e  fuzzy PR closed unmerged -> In Progress",
+            (await _status(task_id, "In Progress")).get("Status"),
+            "In Progress",
+        )
+
         # ---- PR opens as DRAFT: QA assigned, but NOT moved to Needs QA -------
         await _post(
             c,
@@ -237,7 +260,8 @@ async def run_once(*, keep: bool) -> tuple[int, int, list[str]]:
         from boardman.assignment.config import load_team_assignments
 
         cfg = load_team_assignments()
-        qa = next((m for m in cfg.members if str(m.id) in {str(x) for x in qa_ids}), None)
+        pool = list(cfg.members) + list(getattr(cfg, "fallback_members", []) or [])
+        qa = next((m for m in pool if str(m.id) in {str(x) for x in qa_ids}), None)
         qa_login = (getattr(qa, "github_login", "") or "") if qa else ""
         check(
             "9  QA is not an excluded lead",

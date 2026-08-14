@@ -953,19 +953,58 @@ async def handle_pr_closed_without_merge(
     payload: PullRequestEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
+    """Withdraw the link; if that was the task's LAST open PR, review is over.
+
+    A task parked at Needs QA / In QA with zero open PRs is a lie on the board — there
+    is nothing left to review. Revert those (and only those) to In Progress; verdicts
+    like QA Verified/Rejected and terminal states are left alone.
+    """
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
+    task_ids = await distinct_task_ids_for_pr(
+        session, github_repo=repo_name, github_pr_number=pr_number
+    )
     rows = await mark_pr_withdrawn(session, github_repo=repo_name, github_pr_number=pr_number)
+
+    reverted: list[dict[str, Any]] = []
+    if task_ids:
+        from boardman.repos_config import get_routing_async
+
+        routing = await get_routing_async(
+            payload.repository.full_name, repo_name, settings.github_org
+        )
+        bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()
+        if bid:
+            from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+            in_progress = await resolve_plaky_status_patch(bid, intent="workflow_in_progress")
+            review_vals: set[str] = set()
+            for intent in ("workflow_needs_qa", "workflow_needs_qa_again", "workflow_in_qa"):
+                rp = await resolve_plaky_status_patch(bid, intent=intent)
+                if rp:
+                    review_vals.add(str(rp[1]))
+            if in_progress and review_vals:
+                ip_key, ip_val = in_progress
+                plaky = PlakyClient()
+                for tid in task_ids:
+                    if await has_any_open_pr_for_task(session, plaky_task_id=tid):
+                        continue
+                    current = await _current_status_value(plaky, bid, tid, ip_key)
+                    if current not in review_vals:
+                        continue
+                    res = await _update_plaky_task_status(tid, ip_val, bid, status_field_key=ip_key)
+                    reverted.append({"task_id": tid, "plaky": res})
+
     log = SyncLog(
         action="pr_closed_without_merge",
         github_repo=repo_name,
         github_ref=str(pr_number),
-        plaky_task_id=None,
-        detail=json.dumps({"withdrawn_links": len(rows)}),
+        plaky_task_id=task_ids[0] if task_ids else None,
+        detail=json.dumps({"withdrawn_links": len(rows), "reverted": len(reverted)}),
     )
     session.add(log)
     await session.commit()
-    return {"ok": True, "withdrawn_links": len(rows)}
+    return {"ok": True, "withdrawn_links": len(rows), "reverted": reverted}
 
 
 async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSession) -> dict:
