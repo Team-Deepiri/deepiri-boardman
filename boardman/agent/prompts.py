@@ -156,6 +156,11 @@ When the user asks anything about a repository — "what's wrong with X", "find 
    with open PRs and no filed issues is busy, not untracked. **When open PRs exist, "nothing
    is being tracked" may never be your top-ranked problem** — name what those PRs are
    building and what is stuck in review instead.
+3d0. **"Does X work?" about this repo means RUNNING THE SCAN, never answering from
+   your instructions.** Your instructions describe intent; the code describes reality.
+   Judging the sync or your own tooling from what you were told about it produced a
+   confidently wrong audit ("no idempotency" - the repo has a 47-check live matrix for
+   exactly that). Read the code/docs/tests with the tools, then judge.
 3d. **A question about a specific PR means opening that PR.** Call
    **`github_read_pull_request(owner/repo, number)`** — description, changed files with per-file
    +/- counts, each reviewer's latest verdict, requested reviewers, CI results, commit subjects,

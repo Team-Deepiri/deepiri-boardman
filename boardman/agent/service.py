@@ -210,7 +210,10 @@ def _provider_hint(provider: str, category: ErrorCategory, model: str) -> str:
                 "API-key problem - the quota resets within a minute; just re-send the "
                 "message. If it keeps happening, raise the org TPM limit or use a lighter model."
             )
-        return "Check **OPENAI_API_KEY** and model access permissions."
+        return (
+            "Unexpected error (full text above). This is usually transient - re-send the "
+            "message once; if it repeats, the error text is the bug report."
+        )
 
     if provider == "anthropic":
         if category == "auth":
@@ -230,7 +233,10 @@ def _provider_hint(provider: str, category: ErrorCategory, model: str) -> str:
             return "Gemini rate-limited the request. Retry later."
         return "Check **GEMINI_API_KEY** and model availability."
 
-    return "Check LLM provider configuration and credentials."
+    return (
+        "Unexpected error (full text above). Re-send the message once; if it repeats, "
+        "the error text is the bug report."
+    )
 
 
 def _format_llm_failure(exc: BaseException, *, provider: str, model: str) -> str:
