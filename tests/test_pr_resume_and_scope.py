@@ -96,7 +96,10 @@ def _payload() -> PullRequestEventPayload:
 
 
 @pytest.mark.asyncio
-async def test_synchronize_resumes_in_progress_when_rejected(monkeypatch: pytest.MonkeyPatch):
+async def test_synchronize_after_rejection_goes_to_needs_qa_again(monkeypatch: pytest.MonkeyPatch):
+    """A push after QA rejection is a RESUBMISSION (employer: "developer made these
+    changes so it needs QA again"), not a return to In Progress. This board has no
+    'Needs QA Again' option, so it degrades to plain Needs QA (id "4")."""
     fake = _SyncPlaky(current_status_value="7")  # currently QA Rejected
     _wire(monkeypatch, fake)
     engine, factory = await _memory_session_factory()
@@ -113,9 +116,8 @@ async def test_synchronize_resumes_in_progress_when_rejected(monkeypatch: pytest
         await session.commit()
     async with factory() as session:
         out = await handle_pr_synchronized(_payload(), session)
-    assert out.get("event") == "resumed_after_rejection"
-    # Patched status-6 to In Progress (id "2").
-    assert fake.patches and fake.patches[0][1].get("status-6") == "2"
+    assert out.get("event") == "resubmitted_needs_qa_again"
+    assert fake.patches and fake.patches[0][1].get("status-6") == "4"
     await engine.dispose()
 
 

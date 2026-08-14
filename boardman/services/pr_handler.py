@@ -808,8 +808,10 @@ async def handle_pr_synchronized(
     payload: PullRequestEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
-    """New commits pushed (pull_request.synchronize): if a linked task is currently QA-rejected,
-    the developer has resumed work → move it back to In Progress.
+    """New commits pushed (pull_request.synchronize): if a linked task is currently
+    QA-rejected, the developer has addressed the review → the work is RESUBMITTED, not
+    merely resumed. Employer: "developer made these changes so it needs QA again."
+    Boards without a 'Needs QA Again' option degrade to 'Needs QA'.
     """
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
@@ -830,15 +832,17 @@ async def handle_pr_synchronized(
     from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
     rejected = await resolve_plaky_status_patch(bid, intent="github_pr_review_changes_requested")
-    in_progress = await resolve_plaky_status_patch(bid, intent="workflow_in_progress")
-    if not rejected or not in_progress:
+    target = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa_again")
+    if not target:
+        target = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
+    if not rejected or not target:
         return {
             "ok": True,
             "skipped": True,
-            "message": "qa-rejected / in-progress status not resolvable from board",
+            "message": "qa-rejected / needs-qa status not resolvable from board",
         }
     rej_key, rej_id = rejected
-    ip_key, ip_id = in_progress
+    ip_key, ip_id = target
 
     plaky = PlakyClient()
     resumed: list[dict[str, Any]] = []
@@ -849,7 +853,7 @@ async def handle_pr_synchronized(
         res = await _update_plaky_task_status(tid, ip_id, bid, status_field_key=ip_key)
         session.add(
             SyncLog(
-                action="pr_resumed_in_progress",
+                action="pr_resubmitted_needs_qa_again",
                 github_repo=repo_name,
                 github_ref=str(pr_number),
                 plaky_task_id=tid,
@@ -861,7 +865,7 @@ async def handle_pr_synchronized(
     await session.commit()
     if resumed:
         await maybe_enqueue_plaky_reorder_after_task(plaky, resumed[0]["task_id"])
-    return {"ok": True, "updated": resumed, "event": "resumed_after_rejection"}
+    return {"ok": True, "updated": resumed, "event": "resubmitted_needs_qa_again"}
 
 
 async def handle_pr_closed_without_merge(
