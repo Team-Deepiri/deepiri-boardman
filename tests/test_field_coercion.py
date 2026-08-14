@@ -12,6 +12,8 @@ confidence.
 
 from __future__ import annotations
 
+import pytest
+
 from boardman.plaky.field_coercion import coerce_field_values
 
 BOARD = {
@@ -140,3 +142,60 @@ def test_small_context_is_not_marked_truncated() -> None:
 
     data = json.loads(_budget_json({"ok": True, "repo": "o/r", "readme_md": "short"}))
     assert "truncated_fields" not in data
+
+
+# --- batch-create dedupe ------------------------------------------------------------
+
+
+def test_title_matching_catches_rewordings() -> None:
+    from boardman.agent.tools.plaky_tools import _titles_match
+
+    assert _titles_match(
+        "Ship Plaky→GitHub bidirectional sync", "Ship Plaky - GitHub bidirectional sync"
+    )
+    assert _titles_match(
+        "Implement automated weekly scan and norozo summary",
+        "Implement the automated weekly scan + norozo summary",
+    )
+    assert not _titles_match("Fix login bug", "Add dark mode")
+    assert not _titles_match("Fix bug", "Fix bug in retry")  # short titles: exact only
+
+
+@pytest.mark.asyncio
+async def test_batch_create_skips_existing_tasks(monkeypatch) -> None:
+    """The demo created tasks that were already on the board. The tool now checks the
+    board ONCE and answers 'already exists, here it is' instead of burying the original."""
+    import json as _json
+
+    from boardman.agent.tools import plaky_tools as pt
+
+    class FakePlaky:
+        async def get_tasks(self, board_id=None, status="all"):
+            return {"tasks": [{"id": "7116261", "name": "Ship Plaky→GitHub bidirectional sync"}]}
+
+    monkeypatch.setattr(pt, "PlakyClient", FakePlaky)
+
+    created: list[str] = []
+
+    async def fake_create(**kw):
+        created.append(kw["title"])
+        return _json.dumps({"ok": True, "task": {"id": "9999"}, "task_url": "https://x/9999"})
+
+    monkeypatch.setattr(pt, "_plaky_create_task", fake_create)
+
+    out = _json.loads(
+        await pt._plaky_create_tasks(
+            _json.dumps(
+                [
+                    {"title": "Ship Plaky - GitHub bidirectional sync"},
+                    {"title": "A genuinely new task about caching"},
+                ]
+            ),
+            board_id="269028",
+        )
+    )
+    assert out["already_existed_count"] == 1
+    assert out["created_count"] == 1
+    assert created == ["A genuinely new task about caching"]
+    assert "Already on the board" in out["receipt_markdown"]
+    assert out["receipt_markdown"].startswith("1.)")

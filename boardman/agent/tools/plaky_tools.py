@@ -669,6 +669,26 @@ async def _plaky_link_prs(task_id: str, pr_urls: str, board_id: str = "") -> str
     return json.dumps(r2, default=str)
 
 
+def _normalize_title(t: str) -> str:
+    import re as _re
+
+    return " ".join(_re.sub(r"[^a-z0-9 ]+", " ", (t or "").casefold()).split())
+
+
+def _titles_match(a: str, b: str) -> bool:
+    """Same task in different words: exact normalized match, or heavy token overlap."""
+    na, nb = _normalize_title(a), _normalize_title(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    ta, tb = set(na.split()), set(nb.split())
+    if len(ta) < 3 or len(tb) < 3:
+        return False
+    inter = len(ta & tb)
+    return inter / max(1, len(ta | tb)) >= 0.75
+
+
 async def _plaky_create_tasks(
     tasks_json: str,
     board_id: str = "",
@@ -702,6 +722,20 @@ async def _plaky_create_tasks(
             }
         )
 
+    # Duplicate guard: the board is the source of truth. Creating "Ship bidirectional
+    # sync" when that card already exists buries the real one - fetch existing titles
+    # ONCE and skip matches, pointing at the existing card instead.
+    from boardman.agent.tool_context import get_context_plaky_board_id
+
+    existing: list[dict[str, Any]] = []
+    dedupe_bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip()
+    if dedupe_bid:
+        try:
+            listing = await PlakyClient().get_tasks(board_id=dedupe_bid, status="all")
+            existing = [t for t in (listing.get("tasks") or []) if isinstance(t, dict)]
+        except Exception:
+            existing = []  # dedupe is best-effort; creation must not die on a listing blip
+
     # Plaky's create endpoint is ~0.2s solo but shapes concurrent bursts hard (measured
     # 2.5-11.8s per POST at 5-way). Two lanes with a 0.3s stagger measured fastest
     # (12.9s for 5 vs 17.8s at 5-way). QA is NOT picked here (auto_assign_team defaults
@@ -715,6 +749,19 @@ async def _plaky_create_tasks(
                 "title": str((row or {}).get("title") or ""),
                 "message": "title is required",
             }
+        for ex in existing:
+            ex_title = str(ex.get("name") or ex.get("title") or "")
+            if _titles_match(str(row["title"]), ex_title):
+                ex_id = str(ex.get("id") or "")
+                return {
+                    "ok": True,
+                    "already_exists": True,
+                    "title": row["title"],
+                    "existing_title": ex_title,
+                    "task_id": ex_id,
+                    "task_url": f"https://app.plaky.com/task/{ex_id}" if ex_id else "",
+                    "message": "",
+                }
         fv = row.get("field_values")
         # Capped lane stagger AFTER validation: spreads burst arrival without making a
         # 20-row batch's tail idle for seconds, and invalid rows fail instantly.
@@ -768,25 +815,34 @@ async def _plaky_create_tasks(
         )
         for i, r in enumerate(raw_results)
     ]
-    created = [r for r in results if r.get("ok")]
+    created = [r for r in results if r.get("ok") and not r.get("already_exists")]
+    skipped_existing = [r for r in results if r.get("already_exists")]
     failed = [r for r in results if not r.get("ok")]
+    # Numbered receipt cards, one per input row — built from results ALONE so a
+    # malformed row still gets a visible failure card instead of vanishing from the
+    # receipt while counting in failed_count.
     cards: list[str] = []
-    for src, r in zip(rows, results, strict=False):
-        if not isinstance(src, dict):
-            continue
-        line = f"**{r.get('title')}**"
-        if r.get("ok"):
-            meta = (
-                f"Status **NEEDS ASSIGNED** · Priority **{str(src.get('priority') or 'Medium')}**"
+    for i, r in enumerate(results, start=1):
+        head = f"{i}.) **{r.get('title')}**"
+        link = f" · [open in Plaky]({r['task_url']})" if r.get("task_url") else ""
+        if r.get("already_exists"):
+            cards.append(
+                f"{head}\n    Already on the board as **{r.get('existing_title')}** — "
+                f"not re-created{link}"
             )
-            link = f" · [open in Plaky]({r['task_url']})" if r.get("task_url") else ""
-            cards.append(f"{line}\n{meta} · QA assigned at PR time{link}")
+        elif r.get("ok"):
+            bits = []
+            if r.get("default_status_applies", True):
+                bits.append("Status **NEEDS ASSIGNED**")
+            bits.append(f"Priority **{r.get('priority') or 'Medium'}**")
+            cards.append(f"{head}\n    {' · '.join(bits)} · QA assigned at PR time{link}")
         else:
-            cards.append(f"{line}\n⚠ FAILED: {r.get('message')}")
+            cards.append(f"{head}\n    ⚠ FAILED: {r.get('message')}")
     return json.dumps(
         {
             "ok": not failed,
             "created_count": len(created),
+            "already_existed_count": len(skipped_existing),
             "failed_count": len(failed),
             "results": results,
             "receipt_markdown": "\n\n".join(cards),
