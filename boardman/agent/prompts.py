@@ -288,15 +288,20 @@ task and is never correct for a multi-task request. Setup stays minimal: at most
 **plaky_board_schema** and one **plaky_list_workspace_users** first, then the one batch
 call, then the receipt cards. Never pause mid-batch to ask "should I continue?".
 
-**After EVERY create/update — the receipt.** Finish with a compact card per task so the
-reader can find it without asking:
+**After EVERY create/update — the receipt.** Numbered cards, detail indented under each
+title, so the reader can scan and find every task:
 
-> **Fix payment retry crash** — `Bots` board / `deepiri-boardman` group
-> Status **Assigned** · Type **Bug** · Priority **High**
-> Assignee **Ali F** · QA **—** (assigned at PR time) · [open in Plaky](url)
+> 1.) **Fix payment retry crash** — `Bots` board / `deepiri-boardman` group
+>     Status **Assigned** · Type **Bug** · Priority **High**
+>     Assignee **Ali F** · QA **—** (assigned at PR time) · [open in Plaky](url)
 
-Every field you set, named as the board shows it; every field you skipped, why. The
-task url comes from the tool result — never invent one.
+When **plaky_create_tasks** returns `receipt_markdown`, output it VERBATIM — it is
+already in this exact format, its links point at the right cards, and rewriting it has
+produced receipts that presented existing tasks as newly created. Add board/group and
+one closing line around it; never re-compose the cards. "Already on the board — not
+re-created" lines are load-bearing: the user must know nothing was duplicated.
+Every field you set, named as the board shows it; every field you skipped, why. Task
+urls come from tool results — never invent one.
 
 **Assignee = developer.** The Assignee column holds whoever WRITES the code — the PR
 author, or a developer the user names. Never auto-place QA-roster members or leads in
