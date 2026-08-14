@@ -665,6 +665,79 @@ async def _plaky_link_prs(task_id: str, pr_urls: str, board_id: str = "") -> str
     return json.dumps(r2, default=str)
 
 
+async def _plaky_create_tasks(
+    tasks_json: str,
+    board_id: str = "",
+    group_id: str = "",
+    auto_assign_team: bool = True,
+) -> str:
+    """Create MANY Plaky tasks in ONE call - concurrent creates, one receipt per task.
+
+    "Create me 5 tasks" used to cost one full LLM round trip PER task (~25-30s each at
+    this prompt size against the org's TPM ceiling) because the model could only emit
+    one create at a time. Batching moves the loop below the model: one round trip, and
+    the creates run concurrently (bounded, so Plaky's rate limit is not stampeded).
+    """
+    import asyncio as _asyncio
+
+    try:
+        rows = json.loads(tasks_json or "[]")
+    except ValueError as e:
+        return json.dumps({"ok": False, "message": f"tasks_json is not valid JSON: {e}"})
+    if not isinstance(rows, list) or not rows:
+        return json.dumps({"ok": False, "message": "tasks_json must be a non-empty JSON array"})
+    if len(rows) > 20:
+        return json.dumps({"ok": False, "message": "at most 20 tasks per call"})
+
+    sem = _asyncio.Semaphore(3)
+
+    async def one(row: Any) -> dict[str, Any]:
+        if not isinstance(row, dict) or not str(row.get("title") or "").strip():
+            return {
+                "ok": False,
+                "title": str((row or {}).get("title") or ""),
+                "message": "title is required",
+            }
+        fv = row.get("field_values")
+        async with sem:
+            raw = await _plaky_create_task(
+                title=str(row["title"]),
+                description=str(row.get("description") or ""),
+                priority=str(row.get("priority") or "Medium"),
+                repo_tag=str(row.get("repo_tag") or ""),
+                board_id=board_id,
+                group_id=group_id,
+                field_values_json=json.dumps(fv) if isinstance(fv, dict) and fv else "",
+                auto_assign_team=auto_assign_team,
+            )
+        try:
+            res = json.loads(raw)
+        except ValueError:
+            return {"ok": False, "title": row["title"], "message": str(raw)[:300]}
+        task = res.get("task") if isinstance(res.get("task"), dict) else {}
+        return {
+            "ok": bool(res.get("ok")),
+            "title": row["title"],
+            "task_id": str(task.get("id") or res.get("task_id") or ""),
+            "task_url": res.get("task_url") or "",
+            "message": "" if res.get("ok") else str(res.get("message") or "")[:300],
+        }
+
+    results = list(await _asyncio.gather(*(one(r) for r in rows)))
+    created = [r for r in results if r.get("ok")]
+    failed = [r for r in results if not r.get("ok")]
+    return json.dumps(
+        {
+            "ok": not failed,
+            "created_count": len(created),
+            "failed_count": len(failed),
+            "results": results,
+            "note": "Report each task to the user as a receipt card (title, board/group, status, type, priority, assignee, link).",
+        },
+        default=str,
+    )
+
+
 async def _plaky_create_subtask(
     parent_task_id: str,
     title: str,
@@ -796,6 +869,19 @@ def build_plaky_tools(*, allow_writes: bool) -> list[StructuredTool]:
     if allow_writes:
         tools.extend(
             [
+                StructuredTool.from_function(
+                    coroutine=_plaky_create_tasks,
+                    name="plaky_create_tasks",
+                    description=(
+                        "Create SEVERAL Plaky tasks in ONE call - the ONLY correct way to create 2+ "
+                        "tasks. Never loop plaky_create_task for a multi-task request. "
+                        "Args: tasks_json = JSON array of {title (required), description?, priority?, "
+                        "repo_tag?, field_values? (object, schema keys)}; board_id?/group_id? apply to "
+                        "all (Current Plaky placement used when omitted); auto_assign_team (default true). "
+                        "Creates run concurrently server-side. Returns one receipt per task "
+                        "(ok, task_id, task_url, message)."
+                    ),
+                ),
                 StructuredTool.from_function(
                     coroutine=_plaky_create_task,
                     name="plaky_create_task",

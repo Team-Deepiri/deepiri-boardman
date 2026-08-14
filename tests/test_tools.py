@@ -185,6 +185,7 @@ _PLAKY_TOOL_NAMES_READONLY = frozenset(
 _PLAKY_TOOL_NAMES_WRITE = frozenset(
     {
         "plaky_create_task",
+        "plaky_create_tasks",
         "plaky_patch_item_fields",
         "plaky_update_task",
         "plaky_add_comment",

@@ -235,6 +235,13 @@ def _public_api_root_from_base_url(base_url: str) -> str | None:
     return None
 
 
+# API roots where PATCH/PUT of item text is known to 405 for every body shape.
+_ITEM_TEXT_PATCH_UNSUPPORTED: dict[str, bool] = {}
+
+# Per-root index of the single-field PATCH body shape that last succeeded, so each
+# create does not rediscover it by collecting 400s.
+_FIELD_PATCH_SHAPE_HINT: dict[str, int] = {}
+
 # Board -> space map shared by every PlakyClient in the process. See
 # resolve_space_for_board for why this cannot be per-instance.
 _SPACE_CACHE: dict[str, str] = {}
@@ -765,6 +772,12 @@ class PlakyClient:
         root = self._public_root()
         if not root:
             return {"ok": False, "message": "v1/public base URL required"}
+        if _ITEM_TEXT_PATCH_UNSUPPORTED.get(root):
+            return {
+                "ok": False,
+                "skipped": True,
+                "message": "item text patch unsupported (learned)",
+            }
         sid = await self.resolve_space_for_board(board_id.strip())
         if not sid:
             return {"ok": False, "message": "Could not resolve space for board"}
@@ -779,18 +792,27 @@ class PlakyClient:
             {"fields": {"name": title, "description": description}},
         ]
 
-        async with shared_plaky_client() as client:
-            for method in ("PATCH", "PUT"):
-                for body in bodies:
-                    r = await _request_with_rate_limit_retry(
-                        client, method, base, headers=hdr, json=body
-                    )
-                    if r.status_code in (200, 201, 204):
-                        return {
-                            "ok": True,
-                            "status": r.status_code,
-                            "mode": f"{method} {list(body.keys())[0]}",
-                        }
+        if not _ITEM_TEXT_PATCH_UNSUPPORTED.get(root):
+            all_method_not_allowed = True
+            async with shared_plaky_client() as client:
+                for method in ("PATCH", "PUT"):
+                    for body in bodies:
+                        r = await _request_with_rate_limit_retry(
+                            client, method, base, headers=hdr, json=body
+                        )
+                        if r.status_code in (200, 201, 204):
+                            return {
+                                "ok": True,
+                                "status": r.status_code,
+                                "mode": f"{method} {list(body.keys())[0]}",
+                            }
+                        if r.status_code != 405:
+                            all_method_not_allowed = False
+            if all_method_not_allowed:
+                # This API version has no item text endpoint. Remember per process and
+                # stop paying 10 requests per create to rediscover it; the board-field
+                # fallback below still gets its chance.
+                _ITEM_TEXT_PATCH_UNSUPPORTED[root] = True
 
         # Some boards expose title/description as item fields with board-specific keys.
         title_fields: list[str] = []
@@ -1248,6 +1270,43 @@ class PlakyClient:
         base = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
         hdr = _headers(self.api_key)
 
+        # Resolve option LABELS to option ids up front from the cached schema. The API
+        # only accepts ids for select fields; probing label variants against the wire
+        # cost up to 10 requests per field on every create (profiled live).
+        try:
+            from boardman.plaky.board_schema import fetch_board_schema_bundle
+
+            sch = await fetch_board_schema_bundle(board_id.strip())
+            norm = sch.get("normalized") if isinstance(sch, dict) else None
+            rows = {
+                str(f.get("key") or ""): f
+                for f in ((norm or {}).get("fields") or [])
+                if isinstance(f, dict)
+            }
+            resolved: dict[str, Any] = {}
+            for k, v in values.items():
+                row = rows.get(str(k).strip())
+                opts = row.get("options") if isinstance(row, dict) else None
+                out_v = v
+                # ints too: the schema ladder returns digit option ids as int, and an int
+                # value walks the PERSON-shaped candidate ladder first — 10 doomed
+                # requests per select field, plus 6 doomed bulk shapes from the person
+                # coercion. As a plain string id it succeeds on the first request.
+                if isinstance(opts, list) and opts and isinstance(v, (str, int)) and str(v).strip():
+                    vv = str(v).strip().casefold()
+                    for o in opts:
+                        if not isinstance(o, dict):
+                            continue
+                        oid = str(o.get("id") or o.get("key") or "").strip()
+                        lab = str(o.get("name") or o.get("title") or "").strip().casefold()
+                        if oid and (vv == lab or vv == oid.casefold()):
+                            out_v = oid
+                            break
+                resolved[k] = out_v
+            values = resolved
+        except Exception:
+            pass  # schema unavailable: the candidate ladder below still works, just slower
+
         def _bulk_bodies_for(mapping: dict[str, Any]) -> list[dict[str, Any]]:
             """Prefer the OpenAPI flat object shape first; older envelope keys are fallbacks only."""
             entries_kv = [{"key": str(k), "value": val} for k, val in mapping.items()]
@@ -1346,6 +1405,10 @@ class PlakyClient:
                             {"selectedOptionId": val},
                         ]
                         bodies.insert(2, {"text": str(val)})
+                    canonical_shapes = list(bodies)
+                    hint = _FIELD_PATCH_SHAPE_HINT.get(root)
+                    if hint is not None and 0 < hint < len(bodies):
+                        bodies.insert(0, bodies.pop(hint))
                     for body in bodies:
                         r = await _request_with_rate_limit_retry(
                             client, "PATCH", url_single, headers=hdr, json=body
@@ -1353,6 +1416,9 @@ class PlakyClient:
                         last_status = r.status_code
                         last_snip = r.text[:500]
                         if r.status_code in (200, 201, 204):
+                            # Remember the CANONICAL position of the winning shape, not
+                            # its position in the reordered list.
+                            _FIELD_PATCH_SHAPE_HINT[root] = canonical_shapes.index(body)
                             per_ok.append(str(k))
                             hit = True
                             break

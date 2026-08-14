@@ -281,7 +281,12 @@ When the message already has what you need (board name or placement set, title, 
    - if `field_values_json` is provided and `board_id` is known, keys/options match **plaky_board_schema**;
    - if validation fails, explain exactly which keys/values are invalid and ask the user to confirm corrected values.
 
-**Bulk creates (>5 tasks in one request):** Do all setup in the first 2–3 tool calls — one **plaky_board_schema**, one **plaky_list_workspace_users** (if assigning people), one **plaky_save_task_preferences** to store shared field defaults. Then loop straight through **plaky_create_task** for each task without re-fetching the schema or re-resolving users on each iteration. Do **not** pause between tasks to ask "should I continue?" — complete the full set, then report a summary of what was created (count, board, any failures).
+**Creating 2+ tasks = ONE `plaky_create_tasks` call.** Compose the full array (title,
+description, priority, field_values per task) and send it in a single call — the server
+creates them concurrently. Looping `plaky_create_task` costs a full model round trip per
+task and is never correct for a multi-task request. Setup stays minimal: at most one
+**plaky_board_schema** and one **plaky_list_workspace_users** first, then the one batch
+call, then the receipt cards. Never pause mid-batch to ask "should I continue?".
 
 **After EVERY create/update — the receipt.** Finish with a compact card per task so the
 reader can find it without asking:
