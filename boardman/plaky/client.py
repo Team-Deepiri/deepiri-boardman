@@ -1381,9 +1381,10 @@ class PlakyClient:
                         trusted_bulk_keys.add(bk)
 
             per_ok.extend(sorted(trusted_bulk_keys))
-            for k, v in values.items():
-                if str(k).strip() in trusted_bulk_keys:
-                    continue
+
+            async def _patch_one_field(k: Any, v: Any) -> tuple[str, bool, int, str]:
+                """One field's candidate walk. Fields are independent columns — running
+                them concurrently cuts a 3-field create's patch phase to the slowest one."""
                 url_single = f"{base}/fields/{k}"
                 last_status = 0
                 last_snip = ""
@@ -1419,13 +1420,19 @@ class PlakyClient:
                             # Remember the CANONICAL position of the winning shape, not
                             # its position in the reordered list.
                             _FIELD_PATCH_SHAPE_HINT[root] = canonical_shapes.index(body)
-                            per_ok.append(str(k))
                             hit = True
                             break
                     if hit:
                         break
-                if not hit:
-                    per_fail.append({"key": k, "status": last_status, "message": last_snip})
+                return (str(k), hit, last_status, last_snip)
+
+            pending = [(k, v) for k, v in values.items() if str(k).strip() not in trusted_bulk_keys]
+            outcomes = await asyncio.gather(*(_patch_one_field(k, v) for k, v in pending))
+            for key_s, hit, last_status, last_snip in outcomes:
+                if hit:
+                    per_ok.append(key_s)
+                else:
+                    per_fail.append({"key": key_s, "status": last_status, "message": last_snip})
             mode = "bulk_then_per_field" if bulk_last_status is not None else "per_field"
             out: dict[str, Any] = {
                 "ok": len(per_fail) == 0,

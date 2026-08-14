@@ -669,7 +669,7 @@ async def _plaky_create_tasks(
     tasks_json: str,
     board_id: str = "",
     group_id: str = "",
-    auto_assign_team: bool = True,
+    auto_assign_team: bool = False,
 ) -> str:
     """Create MANY Plaky tasks in ONE call - concurrent creates, one receipt per task.
 
@@ -689,9 +689,14 @@ async def _plaky_create_tasks(
     if len(rows) > 20:
         return json.dumps({"ok": False, "message": "at most 20 tasks per call"})
 
-    sem = _asyncio.Semaphore(3)
+    # Plaky's create endpoint is ~0.2s solo but shapes concurrent bursts hard (measured
+    # 2.5-11.8s per POST at 5-way). Two lanes with a 0.3s stagger measured fastest
+    # (12.9s for 5 vs 17.8s at 5-way). QA is NOT picked here (auto_assign_team defaults
+    # False) - employer flow assigns QA at PR time.
+    sem = _asyncio.Semaphore(2)
 
-    async def one(row: Any) -> dict[str, Any]:
+    async def one(row: Any, idx: int = 0) -> dict[str, Any]:
+        await _asyncio.sleep(idx * 0.3)
         if not isinstance(row, dict) or not str(row.get("title") or "").strip():
             return {
                 "ok": False,
@@ -723,16 +728,30 @@ async def _plaky_create_tasks(
             "message": "" if res.get("ok") else str(res.get("message") or "")[:300],
         }
 
-    results = list(await _asyncio.gather(*(one(r) for r in rows)))
+    results = list(await _asyncio.gather(*(one(r, i) for i, r in enumerate(rows))))
     created = [r for r in results if r.get("ok")]
     failed = [r for r in results if not r.get("ok")]
+    cards: list[str] = []
+    for src, r in zip(rows, results):
+        if not isinstance(src, dict):
+            continue
+        line = f"**{r.get('title')}**"
+        if r.get("ok"):
+            meta = (
+                f"Status **NEEDS ASSIGNED** · Priority **{str(src.get('priority') or 'Medium')}**"
+            )
+            link = f" · [open in Plaky]({r['task_url']})" if r.get("task_url") else ""
+            cards.append(f"{line}\n{meta} · QA assigned at PR time{link}")
+        else:
+            cards.append(f"{line}\n⚠ FAILED: {r.get('message')}")
     return json.dumps(
         {
             "ok": not failed,
             "created_count": len(created),
             "failed_count": len(failed),
             "results": results,
-            "note": "Report each task to the user as a receipt card (title, board/group, status, type, priority, assignee, link).",
+            "receipt_markdown": "\n\n".join(cards),
+            "note": "Echo receipt_markdown to the user (adjust only fields you know differ), add ONE closing line. Do not re-compose the receipts from scratch.",
         },
         default=str,
     )

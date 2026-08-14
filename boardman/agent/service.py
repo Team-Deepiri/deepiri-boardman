@@ -141,6 +141,13 @@ def _classify_llm_error(exc: BaseException, *, provider: str) -> ErrorCategory:
     low = str(exc).lower()
     if "not found" in low and "model" in low:
         return "model_missing"
+    # Provider SDK exceptions (openai.RateLimitError etc.) are not httpx errors, so the
+    # transcript's TPM 429 fell through to "unknown" and the user was told to check
+    # their API key — a wrong fix for a full quota.
+    if "rate limit" in low or "rate_limit" in low or "429" in low or "tokens per min" in low:
+        return "rate_limited"
+    if "401" in low or "invalid api key" in low or "incorrect api key" in low:
+        return "auth"
     return "unknown"
 
 
@@ -182,7 +189,11 @@ def _provider_hint(provider: str, category: ErrorCategory, model: str) -> str:
         if category == "model_missing":
             return "Confirm the OpenAI model ID is valid and enabled for your account."
         if category == "rate_limited":
-            return "OpenAI rate-limited the request. Retry later or lower request volume."
+            return (
+                "OpenAI rate-limited the request (tokens-per-minute quota). This is NOT an "
+                "API-key problem - the quota resets within a minute; I retry automatically "
+                "once. If it keeps happening, raise the org TPM limit or use a lighter model."
+            )
         return "Check **OPENAI_API_KEY** and model access permissions."
 
     if provider == "anthropic":
@@ -344,6 +355,11 @@ async def run_agent_chat(
             ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
+    # The user's message goes into history BEFORE the LLM phase: a provider failure
+    # (the TPM 429 in the live transcript) must not erase what the user said — losing
+    # "X is the assignee" and then filing tasks unassigned is worse than the error.
+    session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
+
     # Release the SQLite write lock NOW: the session-row insert/update above would otherwise
     # hold it through the whole (possibly minutes-long) LLM/tool phase, and every concurrent
     # agent turn would die with "database is locked" after the busy timeout.
@@ -445,7 +461,6 @@ async def run_agent_chat(
             extra_system_suffix=draft_md + intake_extra,
         )
 
-    session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
     session.add(
         AgentMessage(
             session_pk=ag.id,
@@ -506,6 +521,10 @@ async def iter_agent_chat_sse(
         if repo and not ag.repo:
             ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
+
+    # The user's message goes into history BEFORE the LLM phase — a provider failure
+    # (the TPM 429 in the live transcript) must not erase what the user said.
+    session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
 
     # Release the SQLite write lock NOW: the session-row insert/update above would otherwise
     # hold it through the whole (possibly minutes-long) LLM/tool phase, and every concurrent
@@ -591,7 +610,6 @@ async def iter_agent_chat_sse(
         assistant_tool_calls_json: str | None = None
         if use_lc and trace_buf:
             assistant_tool_calls_json = _serialize_tool_calls_json(trace_buf)
-        session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
         session.add(
             AgentMessage(
                 session_pk=ag.id,
@@ -606,6 +624,20 @@ async def iter_agent_chat_sse(
     except Exception as e:
         logger.exception("Agent chat stream failed")
         err = _format_llm_failure(e, provider=resolved_provider, model=resolved_model)
+        try:
+            session.add(
+                AgentMessage(
+                    session_pk=ag.id,
+                    role="assistant",
+                    content=(
+                        "(provider failure - the user's message above was NOT answered; "
+                        "act on it now) " + err[:400]
+                    ),
+                )
+            )
+            await session.commit()
+        except Exception:
+            logger.exception("could not persist failure marker")
         yield _sse_event({"type": "error", "message": err})
 
 
