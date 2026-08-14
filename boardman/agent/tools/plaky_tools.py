@@ -560,6 +560,39 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
     c = PlakyClient()
     r = await c.patch_item_field_values(bid, item_id.strip(), parsed)
     out = dict(r) if isinstance(r, dict) else {"result": r}
+
+    # Patch put a person in the engineer/assignee column without a status in the same
+    # request: make Status agree with the Assignee (NEEDS ASSIGNED -> Assigned only).
+    if out.get("ok"):
+        wrote_engineer = False
+        wrote_status = False
+        for f in (normalized or {}).get("fields") or []:
+            if not isinstance(f, dict):
+                continue
+            key = str(f.get("key") or "")
+            if key not in parsed:
+                continue
+            name = str(f.get("name") or "").casefold()
+            ftype = str(f.get("type") or "").upper()
+            # Only the ownership column counts — patching "Reviewer"/"Reporter" person
+            # columns says nothing about who is assigned.
+            if "PERSON" in ftype and any(
+                tok in name for tok in ("assignee", "engineer", "developer", "owner", "dev")
+            ):
+                wrote_engineer = True
+            # Any select-like workflow column counts as an explicit status write, whatever
+            # the board named it ("Status", "State", "Workflow").
+            if ("STATUS" in ftype or "SELECT" in ftype) and any(
+                tok in name for tok in ("status", "state", "workflow")
+            ):
+                wrote_status = True
+        if wrote_engineer and not wrote_status:
+            from boardman.services.task_mutations import bump_status_for_assignee
+
+            bumped = await bump_status_for_assignee(bid, item_id.strip(), c)
+            if bumped:
+                out.update(bumped)
+
     if field_validation_warnings:
         out["field_validation_warnings"] = field_validation_warnings
     return json.dumps(out, default=str)

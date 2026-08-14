@@ -353,17 +353,29 @@ def select_field_patch_pair_from_schema(
             if any(t in ftype_u for t in ("STATUS", "SELECT", "DROPDOWN")) and wants:
                 return (key, value_label_candidates[0])
             continue
-        for opt in options:
-            if not isinstance(opt, dict):
-                continue
-            lab = str(opt.get("name") or "").casefold().strip()
-            if not lab:
-                continue
-            for wc in want_cf:
-                if lab == wc or wc in lab or lab in wc:
-                    val = _option_primary_patch_value(opt)
-                    if val is not None:
-                        return (key, val)
+        # Candidate order is PRIORITY. With options outer, the first board option that
+        # matched ANY candidate won — on a board whose first option is Story, every
+        # ladder ending in 'story' resolved to Story, including 'Research' whose exact
+        # label existed four options later. Candidates outer; exact match beats fuzzy.
+        for wc in want_cf:
+            exact: dict[str, Any] | None = None
+            fuzzy: dict[str, Any] | None = None
+            for opt in options:
+                if not isinstance(opt, dict):
+                    continue
+                lab = str(opt.get("name") or "").casefold().strip()
+                if not lab:
+                    continue
+                if lab == wc:
+                    exact = opt
+                    break
+                if fuzzy is None and (wc in lab or lab in wc):
+                    fuzzy = opt
+            chosen = exact or fuzzy
+            if chosen is not None:
+                val = _option_primary_patch_value(chosen)
+                if val is not None:
+                    return (key, val)
     return None
 
 

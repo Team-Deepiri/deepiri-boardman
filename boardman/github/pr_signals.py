@@ -38,6 +38,9 @@ _TYPE_BY_TOKEN: dict[str, str] = {
     "spike": "Research",
     "story": "Story",
     "issue": "Issue",
+    # GitHub's stock label for feature work — repos that never define custom labels
+    # still use this one, and it inferring nothing left their tasks untyped.
+    "enhancement": "Feature",
 }
 
 # "pause" intent in a comment: pause / paused / pauses / pausing / on hold / on-hold.

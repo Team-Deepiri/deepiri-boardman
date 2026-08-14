@@ -45,7 +45,9 @@ class CreateTaskInput:
     title: str
     description: str = ""
     priority: str = "Medium"
-    status: str = "In Progress"
+    # "" = caller expressed no preference; status then follows the assignee
+    # (engineer -> Assigned, none -> NEEDS ASSIGNED) instead of a hardcoded default.
+    status: str = ""
     task_type: str = "Feature"
     repo: str | None = None
     github_repos: list[str] | None = None
@@ -83,7 +85,7 @@ class CreateSubtaskInput:
     title: str
     description: str = ""
     priority: str = "Medium"
-    status: str = "In Progress"
+    status: str = ""  # "" = follow the assignee, same as CreateTaskInput
     task_type: str = "Feature"
     github_repos: list[str] | None = None
     engineer_plaky_id: str | None = None
@@ -221,8 +223,9 @@ async def _infer_plaky_person_column_keys(
                 ):
                     eng = k
                     break
-        if not qa and person_fields:
-            qa = person_fields[0][0]
+        # No column NAMED qa/quality: do not fall back to the first person column —
+        # that is almost always the Assignee, and writing the QA pick there hands the
+        # task's ownership to the reviewer. An unwritable QA is an honest skip.
         if not eng:
             for k, _ in person_fields:
                 if k != qa:
@@ -455,6 +458,88 @@ def _value_for_comment(value: Any, option_map: dict[Any, str] | None = None) -> 
     return str(value)
 
 
+async def _status_follow_assignee(
+    board_id: str,
+    field_values: dict[str, Any],
+    *,
+    engineer_written: bool,
+    explicit_status: bool,
+) -> dict[str, Any] | None:
+    """Make Status agree with the Assignee at write time.
+
+    Employer rule: "if there's an Assignee in the column, its status is Assigned".
+    A task was being created WITH a developer and still said NEEDS ASSIGNED - the two
+    columns contradicted each other on the board and nobody's workflow moved.
+
+    - engineer written, status not explicitly requested -> Assigned
+    - engineer written, status explicitly the pre-assignment state -> Assigned wins
+      (asking for both an assignee and NEEDS ASSIGNED is a contradiction; the person
+      is the stronger signal)
+    - no engineer, no explicit status -> NEEDS ASSIGNED (creation default)
+    - any other explicit status -> left alone; this never downgrades In Progress etc.
+    """
+    from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+    bid = (board_id or "").strip()
+    if not bid:
+        return None
+    assigned_rp = await resolve_plaky_status_patch(bid, intent="workflow_assigned")
+    needs_rp = await resolve_plaky_status_patch(bid, intent="workflow_needs_assigned")
+    target = assigned_rp if engineer_written else needs_rp
+    if not target:
+        return None
+    sk, sv = target
+    needs_vals = set()
+    if needs_rp:
+        needs_vals.add(str(needs_rp[1]).casefold())
+    needs_vals.add("needs assigned")
+
+    cur = field_values.get(sk)
+    if not explicit_status:
+        # Whatever sits in field_values here came from the canonical DEFAULT ladder,
+        # not from the caller — the assignee-derived status always wins over a default.
+        field_values[sk] = sv
+        return {"status_follows_assignee": {"field": sk, "value": sv}}
+    if engineer_written and cur is not None and str(cur).casefold() in needs_vals:
+        field_values[sk] = sv
+        return {"status_follows_assignee": {"field": sk, "value": sv, "overrode": "needs assigned"}}
+    return None
+
+
+async def bump_status_for_assignee(
+    board_id: str, task_id: str, plaky: PlakyClient | None = None
+) -> dict[str, Any] | None:
+    """If the task currently sits at the pre-assignment status, move it to Assigned.
+
+    For paths that write an engineer onto an EXISTING task (update, raw field patch):
+    read-then-bump, never blind-write — a task already In Progress or deeper must not
+    be dragged back. Returns the patch result, or None when no move was needed.
+    """
+    from boardman.plaky.board_schema import plaky_item_status_id
+    from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+    bid = (board_id or "").strip()
+    tid = (task_id or "").strip()
+    if not bid or not tid:
+        return None
+    assigned_rp = await resolve_plaky_status_patch(bid, intent="workflow_assigned")
+    if not assigned_rp:
+        return None
+    needs_rp = await resolve_plaky_status_patch(bid, intent="workflow_needs_assigned")
+    client = plaky or PlakyClient()
+    info = await client.get_board_item_public(bid, tid)
+    item = info.get("item") if isinstance(info, dict) else None
+    if not item:
+        return None
+    sk, sv = assigned_rp
+    cur = str(plaky_item_status_id(item, sk) or "")
+    needs_val = str(needs_rp[1]) if needs_rp else ""
+    if cur and cur != needs_val:
+        return None  # already past NEEDS ASSIGNED — never downgrade
+    res = await client.patch_item_field_values(bid, tid, {sk: sv})
+    return {"status_follows_assignee": {"field": sk, "value": sv, "ok": res.get("ok")}}
+
+
 async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
     plaky = PlakyClient()
     filters = req.filters if isinstance(req.filters, dict) else {}
@@ -624,6 +709,19 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
             if fk and fv is not None and fk not in field_values:
                 field_values[fk] = fv
 
+    status_follow_note = await _status_follow_assignee(
+        effective_board_id,
+        field_values,
+        engineer_written=bool(eng_apply and engineer_field_key),
+        explicit_status=bool(
+            raw_status
+            or (
+                isinstance(req.field_values, dict)
+                and any(k in req.field_values for k in field_values if str(k).startswith("status"))
+            )
+        ),
+    )
+
     tag_keys = {k.strip() for k in (repo_plaky_key, github_repos_plaky_key) if (k or "").strip()}
     tag_resolution_warnings: list[dict[str, Any]] = []
     if tag_keys and isinstance(schema_normalized, dict):
@@ -645,6 +743,8 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
         )
     if not result.get("ok"):
         return result
+    if status_follow_note:
+        result.update(status_follow_note)
 
     explicit_board_id = (req.plaky_board_id or "").strip()
     created_board_id = _board_id_from_create_result(result)
@@ -790,6 +890,13 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
             fk, fv = pair
             if fk and fv is not None and fk not in field_values:
                 field_values[fk] = fv
+
+    await _status_follow_assignee(
+        board_id,
+        field_values,
+        engineer_written=bool(engineer_plaky_id and engineer_field_key),
+        explicit_status=bool((req.status or "").strip()),
+    )
 
     person_keys = _person_item_field_keys_from_normalized(schema_normalized)
     pri = plaky_create_legacy_priority_param(canon_priority)
@@ -992,6 +1099,16 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
     if update_status_raw and not status_added_to_field_values:
         legacy = await plaky.update_task_fields(task_id, status=update_status_raw)
         ops["legacy_task_fields"] = legacy
+
+    # An engineer landed on the task but the caller asked for no status: make Status
+    # agree with the Assignee (NEEDS ASSIGNED -> Assigned; deeper statuses untouched).
+    if update_engineer and not update_status_raw and board_id:
+        try:
+            bumped = await bump_status_for_assignee(board_id, task_id, plaky)
+            if bumped:
+                ops.update(bumped)
+        except Exception as e:
+            ops["status_follows_assignee"] = {"ok": False, "message": str(e)[:200]}
 
     requested_any = wants_board_patch
     if not requested_any:
