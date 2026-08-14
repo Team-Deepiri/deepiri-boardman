@@ -138,15 +138,30 @@ def _classify_llm_error(exc: BaseException, *, provider: str) -> ErrorCategory:
             return "model_missing"
         return "upstream_http"
 
+    # Provider SDK exceptions (openai.RateLimitError etc.) are not httpx errors, so the
+    # transcript's TPM 429 fell through to "unknown" and the user was told to check
+    # their API key — a wrong fix for a full quota. Use the SDK's own status_code when
+    # present; NEVER match bare digit substrings ("requested 142900 tokens" contains
+    # "429" and would claim a context-length error is a rate limit).
+    st = getattr(exc, "status_code", None)
+    if st is None:
+        st = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(st, int):
+        if st == 429:
+            return "rate_limited"
+        if st in (401, 403):
+            return "auth"
+        if st == 404:
+            return "model_missing"
+        if st == 400:
+            return "bad_request"
+
     low = str(exc).lower()
     if "not found" in low and "model" in low:
         return "model_missing"
-    # Provider SDK exceptions (openai.RateLimitError etc.) are not httpx errors, so the
-    # transcript's TPM 429 fell through to "unknown" and the user was told to check
-    # their API key — a wrong fix for a full quota.
-    if "rate limit" in low or "rate_limit" in low or "429" in low or "tokens per min" in low:
+    if "rate limit" in low or "rate_limit_exceeded" in low or "tokens per min" in low:
         return "rate_limited"
-    if "401" in low or "invalid api key" in low or "incorrect api key" in low:
+    if "invalid api key" in low or "incorrect api key" in low:
         return "auth"
     return "unknown"
 
@@ -191,8 +206,8 @@ def _provider_hint(provider: str, category: ErrorCategory, model: str) -> str:
         if category == "rate_limited":
             return (
                 "OpenAI rate-limited the request (tokens-per-minute quota). This is NOT an "
-                "API-key problem - the quota resets within a minute; I retry automatically "
-                "once. If it keeps happening, raise the org TPM limit or use a lighter model."
+                "API-key problem - the quota resets within a minute; just re-send the "
+                "message. If it keeps happening, raise the org TPM limit or use a lighter model."
             )
         return "Check **OPENAI_API_KEY** and model access permissions."
 
@@ -630,8 +645,8 @@ async def iter_agent_chat_sse(
                     session_pk=ag.id,
                     role="assistant",
                     content=(
-                        "(provider failure - the user's message above was NOT answered; "
-                        "act on it now) " + err[:400]
+                        "(this turn failed with a provider error and produced no answer; "
+                        "the user's previous message is still unhandled) " + err[:400]
                     ),
                 )
             )

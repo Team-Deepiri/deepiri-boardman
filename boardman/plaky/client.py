@@ -238,9 +238,10 @@ def _public_api_root_from_base_url(base_url: str) -> str | None:
 # API roots where PATCH/PUT of item text is known to 405 for every body shape.
 _ITEM_TEXT_PATCH_UNSUPPORTED: dict[str, bool] = {}
 
-# Per-root index of the single-field PATCH body shape that last succeeded, so each
-# create does not rediscover it by collecting 400s.
-_FIELD_PATCH_SHAPE_HINT: dict[str, int] = {}
+# (root, ladder-kind) -> index of the single-field PATCH body shape that last succeeded,
+# so each create does not rediscover it by collecting 400s. Keyed per ladder: the dict
+# and scalar candidate lists differ in length and meaning.
+_FIELD_PATCH_SHAPE_HINT: dict[tuple[str, str], int] = {}
 
 # Board -> space map shared by every PlakyClient in the process. See
 # resolve_space_for_board for why this cannot be per-instance.
@@ -772,12 +773,6 @@ class PlakyClient:
         root = self._public_root()
         if not root:
             return {"ok": False, "message": "v1/public base URL required"}
-        if _ITEM_TEXT_PATCH_UNSUPPORTED.get(root):
-            return {
-                "ok": False,
-                "skipped": True,
-                "message": "item text patch unsupported (learned)",
-            }
         sid = await self.resolve_space_for_board(board_id.strip())
         if not sid:
             return {"ok": False, "message": "Could not resolve space for board"}
@@ -1292,13 +1287,24 @@ class PlakyClient:
                 # value walks the PERSON-shaped candidate ladder first — 10 doomed
                 # requests per select field, plus 6 doomed bulk shapes from the person
                 # coercion. As a plain string id it succeeds on the first request.
-                if isinstance(opts, list) and opts and isinstance(v, (str, int)) and str(v).strip():
+                if isinstance(opts, list) and opts and isinstance(v, str | int) and str(v).strip():
                     vv = str(v).strip().casefold()
                     for o in opts:
                         if not isinstance(o, dict):
                             continue
-                        oid = str(o.get("id") or o.get("key") or "").strip()
-                        lab = str(o.get("name") or o.get("title") or "").strip().casefold()
+                        oid = str(
+                            o.get("id")
+                            or o.get("key")
+                            or o.get("optionId")
+                            or o.get("value")
+                            or o.get("_id")
+                            or ""
+                        ).strip()
+                        lab = (
+                            str(o.get("name") or o.get("title") or o.get("label") or "")
+                            .strip()
+                            .casefold()
+                        )
                         if oid and (vv == lab or vv == oid.casefold()):
                             out_v = oid
                             break
@@ -1406,8 +1412,9 @@ class PlakyClient:
                             {"selectedOptionId": val},
                         ]
                         bodies.insert(2, {"text": str(val)})
+                    ladder = "dict" if isinstance(val, dict) else "scalar"
                     canonical_shapes = list(bodies)
-                    hint = _FIELD_PATCH_SHAPE_HINT.get(root)
+                    hint = _FIELD_PATCH_SHAPE_HINT.get((root, ladder))
                     if hint is not None and 0 < hint < len(bodies):
                         bodies.insert(0, bodies.pop(hint))
                     for body in bodies:
@@ -1417,9 +1424,14 @@ class PlakyClient:
                         last_status = r.status_code
                         last_snip = r.text[:500]
                         if r.status_code in (200, 201, 204):
-                            # Remember the CANONICAL position of the winning shape, not
-                            # its position in the reordered list.
-                            _FIELD_PATCH_SHAPE_HINT[root] = canonical_shapes.index(body)
+                            # Remember the CANONICAL position of the winning shape — but
+                            # never the bare root-object body: Plaky returns 200 for it
+                            # WITHOUT persisting (especially PERSON), and a poisoned hint
+                            # would lead every later patch with a silent no-op shape.
+                            if body is not val:
+                                _FIELD_PATCH_SHAPE_HINT[(root, ladder)] = canonical_shapes.index(
+                                    body
+                                )
                             hit = True
                             break
                     if hit:
@@ -1427,7 +1439,13 @@ class PlakyClient:
                 return (str(k), hit, last_status, last_snip)
 
             pending = [(k, v) for k, v in values.items() if str(k).strip() not in trusted_bulk_keys]
-            outcomes = await asyncio.gather(*(_patch_one_field(k, v) for k, v in pending))
+            field_sem = asyncio.Semaphore(4)
+
+            async def _bounded(k: Any, v: Any) -> tuple[str, bool, int, str]:
+                async with field_sem:
+                    return await _patch_one_field(k, v)
+
+            outcomes = await asyncio.gather(*(_bounded(k, v) for k, v in pending))
             for key_s, hit, last_status, last_snip in outcomes:
                 if hit:
                     per_ok.append(key_s)

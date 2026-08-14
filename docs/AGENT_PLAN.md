@@ -398,3 +398,11 @@ poetry run pytest tests/test_agent_guardrails.py tests/test_tools.py -q
 - **Scheduled reviews**: "Hey, review your board every Monday"
 - **Multiple agents**: Different agents for different repos
 - **AI direction generation**: Ask AI to suggest direction based on repo scan
+## Bulk task creation (Aug 2026)
+
+`plaky_create_tasks` creates up to 20 tasks in ONE tool call (concurrent server-side,
+two lanes + stagger tuned to Plaky's burst shaping). It exists because "create me 5
+tasks" used to cost one full LLM round trip per task. The prompt's bulk-create contract
+mandates it for any 2+ task request; >20 tasks chunk into successive calls. QA is NOT
+assigned at creation (auto_assign_team defaults False — QA is a PR-time concern).
+Receipts come back as `receipt_markdown` the model echoes.

@@ -360,7 +360,6 @@ async def _plaky_create_task(
         get_agent_session_pk,
         get_context_plaky_board_id,
         get_context_plaky_group_id,
-        get_tool_db_session,
     )
 
     bid = board_id.strip() or get_context_plaky_board_id() or None
@@ -385,10 +384,15 @@ async def _plaky_create_task(
             )
         parsed = loaded
 
-    db = get_tool_db_session()
     pk = get_agent_session_pk()
-    if db is not None and pk is not None:
-        draft = await load_task_draft(db, pk)
+    if pk is not None:
+        # A FRESH session per read: the batch tool runs creates on two concurrent lanes,
+        # and SQLAlchemy forbids concurrent operations on one AsyncSession — sharing the
+        # context session here aborted whole batches mid-create under unlucky timing.
+        from boardman.database.session import async_session as _fresh_session
+
+        async with _fresh_session() as _draft_db:
+            draft = await load_task_draft(_draft_db, pk)
         merged = merge_draft_into_field_values(draft, parsed)
     else:
         merged = dict(parsed)
@@ -687,7 +691,16 @@ async def _plaky_create_tasks(
     if not isinstance(rows, list) or not rows:
         return json.dumps({"ok": False, "message": "tasks_json must be a non-empty JSON array"})
     if len(rows) > 20:
-        return json.dumps({"ok": False, "message": "at most 20 tasks per call"})
+        return json.dumps(
+            {
+                "ok": False,
+                "message": (
+                    "at most 20 tasks per call - split the list and call plaky_create_tasks "
+                    "again with the remainder (successive calls are fine; do not fall back "
+                    "to single creates)"
+                ),
+            }
+        )
 
     # Plaky's create endpoint is ~0.2s solo but shapes concurrent bursts hard (measured
     # 2.5-11.8s per POST at 5-way). Two lanes with a 0.3s stagger measured fastest
@@ -696,7 +709,6 @@ async def _plaky_create_tasks(
     sem = _asyncio.Semaphore(2)
 
     async def one(row: Any, idx: int = 0) -> dict[str, Any]:
-        await _asyncio.sleep(idx * 0.3)
         if not isinstance(row, dict) or not str(row.get("title") or "").strip():
             return {
                 "ok": False,
@@ -704,6 +716,9 @@ async def _plaky_create_tasks(
                 "message": "title is required",
             }
         fv = row.get("field_values")
+        # Capped lane stagger AFTER validation: spreads burst arrival without making a
+        # 20-row batch's tail idle for seconds, and invalid rows fail instantly.
+        await _asyncio.sleep(min(idx, 4) * 0.25)
         async with sem:
             raw = await _plaky_create_task(
                 title=str(row["title"]),
@@ -720,19 +735,43 @@ async def _plaky_create_tasks(
         except ValueError:
             return {"ok": False, "title": row["title"], "message": str(raw)[:300]}
         task = res.get("task") if isinstance(res.get("task"), dict) else {}
+        fv_keys = {str(k) for k in fv} if isinstance(fv, dict) else set()
         return {
             "ok": bool(res.get("ok")),
             "title": row["title"],
             "task_id": str(task.get("id") or res.get("task_id") or ""),
             "task_url": res.get("task_url") or "",
+            "priority": str(row.get("priority") or "Medium"),
+            # Only claim the default status when the row did not set its own status or
+            # people - otherwise the receipt could contradict the board.
+            "default_status_applies": (
+                not auto_assign_team
+                and not any(k.startswith(("status", "person")) for k in fv_keys)
+            ),
             "message": "" if res.get("ok") else str(res.get("message") or "")[:300],
         }
 
-    results = list(await _asyncio.gather(*(one(r, i) for i, r in enumerate(rows))))
+    raw_results = await _asyncio.gather(
+        *(one(r, i) for i, r in enumerate(rows)), return_exceptions=True
+    )
+    results = [
+        (
+            r
+            if isinstance(r, dict)
+            else {
+                "ok": False,
+                "title": str(
+                    (rows[i] or {}).get("title") if isinstance(rows[i], dict) else rows[i]
+                )[:80],
+                "message": f"{type(r).__name__}: {r}"[:300],
+            }
+        )
+        for i, r in enumerate(raw_results)
+    ]
     created = [r for r in results if r.get("ok")]
     failed = [r for r in results if not r.get("ok")]
     cards: list[str] = []
-    for src, r in zip(rows, results):
+    for src, r in zip(rows, results, strict=False):
         if not isinstance(src, dict):
             continue
         line = f"**{r.get('title')}**"
@@ -896,7 +935,8 @@ def build_plaky_tools(*, allow_writes: bool) -> list[StructuredTool]:
                         "tasks. Never loop plaky_create_task for a multi-task request. "
                         "Args: tasks_json = JSON array of {title (required), description?, priority?, "
                         "repo_tag?, field_values? (object, schema keys)}; board_id?/group_id? apply to "
-                        "all (Current Plaky placement used when omitted); auto_assign_team (default true). "
+                        "all (Current Plaky placement used when omitted); auto_assign_team defaults "
+                        "FALSE - QA is assigned at PR time per team flow, not at creation. "
                         "Creates run concurrently server-side. Returns one receipt per task "
                         "(ok, task_id, task_url, message)."
                     ),

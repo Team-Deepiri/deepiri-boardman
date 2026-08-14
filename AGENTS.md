@@ -1,7 +1,7 @@
 # deepiri-boardman — agent context
 
 > Machine-oriented project brief. Humans: see [README.md](README.md) and [docs/](docs/).
-> Last verified: 2026-06-05 (PLAN, AGENT_PLAN, NEW_FEATURES, SETUP, DIRECTION reconciled)
+> Last verified: 2026-08-14 (agent tools: plaky_create_tasks batch create added; bulk-create prompt contract updated)
 
 ## Purpose
 
