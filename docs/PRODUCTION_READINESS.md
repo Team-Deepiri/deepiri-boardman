@@ -29,10 +29,14 @@ PR labeled later        -> Type re-syncs (labels only; branch had its chance)
 QA rejects              -> QA Rejected (only the assigned QA can)
 dev pushes after reject -> Needs QA Again (resubmission)
 QA comments             -> In QA (assigned QA counts even off the support roster)
+approval w/ failing CI  -> HELD: task does not read QA Verified while checks are red
+new commits after       -> QA Verified/Rejected invalidated -> Needs QA Again
+  a verdict
 approve / dismiss       -> QA Verified / back to In QA
 merge (last open PR)    -> Completed        close unmerged (last PR) -> In Progress
 issue closed / reopened -> Completed / In Progress
-bug-typed task          -> QA is always Asheen Hameeda (yaml fallback roster)
+no hardcoded QA names   -> exclusion list only (Joe, Austin, Devin, Sean, Nathan,
+                           Hameeda, Andy N); optional qa_bug_specialist ships empty
 ```
 
 Edge guards (all live-verified): duplicate webhook deliveries ignored (status committed
@@ -89,6 +93,7 @@ false with confidence*. The standing protections:
 |---|---|
 | Deterministic fast-lane intent router (PDF plan §2) | biggest remaining speed lever; needs its own tested router — a misroute is worse than 2s |
 | Plaky→GitHub reverse sync | scoped as a task on the board (7116261); loop-prevention design first |
+| ~~Reconciliation~~ | DONE: POST /api/v1/reconcile/{owner}/{repo} walks current open issues/PRs through the idempotent handlers (bounded, repeat-safe) |
 | Rolling history summarization | window of 16 recent messages suffices today |
 | CI latency/quality gate | the p50/p95 metrics now exist to gate on |
 | Bots board vocab gaps | Plaky-admin action, see checklist |

@@ -913,6 +913,7 @@ async def handle_pr_synchronized(
     from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
     rejected = await resolve_plaky_status_patch(bid, intent="github_pr_review_changes_requested")
+    approved = await resolve_plaky_status_patch(bid, intent="github_pr_review_approved")
     target = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa_again")
     if not target:
         target = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
@@ -924,12 +925,24 @@ async def handle_pr_synchronized(
         }
     rej_key, rej_id = rejected
     ip_key, ip_id = target
+    # Each verdict is checked under ITS OWN field key. On every current board both
+    # verdicts live in the one Status column, but if a board ever splits them, reading
+    # only the rejected key would miss a QA Verified task (or falsely match an id
+    # collision). Keys are deduped so the common case stays a single read.
+    stale_checks: dict[str, set[str]] = {rej_key: {str(rej_id)}}
+    if approved:
+        stale_checks.setdefault(approved[0], set()).add(str(approved[1]))
 
     plaky = PlakyClient()
     resumed: list[dict[str, Any]] = []
     for tid in task_ids:
-        current = await _current_status_value(plaky, bid, tid, rej_key)
-        if not current or current != str(rej_id):
+        stale_hit = False
+        for check_key, stale_ids in stale_checks.items():
+            current = await _current_status_value(plaky, bid, tid, check_key)
+            if current and current in stale_ids:
+                stale_hit = True
+                break
+        if not stale_hit:
             continue
         res = await _update_plaky_task_status(tid, ip_id, bid, status_field_key=ip_key)
         session.add(

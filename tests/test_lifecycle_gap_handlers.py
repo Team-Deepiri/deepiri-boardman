@@ -861,3 +861,109 @@ def test_bug_specialist_is_off_by_default() -> None:
     assert DEFAULT_QA_BUG_SPECIALIST == ""
     assert "Asheen Hameeda" in DEFAULT_QA_EXCLUDED
     assert "AndyN-star" in DEFAULT_QA_EXCLUDED
+
+
+@pytest.mark.asyncio
+async def test_approval_with_failing_checks_is_not_verified(db_session, monkeypatch) -> None:
+    """An approval is a verdict on the code, not the build. Red required checks must not
+    let the task read QA Verified."""
+    from boardman.database.models import PullRequestTaskLink
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo="r",
+            github_pr_number=9,
+            plaky_task_id="t1",
+            github_issue_number=0,
+            link_source="auto_link",
+        )
+    )
+    await db_session.flush()
+
+    async def failing(full_name, pr_number):
+        return ["pytest (failure)"]
+
+    monkeypatch.setattr(prh, "_failing_required_checks", failing)
+
+    payload = PullRequestReviewEventPayload(
+        action="submitted",
+        review={"state": "approved", "user": {"login": "sergiovargas111"}},
+        pull_request={"number": 9, "title": "x", "html_url": "u", "state": "open"},
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await prh.handle_pull_request_review(payload, db_session)
+    assert res.get("skipped") is True
+    assert "failing checks" in res.get("message", "")
+    logs = (
+        (
+            await db_session.execute(
+                select(SyncLog).where(SyncLog.action == "approval_held_ci_failing")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(logs) == 1
+
+
+# --- reconciliation ----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_repairs_unmapped_issue_and_skips_healthy(db_session, monkeypatch) -> None:
+    """Reconcile replays current GitHub state through the normal handlers: an open issue
+    with no task gets one; a mapped issue only gets the idempotent metadata sync; a
+    linked PR is left alone. Running it on a healthy repo changes nothing."""
+    from boardman.services import reconcile as rc
+
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=2, plaky_task_id="t-2"))
+    await db_session.flush()
+
+    class FakeResp:
+        def __init__(self, body):
+            self.status_code = 200
+            self._b = body
+
+        def json(self):
+            return self._b
+
+    class FakeClient:
+        async def get(self, url, headers=None):
+            if "/issues?" in url:
+                return FakeResp(
+                    [
+                        {"number": 1, "title": "unmapped", "html_url": "u1", "labels": []},
+                        {"number": 2, "title": "mapped", "html_url": "u2", "labels": []},
+                    ]
+                )
+            return FakeResp(
+                [{"number": 9, "title": "linked pr", "html_url": "u9", "state": "open"}]
+            )
+
+    monkeypatch.setattr(rc, "github_http_client", lambda: FakeClient())
+    monkeypatch.setattr("boardman.settings.settings.github_pat", "t")
+
+    created: list[int] = []
+    resynced: list[int] = []
+
+    async def fake_opened(payload, session):
+        created.append(payload.issue.number)
+        return {"ok": True, "plaky_task_id": "t-new"}
+
+    async def fake_meta(payload, session):
+        resynced.append(payload.issue.number)
+        return {"ok": True, "event": "issue_labels_synced"}
+
+    async def linked(session, *, github_repo, github_pr_number):
+        return ["t-9"]
+
+    monkeypatch.setattr(rc, "handle_issue_opened", fake_opened)
+    monkeypatch.setattr(rc, "handle_issue_labels_changed", fake_meta)
+    monkeypatch.setattr(rc, "distinct_task_ids_for_pr", linked)
+
+    out = await rc.reconcile_repo("o/r", db_session)
+    assert out["ok"] is True
+    assert created == [1], "only the unmapped issue gets a create"
+    assert resynced == [2], "the mapped issue gets the idempotent metadata pass"
+    assert out["tasks_created"] == 1 and out["issues_resynced"] == 1
+    assert out["prs_checked"] == 1 and out["prs_relinked"] == 0

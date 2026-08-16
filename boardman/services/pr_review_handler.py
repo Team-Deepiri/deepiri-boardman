@@ -93,6 +93,50 @@ def _reviewer_plaky_id_from_roster(cfg: TeamAssignmentsConfig, reviewer_login: s
     return None
 
 
+async def _failing_required_checks(full_name: str, pr_number: int) -> list[str]:
+    """Names of failing check runs on the PR head commit, [] when green or unknowable.
+
+    An approval is a verdict on the code, not on the build. If required checks are red,
+    marking the task QA Verified would present broken work as done. API trouble returns
+    [] on purpose: absence of the signal is not evidence of failure.
+    """
+    if not (settings.github_pat or "").strip():
+        return []
+    try:
+        from boardman.github.http import github_http_client
+
+        client = github_http_client()
+        hdr = {
+            "Authorization": f"Bearer {settings.github_pat}",
+            "Accept": "application/vnd.github+json",
+        }
+        r = await client.get(
+            f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}", headers=hdr
+        )
+        if r.status_code != 200:
+            return []
+        sha = str(((r.json().get("head") or {}) or {}).get("sha") or "")
+        if not sha:
+            return []
+        r2 = await client.get(
+            f"https://api.github.com/repos/{full_name}/commits/{sha}/check-runs?per_page=100",
+            headers=hdr,
+        )
+        if r2.status_code != 200:
+            return []
+        bad: list[str] = []
+        for run in r2.json().get("check_runs") or []:
+            if not isinstance(run, dict):
+                continue
+            if str(run.get("status") or "") == "completed" and str(
+                run.get("conclusion") or ""
+            ).lower() in ("failure", "timed_out", "action_required"):
+                bad.append(str(run.get("name") or "check"))
+        return bad
+    except Exception:
+        return []
+
+
 async def _assigned_qa_plaky_id(
     plaky: PlakyClient,
     board_id: str,
@@ -206,6 +250,28 @@ async def handle_pull_request_review(
     qa_field_for_changes: str = ""
 
     if state == "approved":
+        failing = await _failing_required_checks(payload.repository.full_name, pr_number)
+        if failing:
+            session.add(
+                SyncLog(
+                    action="approval_held_ci_failing",
+                    github_repo=repo_name,
+                    github_ref=str(pr_number),
+                    plaky_task_id=task_ids[0],
+                    detail=json.dumps({"reviewer": reviewer_login, "failing": failing[:8]}),
+                )
+            )
+            await session.commit()
+            return {
+                "ok": True,
+                "skipped": True,
+                "message": (
+                    "approval received but NOT applied to the board: failing checks "
+                    f"({', '.join(failing[:5])}). Re-approve or re-run checks once green."
+                ),
+                "reviewer": reviewer_login,
+                "state": state,
+            }
         target_status = _qa_approved_status()
         if not target_status and bid:
             res = await resolve_plaky_status_patch(bid, intent="github_pr_review_approved")

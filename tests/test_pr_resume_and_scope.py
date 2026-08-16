@@ -159,3 +159,31 @@ def test_agent_routes_gated_by_flag(monkeypatch: pytest.MonkeyPatch):
     assert any("/webhooks/github" in p for p in paths_off)
     assert any("/health" in p for p in paths_off)
     assert any("/assignment/" in p for p in paths_off)
+
+
+@pytest.mark.asyncio
+async def test_new_commit_after_approval_invalidates_verification(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """An approval describes the commits that existed when it was given. A new push
+    means the verdict no longer covers what will merge, so QA Verified goes back to
+    Needs QA (Again) for a fresh look."""
+    fake = _SyncPlaky(current_status_value="6")  # currently QA Verified
+    _wire(monkeypatch, fake)
+    engine, factory = await _memory_session_factory()
+    async with factory() as session:
+        session.add(
+            PullRequestTaskLink(
+                github_repo="diri-cyrex",
+                github_pr_number=55,
+                plaky_task_id="task-r",
+                github_issue_number=0,
+                link_source="auto_link",
+            )
+        )
+        await session.commit()
+    async with factory() as session:
+        out = await handle_pr_synchronized(_payload(), session)
+    assert out.get("event") == "resubmitted_needs_qa_again"
+    assert fake.patches and fake.patches[0][1].get("status-6") == "4"
+    await engine.dispose()
