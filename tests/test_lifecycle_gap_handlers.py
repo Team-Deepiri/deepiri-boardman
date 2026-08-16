@@ -851,3 +851,13 @@ async def test_assignee_added_after_creation_fills_engineer(db_session, monkeypa
     res = await handle_issue_labels_changed(payload, db_session)
     assert res.get("event") == "issue_labels_synced"
     assert calls == [("t-90", "476634", "Bug")]
+
+
+def test_bug_specialist_is_off_by_default() -> None:
+    """Per Joe's PR #81 review: no hardcoded QA names except the exclusion list. The
+    bug-specialist mechanism stays available via yaml but ships disabled."""
+    from boardman.assignment.config import DEFAULT_QA_BUG_SPECIALIST, DEFAULT_QA_EXCLUDED
+
+    assert DEFAULT_QA_BUG_SPECIALIST == ""
+    assert "Asheen Hameeda" in DEFAULT_QA_EXCLUDED
+    assert "AndyN-star" in DEFAULT_QA_EXCLUDED

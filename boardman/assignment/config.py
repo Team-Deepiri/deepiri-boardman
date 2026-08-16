@@ -34,12 +34,17 @@ DEFAULT_QA_EXCLUDED: tuple[str, ...] = (
     "Devin Gamble",
     "Sean San",
     "Nathan Adams",
+    # Added per Joe's PR #81 review: on the GitHub support team but leads/managers,
+    # never auto-assigned as PR QA.
+    "Asheen Hameeda",
+    "AndyN-star",
 )
 
-# Bug-typed tasks always get this QA (employer requirement: "bug — assign to Hameeda").
-# Matched case-insensitively against display name AND GitHub login, same as exclusion.
-# Override with `qa_bug_specialist:` in team_assignments.yml; empty string disables.
-DEFAULT_QA_BUG_SPECIALIST = "Asheen Hameeda"
+# Optional: route all bug-typed tasks to one named QA. Per Joe's PR #81 review this is
+# EMPTY by default — no hardcoded QA names except the exclusion list. (The earlier
+# "bug -> Hameeda" instruction was a misunderstanding about manual work, since resolved.)
+# Set `qa_bug_specialist:` in team_assignments.yml to enable the mechanism.
+DEFAULT_QA_BUG_SPECIALIST = ""
 
 _log = logging.getLogger(__name__)
 _last_field_sync_by_board: dict[str, float] = {}

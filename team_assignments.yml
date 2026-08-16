@@ -10,6 +10,10 @@ qa_excluded:
 - Devin Gamble
 - Sean San
 - Nathan Adams
+# Added per Joe's PR #81 review (leads/managers on the support team, never PR QA):
+- Asheen Hameeda
+- AndyN-star
+
 member_defaults:
   roles:
   - engineer

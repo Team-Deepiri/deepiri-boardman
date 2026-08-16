@@ -56,6 +56,11 @@ from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
+# Link policy (deliberate, per Sorge review discussion): commit messages accept a bare
+# "#12" because commits are informal and a mention is cheap (one comment on the task).
+# PR/issue LINKING (issue_handler.ISSUE_LINK_RE) requires closing keywords because a
+# link drives status, assignee and QA; bare mentions there go through the fuzzy
+# pipeline, which corroborates before linking.
 # Commit messages referencing issues: "Fixes #12", "closes #3", or a bare "#12".
 _COMMIT_ISSUE_RE = re.compile(
     r"(?:(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+)?#(\d+)", re.IGNORECASE
@@ -246,6 +251,14 @@ class GitHubEventPoller:
             # The `since` filter returns recently UPDATED issues, so state changes land here
             # too. Without state tracking the poller only ever emitted "opened" and closes /
             # reopens were invisible to the real-time path — tasks never reached Completed.
+            # Sorge (PR #81): this state grew without bound over a long session. Cap the
+            # per-repo maps; entries past the cap are the OLDEST issues, which the
+            # baseline cutoff already excludes from re-processing.
+            for key in ("issue_state", "issue_labels"):
+                m2 = proc.get(key)
+                if isinstance(m2, dict) and len(m2) > 2000:
+                    for old in sorted(m2)[:500]:
+                        m2.pop(old, None)
             issue_state = proc.setdefault("issue_state", {})
             prev = issue_state.get(num)
             issue_state[num] = state

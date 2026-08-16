@@ -20,8 +20,8 @@ import httpx
 from boardman.github.repo_fetch import _parse_owner_repo
 from boardman.settings import settings
 
-_MAX_FILES = 40
-_MAX_BODY_CHARS = 4000
+_MAX_FILES = 40  # fallback; settings.github_pr_max_files wins when set
+_MAX_BODY_CHARS = 4000  # fallback; settings.github_pr_max_body_chars wins when set
 # GitHub's actual closing keywords. "refs #12" links an issue without closing it, so it
 # belongs in mentioned_issues — claiming a PR closes an issue it merely cites is a lie
 # a reviewer would act on.
@@ -69,10 +69,12 @@ async def fetch_pull_request_context(
     full_name: str,
     pr_number: int,
     *,
-    max_files: int = _MAX_FILES,
+    max_files: int = 0,
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Everything needed to judge a PR, with per-section errors preserved."""
+    if not max_files:
+        max_files = int(getattr(settings, "github_pr_max_files", 0) or _MAX_FILES)
     parsed = _parse_owner_repo(full_name)
     if not parsed:
         return {"ok": False, "error": f"{full_name!r} is not in owner/repo form"}
@@ -119,9 +121,10 @@ async def fetch_pull_request_context(
             await client.aclose()
 
     body = str(pr.get("body") or "").strip()
-    body_truncated = len(body) > _MAX_BODY_CHARS
+    max_body = int(getattr(settings, "github_pr_max_body_chars", 0) or _MAX_BODY_CHARS)
+    body_truncated = len(body) > max_body
     if body_truncated:
-        body = body[:_MAX_BODY_CHARS]
+        body = body[:max_body]
 
     file_rows: list[dict[str, Any]] = []
     if isinstance(files, list):

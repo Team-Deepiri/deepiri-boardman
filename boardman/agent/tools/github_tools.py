@@ -287,7 +287,10 @@ async def _github_repo_structure_uncached(owner_repo: str) -> str:
     )
 
 
-_CONTEXT_BUDGET_CHARS = 24000
+def _context_budget() -> int:
+    return int(getattr(settings, "llm_context_budget_chars", 0) or 24000)
+
+
 # Longest first: a repo's own docs earn more room than the commit list.
 _TRIMMABLE = (
     ("DIRECTION_md", 8000),
@@ -314,7 +317,7 @@ def _budget_json(out: dict[str, Any]) -> str:
             trimmed.append(key)
 
     payload = json.dumps(out, default=str)
-    if len(payload) > _CONTEXT_BUDGET_CHARS:
+    if len(payload) > _context_budget():
         # Still over: drop the least load-bearing sections outright rather than corrupt
         # the JSON, and say which ones went.
         for key, _ in reversed(_TRIMMABLE):
@@ -323,7 +326,7 @@ def _budget_json(out: dict[str, Any]) -> str:
             out[key] = "[omitted to fit the context budget — fetch it directly if needed]"
             trimmed.append(key)
             payload = json.dumps(out, default=str)
-            if len(payload) <= _CONTEXT_BUDGET_CHARS:
+            if len(payload) <= _context_budget():
                 break
 
     if trimmed:
