@@ -1421,6 +1421,15 @@ class PlakyClient:
                         r = await _request_with_rate_limit_retry(
                             client, "PATCH", url_single, headers=hdr, json=body
                         )
+                        # 409 means another writer holds the item, not that this body
+                        # shape is wrong. Retry the same shape briefly before judging.
+                        for _conflict_try in range(3):
+                            if r.status_code != 409:
+                                break
+                            await asyncio.sleep(0.3 * (_conflict_try + 1))
+                            r = await _request_with_rate_limit_retry(
+                                client, "PATCH", url_single, headers=hdr, json=body
+                            )
                         last_status = r.status_code
                         last_snip = r.text[:500]
                         if r.status_code in (200, 201, 204):
@@ -1439,13 +1448,12 @@ class PlakyClient:
                 return (str(k), hit, last_status, last_snip)
 
             pending = [(k, v) for k, v in values.items() if str(k).strip() not in trusted_bulk_keys]
-            field_sem = asyncio.Semaphore(4)
-
-            async def _bounded(k: Any, v: Any) -> tuple[str, bool, int, str]:
-                async with field_sem:
-                    return await _patch_one_field(k, v)
-
-            outcomes = await asyncio.gather(*(_bounded(k, v) for k, v in pending))
+            # Sequential on purpose: Plaky holds an item-level lock, so concurrent field
+            # PATCHes on one item 409 and the candidate ladder misread that as a wrong
+            # body shape, walked to failure, and the field silently kept its board
+            # default (caught live: Priority stuck at VERY IMPORTANT). Three fields at
+            # ~0.17s each is cheap; a silently wrong field is not.
+            outcomes = [await _patch_one_field(k, v) for k, v in pending]
             for key_s, hit, last_status, last_snip in outcomes:
                 if hit:
                     per_ok.append(key_s)
