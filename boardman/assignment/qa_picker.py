@@ -242,7 +242,7 @@ async def _github_fit_scores(
             lang_cos = cosine_similarity(profile.language_weights, target_lang)
             tok_cos = cosine_similarity(profile.token_weights, target_tokens)
             fit = (
-                FIT_WEIGHT_DIRECT * direct
+                float(getattr(settings, "qa_fit_weight_direct", 0) or FIT_WEIGHT_DIRECT) * direct
                 + FIT_WEIGHT_LANGUAGE * lang_cos
                 + FIT_WEIGHT_TOKENS * tok_cos
             )
@@ -371,7 +371,11 @@ async def pick_qa_for_repo(
     fits: dict[str, tuple[float, str]] | None = None
     try:
         fits = await asyncio.wait_for(
-            _github_fit_scores(qas, fn), timeout=FIT_SCORING_TIMEOUT_SECONDS
+            _github_fit_scores(qas, fn),
+            timeout=float(
+                getattr(settings, "qa_fit_scoring_timeout_seconds", 0)
+                or FIT_SCORING_TIMEOUT_SECONDS
+            ),
         )
     except Exception as e:  # noqa: BLE001 — never block assignment on scoring (incl. timeout)
         _log.warning("qa_picker: GitHub fit scoring unavailable for %s: %s", fn, e)

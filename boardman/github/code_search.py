@@ -45,8 +45,8 @@ DEFECT_PROBES: tuple[tuple[str, str, str], ...] = (
     ("silent_pass", r"^\s*except[^\n]*:\s*\n\s*pass\s*$", "exception silently discarded"),
 )
 
-_MAX_FILES = 16
-_MAX_BYTES_PER_FILE = 120_000
+_MAX_FILES = 16  # fallback; settings.github_code_search_max_files wins when set
+_MAX_BYTES_PER_FILE = 120_000  # fallback; settings.github_code_search_max_bytes_per_file wins
 
 
 async def _fetch_source_files(
@@ -55,13 +55,28 @@ async def _fetch_source_files(
     async def one(path: str) -> tuple[str, str]:
         try:
             text = await fetch_repo_file_text(
-                client, owner, repo, path, max_chars=_MAX_BYTES_PER_FILE
+                client,
+                owner,
+                repo,
+                path,
+                max_chars=int(
+                    getattr(settings, "github_code_search_max_bytes_per_file", 0)
+                    or _MAX_BYTES_PER_FILE
+                ),
             )
         except Exception:  # noqa: BLE001
             return path, ""
         if not isinstance(text, str) or text.startswith("(file unavailable"):
             return path, ""
-        return path, text[:_MAX_BYTES_PER_FILE]
+        return (
+            path,
+            text[
+                : int(
+                    getattr(settings, "github_code_search_max_bytes_per_file", 0)
+                    or _MAX_BYTES_PER_FILE
+                )
+            ],
+        )
 
     return list(await asyncio.gather(*[one(p) for p in paths]))
 
@@ -77,10 +92,17 @@ async def search_repo_code(
     """Grep the repo's largest source files for `query` (literal, case-insensitive)."""
     if not (settings.github_pat or "").strip() or not (query or "").strip():
         return None
-    hot = await fetch_repo_hotspots(client, owner, repo, top_n=_MAX_FILES)
+    hot = await fetch_repo_hotspots(
+        client,
+        owner,
+        repo,
+        top_n=int(getattr(settings, "github_code_search_max_files", 0) or _MAX_FILES),
+    )
     if not hot:
         return None
-    paths = [f["path"] for f in (hot.get("largest_source_files") or [])][:_MAX_FILES]
+    paths = [f["path"] for f in (hot.get("largest_source_files") or [])][
+        : int(getattr(settings, "github_code_search_max_files", 0) or _MAX_FILES)
+    ]
     files = await _fetch_source_files(client, owner, repo, paths)
 
     needle = query.strip().casefold()
@@ -112,10 +134,17 @@ async def scan_repo_defects(
     """Run every defect probe over the repo's largest source files, with real line numbers."""
     if not (settings.github_pat or "").strip():
         return None
-    hot = await fetch_repo_hotspots(client, owner, repo, top_n=_MAX_FILES)
+    hot = await fetch_repo_hotspots(
+        client,
+        owner,
+        repo,
+        top_n=int(getattr(settings, "github_code_search_max_files", 0) or _MAX_FILES),
+    )
     if not hot:
         return None
-    paths = [f["path"] for f in (hot.get("largest_source_files") or [])][:_MAX_FILES]
+    paths = [f["path"] for f in (hot.get("largest_source_files") or [])][
+        : int(getattr(settings, "github_code_search_max_files", 0) or _MAX_FILES)
+    ]
     files = await _fetch_source_files(client, owner, repo, paths)
 
     findings: list[dict[str, Any]] = []
@@ -148,13 +177,16 @@ async def scan_repo_defects(
         )
 
     searched = [p for p, t in files if t]
+    max_bytes = int(
+        getattr(settings, "github_code_search_max_bytes_per_file", 0) or _MAX_BYTES_PER_FILE
+    )
     return {
         "ok": True,
         "repo": f"{owner}/{repo}",
         "files_read": searched,
         "coverage_note": (
             f"Read the {len(searched)} largest source files (of {hot.get('source_files')} total), "
-            f"up to {_MAX_BYTES_PER_FILE:,} chars each. Counts cover only what was read — "
+            f"up to {max_bytes:,} chars each. Counts cover only what was read — "
             'state them as "at least N", never as repo-wide totals.'
         ),
         "findings": findings,

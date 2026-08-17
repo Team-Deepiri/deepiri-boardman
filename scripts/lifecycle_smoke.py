@@ -24,7 +24,7 @@ from typing import Any
 import httpx
 
 API = "http://localhost:8090/api/v1/webhooks/github"
-BOARD = "269031"
+BOARD = "269028"
 REPO = {"full_name": "Team-Deepiri/deepiri-boardman", "name": "deepiri-boardman"}
 
 # Each STATUS-type column has its OWN option vocabulary — decoding Type or Priority with the
@@ -194,7 +194,7 @@ async def run_once(*, keep: bool) -> bool:
             {"action": "synchronize", "pull_request": pr_body, "repository": REPO},
         )
         f = await _item_fields(task_id)
-        check("dev pushes fix", "Status", f.get("Status"), "In Progress")
+        check("dev pushes fix -> resubmitted", "Status", f.get("Status"), "Needs QA")
 
         # 5. QA comments -> In QA
         await _post(

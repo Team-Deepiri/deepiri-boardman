@@ -18,6 +18,7 @@ from boardman.github.webhooks import (
 )
 from boardman.services.issue_handler import (
     handle_issue_closed,
+    handle_issue_labels_changed,
     handle_issue_opened,
     handle_issue_reopened,
 )
@@ -62,6 +63,10 @@ async def github_webhook(
         if row:
             row.status = status
             row.note = note
+            # Commit BEFORE the response goes out. Riding on session teardown leaves a
+            # window where GitHub's immediate redelivery reads "processing" and the
+            # duplicate is handled twice — caught live by edge guard E1 under load.
+            await session.commit()
 
     if delivery_id:
         already = (
@@ -118,6 +123,15 @@ async def github_webhook(
             result = await handle_issue_closed(payload, session)
         elif payload.action == "reopened":
             result = await handle_issue_reopened(payload, session)
+        elif payload.action in (
+            "labeled",
+            "unlabeled",
+            "assigned",
+            "unassigned",
+            "typed",
+            "untyped",
+        ):
+            result = await handle_issue_labels_changed(payload, session)
 
     elif isinstance(payload, PullRequestReviewEventPayload):
         result = await handle_pull_request_review(payload, session)
@@ -144,6 +158,10 @@ async def github_webhook(
             result = await handle_pr_synchronized(payload, session)
         elif payload.action == "reopened":
             result = await handle_pr_opened(payload, session)
+        elif payload.action in ("labeled", "unlabeled"):
+            from boardman.services.pr_handler import handle_pr_labels_changed
+
+            result = await handle_pr_labels_changed(payload, session)
         elif payload.action == "edited":
             result = await handle_pr_edited(payload, session)
         elif payload.action == "converted_to_draft":

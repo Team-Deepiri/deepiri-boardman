@@ -6,6 +6,7 @@ import base64
 
 import httpx
 
+from boardman.github.http import shared_github_client
 from boardman.settings import settings
 
 
@@ -221,7 +222,7 @@ async def fetch_pr_assignees_and_reviewers_logins(full_name: str, pr_number: int
     from urllib.parse import quote
 
     path = f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/pulls/{int(pr_number)}"
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with shared_github_client() as client:
         r = await github_request(client, path)
     if r.status_code != 200:
         return set()
@@ -253,24 +254,43 @@ async def fetch_repo_file_text(
     that COUNT things in the file (defect scanning) must raise it, otherwise they silently
     report an undercount for any file larger than the cap.
     """
-    from urllib.parse import quote
+    from boardman.github.read_cache import cached
 
-    clean = (path or "").strip().lstrip("/")
-    enc = "/".join(quote(seg, safe="") for seg in clean.split("/") if seg)
-    q = f"/repos/{owner}/{repo}/contents/{enc}"
-    if ref.strip():
-        q += f"?ref={quote(ref.strip(), safe='')}"
-    r = await github_request(client, q)
-    if r.status_code != 200:
-        return f"(file unavailable: HTTP {r.status_code} for {path})"
-    data = r.json()
-    if isinstance(data, dict) and data.get("encoding") == "base64" and data.get("content"):
-        return base64.b64decode(data["content"]).decode("utf-8", errors="replace")[:max_chars]
-    if isinstance(data, list):
-        return f"(path {path} is a directory, not a file)"
-    if isinstance(data, dict) and data.get("message"):
-        return f"(GitHub: {data.get('message')})"
-    return "(Could not decode file)"
+    async def _fetch_full() -> str:
+        """Fetch and decode WITHOUT truncating — the memo must store the full text.
+
+        Callers pass different max_chars (defect scan 120k, prompt reads 50k). Caching an
+        already-truncated string would serve 50k-cut text to the 120k counter and
+        silently undercount defects, so the cap is applied per caller AFTER the memo.
+        """
+        from urllib.parse import quote
+
+        clean = (path or "").strip().lstrip("/")
+        enc = "/".join(quote(seg, safe="") for seg in clean.split("/") if seg)
+        q = f"/repos/{owner}/{repo}/contents/{enc}"
+        if ref.strip():
+            q += f"?ref={quote(ref.strip(), safe='')}"
+        r = await github_request(client, q)
+        if r.status_code != 200:
+            return f"(file unavailable: HTTP {r.status_code} for {path})"
+        data = r.json()
+        if isinstance(data, dict) and data.get("encoding") == "base64" and data.get("content"):
+            return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+        if isinstance(data, list):
+            return f"(path {path} is a directory, not a file)"
+        if isinstance(data, dict) and data.get("message"):
+            return f"(GitHub: {data.get('message')})"
+        return "(Could not decode file)"
+
+    # Scan + search fetch the SAME top-N files back to back; without this every audit
+    # question re-downloaded ~16 files (up to ~2.5MB) per tool call. Error strings all
+    # start with "(" and are never cached, so a 403 blip is retried, not remembered.
+    full = await cached(
+        f"file:{owner}/{repo}@{ref.strip()}:{path}",
+        _fetch_full,
+        ok=lambda s: isinstance(s, str) and not s.startswith("("),
+    )
+    return str(full)[:max_chars]
 
 
 async def fetch_default_branch(client: httpx.AsyncClient, owner: str, repo: str) -> str:

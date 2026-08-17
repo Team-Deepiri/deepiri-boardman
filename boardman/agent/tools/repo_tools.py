@@ -167,7 +167,10 @@ def _scan_local_repo(path: str, max_files: int = 40) -> str:
 
 def thoughts_tool() -> StructuredTool:
     return StructuredTool.from_function(
-        lambda thought: f"Thought recorded: {thought[:50]}...",
+        # str() first: gpt-5.1 sometimes passes a structured dict here, and dict[:50]
+        # raises KeyError(slice(None, 50, None)) — which killed the whole turn over a
+        # scratchpad acknowledgement.
+        lambda thought: f"Thought recorded: {str(thought)[:50]}...",
         name="thoughts",
         description=(
             "Record your internal plan, reasoning, or multi-step logic here. "

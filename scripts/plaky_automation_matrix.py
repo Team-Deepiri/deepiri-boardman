@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 
 API = "http://localhost:8090/api/v1/webhooks/github"
-BOARD = "269031"
+BOARD = "269028"  # "Bots" board, group "deepiri-boardman" — the production routing
 REPO = {"full_name": "Team-Deepiri/deepiri-boardman", "name": "deepiri-boardman"}
 
 OPTION_NAMES = {
@@ -216,6 +216,29 @@ async def run_once(*, keep: bool) -> tuple[int, int, list[str]]:
         check("5c  fuzzy-linked PR -> Needs QA", f.get("Status"), "Needs QA")
         check("5d  fuzzy-linked PR -> QA assigned", bool(f.get("QA Engineer Assigned")), "True")
 
+        # Close the fuzzy PR unmerged so the rest of the matrix runs with ONE open PR
+        # (multi-PR merge gating is E3's job). Close-without-merge -> In Progress.
+        await _post(
+            c,
+            "pull_request",
+            f"mx-{n}-fuzzy-close",
+            {
+                "action": "closed",
+                "pull_request": pr(
+                    number=fuzzy_pr,
+                    state="closed",
+                    merged=False,
+                    html_url=f"https://github.com/{REPO['full_name']}/pull/{fuzzy_pr}",
+                ),
+                "repository": REPO,
+            },
+        )
+        check(
+            "5e  fuzzy PR closed unmerged -> In Progress",
+            (await _status(task_id, "In Progress")).get("Status"),
+            "In Progress",
+        )
+
         # ---- PR opens as DRAFT: QA assigned, but NOT moved to Needs QA -------
         await _post(
             c,
@@ -237,7 +260,8 @@ async def run_once(*, keep: bool) -> tuple[int, int, list[str]]:
         from boardman.assignment.config import load_team_assignments
 
         cfg = load_team_assignments()
-        qa = next((m for m in cfg.members if str(m.id) in {str(x) for x in qa_ids}), None)
+        pool = list(cfg.members) + list(getattr(cfg, "fallback_members", []) or [])
+        qa = next((m for m in pool if str(m.id) in {str(x) for x in qa_ids}), None)
         qa_login = (getattr(qa, "github_login", "") or "") if qa else ""
         check(
             "9  QA is not an excluded lead",
@@ -353,10 +377,15 @@ async def run_once(*, keep: bool) -> tuple[int, int, list[str]]:
             f"mx-{n}-sync",
             {"action": "synchronize", "pull_request": pr(), "repository": REPO},
         )
+        # Push after rejection = RESUBMISSION: Needs QA Again where the board has it,
+        # Needs QA where it does not (the Bots board currently lacks the option).
+        nqa_again = (
+            "Needs QA Again" if "11" in OPTION_NAMES["Status"] and BOARD == "269031" else "Needs QA"
+        )
         check(
-            "15 dev pushes fix -> In Progress",
-            (await _status(task_id, "In Progress")).get("Status"),
-            "In Progress",
+            f"15 dev pushes fix -> {nqa_again}",
+            (await _status(task_id, nqa_again)).get("Status"),
+            nqa_again,
         )
 
         # ---- comment-driven transitions -------------------------------------
@@ -379,9 +408,9 @@ async def run_once(*, keep: bool) -> tuple[int, int, list[str]]:
             issue_comment(f"@{qa_login or 'qa'} ready for another look", "someone-not-qa"),
         )
         check(
-            "17 dev pings QA -> Needs QA Again",
-            (await _status(task_id, "Needs QA Again")).get("Status"),
-            "Needs QA Again",
+            f"17 dev pings QA -> {nqa_again}",
+            (await _status(task_id, nqa_again)).get("Status"),
+            nqa_again,
         )
 
         await _post(

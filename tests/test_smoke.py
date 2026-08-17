@@ -85,4 +85,4 @@ def test_import_tools():
     # Base counts + code-reading tools (search/scan) + PR-reading tools (list/read),
     # so a merge judgement rests on the PR itself rather than the repo around it.
     assert len(build_all_tools(allow_writes=False)) == 23
-    assert len(build_all_tools(allow_writes=True)) == 29
+    assert len(build_all_tools(allow_writes=True)) == 30

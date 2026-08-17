@@ -56,6 +56,11 @@ from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
+# Link policy (deliberate, per Sorge review discussion): commit messages accept a bare
+# "#12" because commits are informal and a mention is cheap (one comment on the task).
+# PR/issue LINKING (issue_handler.ISSUE_LINK_RE) requires closing keywords because a
+# link drives status, assignee and QA; bare mentions there go through the fuzzy
+# pipeline, which corroborates before linking.
 # Commit messages referencing issues: "Fixes #12", "closes #3", or a bare "#12".
 _COMMIT_ISSUE_RE = re.compile(
     r"(?:(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+)?#(\d+)", re.IGNORECASE
@@ -246,12 +251,47 @@ class GitHubEventPoller:
             # The `since` filter returns recently UPDATED issues, so state changes land here
             # too. Without state tracking the poller only ever emitted "opened" and closes /
             # reopens were invisible to the real-time path — tasks never reached Completed.
+            # Sorge (PR #81): this state grew without bound over a long session. Cap the
+            # per-repo maps; entries past the cap are the OLDEST issues, which the
+            # baseline cutoff already excludes from re-processing.
+            for key in ("issue_state", "issue_labels"):
+                m2 = proc.get(key)
+                if isinstance(m2, dict) and len(m2) > 2000:
+                    for old in sorted(m2)[:500]:
+                        m2.pop(old, None)
             issue_state = proc.setdefault("issue_state", {})
             prev = issue_state.get(num)
             issue_state[num] = state
             is_new = (
                 created is not None and created >= baseline and num not in proc["issues_opened"]
             )
+
+            # Labels land AFTER creation (issue #80: `bug` arrived 75s late; the task said
+            # Story indefinitely). Track the label set so a change re-syncs the task Type.
+            type_name = ""
+            if isinstance(it.get("type"), dict):
+                type_name = str(it["type"].get("name") or "")
+            assignee_sig = tuple(
+                sorted(
+                    str((a or {}).get("login") or "")
+                    for a in (it.get("assignees") or [])
+                    if isinstance(a, dict)
+                )
+            )
+            labels_sig = (
+                (type_name,)
+                + assignee_sig
+                + tuple(
+                    sorted(
+                        str((lb or {}).get("name") or "")
+                        for lb in (it.get("labels") or [])
+                        if isinstance(lb, dict)
+                    )
+                )
+            )
+            issue_labels = proc.setdefault("issue_labels", {})
+            labels_prev = issue_labels.get(num)
+            issue_labels[num] = labels_sig
 
             action = ""
             if is_new:
@@ -261,6 +301,8 @@ class GitHubEventPoller:
                 action = "closed" if state == "closed" else "reopened"
             elif prev is None and num in proc["issues_opened"] and state == "closed":
                 action = "closed"
+            elif labels_prev is not None and labels_prev != labels_sig:
+                action = "labeled"
             if not action:
                 continue
 
@@ -274,6 +316,8 @@ class GitHubEventPoller:
                     "state": state,
                     "user": it.get("user"),
                     "labels": it.get("labels") or [],
+                    "type": it.get("type"),
+                    "assignees": it.get("assignees") or [],
                 },
                 repository={"full_name": full_name, "name": name},
             )
@@ -317,6 +361,27 @@ class GitHubEventPoller:
                 result = await self._run_handler(self._pr_payload(pr, full_name, act))
                 _log.info(
                     "poller: PR #%s %s -> %s", num, act, (result or {}).get("message") or result
+                )
+
+            # label set changed (PRs have no native type — labels ARE their typing, and
+            # people label after opening; mirror of the issue-side label tracking)
+            labels_sig = tuple(
+                sorted(
+                    str((lb or {}).get("name") or "")
+                    for lb in (pr.get("labels") or [])
+                    if isinstance(lb, dict)
+                )
+            )
+            pr_labels = proc.setdefault("pr_labels", {})
+            labels_prev = pr_labels.get(num)
+            pr_labels[num] = labels_sig
+            if labels_prev is not None and labels_prev != labels_sig:
+                result = await self._run_handler(self._pr_payload(pr, full_name, "labeled"))
+                _log.info(
+                    "poller: PR #%s labeled %s -> %s",
+                    num,
+                    list(labels_sig),
+                    (result or {}).get("message") or result,
                 )
 
             # newly requested reviewers (webhook-only event, derived from requested_reviewers)
@@ -551,6 +616,10 @@ class GitHubEventPoller:
                         from boardman.services.issue_handler import handle_issue_reopened
 
                         result = await handle_issue_reopened(parsed, session)
+                    elif parsed.action in ("labeled", "unlabeled", "assigned", "unassigned"):
+                        from boardman.services.issue_handler import handle_issue_labels_changed
+
+                        result = await handle_issue_labels_changed(parsed, session)
                 elif isinstance(parsed, PullRequestReviewEventPayload):
                     result = await handle_pull_request_review(parsed, session)
                 elif isinstance(parsed, PullRequestReviewCommentEventPayload):
@@ -569,6 +638,10 @@ class GitHubEventPoller:
                         from boardman.services.pr_handler import handle_pr_review_requested
 
                         result = await handle_pr_review_requested(parsed, session)
+                    elif parsed.action in ("labeled", "unlabeled"):
+                        from boardman.services.pr_handler import handle_pr_labels_changed
+
+                        result = await handle_pr_labels_changed(parsed, session)
                     elif parsed.action == "edited":
                         from boardman.services.pr_handler import handle_pr_edited
 

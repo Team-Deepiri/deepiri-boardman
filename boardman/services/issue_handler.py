@@ -1,5 +1,6 @@
 import json
 import re
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -17,6 +18,26 @@ from boardman.services.priority_rules import infer_priority_from_text
 from boardman.settings import settings
 
 ISSUE_LINK_RE = re.compile(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", re.IGNORECASE)
+
+
+def _issue_assignee_login(issue: Any) -> str:
+    """First assignee login on the GitHub issue, '' when unassigned."""
+    rows = list(getattr(issue, "assignees", None) or [])
+    one = getattr(issue, "assignee", None)
+    if isinstance(one, dict) and one not in rows:
+        rows.insert(0, one)
+    for a in rows:
+        if isinstance(a, dict) and str(a.get("login") or "").strip():
+            return str(a["login"]).strip()
+    return ""
+
+
+def native_issue_type_name(issue: Any) -> str:
+    """GitHub's native issue Type name ('Feature', 'Bug', ...), '' when unset."""
+    t = getattr(issue, "type", None)
+    if isinstance(t, dict):
+        return str(t.get("name") or "").strip()
+    return ""
 
 
 async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession) -> dict:
@@ -74,14 +95,36 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     task_url = result.get("task_url")
 
     # Explicit defaults on the fresh task: status = NEEDS ASSIGNED (board-resolved) and
-    # Type from issue labels (default Feature — the team retired the 'Task' label).
-    task_type = infer_task_type_from_pr(None, labels) or "Feature"
+    # Type precedence: GitHub's native issue Type (the org uses it; it is the
+    # deliberate categorization act) -> labels -> Feature default.
+    task_type = (
+        native_issue_type_name(payload.issue) or infer_task_type_from_pr(None, labels) or "Feature"
+    )
+    # An issue CREATED with an assignee already has an owner — the board must say
+    # Assigned with that person, not NEEDS ASSIGNED with an empty column (verified
+    # live on issue #83: GitHub said Blasted-ctrl, the board said nobody).
+    engineer_plaky_id = ""
+    assignee_login = _issue_assignee_login(payload.issue)
+    if assignee_login:
+        from boardman.plaky.dynamic_qa_status import (
+            github_actor_payload,
+            resolve_github_user_to_plaky_user_id,
+        )
+
+        engineer_plaky_id = (
+            await resolve_github_user_to_plaky_user_id(
+                github_actor_payload({"login": assignee_login})
+            )
+            or ""
+        )
+
     status_key: str | None = None
     status_val = ""
     if bid and task_id:
         from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
-        rp = await resolve_plaky_status_patch(bid, intent="workflow_needs_assigned")
+        intent = "workflow_assigned" if engineer_plaky_id else "workflow_needs_assigned"
+        rp = await resolve_plaky_status_patch(bid, intent=intent)
         if rp:
             status_key, status_val = rp[0], rp[1]
     if task_id:
@@ -94,6 +137,7 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
                 status_plaky_field_key=status_key,
                 task_type=task_type,
                 priority=priority,
+                engineer_plaky_id=engineer_plaky_id or None,
                 plaky_board_id=bid or None,
             ),
         )
@@ -228,3 +272,78 @@ async def handle_issue_reopened(payload: IssueEventPayload, session: AsyncSessio
         action_name="issue_reopened",
         task_comment=f"**Issue reopened on GitHub:** #{n} — task revived by automation.",
     )
+
+
+async def handle_issue_labels_changed(payload: IssueEventPayload, session: AsyncSession) -> dict:
+    """GitHub `labeled`/`unlabeled` → re-mirror the linked task's Type.
+
+    People label AFTER creating: issue #80 was filed bare and got its `bug` label 75
+    seconds later, so the poller raced it and the task said Story indefinitely. Labels on
+    GitHub are the team's explicit categorization act — the source of truth for Type — so
+    a label change must reach the board instead of freezing whatever the creation-time
+    race produced.
+
+    Only Type is touched. Priority may have been hand-tuned by a lead after triage, and
+    label changes carry no signal about it.
+    """
+    repo_name = payload.repository.name
+    issue_number = payload.issue.number
+    mapping = await find_plaky_task_by_issue(repo_name, issue_number, session)
+    if not mapping or not mapping.plaky_task_id:
+        return {"ok": True, "skipped": True, "message": "no Plaky task mapped for this issue"}
+
+    labels = issue_label_names(payload.issue.labels)
+    task_type = (
+        native_issue_type_name(payload.issue) or infer_task_type_from_pr(None, labels) or "Feature"
+    )
+
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
+    bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()
+
+    from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
+
+    # An assignee added AFTER creation flows too (same race as labels: people assign
+    # from the GitHub UI seconds later). Fill-only: an existing Plaky assignee is
+    # curated state and is never overwritten or cleared from here.
+    engineer_plaky_id = ""
+    assignee_login = _issue_assignee_login(payload.issue)
+    if assignee_login:
+        from boardman.plaky.dynamic_qa_status import (
+            github_actor_payload,
+            resolve_github_user_to_plaky_user_id,
+        )
+
+        engineer_plaky_id = (
+            await resolve_github_user_to_plaky_user_id(
+                github_actor_payload({"login": assignee_login})
+            )
+            or ""
+        )
+
+    res = await update_task_internal(
+        str(mapping.plaky_task_id),
+        UpdateTaskInput(
+            task_type=task_type,
+            engineer_plaky_id=engineer_plaky_id or None,
+            plaky_board_id=bid or None,
+        ),
+    )
+    session.add(
+        SyncLog(
+            action="issue_labels_synced",
+            github_repo=repo_name,
+            github_ref=str(issue_number),
+            plaky_task_id=mapping.plaky_task_id,
+            detail=json.dumps(
+                {"labels": labels, "task_type": task_type, "plaky_ok": res.get("ok")},
+                default=str,
+            ),
+        )
+    )
+    await session.commit()
+    return {
+        "ok": True,
+        "plaky_task_id": mapping.plaky_task_id,
+        "event": "issue_labels_synced",
+        "task_type": task_type,
+    }

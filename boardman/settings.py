@@ -55,6 +55,16 @@ class Settings(BaseSettings):
     plaky_board_schema_cache_ttl_seconds: float = 90.0
     # Read-only GitHub repo context reuse between questions. 0 disables the cache.
     github_read_cache_ttl_seconds: float = 300.0
+    # Tunable analysis limits (Sorge review, PR #81): context budget for the repo
+    # planning payload, PR review file cap, and code-search scope.
+    llm_context_budget_chars: int = 24000
+    github_pr_max_files: int = 40
+    github_pr_max_body_chars: int = 4000
+    github_code_search_max_files: int = 16
+    github_code_search_max_bytes_per_file: int = 120_000
+    # QA GitHub-fit scoring knobs (see assignment/qa_picker.py for semantics).
+    qa_fit_weight_direct: float = 0.0  # 0 = use the module default
+    qa_fit_scoring_timeout_seconds: float = 0.0  # 0 = use the module default
 
     # --- Repo → Plaky placement auto-discovery (replaces repos.yml board/group IDs) ---
     # Catalog: all categorical boards + groups, cached on disk for webhook routing.
@@ -143,11 +153,14 @@ class Settings(BaseSettings):
     # routes (no conversational routing / chat in production; UI is deployed separately).
     boardman_enable_agent_api: bool = True
 
-    agent_max_history: int = 50
+    # PDF plan step 6: a tight recent window; 50 messages of prompt stuffing cost more
+    # tokens than they added context. Raise per-deployment if a flow truly needs more.
+    agent_max_history: int = 16
     agent_require_confirm_bulk: bool = True
     agent_langchain_tools: bool = True
     # LangGraph model↔tool steps cap (each step is often a full LLM call — keep low for latency)
-    agent_recursion_limit: int = 60
+    # 0 = mode-based ceiling (10 read / 16 write, PDF latency plan step 4); set to pin.
+    agent_recursion_limit: int = 0
     # When True, LangChain AgentExecutor prints step traces (noisy; dev only)
     agent_langchain_verbose: bool = False
     prompt_version: str = "2026-04-09"

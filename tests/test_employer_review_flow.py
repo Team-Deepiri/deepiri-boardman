@@ -64,12 +64,16 @@ def _cfg(members: list[TeamMember], excluded: list[str] | None = None) -> TeamAs
 
 
 def test_default_exclusion_list_names() -> None:
+    """Original five from Austin's checklist plus the two Joe added in his PR #81
+    review (leads/managers on the support team, never auto-assigned as PR QA)."""
     assert set(DEFAULT_QA_EXCLUDED) == {
         "Joe Black",
         "Austin Heitzman",
         "Devin Gamble",
         "Sean San",
         "Nathan Adams",
+        "Asheen Hameeda",
+        "AndyN-star",
     }
 
 

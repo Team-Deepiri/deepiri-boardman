@@ -35,6 +35,17 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
+def _clear_github_read_cache() -> None:
+    """The read cache is process-wide by design; between tests it would serve one test's
+    fake-transport payload to the next test's assertions."""
+    from boardman.github.read_cache import clear_read_cache
+
+    clear_read_cache()
+    yield
+    clear_read_cache()
+
+
+@pytest.fixture(autouse=True)
 def _disable_agent_rate_limit_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     """Avoid flaky 429s on fast multi-request agent tests."""
     import boardman.settings as bs

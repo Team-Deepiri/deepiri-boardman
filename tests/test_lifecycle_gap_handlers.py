@@ -429,3 +429,541 @@ async def test_triage_is_idempotent_per_pr(db_session, monkeypatch) -> None:
     res = await ph._maybe_triage_ambiguous_pr(_pr_payload("opened"), db_session)
     assert res is not None and res.get("skipped") is True
     assert "already created" in res.get("message", "")
+
+
+# --- label changes after creation ------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_label_added_after_creation_resyncs_type(db_session, monkeypatch) -> None:
+    """Issue #80: filed bare (task typed Story via the Feature default), `bug` labeled 75s
+    later. Labels are the team's explicit categorization act — the change must reach the
+    task instead of freezing the creation-time race."""
+    import boardman.services.issue_handler as ih
+    from boardman.services.issue_handler import handle_issue_labels_changed
+
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=80, plaky_task_id="task-80"))
+    await db_session.flush()
+
+    async def fake_routing(*a: Any, **kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(ih, "get_routing_async", fake_routing)
+
+    calls: list[tuple[str, str]] = []
+
+    async def fake_update(task_id, inp):
+        calls.append((task_id, inp.task_type))
+        return {"ok": True}
+
+    import boardman.services.task_mutations as tm
+
+    monkeypatch.setattr(tm, "update_task_internal", fake_update)
+
+    payload = IssueEventPayload(
+        action="labeled",
+        issue={
+            "number": 80,
+            "title": "showcase",
+            "html_url": "https://github.com/o/r/issues/80",
+            "labels": [{"name": "bug"}, {"name": "NEEDS HELP"}],
+        },
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await handle_issue_labels_changed(payload, db_session)
+    assert res.get("event") == "issue_labels_synced"
+    assert calls == [("task-80", "Bug")]
+
+
+@pytest.mark.asyncio
+async def test_label_change_on_unmapped_issue_is_skipped(db_session) -> None:
+    from boardman.services.issue_handler import handle_issue_labels_changed
+
+    payload = IssueEventPayload(
+        action="labeled",
+        issue={"number": 999, "title": "t", "html_url": "u", "labels": [{"name": "bug"}]},
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await handle_issue_labels_changed(payload, db_session)
+    assert res.get("skipped") is True
+
+
+@pytest.mark.asyncio
+async def test_pr_label_added_after_open_resyncs_type(db_session, monkeypatch) -> None:
+    """PRs have no native GitHub type — labels ARE their typing. A label added after the
+    PR opened must reach the linked task, same as the issue-side sync."""
+    from boardman.services.pr_handler import handle_pr_labels_changed
+
+    async def linked(session: Any, *, github_repo: str, github_pr_number: int) -> list[str]:
+        return ["t1", "t2"]
+
+    async def fake_routing(*a: Any, **kw: Any) -> None:
+        return None
+
+    monkeypatch.setattr(ph, "distinct_task_ids_for_pr", linked)
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+
+    calls: list[tuple[str, str]] = []
+
+    async def fake_update(task_id, inp):
+        calls.append((task_id, inp.task_type))
+        return {"ok": True}
+
+    monkeypatch.setattr(ph, "update_task_internal", fake_update)
+
+    payload = PullRequestEventPayload(
+        action="labeled",
+        pull_request={
+            "number": 9,
+            "title": "x",
+            "html_url": "u",
+            "state": "open",
+            "merged": False,
+            "labels": [{"name": "bug"}],
+            "head": {"ref": "feature/no-number-here"},
+        },
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await handle_pr_labels_changed(payload, db_session)
+    assert res.get("event") == "pr_labels_synced"
+    assert calls == [("t1", "Bug"), ("t2", "Bug")]
+
+
+@pytest.mark.asyncio
+async def test_pr_label_change_without_type_signal_is_skipped(db_session, monkeypatch) -> None:
+    """'NEEDS HELP' carries no type; rewriting Type off it would churn a curated value."""
+    from boardman.services.pr_handler import handle_pr_labels_changed
+
+    async def linked(session: Any, *, github_repo: str, github_pr_number: int) -> list[str]:
+        return ["t1"]
+
+    monkeypatch.setattr(ph, "distinct_task_ids_for_pr", linked)
+
+    payload = PullRequestEventPayload(
+        action="labeled",
+        pull_request={
+            "number": 9,
+            "title": "x",
+            "html_url": "u",
+            "state": "open",
+            "merged": False,
+            "labels": [{"name": "NEEDS HELP"}],
+            "head": {"ref": "feature/no-number-here"},
+        },
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await handle_pr_labels_changed(payload, db_session)
+    assert res.get("skipped") is True
+
+
+# --- bug tasks -> QA bug specialist ------------------------------------------------
+
+
+class _SpecMember:
+    def __init__(self, display, mid, login):
+        self.display, self.id, self.github_login = display, mid, login
+
+
+class _SpecCfg:
+    plaky_field_qa = "person-4"
+    qa_bug_specialist = "Asheen Hameeda"
+    members = [_SpecMember("Ali F", "481106", "Blasted-ctrl")]
+    fallback_members = [_SpecMember("Asheen Hameeda", "432288", "asheenhameeda8-cpu")]
+
+
+def _wire_specialist_env(monkeypatch, *, is_bug: bool, picked=("481106", "ranked")):
+    """Common monkeypatching for _assign_qa_for_pr: no network, no Plaky."""
+    updates: list[tuple[str, str]] = []
+
+    async def fake_bug(plaky, bid, tid):
+        return is_bug
+
+    async def fake_current(plaky, bid, tid, key):
+        return ""
+
+    async def fake_resolve(bid, fallback):
+        return "person-4"
+
+    async def fake_pick(repo_full):
+        return picked
+
+    async def fake_update(task_id, inp):
+        updates.append((task_id, inp.qa_plaky_id))
+        return {"ok": True}
+
+    async def fake_comment(*a, **kw):
+        return {"ok": True}
+
+    async def fake_reviewers(*a, **kw):
+        return {"ok": True}
+
+    monkeypatch.setattr(ph, "_task_type_is_bug", fake_bug)
+    monkeypatch.setattr(ph, "_current_person_field_value", fake_current)
+    monkeypatch.setattr(ph, "load_team_assignments", lambda: _SpecCfg())
+    monkeypatch.setattr(ph, "update_task_internal", fake_update)
+    monkeypatch.setattr("boardman.assignment.qa_picker.pick_qa_for_repo", fake_pick)
+    monkeypatch.setattr(
+        "boardman.plaky.dynamic_qa_status.resolve_qa_assignee_field_key", fake_resolve
+    )
+    monkeypatch.setattr("boardman.github.pr_actions.comment_on_pr", fake_comment)
+    monkeypatch.setattr("boardman.github.pr_actions.request_reviewers", fake_reviewers)
+    return updates
+
+
+@pytest.mark.asyncio
+async def test_bug_task_qa_goes_to_the_specialist(monkeypatch) -> None:
+    """Employer: 'bug - assign to Hameeda'. She is NOT on the live support-team roster,
+    only in the yaml fallback - the policy must resolve through it, not silently stop
+    applying because of team-membership drift."""
+    updates = _wire_specialist_env(monkeypatch, is_bug=True)
+    res = await ph._assign_qa_for_pr(
+        object(), task_id="t1", board_id="b1", repo_full="o/r", pr_number=9
+    )
+    assert res["plaky_qa"]["id"] == "432288"
+    assert "specialist" in res["plaky_qa"]["reason"]
+    assert updates == [("t1", "432288")]
+
+
+@pytest.mark.asyncio
+async def test_non_bug_task_uses_the_ranked_pick(monkeypatch) -> None:
+    updates = _wire_specialist_env(monkeypatch, is_bug=False)
+    res = await ph._assign_qa_for_pr(
+        object(), task_id="t1", board_id="b1", repo_full="o/r", pr_number=9
+    )
+    assert res["plaky_qa"]["id"] == "481106"
+    assert updates == [("t1", "481106")]
+
+
+@pytest.mark.asyncio
+async def test_specialist_never_reviews_her_own_pr(monkeypatch) -> None:
+    updates = _wire_specialist_env(monkeypatch, is_bug=True)
+    res = await ph._assign_qa_for_pr(
+        object(),
+        task_id="t1",
+        board_id="b1",
+        repo_full="o/r",
+        pr_number=9,
+        pr_author_login="asheenhameeda8-cpu",
+    )
+    assert res["plaky_qa"]["id"] == "481106", "specialist was assigned to QA her own PR"
+    assert updates == [("t1", "481106")]
+
+
+# --- orphan PR -> real linked task -------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_orphan_pr_becomes_a_real_linked_task(db_session, monkeypatch) -> None:
+    """Employer: "if a plaky task already exists for a pr then it connects to that pr,
+    else it makes a new one." The old stub had no PullRequestTaskLink, so merge/review
+    events could never reach it - a dead card."""
+    from boardman.database.models import PullRequestTaskLink
+
+    class Amb:
+        enabled = True
+        triage_board_id = ""
+        triage_group_id = ""
+        assign_qa = True
+        title_template = "Triage: PR #{number} - {repo}"
+
+    class Cfg:
+        ambiguous_pr = Amb()
+        plaky_field_qa = "person-6"
+
+    monkeypatch.setattr(ph, "load_team_assignments", lambda: Cfg())
+
+    class Routing:
+        plaky_board_id = "269028"
+        plaky_group_id = "933385"
+
+    async def fake_routing(*a: Any, **kw: Any):
+        return Routing()
+
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+
+    created: list[Any] = []
+
+    async def fake_create(inp):
+        created.append(inp)
+        return {"ok": True, "task": {"id": "task-new"}, "task_url": "https://plaky/task-new"}
+
+    monkeypatch.setattr("boardman.services.task_mutations.create_task_internal", fake_create)
+
+    async def fake_resolve(actor):
+        return "481106"
+
+    monkeypatch.setattr(
+        "boardman.plaky.dynamic_qa_status.resolve_github_user_to_plaky_user_id", fake_resolve
+    )
+
+    comments: list[str] = []
+
+    class FakePlaky:
+        async def add_comment(self, tid, body, **kw):
+            comments.append(body)
+            return {"ok": True}
+
+    monkeypatch.setattr(ph, "PlakyClient", FakePlaky)
+
+    qa_calls: list[str] = []
+
+    async def fake_qa(
+        plaky, *, task_id, board_id, repo_full, pr_number, pr_author_login="", task_url=""
+    ):
+        qa_calls.append(task_id)
+        return {"plaky_qa": {"id": "476634"}}
+
+    monkeypatch.setattr(ph, "_assign_qa_for_pr", fake_qa)
+
+    payload = PullRequestEventPayload(
+        action="opened",
+        pull_request={
+            "number": 90,
+            "title": "Add exponential backoff to the retry handler",
+            "body": "No issue reference here.",
+            "html_url": "https://github.com/o/r/pull/90",
+            "state": "open",
+            "merged": False,
+            "draft": False,
+            "user": {"login": "Blasted-ctrl"},
+            "head": {"ref": "feat/retry-backoff"},
+            "labels": [],
+        },
+        repository={"full_name": "Team-Deepiri/deepiri-boardman", "name": "deepiri-boardman"},
+    )
+
+    res = await ph._maybe_triage_ambiguous_pr(payload, db_session)
+    assert res and res.get("created_from_pr") is True and res.get("plaky_task_id") == "task-new"
+
+    inp = created[0]
+    assert inp.title == "Add exponential backoff to the retry handler"
+    assert inp.status == "Needs QA", "an open non-draft PR IS ready for review"
+    assert inp.task_type == "Feature"  # from the feat/ branch
+    assert inp.engineer_plaky_id == "481106"  # the PR author writes the code
+    assert inp.plaky_board_id == "269028" and inp.plaky_group_id == "933385"
+
+    links = (await db_session.execute(select(PullRequestTaskLink))).scalars().all()
+    assert [(x.github_pr_number, x.plaky_task_id) for x in links] == [(90, "task-new")]
+    assert qa_calls == ["task-new"]
+
+    # Idempotent: the same PR must not create a second task on replay/edit.
+    res2 = await ph._maybe_triage_ambiguous_pr(payload, db_session)
+    assert res2.get("skipped") is True
+    assert len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_issue_created_with_assignee_lands_assigned(
+    db_session, monkeypatch, fake_plaky
+) -> None:
+    """Live issue #83: created WITH an assignee, the board said NEEDS ASSIGNED with an
+    empty Assignee column. Status follows the assignee from the very first write."""
+    updates: list[Any] = []
+
+    async def fake_update(task_id, inp):
+        updates.append(inp)
+        return {"ok": True}
+
+    async def fake_routing(*a: Any, **kw: Any):
+        class R:
+            plaky_board_id = "269028"
+            plaky_group_id = "933385"
+            plaky_table = ""
+            category = ""
+            description = ""
+
+        return R()
+
+    async def fake_resolve(actor):
+        return "481106"
+
+    async def fake_rp(bid, *, intent):
+        return ("status-8", "8") if intent == "workflow_assigned" else ("status-8", "0")
+
+    class FakeCreatePlaky(fake_plaky):
+        async def create_task(self, **kw):
+            return {"ok": True, "task": {"id": "t-new"}, "task_url": ""}
+
+    monkeypatch.setattr(ih, "PlakyClient", FakeCreatePlaky)
+    monkeypatch.setattr(ih, "get_routing_async", fake_routing)
+    monkeypatch.setattr("boardman.services.task_mutations.update_task_internal", fake_update)
+    monkeypatch.setattr(
+        "boardman.plaky.dynamic_qa_status.resolve_github_user_to_plaky_user_id", fake_resolve
+    )
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_plaky_status_patch", fake_rp)
+
+    payload = IssueEventPayload(
+        action="opened",
+        issue={
+            "number": 83,
+            "title": "[sync test] retry queue drains too slowly",
+            "body": "b",
+            "html_url": "https://github.com/o/r/issues/83",
+            "labels": [{"name": "bug"}],
+            "assignees": [{"login": "Blasted-ctrl"}],
+        },
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await ih.handle_issue_opened(payload, db_session)
+    assert res.get("ok") is True
+    inp = updates[0]
+    assert inp.engineer_plaky_id == "481106"
+    assert inp.status == "8", "status must be Assigned, not NEEDS ASSIGNED"
+
+
+@pytest.mark.asyncio
+async def test_assignee_added_after_creation_fills_engineer(db_session, monkeypatch) -> None:
+    from boardman.services.issue_handler import handle_issue_labels_changed
+
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=90, plaky_task_id="t-90"))
+    await db_session.flush()
+
+    async def fake_routing(*a: Any, **kw: Any):
+        return None
+
+    monkeypatch.setattr(ih, "get_routing_async", fake_routing)
+
+    async def fake_resolve(actor):
+        return "476634"
+
+    monkeypatch.setattr(
+        "boardman.plaky.dynamic_qa_status.resolve_github_user_to_plaky_user_id", fake_resolve
+    )
+    calls: list[Any] = []
+
+    async def fake_update(task_id, inp):
+        calls.append((task_id, inp.engineer_plaky_id, inp.task_type))
+        return {"ok": True}
+
+    monkeypatch.setattr("boardman.services.task_mutations.update_task_internal", fake_update)
+
+    payload = IssueEventPayload(
+        action="assigned",
+        issue={
+            "number": 90,
+            "title": "t",
+            "html_url": "u",
+            "labels": [{"name": "bug"}],
+            "assignees": [{"login": "sergiovargas111"}],
+        },
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await handle_issue_labels_changed(payload, db_session)
+    assert res.get("event") == "issue_labels_synced"
+    assert calls == [("t-90", "476634", "Bug")]
+
+
+def test_bug_specialist_is_off_by_default() -> None:
+    """Per Joe's PR #81 review: no hardcoded QA names except the exclusion list. The
+    bug-specialist mechanism stays available via yaml but ships disabled."""
+    from boardman.assignment.config import DEFAULT_QA_BUG_SPECIALIST, DEFAULT_QA_EXCLUDED
+
+    assert DEFAULT_QA_BUG_SPECIALIST == ""
+    assert "Asheen Hameeda" in DEFAULT_QA_EXCLUDED
+    assert "AndyN-star" in DEFAULT_QA_EXCLUDED
+
+
+@pytest.mark.asyncio
+async def test_approval_with_failing_checks_is_not_verified(db_session, monkeypatch) -> None:
+    """An approval is a verdict on the code, not the build. Red required checks must not
+    let the task read QA Verified."""
+    from boardman.database.models import PullRequestTaskLink
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo="r",
+            github_pr_number=9,
+            plaky_task_id="t1",
+            github_issue_number=0,
+            link_source="auto_link",
+        )
+    )
+    await db_session.flush()
+
+    async def failing(full_name, pr_number):
+        return ["pytest (failure)"]
+
+    monkeypatch.setattr(prh, "_failing_required_checks", failing)
+
+    payload = PullRequestReviewEventPayload(
+        action="submitted",
+        review={"state": "approved", "user": {"login": "sergiovargas111"}},
+        pull_request={"number": 9, "title": "x", "html_url": "u", "state": "open"},
+        repository={"full_name": "o/r", "name": "r"},
+    )
+    res = await prh.handle_pull_request_review(payload, db_session)
+    assert res.get("skipped") is True
+    assert "failing checks" in res.get("message", "")
+    logs = (
+        (
+            await db_session.execute(
+                select(SyncLog).where(SyncLog.action == "approval_held_ci_failing")
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(logs) == 1
+
+
+# --- reconciliation ----------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_reconcile_repairs_unmapped_issue_and_skips_healthy(db_session, monkeypatch) -> None:
+    """Reconcile replays current GitHub state through the normal handlers: an open issue
+    with no task gets one; a mapped issue only gets the idempotent metadata sync; a
+    linked PR is left alone. Running it on a healthy repo changes nothing."""
+    from boardman.services import reconcile as rc
+
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=2, plaky_task_id="t-2"))
+    await db_session.flush()
+
+    class FakeResp:
+        def __init__(self, body):
+            self.status_code = 200
+            self._b = body
+
+        def json(self):
+            return self._b
+
+    class FakeClient:
+        async def get(self, url, headers=None):
+            if "/issues?" in url:
+                return FakeResp(
+                    [
+                        {"number": 1, "title": "unmapped", "html_url": "u1", "labels": []},
+                        {"number": 2, "title": "mapped", "html_url": "u2", "labels": []},
+                    ]
+                )
+            return FakeResp(
+                [{"number": 9, "title": "linked pr", "html_url": "u9", "state": "open"}]
+            )
+
+    monkeypatch.setattr(rc, "github_http_client", lambda: FakeClient())
+    monkeypatch.setattr("boardman.settings.settings.github_pat", "t")
+
+    created: list[int] = []
+    resynced: list[int] = []
+
+    async def fake_opened(payload, session):
+        created.append(payload.issue.number)
+        return {"ok": True, "plaky_task_id": "t-new"}
+
+    async def fake_meta(payload, session):
+        resynced.append(payload.issue.number)
+        return {"ok": True, "event": "issue_labels_synced"}
+
+    async def linked(session, *, github_repo, github_pr_number):
+        return ["t-9"]
+
+    monkeypatch.setattr(rc, "handle_issue_opened", fake_opened)
+    monkeypatch.setattr(rc, "handle_issue_labels_changed", fake_meta)
+    monkeypatch.setattr(rc, "distinct_task_ids_for_pr", linked)
+
+    out = await rc.reconcile_repo("o/r", db_session)
+    assert out["ok"] is True
+    assert created == [1], "only the unmapped issue gets a create"
+    assert resynced == [2], "the mapped issue gets the idempotent metadata pass"
+    assert out["tasks_created"] == 1 and out["issues_resynced"] == 1
+    assert out["prs_checked"] == 1 and out["prs_relinked"] == 0

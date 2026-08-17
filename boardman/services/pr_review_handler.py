@@ -81,12 +81,60 @@ async def _task_ids_for_pr(session: AsyncSession, repo_name: str, pr_number: int
 def _reviewer_plaky_id_from_roster(cfg: TeamAssignmentsConfig, reviewer_login: str) -> str | None:
     if not reviewer_login:
         return None
-    for m in cfg.members:
-        gl = (getattr(m, "github_login", None) or "").strip()
-        if gl and gl.casefold() == reviewer_login.casefold():
-            mid = (getattr(m, "id", None) or "").strip()
-            return mid or None
+    # fallback_members too: the bug specialist lives only in the yaml fallback, and her
+    # reviews/comments must carry the same authority as any rostered QA's.
+    for pool in (cfg.members, getattr(cfg, "fallback_members", []) or []):
+        for m in pool:
+            gl = (getattr(m, "github_login", None) or "").strip()
+            if gl and gl.casefold() == reviewer_login.casefold():
+                mid = (getattr(m, "id", None) or "").strip()
+                if mid:
+                    return mid
     return None
+
+
+async def _failing_required_checks(full_name: str, pr_number: int) -> list[str]:
+    """Names of failing check runs on the PR head commit, [] when green or unknowable.
+
+    An approval is a verdict on the code, not on the build. If required checks are red,
+    marking the task QA Verified would present broken work as done. API trouble returns
+    [] on purpose: absence of the signal is not evidence of failure.
+    """
+    if not (settings.github_pat or "").strip():
+        return []
+    try:
+        from boardman.github.http import github_http_client
+
+        client = github_http_client()
+        hdr = {
+            "Authorization": f"Bearer {settings.github_pat}",
+            "Accept": "application/vnd.github+json",
+        }
+        r = await client.get(
+            f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}", headers=hdr
+        )
+        if r.status_code != 200:
+            return []
+        sha = str(((r.json().get("head") or {}) or {}).get("sha") or "")
+        if not sha:
+            return []
+        r2 = await client.get(
+            f"https://api.github.com/repos/{full_name}/commits/{sha}/check-runs?per_page=100",
+            headers=hdr,
+        )
+        if r2.status_code != 200:
+            return []
+        bad: list[str] = []
+        for run in r2.json().get("check_runs") or []:
+            if not isinstance(run, dict):
+                continue
+            if str(run.get("status") or "") == "completed" and str(
+                run.get("conclusion") or ""
+            ).lower() in ("failure", "timed_out", "action_required"):
+                bad.append(str(run.get("name") or "check"))
+        return bad
+    except Exception:
+        return []
 
 
 async def _assigned_qa_plaky_id(
@@ -202,6 +250,28 @@ async def handle_pull_request_review(
     qa_field_for_changes: str = ""
 
     if state == "approved":
+        failing = await _failing_required_checks(payload.repository.full_name, pr_number)
+        if failing:
+            session.add(
+                SyncLog(
+                    action="approval_held_ci_failing",
+                    github_repo=repo_name,
+                    github_ref=str(pr_number),
+                    plaky_task_id=task_ids[0],
+                    detail=json.dumps({"reviewer": reviewer_login, "failing": failing[:8]}),
+                )
+            )
+            await session.commit()
+            return {
+                "ok": True,
+                "skipped": True,
+                "message": (
+                    "approval received but NOT applied to the board: failing checks "
+                    f"({', '.join(failing[:5])}). Re-approve or re-run checks once green."
+                ),
+                "reviewer": reviewer_login,
+                "state": state,
+            }
         target_status = _qa_approved_status()
         if not target_status and bid:
             res = await resolve_plaky_status_patch(bid, intent="github_pr_review_approved")
@@ -222,12 +292,26 @@ async def handle_pull_request_review(
                 reviewer_plaky_id = await resolve_github_user_to_plaky_user_id(
                     github_actor_payload(review_user)
                 )
-    elif state == "commented" and on_support_roster:
-        target_status = _in_qa_status()
-        if not target_status and bid:
-            res = await resolve_plaky_status_patch(bid, intent="workflow_in_qa")
-            if res:
-                status_field_key, target_status = res[0], res[1]
+    elif state == "commented":
+        authorized = on_support_roster
+        if not authorized and reviewer_login and bid and task_ids:
+            # The task's ASSIGNED QA commenting means QA is actively working it — In QA —
+            # even when they are not on the GitHub support team (the bug specialist).
+            cfg_c = load_team_assignments()
+            rid = _reviewer_plaky_id_from_roster(cfg_c, reviewer_login)
+            if not rid:
+                rid = await resolve_github_user_to_plaky_user_id(github_actor_payload(review_user))
+            if rid:
+                qa_field_c = await resolve_qa_assignee_field_key(bid, cfg_c.plaky_field_qa)
+                if qa_field_c:
+                    rid_assigned = await _assigned_qa_plaky_id(plaky, bid, task_ids[0], qa_field_c)
+                    authorized = bool(rid_assigned) and rid_assigned == str(rid)
+        if authorized:
+            target_status = _in_qa_status()
+            if not target_status and bid:
+                res = await resolve_plaky_status_patch(bid, intent="workflow_in_qa")
+                if res:
+                    status_field_key, target_status = res[0], res[1]
 
     if not target_status:
         return {
@@ -444,8 +528,18 @@ async def handle_issue_comment_on_pr(
     # --- Dev pinged QA / support team (@mention) → Needs QA (again). ---
     if "@" in comment_body:
         support = support_team_logins_casefold()
-        commenter_is_qa_side = bool(commenter) and commenter.casefold() in support
-        if not commenter_is_qa_side and comment_mentions_qa_or_support(comment_body, support):
+        cfg_m = load_team_assignments()
+        roster_logins = {
+            (getattr(m, "github_login", "") or "").strip().casefold()
+            for pool in (cfg_m.members, getattr(cfg_m, "fallback_members", []) or [])
+            for m in pool
+            if (getattr(m, "github_login", "") or "").strip()
+        }
+        qa_side = support | roster_logins
+        commenter_is_qa_side = bool(commenter) and commenter.casefold() in qa_side
+        if not commenter_is_qa_side and comment_mentions_qa_or_support(
+            comment_body, support, qa_logins=roster_logins
+        ):
             q_key, q_val = await _resolve_status(
                 bid, _needs_qa_again_status(), "workflow_needs_qa_again", "workflow_needs_qa"
             )
@@ -504,11 +598,7 @@ async def handle_issue_comment_on_pr(
 
     member_plaky_id: str | None = None
     if commenter:
-        for m in cfg.members:
-            gl = (m.github_login or "").strip()
-            if gl and gl.casefold() == commenter.casefold():
-                member_plaky_id = m.id
-                break
+        member_plaky_id = _reviewer_plaky_id_from_roster(cfg, commenter)
         if not member_plaky_id:
             member_plaky_id = await resolve_github_user_to_plaky_user_id(
                 github_actor_payload(comment_user)

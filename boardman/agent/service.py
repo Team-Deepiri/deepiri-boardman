@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from collections.abc import AsyncIterator
 from datetime import datetime
@@ -138,9 +139,31 @@ def _classify_llm_error(exc: BaseException, *, provider: str) -> ErrorCategory:
             return "model_missing"
         return "upstream_http"
 
+    # Provider SDK exceptions (openai.RateLimitError etc.) are not httpx errors, so the
+    # transcript's TPM 429 fell through to "unknown" and the user was told to check
+    # their API key — a wrong fix for a full quota. Use the SDK's own status_code when
+    # present; NEVER match bare digit substrings ("requested 142900 tokens" contains
+    # "429" and would claim a context-length error is a rate limit).
+    st = getattr(exc, "status_code", None)
+    if st is None:
+        st = getattr(getattr(exc, "response", None), "status_code", None)
+    if isinstance(st, int):
+        if st == 429:
+            return "rate_limited"
+        if st in (401, 403):
+            return "auth"
+        if st == 404:
+            return "model_missing"
+        if st == 400:
+            return "bad_request"
+
     low = str(exc).lower()
     if "not found" in low and "model" in low:
         return "model_missing"
+    if "rate limit" in low or "rate_limit_exceeded" in low or "tokens per min" in low:
+        return "rate_limited"
+    if "invalid api key" in low or "incorrect api key" in low:
+        return "auth"
     return "unknown"
 
 
@@ -182,8 +205,15 @@ def _provider_hint(provider: str, category: ErrorCategory, model: str) -> str:
         if category == "model_missing":
             return "Confirm the OpenAI model ID is valid and enabled for your account."
         if category == "rate_limited":
-            return "OpenAI rate-limited the request. Retry later or lower request volume."
-        return "Check **OPENAI_API_KEY** and model access permissions."
+            return (
+                "OpenAI rate-limited the request (tokens-per-minute quota). This is NOT an "
+                "API-key problem - the quota resets within a minute; just re-send the "
+                "message. If it keeps happening, raise the org TPM limit or use a lighter model."
+            )
+        return (
+            "Unexpected error (full text above). This is usually transient - re-send the "
+            "message once; if it repeats, the error text is the bug report."
+        )
 
     if provider == "anthropic":
         if category == "auth":
@@ -203,7 +233,10 @@ def _provider_hint(provider: str, category: ErrorCategory, model: str) -> str:
             return "Gemini rate-limited the request. Retry later."
         return "Check **GEMINI_API_KEY** and model availability."
 
-    return "Check LLM provider configuration and credentials."
+    return (
+        "Unexpected error (full text above). Re-send the message once; if it repeats, "
+        "the error text is the bug report."
+    )
 
 
 def _format_llm_failure(exc: BaseException, *, provider: str, model: str) -> str:
@@ -344,6 +377,11 @@ async def run_agent_chat(
             ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
+    # The user's message goes into history BEFORE the LLM phase: a provider failure
+    # (the TPM 429 in the live transcript) must not erase what the user said — losing
+    # "X is the assignee" and then filing tasks unassigned is worse than the error.
+    session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
+
     # Release the SQLite write lock NOW: the session-row insert/update above would otherwise
     # hold it through the whole (possibly minutes-long) LLM/tool phase, and every concurrent
     # agent turn would die with "database is locked" after the busy timeout.
@@ -445,7 +483,6 @@ async def run_agent_chat(
             extra_system_suffix=draft_md + intake_extra,
         )
 
-    session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
     session.add(
         AgentMessage(
             session_pk=ag.id,
@@ -507,6 +544,14 @@ async def iter_agent_chat_sse(
             ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
+    # Latency plan step 1: request id + per-stage wall clocks, logged as one line.
+    _req_id = uuid.uuid4().hex[:8]
+    _t0 = time.monotonic()
+
+    # The user's message goes into history BEFORE the LLM phase — a provider failure
+    # (the TPM 429 in the live transcript) must not erase what the user said.
+    session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
+
     # Release the SQLite write lock NOW: the session-row insert/update above would otherwise
     # hold it through the whole (possibly minutes-long) LLM/tool phase, and every concurrent
     # agent turn would die with "database is locked" after the busy timeout.
@@ -515,10 +560,12 @@ async def iter_agent_chat_sse(
     # The Plaky create/patch protocol is dead weight when writes are off — the agent cannot
     # act on it. Team policy stays either way so it can still EXPLAIN the conventions.
     intake_extra = TEAM_TASK_POLICY + (TASK_CREATION_WORKFLOW if allow_writes else "")
+    _t_hist = time.monotonic()
     draft_md, plaky_suffix = await asyncio.gather(
         _load_draft_markdown(session, ag.id),
         _plaky_system_suffix(plaky_board_id, plaky_group_id),
     )
+    _t_ctx = time.monotonic()
 
     yield _sse_event({"type": "session", "session_id": sid})
 
@@ -591,7 +638,6 @@ async def iter_agent_chat_sse(
         assistant_tool_calls_json: str | None = None
         if use_lc and trace_buf:
             assistant_tool_calls_json = _serialize_tool_calls_json(trace_buf)
-        session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
         session.add(
             AgentMessage(
                 session_pk=ag.id,
@@ -601,11 +647,42 @@ async def iter_agent_chat_sse(
             )
         )
         await session.flush()
+        from boardman.agent.tool_timing import latency_percentiles, record_turn_latency
+
+        _total = time.monotonic() - _t0
+        record_turn_latency(_total)
+        pct = latency_percentiles()
+        logger.info(
+            "agent turn %s: db+persist=%.2fs context=%.2fs llm+tools=%.2fs total=%.2fs "
+            "(rolling n=%s p50=%ss p95=%ss)",
+            _req_id,
+            _t_hist - _t0,
+            _t_ctx - _t_hist,
+            _total - (_t_ctx - _t0),
+            _total,
+            pct["count"],
+            pct["p50"],
+            pct["p95"],
+        )
         yield _sse_event({"type": "done"})
 
     except Exception as e:
         logger.exception("Agent chat stream failed")
         err = _format_llm_failure(e, provider=resolved_provider, model=resolved_model)
+        try:
+            session.add(
+                AgentMessage(
+                    session_pk=ag.id,
+                    role="assistant",
+                    content=(
+                        "(this turn failed with a provider error and produced no answer; "
+                        "the user's previous message is still unhandled) " + err[:400]
+                    ),
+                )
+            )
+            await session.commit()
+        except Exception:
+            logger.exception("could not persist failure marker")
         yield _sse_event({"type": "error", "message": err})
 
 

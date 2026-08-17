@@ -34,7 +34,17 @@ DEFAULT_QA_EXCLUDED: tuple[str, ...] = (
     "Devin Gamble",
     "Sean San",
     "Nathan Adams",
+    # Added per Joe's PR #81 review: on the GitHub support team but leads/managers,
+    # never auto-assigned as PR QA.
+    "Asheen Hameeda",
+    "AndyN-star",
 )
+
+# Optional: route all bug-typed tasks to one named QA. Per Joe's PR #81 review this is
+# EMPTY by default — no hardcoded QA names except the exclusion list. (The earlier
+# "bug -> Hameeda" instruction was a misunderstanding about manual work, since resolved.)
+# Set `qa_bug_specialist:` in team_assignments.yml to enable the mechanism.
+DEFAULT_QA_BUG_SPECIALIST = ""
 
 _log = logging.getLogger(__name__)
 _last_field_sync_by_board: dict[str, float] = {}
@@ -81,6 +91,10 @@ class TeamAssignmentsConfig:
     random_jitter: float = 0.12
     ambiguous_pr: AmbiguousPRConfig = field(default_factory=AmbiguousPRConfig)
     qa_excluded: list[str] = field(default_factory=lambda: list(DEFAULT_QA_EXCLUDED))
+    qa_bug_specialist: str = DEFAULT_QA_BUG_SPECIALIST
+    # The yaml `members:` list, kept even when the live GitHub roster wins. Policy roles
+    # (e.g. the bug specialist) must resolve even for people outside the support team.
+    fallback_members: list[TeamMember] = field(default_factory=list)
 
 
 def _path() -> Path:
@@ -569,6 +583,10 @@ def load_team_assignments() -> TeamAssignmentsConfig:
     if isinstance(exc_raw, list):
         excluded = [str(x).strip() for x in exc_raw if str(x).strip()]
 
+    bug_specialist = DEFAULT_QA_BUG_SPECIALIST
+    if "qa_bug_specialist" in data:
+        bug_specialist = str(data.get("qa_bug_specialist") or "").strip()
+
     return TeamAssignmentsConfig(
         plaky_field_engineer=str(keys.get("engineer") or keys.get("assignee_dev") or ""),
         plaky_field_qa=str(keys.get("qa") or keys.get("qa_engineer") or ""),
@@ -585,4 +603,6 @@ def load_team_assignments() -> TeamAssignmentsConfig:
         random_jitter=max(0.0, min(jitter, 0.5)),
         ambiguous_pr=ambiguous,
         qa_excluded=excluded,
+        qa_bug_specialist=bug_specialist,
+        fallback_members=_members_from_yaml() if has_explicit_members else [],
     )

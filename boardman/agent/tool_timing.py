@@ -28,10 +28,35 @@ logger = logging.getLogger(__name__)
 # Per-turn accumulator: tool name -> [total seconds, call count]. A ContextVar keeps
 # concurrent chat turns from mixing their numbers together.
 _turn_totals: ContextVar[dict[str, list[float]] | None] = ContextVar("turn_totals", default=None)
+# Per-turn (tool, args-repr) call counts: the loop breaker (latency plan step 4) refuses
+# the third identical call in one turn instead of letting the model spin to the
+# recursion ceiling repeating a fetch that will not change.
+_turn_calls: ContextVar[dict[tuple[str, str], int] | None] = ContextVar("turn_calls", default=None)
+
+# Rolling end-to-end turn latencies for p50/p95 (latency plan step 1). Process-local.
+_TURN_LATENCIES: list[float] = []
+
+
+def record_turn_latency(seconds: float) -> None:
+    _TURN_LATENCIES.append(seconds)
+    if len(_TURN_LATENCIES) > 200:
+        del _TURN_LATENCIES[: len(_TURN_LATENCIES) - 200]
+
+
+def latency_percentiles() -> dict[str, float]:
+    if not _TURN_LATENCIES:
+        return {"count": 0, "p50": 0.0, "p95": 0.0}
+    xs = sorted(_TURN_LATENCIES)
+    return {
+        "count": len(xs),
+        "p50": round(xs[len(xs) // 2], 2),
+        "p95": round(xs[min(len(xs) - 1, int(len(xs) * 0.95))], 2),
+    }
 
 
 def start_turn() -> None:
     _turn_totals.set({})
+    _turn_calls.set({})
 
 
 def turn_timing() -> str:
@@ -57,6 +82,18 @@ def _record(name: str, elapsed: float) -> None:
 
 def _timed(name: str, coro_fn: Callable[..., Any]) -> Callable[..., Any]:
     async def wrapper(*args: Any, **kwargs: Any) -> Any:
+        calls = _turn_calls.get()
+        if calls is not None:
+            key = (name, repr(args) + "|" + repr(sorted(kwargs.items())))
+            n = calls.get(key, 0) + 1
+            calls[key] = n
+            if n > 2:
+                logger.warning("agent tool %s: identical call #%d refused (loop breaker)", name, n)
+                return (
+                    "LOOP DETECTED: you already called this tool with these exact arguments "
+                    f"{n - 1} times this turn and the result will not change. Use the result "
+                    "you already have, or change the arguments. Do not call it again."
+                )
         started = time.monotonic()
         outcome = "ok"
         try:

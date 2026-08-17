@@ -360,7 +360,6 @@ async def _plaky_create_task(
         get_agent_session_pk,
         get_context_plaky_board_id,
         get_context_plaky_group_id,
-        get_tool_db_session,
     )
 
     bid = board_id.strip() or get_context_plaky_board_id() or None
@@ -385,10 +384,15 @@ async def _plaky_create_task(
             )
         parsed = loaded
 
-    db = get_tool_db_session()
     pk = get_agent_session_pk()
-    if db is not None and pk is not None:
-        draft = await load_task_draft(db, pk)
+    if pk is not None:
+        # A FRESH session per read: the batch tool runs creates on two concurrent lanes,
+        # and SQLAlchemy forbids concurrent operations on one AsyncSession — sharing the
+        # context session here aborted whole batches mid-create under unlucky timing.
+        from boardman.database.session import async_session as _fresh_session
+
+        async with _fresh_session() as _draft_db:
+            draft = await load_task_draft(_draft_db, pk)
         merged = merge_draft_into_field_values(draft, parsed)
     else:
         merged = dict(parsed)
@@ -560,6 +564,39 @@ async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str
     c = PlakyClient()
     r = await c.patch_item_field_values(bid, item_id.strip(), parsed)
     out = dict(r) if isinstance(r, dict) else {"result": r}
+
+    # Patch put a person in the engineer/assignee column without a status in the same
+    # request: make Status agree with the Assignee (NEEDS ASSIGNED -> Assigned only).
+    if out.get("ok"):
+        wrote_engineer = False
+        wrote_status = False
+        for f in (normalized or {}).get("fields") or []:
+            if not isinstance(f, dict):
+                continue
+            key = str(f.get("key") or "")
+            if key not in parsed:
+                continue
+            name = str(f.get("name") or "").casefold()
+            ftype = str(f.get("type") or "").upper()
+            # Only the ownership column counts — patching "Reviewer"/"Reporter" person
+            # columns says nothing about who is assigned.
+            if "PERSON" in ftype and any(
+                tok in name for tok in ("assignee", "engineer", "developer", "owner", "dev")
+            ):
+                wrote_engineer = True
+            # Any select-like workflow column counts as an explicit status write, whatever
+            # the board named it ("Status", "State", "Workflow").
+            if ("STATUS" in ftype or "SELECT" in ftype) and any(
+                tok in name for tok in ("status", "state", "workflow")
+            ):
+                wrote_status = True
+        if wrote_engineer and not wrote_status:
+            from boardman.services.task_mutations import bump_status_for_assignee
+
+            bumped = await bump_status_for_assignee(bid, item_id.strip(), c)
+            if bumped:
+                out.update(bumped)
+
     if field_validation_warnings:
         out["field_validation_warnings"] = field_validation_warnings
     return json.dumps(out, default=str)
@@ -630,6 +667,189 @@ async def _plaky_link_prs(task_id: str, pr_urls: str, board_id: str = "") -> str
     r2["posted_comment_text"] = comment
     r2["linked_pr_urls"] = urls
     return json.dumps(r2, default=str)
+
+
+def _normalize_title(t: str) -> str:
+    import re as _re
+
+    return " ".join(_re.sub(r"[^a-z0-9 ]+", " ", (t or "").casefold()).split())
+
+
+def _titles_match(a: str, b: str) -> bool:
+    """Same task in different words: exact normalized match, or heavy token overlap."""
+    na, nb = _normalize_title(a), _normalize_title(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    ta, tb = set(na.split()), set(nb.split())
+    if len(ta) < 3 or len(tb) < 3:
+        return False
+    inter = len(ta & tb)
+    return inter / max(1, len(ta | tb)) >= 0.75
+
+
+async def _plaky_create_tasks(
+    tasks_json: str,
+    board_id: str = "",
+    group_id: str = "",
+    auto_assign_team: bool = False,
+) -> str:
+    """Create MANY Plaky tasks in ONE call - concurrent creates, one receipt per task.
+
+    "Create me 5 tasks" used to cost one full LLM round trip PER task (~25-30s each at
+    this prompt size against the org's TPM ceiling) because the model could only emit
+    one create at a time. Batching moves the loop below the model: one round trip, and
+    the creates run concurrently (bounded, so Plaky's rate limit is not stampeded).
+    """
+    import asyncio as _asyncio
+
+    try:
+        rows = json.loads(tasks_json or "[]")
+    except ValueError as e:
+        return json.dumps({"ok": False, "message": f"tasks_json is not valid JSON: {e}"})
+    if not isinstance(rows, list) or not rows:
+        return json.dumps({"ok": False, "message": "tasks_json must be a non-empty JSON array"})
+    if len(rows) > 20:
+        return json.dumps(
+            {
+                "ok": False,
+                "message": (
+                    "at most 20 tasks per call - split the list and call plaky_create_tasks "
+                    "again with the remainder (successive calls are fine; do not fall back "
+                    "to single creates)"
+                ),
+            }
+        )
+
+    # Duplicate guard: the board is the source of truth. Creating "Ship bidirectional
+    # sync" when that card already exists buries the real one - fetch existing titles
+    # ONCE and skip matches, pointing at the existing card instead.
+    from boardman.agent.tool_context import get_context_plaky_board_id
+
+    existing: list[dict[str, Any]] = []
+    dedupe_bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip()
+    if dedupe_bid:
+        try:
+            listing = await PlakyClient().get_tasks(board_id=dedupe_bid, status="all")
+            existing = [t for t in (listing.get("tasks") or []) if isinstance(t, dict)]
+        except Exception:
+            existing = []  # dedupe is best-effort; creation must not die on a listing blip
+
+    # Plaky's create endpoint is ~0.2s solo but shapes concurrent bursts hard (measured
+    # 2.5-11.8s per POST at 5-way). Two lanes with a 0.3s stagger measured fastest
+    # (12.9s for 5 vs 17.8s at 5-way). QA is NOT picked here (auto_assign_team defaults
+    # False) - employer flow assigns QA at PR time.
+    sem = _asyncio.Semaphore(2)
+
+    async def one(row: Any, idx: int = 0) -> dict[str, Any]:
+        if not isinstance(row, dict) or not str(row.get("title") or "").strip():
+            return {
+                "ok": False,
+                "title": str((row or {}).get("title") or ""),
+                "message": "title is required",
+            }
+        for ex in existing:
+            ex_title = str(ex.get("name") or ex.get("title") or "")
+            if _titles_match(str(row["title"]), ex_title):
+                ex_id = str(ex.get("id") or "")
+                return {
+                    "ok": True,
+                    "already_exists": True,
+                    "title": row["title"],
+                    "existing_title": ex_title,
+                    "task_id": ex_id,
+                    "task_url": f"https://app.plaky.com/task/{ex_id}" if ex_id else "",
+                    "message": "",
+                }
+        fv = row.get("field_values")
+        # Capped lane stagger AFTER validation: spreads burst arrival without making a
+        # 20-row batch's tail idle for seconds, and invalid rows fail instantly.
+        await _asyncio.sleep(min(idx, 4) * 0.25)
+        async with sem:
+            raw = await _plaky_create_task(
+                title=str(row["title"]),
+                description=str(row.get("description") or ""),
+                priority=str(row.get("priority") or "Medium"),
+                repo_tag=str(row.get("repo_tag") or ""),
+                board_id=board_id,
+                group_id=group_id,
+                field_values_json=json.dumps(fv) if isinstance(fv, dict) and fv else "",
+                auto_assign_team=auto_assign_team,
+            )
+        try:
+            res = json.loads(raw)
+        except ValueError:
+            return {"ok": False, "title": row["title"], "message": str(raw)[:300]}
+        task = res.get("task") if isinstance(res.get("task"), dict) else {}
+        fv_keys = {str(k) for k in fv} if isinstance(fv, dict) else set()
+        return {
+            "ok": bool(res.get("ok")),
+            "title": row["title"],
+            "task_id": str(task.get("id") or res.get("task_id") or ""),
+            "task_url": res.get("task_url") or "",
+            "priority": str(row.get("priority") or "Medium"),
+            # Only claim the default status when the row did not set its own status or
+            # people - otherwise the receipt could contradict the board.
+            "default_status_applies": (
+                not auto_assign_team
+                and not any(k.startswith(("status", "person")) for k in fv_keys)
+            ),
+            "message": "" if res.get("ok") else str(res.get("message") or "")[:300],
+        }
+
+    raw_results = await _asyncio.gather(
+        *(one(r, i) for i, r in enumerate(rows)), return_exceptions=True
+    )
+    results = [
+        (
+            r
+            if isinstance(r, dict)
+            else {
+                "ok": False,
+                "title": str(
+                    (rows[i] or {}).get("title") if isinstance(rows[i], dict) else rows[i]
+                )[:80],
+                "message": f"{type(r).__name__}: {r}"[:300],
+            }
+        )
+        for i, r in enumerate(raw_results)
+    ]
+    created = [r for r in results if r.get("ok") and not r.get("already_exists")]
+    skipped_existing = [r for r in results if r.get("already_exists")]
+    failed = [r for r in results if not r.get("ok")]
+    # Numbered receipt cards, one per input row — built from results ALONE so a
+    # malformed row still gets a visible failure card instead of vanishing from the
+    # receipt while counting in failed_count.
+    cards: list[str] = []
+    for i, r in enumerate(results, start=1):
+        head = f"{i}.) **{r.get('title')}**"
+        link = f" · [open in Plaky]({r['task_url']})" if r.get("task_url") else ""
+        if r.get("already_exists"):
+            cards.append(
+                f"{head}\n    Already on the board as **{r.get('existing_title')}** — "
+                f"not re-created{link}"
+            )
+        elif r.get("ok"):
+            bits = []
+            if r.get("default_status_applies", True):
+                bits.append("Status **NEEDS ASSIGNED**")
+            bits.append(f"Priority **{r.get('priority') or 'Medium'}**")
+            cards.append(f"{head}\n    {' · '.join(bits)} · QA assigned at PR time{link}")
+        else:
+            cards.append(f"{head}\n    ⚠ FAILED: {r.get('message')}")
+    return json.dumps(
+        {
+            "ok": not failed,
+            "created_count": len(created),
+            "already_existed_count": len(skipped_existing),
+            "failed_count": len(failed),
+            "results": results,
+            "receipt_markdown": "\n\n".join(cards),
+            "note": "Echo receipt_markdown to the user (adjust only fields you know differ), add ONE closing line. Do not re-compose the receipts from scratch.",
+        },
+        default=str,
+    )
 
 
 async def _plaky_create_subtask(
@@ -763,6 +983,20 @@ def build_plaky_tools(*, allow_writes: bool) -> list[StructuredTool]:
     if allow_writes:
         tools.extend(
             [
+                StructuredTool.from_function(
+                    coroutine=_plaky_create_tasks,
+                    name="plaky_create_tasks",
+                    description=(
+                        "Create SEVERAL Plaky tasks in ONE call - the ONLY correct way to create 2+ "
+                        "tasks. Never loop plaky_create_task for a multi-task request. "
+                        "Args: tasks_json = JSON array of {title (required), description?, priority?, "
+                        "repo_tag?, field_values? (object, schema keys)}; board_id?/group_id? apply to "
+                        "all (Current Plaky placement used when omitted); auto_assign_team defaults "
+                        "FALSE - QA is assigned at PR time per team flow, not at creation. "
+                        "Creates run concurrently server-side. Returns one receipt per task "
+                        "(ok, task_id, task_url, message)."
+                    ),
+                ),
                 StructuredTool.from_function(
                     coroutine=_plaky_create_task,
                     name="plaky_create_task",

@@ -10,6 +10,10 @@ qa_excluded:
 - Devin Gamble
 - Sean San
 - Nathan Adams
+# Added per Joe's PR #81 review (leads/managers on the support team, never PR QA):
+- Asheen Hameeda
+- AndyN-star
+
 member_defaults:
   roles:
   - engineer
@@ -66,7 +70,7 @@ repo_requirements:
 selection:
   random_jitter: 0.12
 ambiguous_pr:
-  enabled: false
+  enabled: true   # orphan PRs become real, linked tasks on the repo's routed board
   triage_board_id: ''
   triage_group_id: ''
   assign_qa: true
