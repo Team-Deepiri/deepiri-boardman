@@ -28,6 +28,14 @@ issue opened            -> task on Bots/deepiri-boardman: NEEDS ASSIGNED
                            Priority: inferred from text/labels
 issue labeled/typed/    -> re-syncs Type and fills the assignee (fill-only, never
   assigned later           clears curated Plaky state)
+sidebar Priority set    -> Priority mirrors GitHub's issue field / priority label
+  or changed               (Low/Medium/High, Urgent -> VERY IMPORTANT); text-inferred
+                           priority never overwrites the board after creation
+issue title/body edited -> task name + description re-sync (poller detects via a
+                           text signature; webhooks route issues.edited)
+issue closed            -> Completed, remembering the pre-close status
+issue reopened          -> RESUMES the pre-close status; no record -> owner ? Assigned
+                           : NEEDS ASSIGNED (never a blanket In Progress)
 PR opened (linked)      -> assignee = PR author; QA picked + @mentioned + requested;
                            non-draft -> Needs QA; draft -> follows assignee
 PR opened (no match)    -> a REAL linked task is created (title/type/priority from the
@@ -41,7 +49,6 @@ new commits after       -> QA Verified/Rejected invalidated -> Needs QA Again
   a verdict
 approve / dismiss       -> QA Verified / back to In QA
 merge (last open PR)    -> Completed        close unmerged (last PR) -> In Progress
-issue closed / reopened -> Completed / In Progress
 no hardcoded QA names   -> exclusion list only (Joe, Austin, Devin, Sean, Nathan,
                            Hameeda, Andy N); optional qa_bug_specialist ships empty
 ```

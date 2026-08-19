@@ -27,6 +27,11 @@ class GitHubIssue(BaseModel):
     # GitHub's native issue Type (org feature): {"name": "Feature", ...} or None.
     # PRs never have one — for them, labels are the only typing signal.
     type: Any | None = None
+    priority: Any | None = None
+    # Sidebar issue fields (org feature): rows like {"issue_field_name": "Priority",
+    # "single_select_option": {"name": "High"}}. Undeclared keys are DROPPED by
+    # pydantic, which silently ate the team's actual priority signal.
+    issue_field_values: list[Any] = Field(default_factory=list)
     assignee: Any | None = None
     assignees: list[Any] = Field(default_factory=list)
 

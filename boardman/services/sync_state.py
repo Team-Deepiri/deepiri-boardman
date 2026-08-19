@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
-from boardman.services.priority_rules import infer_priority_from_text
+from boardman.services.priority_rules import infer_priority_from_text, priority_from_github_label
 
 
 def _value(obj: Any, name: str, default: Any = None) -> Any:
@@ -48,6 +48,10 @@ class GitHubSyncState:
     native_type: str
     task_type: str
     priority: str
+    # True when a human set the priority ON GITHUB (sidebar Priority field or a
+    # priority label). Only then may later syncs overwrite the board's value —
+    # inferred priorities must not stomp a lead's hand-tuning on unrelated events.
+    priority_explicit: bool
     assignee_login: str
     author_login: str
     state: str
@@ -66,6 +70,28 @@ def _native_type(value: Any) -> str:
     return str(value or "").strip()
 
 
+def issue_field_priority(issue: Any) -> str:
+    """Priority from GitHub's sidebar issue fields (org feature, 2025+).
+
+    The REST payload carries `issue_field_values` rows like
+    {"issue_field_name": "Priority", "data_type": "single_select",
+     "single_select_option": {"name": "High"}}. This is where the team actually
+    sets priority (verified live on issue #87: sidebar said High, no label, no
+    project — and the task sat on the inferred Medium).
+    """
+    for row in _value(issue, "issue_field_values", []) or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("issue_field_name") or "").strip().casefold() != "priority":
+            continue
+        opt = row.get("single_select_option")
+        name = opt.get("name") if isinstance(opt, dict) else None
+        mapped = priority_from_github_label(name)
+        if mapped:
+            return mapped
+    return ""
+
+
 def resolve_issue_state(issue: Any, *, repo_full_name: str, repo_name: str) -> GitHubSyncState:
     labels = _labels(_value(issue, "labels", []))
     native = _native_type(_value(issue, "type"))
@@ -75,6 +101,11 @@ def resolve_issue_state(issue: Any, *, repo_full_name: str, repo_name: str) -> G
     single_assignee = _value(issue, "assignee")
     if single_assignee and not assignees:
         assignees = [single_assignee]
+    explicit_priority = (
+        issue_field_priority(issue)
+        or priority_from_github_label(_value(issue, "priority"))
+        or next((p for p in (priority_from_github_label(lb) for lb in labels) if p), "")
+    )
     return GitHubSyncState(
         entity="issue",
         repo_full_name=repo_full_name,
@@ -86,7 +117,8 @@ def resolve_issue_state(issue: Any, *, repo_full_name: str, repo_name: str) -> G
         labels=labels,
         native_type=native,
         task_type=native or infer_task_type_from_pr(None, labels) or "Feature",
-        priority=infer_priority_from_text(title, body, labels),
+        priority=explicit_priority or infer_priority_from_text(title, body, labels),
+        priority_explicit=bool(explicit_priority),
         assignee_login=first_login(assignees),
         author_login=_login(_value(issue, "user")),
         state=str(_value(issue, "state", "open") or "open").strip().casefold(),
@@ -119,6 +151,7 @@ def resolve_pr_state(pr: Any, *, repo_full_name: str, repo_name: str) -> GitHubS
         priority=infer_priority_from_text(
             str(_value(pr, "title", "") or ""), str(_value(pr, "body", "") or ""), labels
         ),
+        priority_explicit=False,
         assignee_login=assignee or author,
         author_login=author,
         state=str(_value(pr, "state", "open") or "open").strip().casefold(),

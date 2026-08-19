@@ -22,6 +22,7 @@ registered GitHub webhook delivers events instead.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -65,6 +66,48 @@ _log = logging.getLogger(__name__)
 _COMMIT_ISSUE_RE = re.compile(
     r"(?:(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)\s+)?#(\d+)", re.IGNORECASE
 )
+
+
+def issue_meta_signature(it: dict[str, Any]) -> tuple[str, ...]:
+    """Everything metadata-shaped that must re-sync the task when it changes on GitHub:
+    native Type, the sidebar Priority field, assignees, labels."""
+    type_name = ""
+    if isinstance(it.get("type"), dict):
+        type_name = str(it["type"].get("name") or "")
+    priority = ""
+    for row in it.get("issue_field_values") or []:
+        if (
+            isinstance(row, dict)
+            and str(row.get("issue_field_name") or "").strip().casefold() == "priority"
+        ):
+            opt = row.get("single_select_option")
+            priority = str(opt.get("name") or "") if isinstance(opt, dict) else ""
+            break
+    assignee_sig = tuple(
+        sorted(
+            str((a or {}).get("login") or "")
+            for a in (it.get("assignees") or [])
+            if isinstance(a, dict)
+        )
+    )
+    labels = tuple(
+        sorted(
+            str((lb or {}).get("name") or "")
+            for lb in (it.get("labels") or [])
+            if isinstance(lb, dict)
+        )
+    )
+    return (type_name, priority) + assignee_sig + labels
+
+
+def issue_text_signature(it: dict[str, Any]) -> tuple[str, str]:
+    """Title plus a body digest — a change means the issue was edited and the task's
+    name/description must follow (bodies can be huge; the digest keeps the map small)."""
+    body = str(it.get("body") or "")
+    return (
+        str(it.get("title") or ""),
+        hashlib.sha1(body.encode("utf-8"), usedforsecurity=False).hexdigest(),
+    )
 
 
 def _parse_iso(value: str) -> datetime | None:
@@ -254,7 +297,7 @@ class GitHubEventPoller:
             # Sorge (PR #81): this state grew without bound over a long session. Cap the
             # per-repo maps; entries past the cap are the OLDEST issues, which the
             # baseline cutoff already excludes from re-processing.
-            for key in ("issue_state", "issue_labels"):
+            for key in ("issue_state", "issue_labels", "issue_text"):
                 m2 = proc.get(key)
                 if isinstance(m2, dict) and len(m2) > 2000:
                     for old in sorted(m2)[:500]:
@@ -267,31 +310,18 @@ class GitHubEventPoller:
             )
 
             # Labels land AFTER creation (issue #80: `bug` arrived 75s late; the task said
-            # Story indefinitely). Track the label set so a change re-syncs the task Type.
-            type_name = ""
-            if isinstance(it.get("type"), dict):
-                type_name = str(it["type"].get("name") or "")
-            assignee_sig = tuple(
-                sorted(
-                    str((a or {}).get("login") or "")
-                    for a in (it.get("assignees") or [])
-                    if isinstance(a, dict)
-                )
-            )
-            labels_sig = (
-                (type_name,)
-                + assignee_sig
-                + tuple(
-                    sorted(
-                        str((lb or {}).get("name") or "")
-                        for lb in (it.get("labels") or [])
-                        if isinstance(lb, dict)
-                    )
-                )
-            )
+            # Story indefinitely). Track a metadata signature (type/priority/assignees/
+            # labels) AND a text signature (title/body): sidebar priority changes and
+            # post-creation edits must re-sync the task instead of freezing whatever the
+            # creation-time race produced.
+            meta_sig = issue_meta_signature(it)
             issue_labels = proc.setdefault("issue_labels", {})
             labels_prev = issue_labels.get(num)
-            issue_labels[num] = labels_sig
+            issue_labels[num] = meta_sig
+            text_sig = issue_text_signature(it)
+            issue_text = proc.setdefault("issue_text", {})
+            text_prev = issue_text.get(num)
+            issue_text[num] = text_sig
 
             action = ""
             if is_new:
@@ -301,7 +331,10 @@ class GitHubEventPoller:
                 action = "closed" if state == "closed" else "reopened"
             elif prev is None and num in proc["issues_opened"] and state == "closed":
                 action = "closed"
-            elif labels_prev is not None and labels_prev != labels_sig:
+            elif text_prev is not None and text_prev != text_sig:
+                # "edited" syncs text AND metadata, so it wins when both changed.
+                action = "edited"
+            elif labels_prev is not None and labels_prev != meta_sig:
                 action = "labeled"
             if not action:
                 continue
@@ -317,6 +350,7 @@ class GitHubEventPoller:
                     "user": it.get("user"),
                     "labels": it.get("labels") or [],
                     "type": it.get("type"),
+                    "issue_field_values": it.get("issue_field_values") or [],
                     "assignees": it.get("assignees") or [],
                 },
                 repository={"full_name": full_name, "name": name},
@@ -616,7 +650,18 @@ class GitHubEventPoller:
                         from boardman.services.issue_handler import handle_issue_reopened
 
                         result = await handle_issue_reopened(parsed, session)
-                    elif parsed.action in ("labeled", "unlabeled", "assigned", "unassigned"):
+                    elif parsed.action == "edited":
+                        from boardman.services.issue_handler import handle_issue_edited
+
+                        result = await handle_issue_edited(parsed, session)
+                    elif parsed.action in (
+                        "labeled",
+                        "unlabeled",
+                        "assigned",
+                        "unassigned",
+                        "typed",
+                        "untyped",
+                    ):
                         from boardman.services.issue_handler import handle_issue_labels_changed
 
                         result = await handle_issue_labels_changed(parsed, session)
