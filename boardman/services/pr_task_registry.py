@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from datetime import datetime
 
 from sqlalchemy import and_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.models import PullRequestTaskLink
@@ -41,8 +42,21 @@ async def upsert_pr_task_link(
         github_issue_number=github_issue_number,
         link_source=link_source,
     )
-    session.add(row)
-    return row
+    try:
+        async with session.begin_nested():
+            session.add(row)
+            await session.flush()
+        return row
+    except IntegrityError:
+        existing = await session.execute(q)
+        row = existing.scalar_one_or_none()
+        if row is None:
+            raise
+        row.plaky_task_id = plaky_task_id
+        row.link_source = link_source
+        row.merged_at = None
+        row.withdrawn_at = None
+        return row
 
 
 async def mark_pr_withdrawn(

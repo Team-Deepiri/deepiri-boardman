@@ -22,7 +22,10 @@ from boardman.plaky.dynamic_qa_status import (
     resolve_qa_assignee_field_key,
 )
 from boardman.repos_config import get_routing_async
-from boardman.services.comment_dedupe import comment_already_synced
+from boardman.services.comment_dedupe import (
+    github_activity_marker,
+    mirror_github_activity,
+)
 from boardman.services.pr_handler import _update_plaky_task_status
 from boardman.services.pr_task_registry import distinct_task_ids_for_pr
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
@@ -235,16 +238,46 @@ async def handle_pull_request_review(
     support = support_team_logins_casefold()
     on_support_roster = bool(reviewer_login) and reviewer_login.casefold() in support
 
+    bid = (board_id or "").strip()
     plaky = PlakyClient()
     updated: list[dict[str, Any]] = []
+    review_data = payload.review.model_dump()
+    review_body = str(review_data.get("body") or "").strip()
+    review_marker = github_activity_marker(
+        review_data,
+        kind="pr-review",
+        fallback=f"{repo_name}:{pr_number}:{reviewer_login}:{state}:{review_body}",
+    )
+    review_mirrors: list[dict[str, Any]] = []
+    if review_body:
+        review_url = str(review_data.get("html_url") or "").strip()
+        review_text = (
+            f"📝 **GitHub PR review** by `{reviewer_login or 'unknown'}` on PR #{pr_number}:\n\n"
+            f"> {review_body[:1000].replace(chr(10), chr(10) + '> ')}"
+        )
+        if review_url:
+            review_text += f"\n\n{review_url}"
+        for task_id in task_ids:
+            review_mirrors.append(
+                await mirror_github_activity(
+                    session,
+                    plaky,
+                    task_id=task_id,
+                    action="pr_review_synced",
+                    marker=f"{review_marker}:{task_id}",
+                    body=review_text,
+                    board_id=bid,
+                    github_repo=repo_name,
+                    github_ref=str(pr_number),
+                )
+            )
+        await session.commit()
 
     # Approved: any reviewer's Approve → QA verified / approved Plaky status.
     # changes_requested: only the Plaky-assigned QA's "Request changes" → QA rejected (not other reviewers).
     # "commented" → In QA only for support-team logins to avoid noise from drive-by comments.
     target_status = ""
     status_field_key: str | None = None
-    bid = (board_id or "").strip()
-
     changes_requested_only_assigned_qa = False
     reviewer_plaky_id: str | None = None
     qa_field_for_changes: str = ""
@@ -416,14 +449,6 @@ async def _sync_plain_issue_comment(
     if not mapping or not mapping.plaky_task_id:
         return {"ok": True, "skipped": True, "message": "no Plaky task mapped for this issue"}
 
-    if await comment_already_synced(session, "issue_comment_synced", comment_url):
-        return {
-            "ok": True,
-            "skipped": True,
-            "message": "comment already mirrored to Plaky",
-            "plaky_task_id": mapping.plaky_task_id,
-        }
-
     routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()
 
@@ -436,21 +461,30 @@ async def _sync_plain_issue_comment(
         text += f"\n\n{comment_url}"
 
     plaky = PlakyClient()
-    res = await plaky.add_comment(mapping.plaky_task_id, text, board_id=bid or None)
-    session.add(
-        SyncLog(
-            action="issue_comment_synced",
-            github_repo=repo_name,
-            github_ref=str(issue_number),
-            plaky_task_id=mapping.plaky_task_id,
-            detail=json.dumps(
-                {"commenter": commenter, "comment_url": comment_url, "plaky_ok": res.get("ok")},
-                default=str,
-            ),
-        )
+    marker = github_activity_marker(
+        payload.comment,
+        kind="issue-comment",
+        fallback=f"{repo_name}:{issue_number}:{commenter}:{comment_body}",
+    )
+    res = await mirror_github_activity(
+        session,
+        plaky,
+        task_id=mapping.plaky_task_id,
+        action="issue_comment_synced",
+        marker=marker,
+        body=text,
+        board_id=bid,
+        github_repo=repo_name,
+        github_ref=str(issue_number),
     )
     await session.commit()
-    return {"ok": True, "plaky_task_id": mapping.plaky_task_id, "event": "issue_comment_synced"}
+    return {
+        "ok": res.get("ok", True),
+        "skipped": bool(res.get("skipped")),
+        "plaky_task_id": mapping.plaky_task_id,
+        "event": "issue_comment_synced",
+        "mirrored": res.get("mirrored", False),
+    }
 
 
 async def handle_issue_comment_on_pr(
@@ -492,6 +526,36 @@ async def handle_issue_comment_on_pr(
         comment_body = str(payload.comment.get("body") or "")
 
     bid = (board_id or "").strip()
+    comment_url = str(payload.comment.get("html_url") or "").strip() if isinstance(payload.comment, dict) else ""
+    marker = github_activity_marker(
+        payload.comment,
+        kind="pr-conversation-comment",
+        fallback=f"{repo_name}:{pr_number}:{commenter}:{comment_body}",
+    )
+    comment_excerpt = comment_body[:700] + ("…" if len(comment_body) > 700 else "")
+    mirror_text = (
+        f"💬 **GitHub PR comment** by `{commenter or 'unknown'}` on PR #{pr_number}:\n\n"
+        f"> {comment_excerpt.replace(chr(10), chr(10) + '> ')}"
+    )
+    if comment_url:
+        mirror_text += f"\n\n{comment_url}"
+    plaky = PlakyClient()
+    mirrored: list[dict[str, Any]] = []
+    for task_id in task_ids:
+        mirrored.append(
+            await mirror_github_activity(
+                session,
+                plaky,
+                task_id=task_id,
+                action="pr_comment_synced",
+                marker=f"{marker}:{task_id}",
+                body=mirror_text,
+                board_id=bid,
+                github_repo=repo_name,
+                github_ref=str(pr_number),
+            )
+        )
+    await session.commit()
 
     # --- Pause: any commenter saying "pause"/"paused"/"on hold" pauses the work. ---
     from boardman.github.pr_signals import comment_mentions_qa_or_support, comment_requests_pause
@@ -504,7 +568,7 @@ async def handle_issue_comment_on_pr(
                 "skipped": True,
                 "message": "pause requested but no paused status resolvable",
             }
-        plaky_p = PlakyClient()
+        plaky_p = plaky
         updated_p: list[dict[str, Any]] = []
         for tid in task_ids:
             res = await _update_plaky_task_status(
@@ -544,7 +608,7 @@ async def handle_issue_comment_on_pr(
                 bid, _needs_qa_again_status(), "workflow_needs_qa_again", "workflow_needs_qa"
             )
             if q_val:
-                plaky_q = PlakyClient()
+                plaky_q = plaky
                 updated_q: list[dict[str, Any]] = []
                 for tid in task_ids:
                     res = await _update_plaky_task_status(
@@ -594,8 +658,6 @@ async def handle_issue_comment_on_pr(
 
     cfg = load_team_assignments()
     qa_field = await resolve_qa_assignee_field_key(bid, cfg.plaky_field_qa)
-    plaky = PlakyClient()
-
     member_plaky_id: str | None = None
     if commenter:
         member_plaky_id = _reviewer_plaky_id_from_roster(cfg, commenter)
@@ -693,4 +755,9 @@ async def handle_issue_comment_on_pr(
     await session.commit()
     if updated and task_ids:
         await maybe_enqueue_plaky_reorder_after_task(plaky, task_ids[0])
-    return {"ok": True, "updated": updated, "status": in_qa}
+    return {
+        "ok": True,
+        "updated": updated,
+        "status": in_qa,
+        "mirrored": mirrored,
+    }

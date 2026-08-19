@@ -65,7 +65,79 @@ async def plaky_reorder_group_job(payload: dict[str, Any]) -> dict[str, Any]:
         return await reorder_group_completed_last(plaky, bid, gid)
 
 
+async def boardman_repo_scan_job(payload: dict[str, Any]) -> dict[str, Any]:
+    """Background: run an LLM repo scan without holding an HTTP request open."""
+    from boardman.database.session import async_session
+    from boardman.services.scan_handler import run_repo_scan
+
+    repo = str(payload.get("repo") or "").strip()
+    if not repo:
+        return {"ok": False, "error": "repo required"}
+
+    async with async_session() as session:
+        try:
+            result = await run_repo_scan(
+                session,
+                repo,
+                dry_run=bool(payload.get("dry_run")),
+                provider=payload.get("provider"),
+                model=payload.get("model"),
+            )
+            await session.commit()
+            return result
+        except Exception as e:
+            logger.exception("boardman_repo_scan_job failed")
+            await session.rollback()
+            return {"ok": False, "error": str(e)}
+
+
+async def boardman_github_webhook_job(payload: dict[str, Any]) -> dict[str, Any]:
+    """Process one verified GitHub delivery off the HTTP request path."""
+    import asyncio
+
+    from boardman.database.models import GitHubWebhookDelivery
+    from boardman.database.session import async_session
+    from boardman.routes.github_events import dispatch_github_event
+    from boardman.settings import settings
+
+    event_type = str(payload.get("event_type") or "").strip()
+    body = payload.get("payload")
+    delivery_id = str(payload.get("delivery_id") or "").strip()
+    if not event_type or not isinstance(body, dict):
+        return {"ok": False, "error": "event_type and payload are required"}
+
+    last_error = ""
+    attempts = max(1, int(settings.github_webhook_job_retries or 0) + 1)
+    for attempt in range(1, attempts + 1):
+        async with async_session() as session:
+            try:
+                result = await dispatch_github_event(event_type, body, session)
+                if not result.get("ok", True):
+                    raise RuntimeError(str(result.get("message") or "synchronization failed"))
+                if delivery_id:
+                    row = await session.get(GitHubWebhookDelivery, delivery_id)
+                    if row:
+                        row.status = "processed"
+                        row.note = f"worker attempt {attempt}"
+                await session.commit()
+                return {**result, "delivery_id": delivery_id, "attempt": attempt}
+            except Exception as exc:
+                last_error = str(exc)[:500]
+                await session.rollback()
+                if delivery_id:
+                    row = await session.get(GitHubWebhookDelivery, delivery_id)
+                    if row:
+                        row.status = "failed" if attempt >= attempts else "processing"
+                        row.note = f"worker attempt {attempt}: {last_error}"
+                    await session.commit()
+        if attempt < attempts:
+            await asyncio.sleep(min(2.0 ** (attempt - 1), 8.0))
+    raise RuntimeError(last_error or "GitHub webhook synchronization failed")
+
+
 JOB_HANDLERS: dict[str, JobHandler] = {
     "boardman_agent_chat_job": boardman_agent_chat_job,
+    "boardman_github_webhook_job": boardman_github_webhook_job,
+    "boardman_repo_scan_job": boardman_repo_scan_job,
     "plaky_reorder_group_job": plaky_reorder_group_job,
 }

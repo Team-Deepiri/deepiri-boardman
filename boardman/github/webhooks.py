@@ -67,6 +67,7 @@ class PullRequestEventPayload(BaseModel):
     action: str
     pull_request: GitHubPullRequest
     repository: GitHubRepository
+    label: dict | None = None
 
 
 class GitHubReview(BaseModel):
@@ -75,6 +76,11 @@ class GitHubReview(BaseModel):
     user: dict | None = None
     state: str = ""
     body: str | None = None
+    id: int | str | None = None
+    node_id: str | None = None
+    html_url: str | None = None
+    submitted_at: str | None = None
+    updated_at: str | None = None
 
 
 class PullRequestReviewEventPayload(BaseModel):

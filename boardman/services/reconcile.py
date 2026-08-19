@@ -7,7 +7,8 @@ the same handlers the webhook path uses. Those handlers are already idempotent (
 live retro-sync of issues #82/#83 ran exactly this way), so reconciliation cannot
 duplicate tasks or comments, and a second run over a healthy repo is a no-op.
 
-Bounded on purpose: open items plus a single bounded page each, never full history.
+Bounded on purpose: the latest bounded page of issues and PRs is fetched, including closed
+items, so terminal-state drift can be repaired without walking full repository history.
 """
 
 from __future__ import annotations
@@ -24,7 +25,12 @@ from boardman.services.issue_handler import (
     handle_issue_labels_changed,
     handle_issue_opened,
 )
-from boardman.services.pr_handler import handle_pr_opened
+from boardman.services.pr_handler import (
+    handle_pr_closed_without_merge,
+    handle_pr_edited,
+    handle_pr_merged,
+    handle_pr_opened,
+)
 from boardman.services.pr_task_registry import distinct_task_ids_for_pr
 from boardman.settings import settings
 
@@ -65,7 +71,7 @@ async def reconcile_repo(
     }
 
     r = await client.get(
-        f"https://api.github.com/repos/{full_name}/issues?state=open&per_page={max_items}",
+        f"https://api.github.com/repos/{full_name}/issues?state=all&sort=updated&direction=desc&per_page={max_items}",
         headers=_gh_headers(),
     )
     if r.status_code != 200:
@@ -90,19 +96,27 @@ async def reconcile_repo(
                         res.get("plaky_task_id"),
                     )
             else:
-                # Metadata sync is fill-only and idempotent: Type from native type or
-                # labels, assignee filled when Plaky has none. Healthy items no-op.
-                res = await handle_issue_labels_changed(
-                    IssueEventPayload(action="labeled", issue=issue, repository=repo_block),
-                    session,
-                )
+                # The generalized issue metadata path also re-resolves priority,
+                # title/body, assignee removal, and open/closed workflow state.
+                if str(issue.get("state") or "open").casefold() == "closed":
+                    from boardman.services.issue_handler import handle_issue_closed
+
+                    res = await handle_issue_closed(
+                        IssueEventPayload(action="closed", issue=issue, repository=repo_block),
+                        session,
+                    )
+                else:
+                    res = await handle_issue_labels_changed(
+                        IssueEventPayload(action="edited", issue=issue, repository=repo_block),
+                        session,
+                    )
                 if res.get("event") == "issue_labels_synced":
                     out["issues_resynced"] += 1
         except Exception as e:
             out["errors"].append(f"issue #{num}: {type(e).__name__}: {e}"[:200])
 
     r2 = await client.get(
-        f"https://api.github.com/repos/{full_name}/pulls?state=open&per_page={max_items}",
+        f"https://api.github.com/repos/{full_name}/pulls?state=all&sort=updated&direction=desc&per_page={max_items}",
         headers=_gh_headers(),
     )
     if r2.status_code != 200:
@@ -118,7 +132,28 @@ async def reconcile_repo(
                 session, github_repo=short, github_pr_number=num
             )
             if linked:
-                continue  # a stable link exists; PR events keep it current
+                pr_state = str(pr.get("state") or "open").casefold()
+                if bool(pr.get("merged")):
+                    res = await handle_pr_merged(
+                        PullRequestEventPayload(action="closed", pull_request=pr, repository=repo_block),
+                        session,
+                    )
+                    out["prs_relinked"] += int(bool(res.get("updated")))
+                elif pr_state == "closed":
+                    res = await handle_pr_closed_without_merge(
+                        PullRequestEventPayload(action="closed", pull_request=pr, repository=repo_block),
+                        session,
+                    )
+                    out["prs_relinked"] += int(bool(res.get("withdrawn_links")))
+                elif "updated_at" in pr:
+                    # Real GitHub list payloads carry updated_at; the guard also keeps
+                    # small legacy fixtures from turning reconciliation into a write.
+                    res = await handle_pr_edited(
+                        PullRequestEventPayload(action="edited", pull_request=pr, repository=repo_block),
+                        session,
+                    )
+                    out["prs_relinked"] += int(bool(res.get("updated")))
+                continue  # a stable link exists; metadata/state was reconciled above
             res = await handle_pr_opened(
                 PullRequestEventPayload(action="opened", pull_request=pr, repository=repo_block),
                 session,

@@ -10,6 +10,13 @@ class Base(DeclarativeBase):
 
 class IssueTaskMap(Base):
     __tablename__ = "issue_task_map"
+    __table_args__ = (
+        UniqueConstraint(
+            "github_repo",
+            "github_issue_number",
+            name="uq_issue_task_map_repo_issue",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     github_repo: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
@@ -123,6 +130,11 @@ class ProjectContext(Base):
     summary: Mapped[str | None] = mapped_column(Text, nullable=True)
     goals_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     last_scanned: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # Compact progressive repo context used by the assistant between turns/processes.
+    # This is intentionally structured JSON, not a raw repository dump.
+    context_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    context_source_revision: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    context_fetched_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
 
 class OpenPRTrack(Base):

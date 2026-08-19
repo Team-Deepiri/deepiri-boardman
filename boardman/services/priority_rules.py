@@ -23,6 +23,9 @@ _LOW_RE = re.compile(
 )
 
 _LABEL_PRIORITY = {
+    "very important": "Very Important",
+    "priority: very important": "Very Important",
+    "p0 very important": "Very Important",
     "critical": "High",
     "urgent": "High",
     "p0": "High",

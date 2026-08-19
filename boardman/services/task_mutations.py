@@ -21,6 +21,8 @@ from boardman.plaky.board_schema import (
     field_row_item_key,
     looks_like_placeholder_plaky_field_key,
     plaky_field_row_label,
+    plaky_item_field_value,
+    plaky_item_person_ids,
     plaky_repo_field_value_format,
     resolve_repo_tag_field_values_from_schema,
     select_field_patch_pair_from_schema,
@@ -69,11 +71,18 @@ class UpdateTaskInput:
     status_plaky_field_key: str | None = None
     task_type: str | None = None
     priority: str | None = None
+    title: str | None = None
+    description: str | None = None
     qa_plaky_id: str | None = None
     # Engineer/developer assignee fill-in (PR author → Plaky user id). Field key is resolved
     # per-board when not supplied.
     engineer_plaky_id: str | None = None
     engineer_plaky_field_key: str | None = None
+    clear_engineer_assignee: bool = False
+    # Read the current Plaky item/task when possible and omit fields already equal
+    # to the desired value.  If the read is unavailable, the safe fallback is the
+    # existing write behavior so a transient read outage does not lose a sync.
+    diff_only: bool = False
     auto_assign_qa: bool = False
     github_repo: str | None = None
     plaky_board_id: str | None = None
@@ -927,8 +936,11 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
     update_status_plaky_key_raw = (req.status_plaky_field_key or "").strip()
     update_type_raw = (req.task_type or "").strip()
     update_priority_raw = (req.priority or "").strip()
+    update_title = req.title if req.title is not None else None
+    update_description = req.description if req.description is not None else None
     update_qa = (req.qa_plaky_id or "").strip()
     update_engineer = (req.engineer_plaky_id or "").strip()
+    clear_engineer = bool(req.clear_engineer_assignee)
     update_engineer_key_raw = (req.engineer_plaky_field_key or "").strip()
     update_repo_in = (req.github_repo or "").strip()
     auto_assign_qa = bool(req.auto_assign_qa)
@@ -973,9 +985,11 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
             update_priority_raw,
             update_qa,
             update_engineer,
+            clear_engineer,
             auto_assign_qa,
         )
     )
+    wants_text_patch = update_title is not None or update_description is not None
 
     board_id = (req.plaky_board_id or "").strip()
     needs_board_lookup = wants_board_patch
@@ -1028,6 +1042,8 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
             field_values[qa_field_key] = update_qa
         if update_engineer and engineer_field_key:
             field_values[engineer_field_key] = update_engineer
+        elif clear_engineer and engineer_field_key:
+            field_values[engineer_field_key] = ""
 
         canon_status = canonical_task_status(update_status_raw) if update_status_raw else ""
         canon_type = canonical_task_type(update_type_raw) if update_type_raw else ""
@@ -1077,6 +1093,42 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
                     if pair is status_pair:
                         status_added_to_field_values = True
 
+        if req.diff_only and field_values:
+            try:
+                current_info = await plaky.get_board_item_public(board_id, task_id)
+                current_item = current_info.get("item") if current_info.get("ok") else None
+                if isinstance(current_item, dict):
+                    person_keys = _person_item_field_keys_from_normalized(schema_normalized)
+
+                    def same_value(key: str, desired: Any) -> bool:
+                        if key in person_keys:
+                            actual_ids = plaky_item_person_ids(current_item, key)
+                            desired_ids = [] if desired in (None, "") else [str(desired).strip()]
+                            return actual_ids == desired_ids
+                        actual = plaky_item_field_value(current_item, key)
+                        if isinstance(actual, dict):
+                            actual = actual.get("id") or actual.get("value") or actual.get("key")
+                        if isinstance(desired, dict):
+                            desired = desired.get("id") or desired.get("value") or desired.get("key")
+                        return str(actual or "").strip().casefold() == str(desired or "").strip().casefold()
+
+                    before = dict(field_values)
+                    field_values = {
+                        key: value
+                        for key, value in field_values.items()
+                        if not same_value(str(key), value)
+                    }
+                    if update_status_raw and status_pair and status_pair[0] not in field_values:
+                        status_added_to_field_values = True
+                    ops["field_diff"] = {
+                        "ok": True,
+                        "requested": list(before),
+                        "changed": list(field_values),
+                        "skipped": [key for key in before if key not in field_values],
+                    }
+            except Exception as e:
+                ops["field_diff"] = {"ok": False, "fallback": True, "message": str(e)[:200]}
+
         if field_values:
             person_keys = _person_item_field_keys_from_normalized(schema_normalized)
             patch = await plaky.patch_item_field_values(
@@ -1100,6 +1152,55 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
         legacy = await plaky.update_task_fields(task_id, status=update_status_raw)
         ops["legacy_task_fields"] = legacy
 
+    if wants_text_patch:
+        text_updates: dict[str, str] = {}
+        if req.diff_only:
+            try:
+                current_task_result = await plaky.get_task(task_id)
+                current_task = current_task_result.get("task") if current_task_result.get("ok") else None
+                if isinstance(current_task, dict):
+                    current_title = str(current_task.get("title") or current_task.get("name") or "")
+                    current_description = str(current_task.get("description") or "")
+                    if update_title is not None and current_title != update_title:
+                        text_updates["title"] = update_title
+                    if update_description is not None and current_description != update_description:
+                        text_updates["description"] = update_description
+                    ops["text_diff"] = {
+                        "ok": True,
+                        "changed": list(text_updates),
+                        "skipped": [
+                            key
+                            for key, value in (("title", update_title), ("description", update_description))
+                            if value is not None and key not in text_updates
+                        ],
+                    }
+                else:
+                    text_updates = {
+                        key: value
+                        for key, value in (("title", update_title), ("description", update_description))
+                        if value is not None
+                    }
+            except Exception as e:
+                text_updates = {
+                    key: value
+                    for key, value in (("title", update_title), ("description", update_description))
+                    if value is not None
+                }
+                ops["text_diff"] = {"ok": False, "fallback": True, "message": str(e)[:200]}
+        else:
+            text_updates = {
+                key: value
+                for key, value in (("title", update_title), ("description", update_description))
+                if value is not None
+            }
+        if text_updates:
+            legacy_text = await plaky.update_task_fields(
+                task_id,
+                title=text_updates.get("title"),
+                description=text_updates.get("description"),
+            )
+            ops["legacy_text_fields"] = legacy_text
+
     # An engineer landed on the task but the caller asked for no status: make Status
     # agree with the Assignee (NEEDS ASSIGNED -> Assigned; deeper statuses untouched).
     if update_engineer and not update_status_raw and board_id:
@@ -1110,7 +1211,7 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
         except Exception as e:
             ops["status_follows_assignee"] = {"ok": False, "message": str(e)[:200]}
 
-    requested_any = wants_board_patch
+    requested_any = wants_board_patch or wants_text_patch
     if not requested_any:
         return {"ok": False, "status": 400, "message": "No update fields provided"}
     op_results = [v for v in ops.values() if isinstance(v, dict)]

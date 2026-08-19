@@ -10,12 +10,49 @@ import logging
 import sys
 
 from boardman.broker.job_queue import claim_next_job_row, fail_stale_running_jobs, mark_job_finished
-from boardman.database.session import init_db
+from boardman.database.session import async_session, init_db
 from boardman.jobs.handlers import JOB_HANDLERS
 from boardman.logging_config import setup_logging
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
+
+
+async def _reconciliation_loop() -> None:
+    """Optional bounded safety net for webhook outages, owned by the existing worker."""
+    from boardman.repos_config import list_registered_repos
+    from boardman.services.reconcile import reconcile_repo
+
+    while True:
+        await asyncio.sleep(max(30.0, float(settings.github_reconcile_interval_seconds)))
+        if not (settings.github_pat or "").strip():
+            continue
+        owner = (settings.github_bare_repo_owner or settings.github_org or "").strip()
+        repos = []
+        for key in list_registered_repos():
+            full_name = key if "/" in key else f"{owner}/{key}"
+            if full_name not in repos:
+                repos.append(full_name)
+        for full_name in repos:
+            async with async_session() as session:
+                try:
+                    result = await reconcile_repo(
+                        full_name,
+                        session,
+                        max_items=max(1, min(int(settings.github_reconcile_max_items), 100)),
+                    )
+                    await session.commit()
+                    _log.info(
+                        "reconciliation repo=%s ok=%s issues=%s prs=%s errors=%s",
+                        full_name,
+                        result.get("ok"),
+                        result.get("issues_checked"),
+                        result.get("prs_checked"),
+                        len(result.get("errors") or []),
+                    )
+                except Exception:
+                    await session.rollback()
+                    _log.exception("reconciliation failed for %s", full_name)
 
 
 async def _run_one(job_id: str, kind: str, payload: dict) -> None:
@@ -30,7 +67,13 @@ async def _run_one(job_id: str, kind: str, payload: dict) -> None:
         return
     try:
         out = await handler(payload)
-        await mark_job_finished(job_id, success=True, status="complete", result=out)
+        ok = not isinstance(out, dict) or out.get("ok", True) is not False
+        await mark_job_finished(
+            job_id,
+            success=ok,
+            status="complete" if ok else "incomplete",
+            result=out,
+        )
     except Exception as e:
         _log.exception("job %s (%s) failed", job_id, kind)
         await mark_job_finished(
@@ -53,13 +96,20 @@ async def run_worker_forever() -> None:
         poll,
         settings.queue_worker_stale_running_seconds,
     )
-    while True:
-        row = await claim_next_job_row()
-        if row is None:
-            await asyncio.sleep(poll)
-            continue
-        job_id, kind, payload = row
-        await _run_one(job_id, kind, payload)
+    reconcile_task = None
+    if settings.github_reconcile_enabled:
+        reconcile_task = asyncio.create_task(_reconciliation_loop(), name="github-reconciliation")
+    try:
+        while True:
+            row = await claim_next_job_row()
+            if row is None:
+                await asyncio.sleep(poll)
+                continue
+            job_id, kind, payload = row
+            await _run_one(job_id, kind, payload)
+    finally:
+        if reconcile_task is not None:
+            reconcile_task.cancel()
 
 
 def main() -> None:

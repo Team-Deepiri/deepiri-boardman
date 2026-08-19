@@ -55,9 +55,14 @@ class Settings(BaseSettings):
     plaky_board_schema_cache_ttl_seconds: float = 90.0
     # Read-only GitHub repo context reuse between questions. 0 disables the cache.
     github_read_cache_ttl_seconds: float = 300.0
+    # Persistent planning-context snapshot TTL. The in-process GitHub cache is shorter;
+    # this survives API/worker restarts without turning ProjectContext into a raw repo dump.
+    agent_repo_context_cache_ttl_seconds: float = 900.0
+    # Keep a stale snapshot available as a graceful fallback when GitHub is unavailable.
+    agent_repo_context_stale_if_error_seconds: float = 86_400.0
     # Tunable analysis limits (Sorge review, PR #81): context budget for the repo
     # planning payload, PR review file cap, and code-search scope.
-    llm_context_budget_chars: int = 24000
+    llm_context_budget_chars: int = 20000
     github_pr_max_files: int = 40
     github_pr_max_body_chars: int = 4000
     github_code_search_max_files: int = 16
@@ -89,6 +94,14 @@ class Settings(BaseSettings):
     testing_live_plaky_catchup_minutes: float = 45.0
 
     github_webhook_secret: str = ""
+    # Production webhooks should acknowledge quickly and let boardman-worker run the
+    # Plaky mutation.  Kept opt-in for local/dev callers that intentionally exercise
+    # handlers inline without a worker.
+    github_webhook_async_enabled: bool = False
+    github_webhook_job_retries: int = 2
+    github_reconcile_enabled: bool = False
+    github_reconcile_interval_seconds: float = 900.0
+    github_reconcile_max_items: int = 50
     github_pat: str | None = None
     github_org: str = "deepiri-org"
     # Prepended to bare repo slugs (no "owner/") for QA roster + create-task; e.g. Team-Deepiri/foo.

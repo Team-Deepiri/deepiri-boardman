@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import load_team_assignments
@@ -15,6 +17,7 @@ from boardman.database.models import PullRequestTaskLink, SyncLog
 from boardman.github.webhooks import PullRequestEventPayload, PullRequestReviewCommentEventPayload
 from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status_id
 from boardman.plaky.client import PlakyClient
+from boardman.services.comment_dedupe import github_activity_marker, mirror_github_activity
 from boardman.services.issue_handler import find_plaky_task_by_issue, get_linked_issue_numbers
 from boardman.services.pr_link_comment import format_pr_notice_with_url
 from boardman.services.pr_task_linking import (
@@ -30,6 +33,7 @@ from boardman.services.pr_task_registry import (
     upsert_pr_task_link,
 )
 from boardman.services.pr_tracker import remove_pr_row, upsert_pr_row
+from boardman.services.sync_state import resolve_pr_state
 from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
 from boardman.settings import settings
@@ -51,6 +55,7 @@ async def _update_plaky_task_status(
             status=status_value,
             plaky_board_id=board_id or None,
             status_plaky_field_key=status_field_key,
+            diff_only=True,
         ),
     )
 
@@ -117,9 +122,20 @@ async def _apply_pr_type_and_assignee(
     head_ref = str(head.get("ref")) if isinstance(head, dict) else ""
     labels = pr_label_names(getattr(pull_request, "labels", None))
     canon_type = infer_task_type_from_pr(head_ref, labels)
+    pr_state = resolve_pr_state(
+        pull_request,
+        repo_full_name=repo_full,
+        repo_name=repo_full.rsplit("/", 1)[-1],
+    )
     if canon_type:
         res = await update_task_internal(
-            task_id, UpdateTaskInput(task_type=canon_type, plaky_board_id=bid or None)
+            task_id,
+            UpdateTaskInput(
+                task_type=canon_type,
+                priority=pr_state.priority,
+                plaky_board_id=bid or None,
+                diff_only=True,
+            ),
         )
         out["type"] = {"value": canon_type, "ok": res.get("ok")}
 
@@ -408,6 +424,30 @@ async def _maybe_triage_ambiguous_pr(
             "ambiguous_triage": True,
         }
 
+    reservation = PullRequestTaskLink(
+        github_repo=repo_name,
+        github_pr_number=pr_number,
+        plaky_task_id=f"pending:{uuid.uuid4().hex}",
+        github_issue_number=0,
+        link_source="pr_task_pending",
+    )
+    try:
+        async with session.begin_nested():
+            session.add(reservation)
+            await session.flush()
+    except IntegrityError:
+        linked = await distinct_task_ids_for_pr(
+            session, github_repo=repo_name, github_pr_number=pr_number
+        )
+        if linked:
+            return {
+                "ok": True,
+                "skipped": True,
+                "message": "task already created for this PR",
+                "ambiguous_triage": True,
+            }
+        raise
+
     from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
     from boardman.plaky.dynamic_qa_status import (
         github_actor_payload,
@@ -466,20 +506,14 @@ async def _maybe_triage_ambiguous_pr(
         )
     )
     if not res.get("ok"):
+        await session.delete(reservation)
         return {"ok": False, "message": res.get("message"), "ambiguous_triage": True}
 
     task_id = str(res.get("task", {}).get("id") or res.get("task", {}).get("taskId") or "")
 
     if task_id:
-        session.add(
-            PullRequestTaskLink(
-                github_repo=repo_name,
-                github_pr_number=pr_number,
-                plaky_task_id=task_id,
-                github_issue_number=0,
-                link_source="pr_task_created",
-            )
-        )
+        reservation.plaky_task_id = task_id
+        reservation.link_source = "pr_task_created"
         plaky = PlakyClient()
         await plaky.add_comment(
             task_id,
@@ -500,6 +534,7 @@ async def _maybe_triage_ambiguous_pr(
         else:
             qa_res = {"skipped": "ambiguous_pr.assign_qa is false"}
     else:
+        await session.delete(reservation)
         qa_res = {"skipped": "task id missing from create result"}
 
     session.add(
@@ -723,7 +758,7 @@ async def handle_pr_edited(
     payload: PullRequestEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
-    """PR title/body edited: an unlinked PR gets one more shot at linking.
+    """PR metadata edited: unlinked PRs get one more shot at linking; linked PRs update metadata.
 
     A PR opened without `Fixes #N` that is later edited to include one (or given a
     clearer title) re-runs the full opened pipeline. Already-linked PRs are left
@@ -738,7 +773,99 @@ async def handle_pr_edited(
         session, github_repo=repo_name, github_pr_number=pr_number
     )
     if task_ids:
-        return {"ok": True, "skipped": True, "message": "PR already linked; edit ignored"}
+        from boardman.repos_config import get_routing_async
+
+        routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
+        board_id = str(getattr(routing, "plaky_board_id", "") or "").strip()
+        state = resolve_pr_state(
+            payload.pull_request,
+            repo_full_name=payload.repository.full_name,
+            repo_name=repo_name,
+        )
+        from boardman.plaky.dynamic_qa_status import (
+            github_actor_payload,
+            resolve_github_user_to_plaky_user_id,
+            resolve_plaky_status_patch,
+        )
+
+        engineer_id = ""
+        if state.assignee_login:
+            engineer_id = str(
+                await resolve_github_user_to_plaky_user_id(
+                    github_actor_payload({"login": state.assignee_login})
+                )
+                or ""
+            ).strip()
+        status_value = ""
+        status_key: str | None = None
+        if board_id and state.draft:
+            resolved = await resolve_plaky_status_patch(board_id, intent="workflow_assigned")
+            if resolved:
+                status_key, status_value = resolved[0], resolved[1]
+        standalone_ids = {
+            str(row.plaky_task_id)
+            for row in (
+                await session.execute(
+                    select(PullRequestTaskLink).where(
+                        PullRequestTaskLink.github_repo == repo_name,
+                        PullRequestTaskLink.github_pr_number == pr_number,
+                        PullRequestTaskLink.github_issue_number == 0,
+                    )
+                )
+            ).scalars()
+            if str(row.plaky_task_id).strip()
+        }
+        standalone_description = (
+            f"Auto-created from GitHub PR: {state.url}\n\n"
+            f"**Repo:** `{state.repo_full_name}`  **Branch:** `{state.head_ref or '?'}`  "
+            f"**Author:** `{state.author_login or 'unknown'}`\n\n{state.body}"
+        )
+        plaky_results: list[dict[str, Any]] = []
+        for task_id in task_ids:
+            mutation = await update_task_internal(
+                task_id,
+                UpdateTaskInput(
+                    title=(state.title or None) if task_id in standalone_ids else None,
+                    description=standalone_description if task_id in standalone_ids else None,
+                    task_type=state.task_type,
+                    priority=state.priority,
+                    engineer_plaky_id=engineer_id or None,
+                    plaky_board_id=board_id or None,
+                    status=status_value or None,
+                    status_plaky_field_key=status_key,
+                    diff_only=True,
+                ),
+            )
+            plaky_results.append({"task_id": task_id, "mutation": mutation})
+            session.add(
+                SyncLog(
+                    action="pr_metadata_synced",
+                    github_repo=repo_name,
+                    github_ref=str(pr_number),
+                    plaky_task_id=task_id,
+                    detail=json.dumps(
+                        {
+                            "event": payload.action,
+                            "task_type": state.task_type,
+                            "priority": state.priority,
+                            "assignee_login": state.assignee_login,
+                            "status": status_value,
+                            "plaky_ok": mutation.get("ok"),
+                        },
+                        default=str,
+                    ),
+                )
+            )
+        await session.commit()
+        all_failed = bool(plaky_results) and not any(
+            x["mutation"].get("ok") for x in plaky_results
+        )
+        return {
+            "ok": not all_failed,
+            "skipped": all_failed,
+            "event": "pr_metadata_synced",
+            "updated": plaky_results,
+        }
     return await handle_pr_opened(payload, session)
 
 
@@ -858,31 +985,44 @@ async def handle_pr_review_requested(
     routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
-    in_qa = (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
-    in_qa_field_key: str | None = None
+    request_removed = payload.action == "review_request_removed"
+    target_status = (
+        (settings.plaky_pr_needs_qa_status or settings.plaky_status_needs_qa or "").strip()
+        if request_removed
+        else (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
+    )
+    target_field_key: str | None = None
     bid = (board_id or "").strip()
-    if not in_qa and bid:
+    if not target_status and bid:
         from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
-        rp = await resolve_plaky_status_patch(bid, intent="workflow_in_qa")
+        rp = await resolve_plaky_status_patch(
+            bid,
+            intent="workflow_needs_qa" if request_removed else "workflow_in_qa",
+        )
         if rp:
-            in_qa_field_key, in_qa = rp[0], rp[1]
-    if not in_qa:
+            target_field_key, target_status = rp[0], rp[1]
+    if not target_status:
         return {
             "ok": True,
             "skipped": True,
-            "message": "in_qa status not configured or discoverable",
+            "message": "review status not configured or discoverable",
         }
 
     plaky = PlakyClient()
     for tid in task_ids:
         await _update_plaky_task_status(
-            tid, in_qa, board_id or "", status_field_key=in_qa_field_key
+            tid, target_status, board_id or "", status_field_key=target_field_key
         )
     await session.commit()
     if task_ids:
         await maybe_enqueue_plaky_reorder_after_task(plaky, task_ids[0])
-    return {"ok": True, "tasks": task_ids, "status": in_qa, "event": "review_requested"}
+    return {
+        "ok": True,
+        "tasks": task_ids,
+        "status": target_status,
+        "event": "review_request_removed" if request_removed else "review_requested",
+    }
 
 
 async def handle_pr_synchronized(
@@ -1161,6 +1301,37 @@ async def handle_pr_review_comment(
     routing = await get_routing_async(full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
+    plaky = PlakyClient()
+    comment_body = str(comment.get("body") or "").strip()
+    comment_marker = github_activity_marker(
+        comment,
+        kind="pr-review-comment",
+        fallback=f"{repo_name}:{pr_number}:{commenter_login}:{comment_body}",
+    )
+    comment_url = str(comment.get("html_url") or "").strip()
+    comment_text = (
+        f"💬 **GitHub inline review comment** by `{commenter_login}` on PR #{pr_number}:\n\n"
+        f"> {comment_body[:1000].replace(chr(10), chr(10) + '> ')}"
+    )
+    if comment_url:
+        comment_text += f"\n\n{comment_url}"
+    mirrored: list[dict[str, Any]] = []
+    for task_id, _issue_num in task_ids_with_issue:
+        mirrored.append(
+            await mirror_github_activity(
+                session,
+                plaky,
+                task_id=task_id,
+                action="pr_review_comment_synced",
+                marker=f"{comment_marker}:{task_id}",
+                body=comment_text,
+                board_id=board_id,
+                github_repo=repo_name,
+                github_ref=str(pr_number),
+            )
+        )
+    await session.commit()
+
     qa_field = await resolve_qa_assignee_field_key(board_id, cfg.plaky_field_qa)
     if not qa_field:
         return {
@@ -1169,7 +1340,6 @@ async def handle_pr_review_comment(
             "message": "QA field not configured or discoverable on board",
         }
 
-    plaky = PlakyClient()
     results = []
 
     reviewer_plaky_id: str | None = None
@@ -1207,9 +1377,6 @@ async def handle_pr_review_comment(
             await _update_plaky_task_status(
                 task_id, status_to_set, board_id, status_field_key=status_field_key
             )
-            comment_text = f"**PR Comment:** by @{commenter_login}"
-            await plaky.add_comment(task_id, comment_text, board_id=board_id or None)
-
             log = SyncLog(
                 action="in_qa_comment",
                 github_repo=repo_name,
@@ -1240,7 +1407,7 @@ async def handle_pr_review_comment(
         tid0 = results[0].get("task_id") if results else None
         if tid0:
             await maybe_enqueue_plaky_reorder_after_task(plaky, str(tid0))
-    return {"ok": True, "updated": results}
+    return {"ok": True, "updated": results, "mirrored": mirrored}
 
 
 async def handle_pr_labels_changed(
@@ -1271,9 +1438,21 @@ async def handle_pr_labels_changed(
     # ("feature/x" beats a freshly added "bug" label) this handler could never change
     # anything, which is exactly the frozen-Type problem it exists to fix.
     labels = pr_label_names(getattr(payload.pull_request, "labels", None))
-    canon_type = infer_task_type_from_pr(None, labels)
-    if not canon_type:
+    label_type = infer_task_type_from_pr(None, labels)
+    removed_type = infer_task_type_from_pr(
+        None,
+        pr_label_names([getattr(payload, "label", None)])
+        if getattr(payload, "label", None)
+        else [],
+    )
+    if not label_type and not (payload.action == "unlabeled" and removed_type):
         return {"ok": True, "skipped": True, "message": "labels carry no type signal"}
+    canon_type = label_type or "Feature"
+    pr_state = resolve_pr_state(
+        payload.pull_request,
+        repo_full_name=payload.repository.full_name,
+        repo_name=repo_name,
+    )
 
     routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()
@@ -1281,7 +1460,13 @@ async def handle_pr_labels_changed(
     updated: list[dict[str, Any]] = []
     for tid in task_ids:
         res = await update_task_internal(
-            tid, UpdateTaskInput(task_type=canon_type, plaky_board_id=bid or None)
+            tid,
+            UpdateTaskInput(
+                task_type=canon_type,
+                priority=pr_state.priority,
+                plaky_board_id=bid or None,
+                diff_only=True,
+            ),
         )
         updated.append({"task_id": tid, "ok": res.get("ok")})
     session.add(

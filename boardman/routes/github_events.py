@@ -18,6 +18,7 @@ from boardman.github.webhooks import (
 )
 from boardman.services.issue_handler import (
     handle_issue_closed,
+    handle_issue_edited,
     handle_issue_labels_changed,
     handle_issue_opened,
     handle_issue_reopened,
@@ -40,6 +41,80 @@ from boardman.services.pr_review_handler import (
 from boardman.settings import settings
 
 router = APIRouter()
+
+
+async def dispatch_github_event(
+    event_type: str,
+    payload_dict: dict[str, Any],
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """Dispatch a parsed GitHub event for both HTTP and worker execution paths."""
+    payload = parse_webhook_payload(event_type, payload_dict)
+    if not payload:
+        return {"ok": False, "message": "Unsupported event type"}
+
+    result: dict[str, Any] | None = None
+    if isinstance(payload, IssueEventPayload):
+        if payload.action == "opened":
+            result = await handle_issue_opened(payload, session)
+        elif payload.action == "closed":
+            result = await handle_issue_closed(payload, session)
+        elif payload.action == "reopened":
+            result = await handle_issue_reopened(payload, session)
+        elif payload.action in (
+            "edited",
+            "labeled",
+            "unlabeled",
+            "assigned",
+            "unassigned",
+            "typed",
+            "untyped",
+            "milestoned",
+            "demilestoned",
+        ):
+            if payload.action == "edited":
+                result = await handle_issue_edited(payload, session)
+            else:
+                result = await handle_issue_labels_changed(payload, session)
+
+    elif isinstance(payload, PullRequestReviewEventPayload):
+        result = await handle_pull_request_review(payload, session)
+
+    elif isinstance(payload, PullRequestReviewCommentEventPayload):
+        if payload.action in ("created", "edited"):
+            result = await handle_pr_review_comment(payload, session)
+
+    elif isinstance(payload, IssueCommentEventPayload):
+        if payload.action in ("created", "edited"):
+            result = await handle_issue_comment_on_pr(payload, session)
+
+    elif isinstance(payload, PullRequestEventPayload):
+        if payload.action == "opened":
+            result = await handle_pr_opened(payload, session)
+        elif payload.action == "ready_for_review":
+            result = await handle_pr_ready_for_review(payload, session)
+        elif payload.action in ("review_requested", "review_request_removed"):
+            result = await handle_pr_review_requested(payload, session)
+        elif payload.action == "closed" and payload.pull_request.merged:
+            result = await handle_pr_merged(payload, session)
+        elif payload.action == "closed" and not payload.pull_request.merged:
+            result = await handle_pr_closed_without_merge(payload, session)
+        elif payload.action == "synchronize":
+            result = await handle_pr_synchronized(payload, session)
+        elif payload.action == "reopened":
+            result = await handle_pr_opened(payload, session)
+        elif payload.action in ("labeled", "unlabeled"):
+            from boardman.services.pr_handler import handle_pr_labels_changed
+
+            result = await handle_pr_labels_changed(payload, session)
+        elif payload.action in ("edited", "assigned", "unassigned"):
+            result = await handle_pr_edited(payload, session)
+        elif payload.action == "converted_to_draft":
+            result = await handle_pr_converted_to_draft(payload, session)
+
+    if result is not None:
+        return result
+    return {"ok": True, "message": "Event ignored"}
 
 
 @router.post("/webhooks/github")
@@ -76,11 +151,15 @@ async def github_webhook(
                 )
             )
         ).scalar_one_or_none()
-        if already and already.status == "processed":
+        if already and already.status in ("processed", "processing"):
             body = json.dumps(
                 {
                     "ok": True,
-                    "message": "Duplicate delivery ignored",
+                    "message": (
+                        "Duplicate delivery ignored"
+                        if already.status == "processed"
+                        else "Delivery already queued"
+                    ),
                     "delivery_id": delivery_id,
                     "event_type": already.event_type,
                 }
@@ -108,64 +187,45 @@ async def github_webhook(
         await _mark_delivery("processed", "pong")
         return Response(content=json.dumps({"ok": True, "message": "pong"}))
 
-    payload = parse_webhook_payload(event_type, payload_dict)
-    if not payload:
+    if not parse_webhook_payload(event_type, payload_dict):
         await _mark_delivery("processed", "unsupported_event")
         body = json.dumps({"ok": False, "message": "Unsupported event type"})
         return Response(content=body, status_code=400)
 
-    result: dict[str, Any] | None = None
+    if settings.github_webhook_async_enabled:
+        from boardman.broker.job_queue import get_job_queue
 
-    if isinstance(payload, IssueEventPayload):
-        if payload.action == "opened":
-            result = await handle_issue_opened(payload, session)
-        elif payload.action == "closed":
-            result = await handle_issue_closed(payload, session)
-        elif payload.action == "reopened":
-            result = await handle_issue_reopened(payload, session)
-        elif payload.action in (
-            "labeled",
-            "unlabeled",
-            "assigned",
-            "unassigned",
-            "typed",
-            "untyped",
-        ):
-            result = await handle_issue_labels_changed(payload, session)
+        # Commit the processing marker before enqueueing.  A concurrent GitHub retry
+        # must see that this delivery already has a durable worker job.
+        await session.commit()
+        try:
+            job = await get_job_queue().enqueue_job(
+                "boardman_github_webhook_job",
+                {
+                    "delivery_id": delivery_id,
+                    "event_type": event_type,
+                    "payload": payload_dict,
+                },
+            )
+        except Exception as exc:
+            row = await session.get(GitHubWebhookDelivery, delivery_id) if delivery_id else None
+            if row:
+                row.status = "failed"
+                row.note = f"enqueue failed: {str(exc)[:400]}"
+                await session.commit()
+            raise
+        return Response(
+            content=json.dumps(
+                {"ok": True, "queued": True, "job_id": job.job_id, "delivery_id": delivery_id}
+            ),
+            status_code=202,
+        )
 
-    elif isinstance(payload, PullRequestReviewEventPayload):
-        result = await handle_pull_request_review(payload, session)
+    result = await dispatch_github_event(event_type, payload_dict, session)
 
-    elif isinstance(payload, PullRequestReviewCommentEventPayload):
-        if payload.action == "created":
-            result = await handle_pr_review_comment(payload, session)
-
-    elif isinstance(payload, IssueCommentEventPayload):
-        result = await handle_issue_comment_on_pr(payload, session)
-
-    elif isinstance(payload, PullRequestEventPayload):
-        if payload.action == "opened":
-            result = await handle_pr_opened(payload, session)
-        elif payload.action == "ready_for_review":
-            result = await handle_pr_ready_for_review(payload, session)
-        elif payload.action == "review_requested":
-            result = await handle_pr_review_requested(payload, session)
-        elif payload.action == "closed" and payload.pull_request.merged:
-            result = await handle_pr_merged(payload, session)
-        elif payload.action == "closed" and not payload.pull_request.merged:
-            result = await handle_pr_closed_without_merge(payload, session)
-        elif payload.action == "synchronize":
-            result = await handle_pr_synchronized(payload, session)
-        elif payload.action == "reopened":
-            result = await handle_pr_opened(payload, session)
-        elif payload.action in ("labeled", "unlabeled"):
-            from boardman.services.pr_handler import handle_pr_labels_changed
-
-            result = await handle_pr_labels_changed(payload, session)
-        elif payload.action == "edited":
-            result = await handle_pr_edited(payload, session)
-        elif payload.action == "converted_to_draft":
-            result = await handle_pr_converted_to_draft(payload, session)
+    if result.get("ok", True) is False:
+        await _mark_delivery("failed", str(result.get("message") or "synchronization failed"))
+        return Response(content=json.dumps(result), status_code=500)
 
     if result is not None:
         await _mark_delivery("processed", "handled")

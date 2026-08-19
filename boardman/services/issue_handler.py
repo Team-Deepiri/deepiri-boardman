@@ -1,8 +1,11 @@
 import json
+import logging
 import re
+import uuid
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.qa_picker import build_repo_field_map
@@ -14,8 +17,12 @@ from boardman.plaky.board_aware import resolve_group_for_repo
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing_async
+from boardman.services.comment_dedupe import mirror_github_activity
 from boardman.services.priority_rules import infer_priority_from_text
+from boardman.services.sync_state import issue_status_intent, resolve_issue_state
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
 
 ISSUE_LINK_RE = re.compile(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", re.IGNORECASE)
 
@@ -40,6 +47,131 @@ def native_issue_type_name(issue: Any) -> str:
     return ""
 
 
+def _issue_task_text(state: Any, routing: Any | None) -> tuple[str, str]:
+    """Build the canonical title/details representation for an issue task."""
+    title = f"[{state.repo_name}] {state.title}"
+    footer = (
+        f"\n\n---\n**GitHub:** {state.repo_full_name}\n"
+        f"**Issue:** #{state.number}\n"
+    )
+    if routing:
+        if getattr(routing, "plaky_table", ""):
+            footer += f"**Plaky group (label):** `{routing.plaky_table}`\n"
+        if getattr(routing, "category", ""):
+            footer += f"**Category:** {routing.category}\n"
+        if getattr(routing, "plaky_board_id", "") or getattr(routing, "plaky_group_id", ""):
+            footer += (
+                f"**board_id:** `{getattr(routing, 'plaky_board_id', '')}` "
+                f"**group_id:** `{getattr(routing, 'plaky_group_id', '')}`\n"
+            )
+    description = f"{state.body}\n\n{state.url}{footer}"
+    return title, description
+
+
+async def _resolve_issue_engineer_id(login: str) -> str:
+    if not login:
+        return ""
+    from boardman.plaky.dynamic_qa_status import (
+        github_actor_payload,
+        resolve_github_user_to_plaky_user_id,
+    )
+
+    return str(
+        await resolve_github_user_to_plaky_user_id(github_actor_payload({"login": login})) or ""
+    ).strip()
+
+
+async def handle_issue_changed(
+    payload: IssueEventPayload,
+    session: AsyncSession,
+    *,
+    event_label: str = "issue_changed",
+) -> dict[str, Any]:
+    """Re-resolve every GitHub-owned issue field after an edit/assignment/label event."""
+    state = resolve_issue_state(
+        payload.issue,
+        repo_full_name=payload.repository.full_name,
+        repo_name=payload.repository.name,
+    )
+    mapping = await find_plaky_task_by_issue(state.repo_name, state.number, session)
+    if not mapping or not mapping.plaky_task_id:
+        return {"ok": True, "skipped": True, "message": "no Plaky task mapped for this issue"}
+
+    routing = await get_routing_async(
+        state.repo_full_name, state.repo_name, settings.github_org
+    )
+    board_id = str(getattr(routing, "plaky_board_id", "") or "").strip()
+    title, description = _issue_task_text(state, routing)
+    engineer_id = await _resolve_issue_engineer_id(state.assignee_login)
+
+    status_value = ""
+    status_field_key: str | None = None
+    if board_id:
+        from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+        resolved = await resolve_plaky_status_patch(board_id, intent=issue_status_intent(state))
+        if resolved:
+            status_field_key, status_value = resolved[0], resolved[1]
+    if not status_value and state.state == "closed":
+        status_value = (settings.plaky_status_completed or "").strip()
+
+    from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
+
+    update = UpdateTaskInput(
+        title=title,
+        description=description,
+        status=status_value or None,
+        status_plaky_field_key=status_field_key,
+        task_type=state.task_type,
+        priority=state.priority,
+        engineer_plaky_id=engineer_id or None,
+        clear_engineer_assignee=not state.assignee_login,
+        plaky_board_id=board_id or None,
+        diff_only=True,
+    )
+    result = await update_task_internal(str(mapping.plaky_task_id), update)
+    detail = {
+        "event": payload.action,
+        "title": state.title,
+        "task_type": state.task_type,
+        "priority": state.priority,
+        "assignee_login": state.assignee_login,
+        "status": status_value,
+        "plaky_ok": result.get("ok"),
+    }
+    session.add(
+        SyncLog(
+            action=event_label,
+            github_repo=state.repo_name,
+            github_ref=str(state.number),
+            plaky_task_id=mapping.plaky_task_id,
+            detail=json.dumps(detail, default=str),
+        )
+    )
+    await session.commit()
+    _log.info(
+        "github sync event=%s repo=%s issue=%s task_id=%s type=%s priority=%s assignee=%s status=%s result=%s",
+        payload.action,
+        state.repo_full_name,
+        state.number,
+        mapping.plaky_task_id,
+        state.task_type,
+        state.priority,
+        state.assignee_login or "",
+        status_value or "unchanged",
+        result.get("ok"),
+    )
+    return {
+        "ok": bool(result.get("ok")),
+        "plaky_task_id": mapping.plaky_task_id,
+        "event": event_label,
+        "task_type": state.task_type,
+        "priority": state.priority,
+        "status": status_value or None,
+        "mutation": result,
+    }
+
+
 async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession) -> dict:
     repo_name = payload.repository.name
     issue_number = payload.issue.number
@@ -53,6 +185,25 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     existing = result.scalar_one_or_none()
     if existing:
         return {"ok": True, "skipped": True, "message": "Issue already mapped"}
+
+    # Reserve the canonical GitHub identity before the first Plaky POST.  Two
+    # different webhook delivery ids for the same issue must not both pass the
+    # read-then-create window.  The unique index is the final guard; the savepoint
+    # keeps a race from rolling back the surrounding webhook-delivery transaction.
+    reservation = IssueTaskMap(
+        github_repo=repo_name,
+        github_issue_number=issue_number,
+        plaky_task_id=f"pending:{uuid.uuid4().hex}",
+    )
+    try:
+        async with session.begin_nested():
+            session.add(reservation)
+            await session.flush()
+    except IntegrityError:
+        existing = await find_plaky_task_by_issue(repo_name, issue_number, session)
+        if existing:
+            return {"ok": True, "skipped": True, "message": "Issue already mapped"}
+        raise
 
     plaky = PlakyClient()
     full_name = payload.repository.full_name
@@ -89,10 +240,14 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     )
 
     if not result.get("ok"):
+        await session.delete(reservation)
         return result
 
     task_id = result.get("task", {}).get("id") or result.get("task", {}).get("taskId")
     task_url = result.get("task_url")
+    if not task_id:
+        await session.delete(reservation)
+        return {"ok": False, "message": "Plaky task create returned no task id"}
 
     # Explicit defaults on the fresh task: status = NEEDS ASSIGNED (board-resolved) and
     # Type precedence: GitHub's native issue Type (the org uses it; it is the
@@ -142,13 +297,8 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
             ),
         )
 
-    mapping = IssueTaskMap(
-        github_repo=repo_name,
-        github_issue_number=issue_number,
-        plaky_task_id=task_id or "",
-        plaky_task_url=task_url,
-    )
-    session.add(mapping)
+    reservation.plaky_task_id = task_id or reservation.plaky_task_id
+    reservation.plaky_task_url = task_url
 
     log = SyncLog(
         action="issue_created",
@@ -229,10 +379,21 @@ async def _issue_status_transition(
             status=target,
             plaky_board_id=bid or None,
             status_plaky_field_key=status_field_key,
+            diff_only=True,
         ),
     )
     plaky = PlakyClient()
-    await plaky.add_comment(mapping.plaky_task_id, task_comment, board_id=bid or None)
+    comment_result = await mirror_github_activity(
+        session,
+        plaky,
+        task_id=mapping.plaky_task_id,
+        action=f"{action_name}_comment",
+        marker=f"github:issue-state:{repo_name}:{issue_number}:{action_name}",
+        body=task_comment,
+        board_id=bid,
+        github_repo=repo_name,
+        github_ref=str(issue_number),
+    )
     session.add(
         SyncLog(
             action=action_name,
@@ -240,7 +401,12 @@ async def _issue_status_transition(
             github_ref=str(issue_number),
             plaky_task_id=mapping.plaky_task_id,
             detail=json.dumps(
-                {"issue_url": payload.issue.html_url, "plaky_status": target}, default=str
+                {
+                    "issue_url": payload.issue.html_url,
+                    "plaky_status": target,
+                    "comment_ok": comment_result.get("ok"),
+                },
+                default=str,
             ),
         )
     )
@@ -286,64 +452,12 @@ async def handle_issue_labels_changed(payload: IssueEventPayload, session: Async
     Only Type is touched. Priority may have been hand-tuned by a lead after triage, and
     label changes carry no signal about it.
     """
-    repo_name = payload.repository.name
-    issue_number = payload.issue.number
-    mapping = await find_plaky_task_by_issue(repo_name, issue_number, session)
-    if not mapping or not mapping.plaky_task_id:
-        return {"ok": True, "skipped": True, "message": "no Plaky task mapped for this issue"}
-
-    labels = issue_label_names(payload.issue.labels)
-    task_type = (
-        native_issue_type_name(payload.issue) or infer_task_type_from_pr(None, labels) or "Feature"
+    return await handle_issue_changed(
+        payload,
+        session,
+        event_label="issue_labels_synced",
     )
 
-    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
-    bid = ((routing.plaky_board_id if routing and routing.plaky_board_id else "") or "").strip()
 
-    from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
-
-    # An assignee added AFTER creation flows too (same race as labels: people assign
-    # from the GitHub UI seconds later). Fill-only: an existing Plaky assignee is
-    # curated state and is never overwritten or cleared from here.
-    engineer_plaky_id = ""
-    assignee_login = _issue_assignee_login(payload.issue)
-    if assignee_login:
-        from boardman.plaky.dynamic_qa_status import (
-            github_actor_payload,
-            resolve_github_user_to_plaky_user_id,
-        )
-
-        engineer_plaky_id = (
-            await resolve_github_user_to_plaky_user_id(
-                github_actor_payload({"login": assignee_login})
-            )
-            or ""
-        )
-
-    res = await update_task_internal(
-        str(mapping.plaky_task_id),
-        UpdateTaskInput(
-            task_type=task_type,
-            engineer_plaky_id=engineer_plaky_id or None,
-            plaky_board_id=bid or None,
-        ),
-    )
-    session.add(
-        SyncLog(
-            action="issue_labels_synced",
-            github_repo=repo_name,
-            github_ref=str(issue_number),
-            plaky_task_id=mapping.plaky_task_id,
-            detail=json.dumps(
-                {"labels": labels, "task_type": task_type, "plaky_ok": res.get("ok")},
-                default=str,
-            ),
-        )
-    )
-    await session.commit()
-    return {
-        "ok": True,
-        "plaky_task_id": mapping.plaky_task_id,
-        "event": "issue_labels_synced",
-        "task_type": task_type,
-    }
+async def handle_issue_edited(payload: IssueEventPayload, session: AsyncSession) -> dict:
+    return await handle_issue_changed(payload, session, event_label="issue_edited_synced")

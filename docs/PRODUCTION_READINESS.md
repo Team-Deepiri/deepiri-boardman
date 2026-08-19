@@ -6,6 +6,13 @@
 
 ## 1. What Boardman is
 
+The lifecycle implementation is event-source-of-truth: webhook and reconciliation paths
+resolve the same canonical GitHub state, apply only changed Plaky fields, and record
+activity markers in `SyncLog`. Production should acknowledge verified webhooks through the
+SQLite worker (`GITHUB_WEBHOOK_ASYNC_ENABLED=true`) and keep the bounded reconciliation loop
+available for delivery gaps. The live claims below are historical operator evidence; rerun
+the matrix against the current board before a new deployment.
+
 A FastAPI service (:8090) + React UI (:5176) that keeps GitHub and Plaky telling the
 same story: issues and PRs become tasks, review activity becomes status, and an LLM
 assistant (gpt-5.1, LangChain tool-calling) reads repos and manages the board on
@@ -103,6 +110,11 @@ false with confidence*. The standing protections:
 | Sub-15s five-task creates | bounded by Plaky burst shaping + model decode; needs the fast lane + a faster planning model |
 
 ## 7. Operator runbook (the short version)
+
+The previously listed synchronization gap is now closed for GitHub-to-Plaky: issue/PR
+metadata, assignees, statuses, review/comment mirroring, delivery retries, identity
+uniqueness, and bounded reconciliation are implemented. The remaining product gap is the
+reverse Plaky-to-GitHub direction, which still needs loop-prevention semantics.
 
 New repo → add to `repos.yml` (board/group) — everything else is schema-discovered.
 New QA → GitHub support team (live roster) or `team_assignments.yml` fallback.
