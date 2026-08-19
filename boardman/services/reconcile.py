@@ -84,6 +84,12 @@ async def reconcile_repo(
         try:
             mapping = await find_plaky_task_by_issue(short, num, session)
             if mapping is None or not mapping.plaky_task_id:
+                if str(issue.get("state") or "open").casefold() != "open":
+                    # Same rule as pull requests: a closed issue nobody ever tracked is
+                    # history. handle_issue_opened would file it at NEEDS ASSIGNED, so
+                    # the board would grow work items for things already finished.
+                    out["issues_skipped_closed"] = out.get("issues_skipped_closed", 0) + 1
+                    continue
                 res = await handle_issue_opened(
                     IssueEventPayload(action="opened", issue=issue, repository=repo_block),
                     session,
@@ -135,13 +141,17 @@ async def reconcile_repo(
                 pr_state = str(pr.get("state") or "open").casefold()
                 if bool(pr.get("merged")):
                     res = await handle_pr_merged(
-                        PullRequestEventPayload(action="closed", pull_request=pr, repository=repo_block),
+                        PullRequestEventPayload(
+                            action="closed", pull_request=pr, repository=repo_block
+                        ),
                         session,
                     )
                     out["prs_relinked"] += int(bool(res.get("updated")))
                 elif pr_state == "closed":
                     res = await handle_pr_closed_without_merge(
-                        PullRequestEventPayload(action="closed", pull_request=pr, repository=repo_block),
+                        PullRequestEventPayload(
+                            action="closed", pull_request=pr, repository=repo_block
+                        ),
                         session,
                     )
                     out["prs_relinked"] += int(bool(res.get("withdrawn_links")))
@@ -149,11 +159,22 @@ async def reconcile_repo(
                     # Real GitHub list payloads carry updated_at; the guard also keeps
                     # small legacy fixtures from turning reconciliation into a write.
                     res = await handle_pr_edited(
-                        PullRequestEventPayload(action="edited", pull_request=pr, repository=repo_block),
+                        PullRequestEventPayload(
+                            action="edited", pull_request=pr, repository=repo_block
+                        ),
                         session,
                     )
                     out["prs_relinked"] += int(bool(res.get("updated")))
                 continue  # a stable link exists; metadata/state was reconciled above
+            if str(pr.get("state") or "open").casefold() != "open" or pr.get("merged"):
+                # An unlinked CLOSED pull request is history, not drift. Replaying it
+                # through handle_pr_opened manufactures a brand-new task, assigns a QA
+                # and parks it at Needs QA for work that shipped long ago — which is
+                # exactly how the board filled with tasks named "Merge main into dev"
+                # and a merged dependabot bump sitting in Needs QA. Only open PRs
+                # still need a task to represent them.
+                out["prs_skipped_closed"] = out.get("prs_skipped_closed", 0) + 1
+                continue
             res = await handle_pr_opened(
                 PullRequestEventPayload(action="opened", pull_request=pr, repository=repo_block),
                 session,

@@ -393,6 +393,19 @@ async def _maybe_triage_ambiguous_pr(
     pr_url = payload.pull_request.html_url
     full_name = payload.repository.full_name
 
+    # Never manufacture review work for a pull request that already shipped. A closed
+    # or merged PR replayed through this path (reconciliation sweep, redelivered
+    # webhook, poller catch-up) would create a task, assign a QA and park it at
+    # Needs QA for code that merged long ago.
+    pr_state = str(getattr(payload.pull_request, "state", "open") or "open").casefold()
+    if pr_state != "open" or bool(getattr(payload.pull_request, "merged", False)):
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": f"PR #{pr_number} is already {pr_state}; not creating a task for finished work",
+            "ambiguous_triage": True,
+        }
+
     from boardman.repos_config import get_routing_async
 
     routing = await get_routing_async(full_name, repo_name, settings.github_org)
@@ -775,7 +788,9 @@ async def handle_pr_edited(
     if task_ids:
         from boardman.repos_config import get_routing_async
 
-        routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
+        routing = await get_routing_async(
+            payload.repository.full_name, repo_name, settings.github_org
+        )
         board_id = str(getattr(routing, "plaky_board_id", "") or "").strip()
         state = resolve_pr_state(
             payload.pull_request,
@@ -857,9 +872,7 @@ async def handle_pr_edited(
                 )
             )
         await session.commit()
-        all_failed = bool(plaky_results) and not any(
-            x["mutation"].get("ok") for x in plaky_results
-        )
+        all_failed = bool(plaky_results) and not any(x["mutation"].get("ok") for x in plaky_results)
         return {
             "ok": not all_failed,
             "skipped": all_failed,
@@ -1441,9 +1454,11 @@ async def handle_pr_labels_changed(
     label_type = infer_task_type_from_pr(None, labels)
     removed_type = infer_task_type_from_pr(
         None,
-        pr_label_names([getattr(payload, "label", None)])
-        if getattr(payload, "label", None)
-        else [],
+        (
+            pr_label_names([getattr(payload, "label", None)])
+            if getattr(payload, "label", None)
+            else []
+        ),
     )
     if not label_type and not (payload.action == "unlabeled" and removed_type):
         return {"ok": True, "skipped": True, "message": "labels carry no type signal"}
