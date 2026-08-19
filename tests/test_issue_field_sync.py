@@ -224,6 +224,65 @@ async def test_edited_syncs_title_and_body(
 
 
 @pytest.mark.asyncio
+async def test_untitleable_board_mirrors_the_edit_as_a_comment(
+    db_session, plumbing, monkeypatch
+) -> None:
+    """Plaky answers `Allow: GET,HEAD,DELETE,OPTIONS` on an item, so a rename cannot be
+    written. Verified live on board 269028. The edit must still reach the board."""
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=87, plaky_task_id="t-1"))
+    await db_session.flush()
+
+    async def fake_update(task_id: str, inp: Any) -> dict:
+        return {
+            "ok": False,
+            "operations": {
+                "field_diff": {"ok": True},
+                "item_text_fields": {"ok": False, "message": "board has no title field"},
+            },
+        }
+
+    mirrored: list[dict[str, Any]] = []
+
+    async def fake_mirror(session: Any, plaky: Any, **kw: Any) -> dict:
+        mirrored.append(kw)
+        return {"ok": True}
+
+    async def fake_resolve(bid: str, *, intent: str) -> tuple[str, str]:
+        return ("status-8", "0")
+
+    monkeypatch.setattr("boardman.services.task_mutations.update_task_internal", fake_update)
+    monkeypatch.setattr(ih, "mirror_github_activity", fake_mirror)
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_plaky_status_patch", fake_resolve)
+
+    res = await ih.handle_issue_edited(
+        _payload("edited", _issue(title="Speed Issue", body="now with detail")), db_session
+    )
+    assert res["text_mirrored_as_comment"] is True
+    assert res["ok"] is True  # a Plaky API limit is not a sync failure
+    assert "Speed Issue" in mirrored[0]["body"]
+    assert "now with detail" in mirrored[0]["body"]
+
+
+@pytest.mark.asyncio
+async def test_metadata_only_events_never_comment(
+    db_session, captured_updates, plumbing, monkeypatch
+) -> None:
+    """A label change carries no text, so it must not spam the task with comments."""
+    db_session.add(IssueTaskMap(github_repo="r", github_issue_number=87, plaky_task_id="t-1"))
+    await db_session.flush()
+
+    async def boom(*a: Any, **kw: Any):
+        raise AssertionError("no comment for metadata-only events")
+
+    async def fake_resolve(bid: str, *, intent: str) -> tuple[str, str]:
+        return ("status-8", "0")
+
+    monkeypatch.setattr(ih, "mirror_github_activity", boom)
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_plaky_status_patch", fake_resolve)
+    await ih.handle_issue_labels_changed(_payload("labeled", _issue()), db_session)
+
+
+@pytest.mark.asyncio
 async def test_close_records_the_pre_close_status(
     db_session, captured_updates, plumbing, monkeypatch
 ) -> None:

@@ -31,8 +31,11 @@ issue labeled/typed/    -> re-syncs Type and fills the assignee (fill-only, neve
 sidebar Priority set    -> Priority mirrors GitHub's issue field / priority label
   or changed               (Low/Medium/High, Urgent -> VERY IMPORTANT); text-inferred
                            priority never overwrites the board after creation
-issue title/body edited -> task name + description re-sync (poller detects via a
-                           text signature; webhooks route issues.edited)
+issue title/body edited -> re-syncs where the board can store it; Plaky's public API
+                           cannot rewrite an existing item's text (OPTIONS on an item
+                           answers Allow: GET,HEAD,DELETE,OPTIONS and /fields refuses
+                           `title`), so the edit is mirrored as a deduped comment on
+                           the task instead of being silently dropped
 issue closed            -> Completed, remembering the pre-close status
 issue reopened          -> RESUMES the pre-close status; no record -> owner ? Assigned
                            : NEEDS ASSIGNED (never a blanket In Progress)
@@ -114,6 +117,7 @@ false with confidence*. The standing protections:
 | Rolling history summarization | window of 16 recent messages suffices today |
 | CI latency/quality gate | the p50/p95 metrics now exist to gate on |
 | Bots board vocab gaps | Plaky-admin action, see checklist |
+| Renaming an existing task | Plaky API exposes no item update verb (Allow: GET/HEAD/DELETE); adding a "Details" text field to the board would at least let the body sync into a column |
 | Sub-15s five-task creates | bounded by Plaky burst shaping + model decode; needs the fast lane + a faster planning model |
 
 ## 7. Operator runbook (the short version)

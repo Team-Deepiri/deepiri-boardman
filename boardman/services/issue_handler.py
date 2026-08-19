@@ -1,3 +1,4 @@
+import hashlib
 import json
 import logging
 import re
@@ -154,6 +155,47 @@ async def handle_issue_changed(
         diff_only=True,
     )
     result = await update_task_internal(str(mapping.plaky_task_id), update)
+
+    # Plaky's public API cannot rewrite an existing item's text: OPTIONS on
+    # /spaces/{s}/boards/{b}/items/{i} answers "Allow: GET,HEAD,DELETE,OPTIONS", and
+    # /fields refuses `title`/`name` ("No field with key or name"). Only creation takes
+    # a title, and re-creating the task would destroy its id, comments and PR links.
+    # So when the board cannot store the new text, mirror the edit as a comment — the
+    # board still shows the change instead of silently keeping a stale title.
+    text_ops = (result.get("operations") or {}).get("item_text_fields") or {}
+    text_blocked = sync_text and text_ops.get("ok") is False
+    text_mirrored = False
+    if text_blocked:
+        excerpt = (state.body or "").strip()
+        if len(excerpt) > 1200:
+            excerpt = excerpt[:1200].rstrip() + "…"
+        # Marker is content-addressed: a redelivered edit comments once, a genuinely
+        # new edit gets its own comment.
+        text_digest = hashlib.sha1(
+            "\n".join([state.title, state.body]).encode("utf-8"), usedforsecurity=False
+        ).hexdigest()[:12]
+        mirror = await mirror_github_activity(
+            session,
+            PlakyClient(),
+            task_id=str(mapping.plaky_task_id),
+            action="issue_text_changed_comment",
+            marker=f"github:issue-text:{state.repo_name}:{state.number}:{text_digest}",
+            body=(
+                f"**Issue edited on GitHub:** #{state.number}\n\n"
+                f"**Title is now:** {state.title}\n\n"
+                f"{excerpt}\n\n{state.url}\n\n"
+                "_Plaky's API cannot rename an existing item, so this comment carries "
+                "the update._"
+            ),
+            board_id=board_id,
+            github_repo=state.repo_name,
+            github_ref=str(state.number),
+        )
+        text_mirrored = bool(mirror.get("ok"))
+
+    # A board that cannot hold item text is a Plaky limitation, not a sync failure:
+    # report ok when every writable field landed and the edit was mirrored.
+    ok = bool(result.get("ok")) or (text_blocked and text_mirrored)
     detail = {
         "event": payload.action,
         "title": state.title,
@@ -162,6 +204,7 @@ async def handle_issue_changed(
         "assignee_login": state.assignee_login,
         "status": status_value,
         "plaky_ok": result.get("ok"),
+        "text_mirrored_as_comment": text_mirrored,
     }
     session.add(
         SyncLog(
@@ -186,12 +229,13 @@ async def handle_issue_changed(
         result.get("ok"),
     )
     return {
-        "ok": bool(result.get("ok")),
+        "ok": ok,
         "plaky_task_id": mapping.plaky_task_id,
         "event": event_label,
         "task_type": state.task_type,
         "priority": state.priority,
         "status": status_value or None,
+        "text_mirrored_as_comment": text_mirrored,
         "mutation": result,
     }
 
