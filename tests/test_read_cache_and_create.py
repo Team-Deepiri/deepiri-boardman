@@ -71,6 +71,9 @@ async def test_concurrent_callers_share_one_fetch() -> None:
 
     await asyncio.gather(*[rc.cached("k", slow, ok=rc.json_ok) for _ in range(5)])
     assert calls["n"] == 1, "concurrent callers stampeded the API"
+    stats = rc.cache_stats()
+    assert stats["misses"] == 1
+    assert stats["coalesced"] >= 1
 
 
 @pytest.mark.asyncio

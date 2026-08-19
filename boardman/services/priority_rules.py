@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
+from typing import Any
 
 # Signals that something is on fire or user-facing broken.
 _HIGH_RE = re.compile(
@@ -27,7 +28,7 @@ _LABEL_PRIORITY = {
     "priority: very important": "Very Important",
     "p0 very important": "Very Important",
     "critical": "High",
-    "urgent": "High",
+    "urgent": "Very Important",
     "p0": "High",
     "p1": "High",
     "high": "High",
@@ -42,16 +43,40 @@ _LABEL_PRIORITY = {
 }
 
 
+def priority_from_github_label(value: Any) -> str:
+    """Resolve free-form GitHub priority labels to canonical Plaky values."""
+    if isinstance(value, dict):
+        value = value.get("name") or value.get("title") or value.get("label") or value.get("value")
+    raw = str(value or "").strip().casefold()
+    if not raw:
+        return ""
+    token = re.sub(r"[\s_/:#-]+", " ", raw).strip()
+    token = re.sub(r"^(?:priority|prio)\s+", "", token).strip()
+    token = re.sub(r"\s+(?:priority|prio)$", "", token).strip()
+    direct = _LABEL_PRIORITY.get(token)
+    if direct:
+        return direct
+    if re.search(r"\burgent\b", token):
+        return "Very Important"
+    if re.search(r"\bhigh\b", token):
+        return "High"
+    if re.search(r"\bmedium\b|\bmed\b", token):
+        return "Medium"
+    if re.search(r"\blow\b", token):
+        return "Low"
+    return ""
+
+
 def infer_priority_from_text(
     title: str,
     body: str | None = None,
     labels: Sequence[str] | None = None,
 ) -> str:
-    """Return "High" | "Medium" | "Low". Explicit labels beat text keywords; default Medium."""
+    """Return a canonical Plaky bucket; explicit labels beat text keywords."""
     for raw in labels or []:
-        name = str(raw or "").strip().lower()
-        if name in _LABEL_PRIORITY:
-            return _LABEL_PRIORITY[name]
+        explicit = priority_from_github_label(raw)
+        if explicit:
+            return explicit
 
     text = f"{title or ''}\n{(body or '')[:2000]}"
     if _HIGH_RE.search(text):

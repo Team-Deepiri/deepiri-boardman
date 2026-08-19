@@ -526,7 +526,11 @@ async def handle_issue_comment_on_pr(
         comment_body = str(payload.comment.get("body") or "")
 
     bid = (board_id or "").strip()
-    comment_url = str(payload.comment.get("html_url") or "").strip() if isinstance(payload.comment, dict) else ""
+    comment_url = (
+        str(payload.comment.get("html_url") or "").strip()
+        if isinstance(payload.comment, dict)
+        else ""
+    )
     marker = github_activity_marker(
         payload.comment,
         kind="pr-conversation-comment",

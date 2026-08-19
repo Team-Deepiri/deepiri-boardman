@@ -41,6 +41,8 @@ async def _request_with_rate_limit_retry(
     last_exc: Exception | None = None
     response: httpx.Response | None = None
     for attempt in range(retries + 1):
+        response = None
+        started = time.monotonic()
         try:
             response = await client.request(
                 method=method, url=url, headers=headers, json=json, params=params, timeout=20
@@ -59,6 +61,15 @@ async def _request_with_rate_limit_retry(
             )
             await asyncio.sleep(_transient_backoff(attempt))
             continue
+        finally:
+            _log.debug(
+                "Plaky %s %s attempt=%d took %.2fs status=%s",
+                method,
+                url,
+                attempt + 1,
+                time.monotonic() - started,
+                response.status_code if response is not None else "error",
+            )
 
         if response.status_code == 429:
             if attempt == retries:
@@ -767,9 +778,14 @@ class PlakyClient:
         *,
         board_id: str,
         item_id: str,
-        title: str,
-        description: str,
+        title: str | None = None,
+        description: str | None = None,
     ) -> dict[str, Any]:
+        if not self.api_key:
+            return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
+        if title is None and description is None:
+            return {"ok": False, "status": 400, "message": "No item text fields to update."}
+
         root = self._public_root()
         if not root:
             return {"ok": False, "message": "v1/public base URL required"}
@@ -779,12 +795,20 @@ class PlakyClient:
 
         base = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
         hdr = _headers(self.api_key)
+        flat: dict[str, Any] = {}
+        if title is not None:
+            flat["title"] = title
+        if description is not None:
+            flat["description"] = description
+        name_flat = dict(flat)
+        if "title" in name_flat:
+            name_flat["name"] = name_flat.pop("title")
         bodies: list[dict[str, Any]] = [
-            {"name": title, "description": description},
-            {"title": title, "description": description},
-            {"item": {"name": title, "description": description}},
-            {"item": {"title": title, "description": description}},
-            {"fields": {"name": title, "description": description}},
+            name_flat,
+            flat,
+            {"item": dict(name_flat)},
+            {"item": dict(flat)},
+            {"fields": dict(name_flat)},
         ]
 
         if not _ITEM_TEXT_PATCH_UNSUPPORTED.get(root):
@@ -834,10 +858,12 @@ class PlakyClient:
             pass
 
         patch_values: dict[str, Any] = {}
-        for k in title_fields:
-            patch_values[k] = title
-        for k in description_fields:
-            patch_values[k] = description
+        if title is not None:
+            for k in title_fields:
+                patch_values[k] = title
+        if description is not None:
+            for k in description_fields:
+                patch_values[k] = description
         if not patch_values:
             return {
                 "ok": False,
@@ -852,6 +878,22 @@ class PlakyClient:
         if field_patch.get("ok"):
             return {"ok": True, "mode": "field_patch", "field_patch": field_patch}
         return {"ok": False, "field_patch": field_patch}
+
+    async def update_item_text(
+        self,
+        board_id: str,
+        item_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Update the core title/description of a v1/public board item."""
+        return await self._enforce_item_text(
+            board_id=board_id,
+            item_id=item_id,
+            title=title,
+            description=description,
+        )
 
     async def _create_item_hierarchy(
         self,

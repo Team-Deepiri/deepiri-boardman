@@ -99,34 +99,19 @@ async def _fetch_repo_hotspots_uncached(
     token = (settings.github_pat or "").strip()
     if not token:
         return None
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-
     ref = (branch or "").strip()
-    if not ref:
-        try:
-            r = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}",
-                headers=headers,
-                follow_redirects=True,
-            )
-            if r.status_code != 200:
-                return None
-            ref = str((r.json() or {}).get("default_branch") or "main")
-        except Exception as e:  # noqa: BLE001
-            _log.debug("hotspots: default branch lookup failed for %s/%s: %s", owner, repo, e)
-            return None
+    from boardman.github.repo_metadata import fetch_repo_identity, fetch_repo_tree
 
-    try:
-        tr = await client.get(
-            f"https://api.github.com/repos/{owner}/{repo}/git/trees/{ref}?recursive=1",
-            headers=headers,
-            follow_redirects=True,
-        )
-        if tr.status_code != 200:
-            return None
-        data = tr.json() or {}
-    except Exception as e:  # noqa: BLE001
-        _log.debug("hotspots: tree fetch failed for %s/%s: %s", owner, repo, e)
+    identity = await fetch_repo_identity(client, owner, repo)
+    if not identity:
+        _log.debug("hotspots: repo identity unavailable for %s/%s", owner, repo)
+        return None
+    if not ref:
+        ref = str(identity.get("default_branch") or "main")
+
+    data = await fetch_repo_tree(client, owner, repo, ref)
+    if not data:
+        _log.debug("hotspots: tree unavailable for %s/%s", owner, repo)
         return None
 
     blobs = [n for n in (data.get("tree") or []) if isinstance(n, dict) and n.get("type") == "blob"]

@@ -150,6 +150,15 @@ class TestPlakyClient:
         assert "missing" in result["message"].lower()
 
     @pytest.mark.asyncio
+    async def test_update_item_text_missing_api_key(self, plaky_key_cleared):
+        from boardman.plaky.client import PlakyClient
+
+        c = PlakyClient(api_key=None)
+        result = await c.update_item_text("board-1", "item-1", title="New title")
+        assert result["ok"] is False
+        assert "missing" in result["message"].lower()
+
+    @pytest.mark.asyncio
     async def test_create_subtask_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
 

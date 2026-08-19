@@ -345,6 +345,59 @@ async def _plaky_save_task_preferences(preferences_json: str) -> str:
     return json.dumps(out, default=str)
 
 
+def resolve_people_to_field_values(
+    *,
+    assignee: str,
+    qa: str,
+    normalized: dict[str, Any] | None,
+) -> tuple[dict[str, str], list[str]]:
+    """Turn typed names ("Ali", "sergiovargas111") into person-column values.
+
+    Returns (field_values, notes). A name that cannot be resolved confidently is
+    reported in notes and left unset — assigning the wrong teammate is worse than
+    leaving the column empty, and the note names the near-misses so the assistant can
+    ask instead of guessing.
+    """
+    from boardman.assignment.person_match import (
+        ambiguous_candidates,
+        best_member_for_name,
+    )
+
+    out: dict[str, str] = {}
+    notes: list[str] = []
+    wanted = [("assignee", (assignee or "").strip()), ("qa", (qa or "").strip())]
+    if not any(v for _role, v in wanted):
+        return out, notes
+
+    cfg = load_team_assignments()
+    people = list(cfg.members) + list(getattr(cfg, "fallback_members", []) or [])
+    keys = infer_plaky_field_keys_from_normalized(normalized) if normalized else {}
+    field_for = {"assignee": keys.get("engineer") or "", "qa": keys.get("qa") or ""}
+
+    for role, name in wanted:
+        if not name:
+            continue
+        key = field_for.get(role) or ""
+        if not key:
+            notes.append(f"{role} {name!r} not set: this board has no {role} person column")
+            continue
+        hit = best_member_for_name(name, people)
+        if hit is None:
+            near = ambiguous_candidates(name, people)
+            hint = f" Did you mean: {', '.join(near)}?" if near else ""
+            notes.append(f"{role} {name!r} did not match one person, so it was left unset.{hint}")
+            continue
+        member_id = str(getattr(hit.member, "id", "") or "").strip()
+        if not member_id:
+            notes.append(
+                f"{role} {name!r} matched {hit.member.display!r} but they have no Plaky id"
+            )
+            continue
+        out[key] = member_id
+        notes.append(f"{role} -> {hit.member.display} ({hit.reason}, {hit.score:.2f})")
+    return out, notes
+
+
 async def _plaky_create_task(
     title: str,
     description: str,
@@ -353,7 +406,9 @@ async def _plaky_create_task(
     board_id: str = "",
     group_id: str = "",
     field_values_json: str = "",
-    auto_assign_team: bool = True,
+    auto_assign_team: bool = False,
+    assignee: str = "",
+    qa: str = "",
 ) -> str:
     from boardman.agent.task_draft import load_task_draft, merge_draft_into_field_values
     from boardman.agent.tool_context import (
@@ -415,6 +470,7 @@ async def _plaky_create_task(
         # global but field keys are per-board (e.g. repo tag-2 exists on some boards and not
         # on 269031), and sending an unknown key makes Plaky reject the whole create with
         # "Item field doesn't exist" — which surfaced to the user as a failed task creation.
+        board_keys: set[str] = set()
         if normalized:
             board_keys = {
                 str(f.get("key") or "").strip()
@@ -437,8 +493,39 @@ async def _plaky_create_task(
             github_repos_value_format=gh_fmt,
         )
         for key, value in repo_fields.items():
+            if key in parsed:
+                continue
+            # The scrub above only cleared the LOCAL variables; build_repo_field_map falls
+            # back to cfg.plaky_field_repo on its own, so the global key comes right back.
+            # team_assignments.yml names tag-2 (an old demo board), the Bots board has no
+            # such column, and one absent key refused every row of a 5-task batch while the
+            # model reported failure instead of retrying. Filter against the real board.
+            if board_keys and key not in board_keys:
+                continue
+            merged[key] = value
+
+    person_notes: list[str] = []
+    if (assignee or qa) and normalized is None and effective_board:
+        bundle = await fetch_board_schema_bundle(effective_board)
+        normalized = (
+            bundle.get("normalized") if isinstance(bundle.get("normalized"), dict) else None
+        )
+    if assignee or qa:
+        # Names resolve here, in-process, instead of costing the model a
+        # plaky_list_workspace_users round trip per task. Explicit field_values win.
+        people_fv, person_notes = resolve_people_to_field_values(
+            assignee=assignee, qa=qa, normalized=normalized
+        )
+        for key, value in people_fv.items():
             if key not in parsed:
                 merged[key] = value
+            else:
+                # An explicit field_values entry wins, so the resolved person was NOT
+                # written. The receipt must not name them.
+                person_notes = [n for n in person_notes if f"-> {value}" not in n]
+                person_notes.append(
+                    f"{key} was set explicitly in field_values, so the typed name was ignored"
+                )
 
     field_validation_warnings: list[str] = []
     if merged:
@@ -506,6 +593,10 @@ async def _plaky_create_task(
         out["merged_field_values"] = merged
     if field_validation_warnings:
         out["field_validation_warnings"] = field_validation_warnings
+    if person_notes:
+        # The receipt must say who actually landed on the task, including anyone the
+        # matcher refused to guess at.
+        out["people_resolved"] = person_notes
     return json.dumps(out, default=str)
 
 
@@ -776,6 +867,8 @@ async def _plaky_create_tasks(
                 group_id=group_id,
                 field_values_json=json.dumps(fv) if isinstance(fv, dict) and fv else "",
                 auto_assign_team=auto_assign_team,
+                assignee=str(row.get("assignee") or ""),
+                qa=str(row.get("qa") or ""),
             )
         try:
             res = json.loads(raw)
@@ -790,11 +883,17 @@ async def _plaky_create_tasks(
             "task_url": res.get("task_url") or "",
             "priority": str(row.get("priority") or "Medium"),
             # Only claim the default status when the row did not set its own status or
-            # people - otherwise the receipt could contradict the board.
+            # people - otherwise the receipt could contradict the board. assignee/qa
+            # count: they resolve into person columns, so the status follows the
+            # assignee and the card must not print "NEEDS ASSIGNED / QA at PR time".
             "default_status_applies": (
                 not auto_assign_team
+                and not row.get("assignee")
+                and not row.get("qa")
                 and not any(k.startswith(("status", "person")) for k in fv_keys)
             ),
+            # A name the matcher refused is the one thing the user must hear about.
+            "people_resolved": res.get("people_resolved") or [],
             "message": "" if res.get("ok") else str(res.get("message") or "")[:300],
         }
 
@@ -990,7 +1089,11 @@ def build_plaky_tools(*, allow_writes: bool) -> list[StructuredTool]:
                         "Create SEVERAL Plaky tasks in ONE call - the ONLY correct way to create 2+ "
                         "tasks. Never loop plaky_create_task for a multi-task request. "
                         "Args: tasks_json = JSON array of {title (required), description?, priority?, "
-                        "repo_tag?, field_values? (object, schema keys)}; board_id?/group_id? apply to "
+                        "repo_tag?, assignee? (PLAIN NAME e.g. 'Ali' or a GitHub login - resolved "
+                        "server-side, never pass an id), qa? (plain name, same rule; set it whenever "
+                        "the user asks for QA on these tasks - that is an explicit request, not "
+                        "auto-assignment), "
+                        "field_values? (object, schema keys)}; board_id?/group_id? apply to "
                         "all (Current Plaky placement used when omitted); auto_assign_team defaults "
                         "FALSE - QA is assigned at PR time per team flow, not at creation. "
                         "Creates run concurrently server-side. Returns one receipt per task "
@@ -1005,9 +1108,16 @@ def build_plaky_tools(*, allow_writes: bool) -> list[StructuredTool]:
                         "field_values_json keys MUST match schema key= strings; assignee ids from plaky_list_workspace_users. "
                         "Placement: pass board_id/group_id or rely on Current Plaky placement. "
                         "Args: title, description, priority (High|Low|Medium|Very Important or legacy low|medium|high), "
-                        "repo_tag?, board_id?, group_id?, field_values_json?, auto_assign_team (default true). "
-                        "Set auto_assign_team false to skip roster QA assignment; set QA explicitly via field_values_json / "
-                        "session draft keys from plaky_board_schema instead. "
+                        "repo_tag?, board_id?, group_id?, field_values_json?, assignee?, qa?, "
+                        "auto_assign_team (default FALSE - QA is picked when a PR opens). "
+                        "assignee/qa take a PLAIN NAME ('Ali', 'sergio', 'AndyN-star'); Boardman fuzzy-matches "
+                        "it to the roster in-process, so do NOT call plaky_list_workspace_users first and do "
+                        "NOT pass numeric ids. An unresolvable or ambiguous name is reported back in "
+                        "people_resolved and the column is left empty - relay that, never invent a person. "
+                        "ALWAYS pass assignee/qa when the user names a person ('assign it to Ali', 'Sergio "
+                        "should QA this'). An explicit request is not auto-assignment: auto_assign_team=False "
+                        "only stops Boardman from PICKING a QA on its own, it never blocks a QA the user asked "
+                        "for. Refusing a named assignee because 'QA happens at PR time' is wrong. "
                         "When auto_assign_team is true and repo_tag lists a GitHub repo, team_assignments.yml picks QA "
                         "unless the QA person field is already set in field_values_json or saved draft. "
                         "Bare repo names (e.g. my-repo) normalize to GITHUB_BARE_REPO_OWNER/my-repo like the CLI. "

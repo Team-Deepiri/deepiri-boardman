@@ -643,7 +643,13 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
     engineer_field_key = inferred_from_schema.get("engineer") or cfg_engineer_key
     qa_field_key = inferred_from_schema.get("qa") or cfg_qa_key or qa_env_fallback
 
-    pick_qa_id, pick_qa_reason = await pick_qa_for_repo(repo_full, cfg)
+    # Only rank QA when the result can actually be used. This ran unconditionally, so
+    # every create paid repo tier classification plus GitHub-fit scoring (45s budget)
+    # and threw the answer away — 20 wasted passes on a 20-row batch, since QA is
+    # assigned when a PR opens, not at creation.
+    pick_qa_id, pick_qa_reason = "", "qa auto-assign off (QA is picked when a PR opens)"
+    if req.auto_assign_team and not qa_plaky_id:
+        pick_qa_id, pick_qa_reason = await pick_qa_for_repo(repo_full, cfg)
     needs_infer = effective_board_id and (
         (engineer_plaky_id and not engineer_field_key)
         or (qa_plaky_id and not qa_field_key)
@@ -718,16 +724,38 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
             if fk and fv is not None and fk not in field_values:
                 field_values[fk] = fv
 
+    # Read the assignee off the FINAL merged map, not off eng_apply. The assistant can
+    # only reach the person column through req.field_values, which is merged above at
+    # line 694 — after eng_apply was computed. Judging by eng_apply alone made every
+    # assistant-created task claim "nobody is assigned" while a person sat in the
+    # Assignee column, and the board then read NEEDS ASSIGNED. Reproduced live: task
+    # 7185894, assignee 481106, status NEEDS ASSIGNED.
+    assignee_present = bool(engineer_field_key and str(field_values.get(engineer_field_key) or ""))
+    # Type and Priority are ALSO "status-N" columns on Plaky boards (Bots: Status
+    # status-8, Type status-7, Priority status-9), so a prefix test treated setting a
+    # priority as "the user chose a status" and suppressed the default. Compare against
+    # the one key the status ladder actually resolved.
+    # Identify the status COLUMN itself. Resolving it through a value lookup would make
+    # this depend on the board happening to have an "In Progress"-like option, and a
+    # board without one would silently overwrite a caller's chosen status.
+    status_keys: set[str] = set()
+    if isinstance(schema_normalized, dict):
+        for f in schema_normalized.get("fields") or []:
+            if not isinstance(f, dict):
+                continue
+            name = plaky_field_row_label(f)
+            key = field_row_item_key(f)
+            if not key or not name:
+                continue
+            if any(tok in name for tok in ("status", "state", "workflow")):
+                status_keys.add(key)
     status_follow_note = await _status_follow_assignee(
         effective_board_id,
         field_values,
-        engineer_written=bool(eng_apply and engineer_field_key),
+        engineer_written=assignee_present,
         explicit_status=bool(
             raw_status
-            or (
-                isinstance(req.field_values, dict)
-                and any(k in req.field_values for k in field_values if str(k).startswith("status"))
-            )
+            or (isinstance(req.field_values, dict) and (set(req.field_values) & status_keys))
         ),
     )
 
@@ -775,6 +803,47 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
     result["post_create_assignment"] = post_assign
     if tag_resolution_warnings:
         result["tag_resolution_warnings"] = tag_resolution_warnings
+
+    # The status was decided from what we INTENDED to write. If the person column did
+    # not actually take (an id Plaky rejects, e.g. a workspace user who is not on this
+    # board), the task would read Assigned with an empty Assignee — the state the board
+    # rules forbid. Verify the column and walk the status back when it is empty.
+    if assignee_present and patch_board_id and status_follow_note:
+        created_task_id = str(
+            (result.get("task") or {}).get("id")
+            or (result.get("task") or {}).get("taskId")
+            or result.get("task_id")
+            or ""
+        ).strip()
+        # The task already exists at this point. Nothing here may raise, or the batch
+        # path would render a created task as a failed row.
+        try:
+            if created_task_id:
+                from boardman.plaky.board_schema import plaky_item_person_ids
+                from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+
+                info = await plaky.get_board_item_public(patch_board_id, created_task_id)
+                read_ok = bool(info.get("ok")) and bool(info.get("item"))
+                if not read_ok:
+                    # A failed read is NOT evidence the column is empty. Downgrading on
+                    # a transient 429 would create the very contradiction this guards.
+                    result["assignee_unverified"] = (
+                        "could not re-read the item to confirm the assignee; status left as written"
+                    )
+                elif not plaky_item_person_ids(info["item"], engineer_field_key):
+                    rp = await resolve_plaky_status_patch(
+                        patch_board_id, intent="workflow_needs_assigned"
+                    )
+                    if rp:
+                        await plaky.patch_item_field_values(
+                            patch_board_id, created_task_id, {rp[0]: rp[1]}
+                        )
+                        result["assignee_did_not_apply"] = (
+                            f"{engineer_field_key} stayed empty, so the status was set back "
+                            "to NEEDS ASSIGNED instead of claiming an owner"
+                        )
+        except Exception as exc:  # noqa: BLE001 - never fail a created task on a check
+            result["assignee_unverified"] = f"assignee verification skipped: {exc}"[:200]
     return result
 
 
@@ -992,7 +1061,7 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
     wants_text_patch = update_title is not None or update_description is not None
 
     board_id = (req.plaky_board_id or "").strip()
-    needs_board_lookup = wants_board_patch
+    needs_board_lookup = wants_board_patch or wants_text_patch
     if needs_board_lookup and not board_id:
         got = await plaky.get_task(task_id)
         task = (
@@ -1109,8 +1178,13 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
                         if isinstance(actual, dict):
                             actual = actual.get("id") or actual.get("value") or actual.get("key")
                         if isinstance(desired, dict):
-                            desired = desired.get("id") or desired.get("value") or desired.get("key")
-                        return str(actual or "").strip().casefold() == str(desired or "").strip().casefold()
+                            desired = (
+                                desired.get("id") or desired.get("value") or desired.get("key")
+                            )
+                        return (
+                            str(actual or "").strip().casefold()
+                            == str(desired or "").strip().casefold()
+                        )
 
                     before = dict(field_values)
                     field_values = {
@@ -1157,7 +1231,9 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
         if req.diff_only:
             try:
                 current_task_result = await plaky.get_task(task_id)
-                current_task = current_task_result.get("task") if current_task_result.get("ok") else None
+                current_task = (
+                    current_task_result.get("task") if current_task_result.get("ok") else None
+                )
                 if isinstance(current_task, dict):
                     current_title = str(current_task.get("title") or current_task.get("name") or "")
                     current_description = str(current_task.get("description") or "")
@@ -1170,14 +1246,20 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
                         "changed": list(text_updates),
                         "skipped": [
                             key
-                            for key, value in (("title", update_title), ("description", update_description))
+                            for key, value in (
+                                ("title", update_title),
+                                ("description", update_description),
+                            )
                             if value is not None and key not in text_updates
                         ],
                     }
                 else:
                     text_updates = {
                         key: value
-                        for key, value in (("title", update_title), ("description", update_description))
+                        for key, value in (
+                            ("title", update_title),
+                            ("description", update_description),
+                        )
                         if value is not None
                     }
             except Exception as e:
@@ -1194,12 +1276,21 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
                 if value is not None
             }
         if text_updates:
-            legacy_text = await plaky.update_task_fields(
-                task_id,
-                title=text_updates.get("title"),
-                description=text_updates.get("description"),
-            )
-            ops["legacy_text_fields"] = legacy_text
+            if board_id and callable(getattr(plaky, "update_item_text", None)):
+                item_text = await plaky.update_item_text(
+                    board_id,
+                    task_id,
+                    title=text_updates.get("title"),
+                    description=text_updates.get("description"),
+                )
+                ops["item_text_fields"] = item_text
+            else:
+                legacy_text = await plaky.update_task_fields(
+                    task_id,
+                    title=text_updates.get("title"),
+                    description=text_updates.get("description"),
+                )
+                ops["legacy_text_fields"] = legacy_text
 
     # An engineer landed on the task but the caller asked for no status: make Status
     # agree with the Assignee (NEEDS ASSIGNED -> Assigned; deeper statuses untouched).

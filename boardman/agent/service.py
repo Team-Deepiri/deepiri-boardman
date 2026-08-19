@@ -15,10 +15,13 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from boardman.agent.fast_path import maybe_fast_path
 from boardman.agent.guardrails import has_confirm_token, looks_like_board_organize_request
 from boardman.agent.memory_store import db_messages_to_langchain
 from boardman.agent.plaky_prompt_extra import plaky_placement_markdown
 from boardman.agent.prompts import BOARD_MANAGER_SYSTEM, TASK_CREATION_WORKFLOW, TEAM_TASK_POLICY
+from boardman.agent.repo_context import load_planning_snapshot, snapshot_prompt_block
+from boardman.agent.repo_resolution import resolve_repo
 from boardman.agent.runner import iter_tool_agent, run_tool_agent
 from boardman.agent.task_draft import format_task_draft_for_prompt, load_task_draft
 from boardman.agent.tool_context import agent_tool_context
@@ -384,11 +387,77 @@ async def _safe_plain_chat(
         return _format_llm_failure(e, provider=resolved_provider, model=resolved_model)
 
 
+def _placement_fallback_from_routing(repo: str | None) -> tuple[str | None, str | None, str]:
+    """Board/group for chat when the UI made no selection.
+
+    repos.yml already routes every configured repo to its board and group for the
+    webhook path; the assistant asking Ali "which board?" for a repo the config
+    routes was a live failure (it interrogated instead of creating). Explicit UI
+    selection still wins — this only fills silence.
+    """
+    try:
+        from boardman.repos_config import get_routing, list_registered_repos
+
+        org = (settings.github_org or "").strip()
+        routing = None
+        matched = ""
+        r = (repo or "").strip()
+        if r:
+            short = r.split("/")[-1]
+            full = r if "/" in r else (f"{org}/{short}" if org else short)
+            routing = get_routing(full, short, org)
+            matched = full
+        if (routing is None or not (routing.plaky_board_id or "").strip()) and not r:
+            # Only guess when NO repo was named. A named-but-unrouted repo must stay
+            # silent: substituting the one configured repo's board here would file that
+            # other repo's tasks into deepiri-boardman's group and tell the model the
+            # wrong repo is "the subject" (review-confirmed failure).
+            with_boards = [
+                (name, rt)
+                for name, rt in list_registered_repos().items()
+                if (rt.plaky_board_id or "").strip()
+            ]
+            if len(with_boards) == 1:
+                matched, routing = with_boards[0]
+        if routing is None or not (routing.plaky_board_id or "").strip():
+            return None, None, ""
+        label = (routing.plaky_table or "").strip()
+        note = (
+            f"Routing note: these ids come from repos.yml for **{matched}**"
+            + (f' (group label: "{label}")' if label else "")
+            + ". Treat that repo as the default subject of board requests — never ask "
+            "which repo or board. For requests like 'make it production ready', derive "
+            "the specifics from the repo itself (docs, open issues, open PRs, existing "
+            "board tasks) instead of asking the user to define them."
+        )
+        return (
+            routing.plaky_board_id.strip(),
+            (routing.plaky_group_id or "").strip() or None,
+            note,
+        )
+    except Exception:
+        logger.exception("placement fallback from repos.yml failed")
+        return None, None, ""
+
+
+def _resolve_placement(
+    plaky_board_id: str | None, plaky_group_id: str | None, repo: str | None
+) -> tuple[str | None, str | None, str]:
+    """Explicit UI selection passes through untouched; silence falls back to routing."""
+    if (plaky_board_id or "").strip():
+        return plaky_board_id, plaky_group_id, ""
+    fb_bid, fb_gid, note = _placement_fallback_from_routing(repo)
+    if not fb_bid:
+        return plaky_board_id, plaky_group_id, ""
+    return fb_bid, ((plaky_group_id or "").strip() or fb_gid), note
+
+
 async def _plaky_system_suffix(
     plaky_board_id: str | None,
     plaky_group_id: str | None,
+    note: str = "",
 ) -> str:
-    out = plaky_placement_markdown(plaky_board_id, plaky_group_id)
+    out = plaky_placement_markdown(plaky_board_id, plaky_group_id, note)
     bid = (plaky_board_id or "").strip()
     if bid:
         try:
@@ -428,10 +497,17 @@ async def run_agent_chat(
     res = await session.execute(q)
     ag: AgentSession | None = res.scalar_one_or_none()
 
+    resolution = resolve_repo(
+        explicit_repo=repo,
+        session_repo=ag.repo if ag is not None else None,
+        message=message,
+    )
+    active_repo = resolution.repo
+
     if ag is None:
         ag = AgentSession(
             session_id=sid,
-            repo=repo,
+            repo=active_repo,
             prompt_version=settings.prompt_version,
             created_at=datetime.utcnow(),
             last_active=datetime.utcnow(),
@@ -441,9 +517,13 @@ async def run_agent_chat(
         history_msgs: list[AgentMessage] = []
     else:
         ag.last_active = datetime.utcnow()
-        if repo and not ag.repo:
-            ag.repo = repo
+        if active_repo and active_repo != ag.repo:
+            ag.repo = active_repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
+
+    plaky_board_id, plaky_group_id, placement_note = _resolve_placement(
+        plaky_board_id, plaky_group_id, active_repo
+    )
 
     # The user's message goes into history BEFORE the LLM phase: a provider failure
     # (the TPM 429 in the live transcript) must not erase what the user said — losing
@@ -454,13 +534,42 @@ async def run_agent_chat(
     # hold it through the whole (possibly minutes-long) LLM/tool phase, and every concurrent
     # agent turn would die with "database is locked" after the busy timeout.
     await session.commit()
+    agent_session_pk = ag.id
+
+    # Answer small read-only intents without paying for an LLM/tool loop.
+    fast = await maybe_fast_path(
+        message,
+        repo=active_repo,
+        board_id=plaky_board_id,
+        group_id=plaky_group_id,
+    )
+    if fast is not None:
+        session.add(AgentMessage(session_pk=ag.id, role="assistant", content=fast.reply))
+        await session.flush()
+        logger.info(
+            "agent fast path intent=%s repo=%s source=%s",
+            fast.intent,
+            active_repo or "",
+            resolution.source,
+        )
+        return fast.reply, sid
+
+    cached_repo_json, cache_state = await load_planning_snapshot(session, active_repo or "")
+    repo_context_prompt = snapshot_prompt_block(cached_repo_json)
+    if active_repo:
+        logger.info(
+            "agent repo context=%s source=%s cache=%s",
+            active_repo,
+            resolution.source,
+            cache_state,
+        )
 
     # The Plaky create/patch protocol is dead weight when writes are off — the agent cannot
     # act on it. Team policy stays either way so it can still EXPLAIN the conventions.
     intake_extra = TEAM_TASK_POLICY + (TASK_CREATION_WORKFLOW if allow_writes else "")
     draft_md, plaky_suffix = await asyncio.gather(
-        _load_draft_markdown(session, ag.id),
-        _plaky_system_suffix(plaky_board_id, plaky_group_id),
+        _load_draft_markdown(session, agent_session_pk),
+        _plaky_system_suffix(plaky_board_id, plaky_group_id, note=placement_note),
     )
 
     reply: str
@@ -488,7 +597,7 @@ async def run_agent_chat(
                 "Agent chat: LangChain tool path (session_id=%s, allow_writes=%s, repo=%s)",
                 sid,
                 allow_writes,
-                repo or "",
+                active_repo or "",
             )
             lc_hist = db_messages_to_langchain(history_msgs)
             extra = (
@@ -499,11 +608,14 @@ async def run_agent_chat(
                 "**plaky_create_task** / **plaky_patch_item_fields** when field keys are not already explicit in context; "
                 "the API rejects invented field keys."
             )
-            if repo:
-                extra += f"\n## Repo context\n`{repo}`"
+            if active_repo:
+                extra += f"\n## Repo context\n`{active_repo}` (resolved from {resolution.source})"
+            extra += repo_context_prompt
             extra += plaky_suffix
             extra += draft_md + intake_extra
-            async with agent_tool_context(session, ag.id, plaky_board_id, plaky_group_id):
+            async with agent_tool_context(
+                session, agent_session_pk, plaky_board_id, plaky_group_id
+            ):
                 tool_out = await run_tool_agent(
                     message,
                     chat_history=lc_hist,
@@ -524,14 +636,14 @@ async def run_agent_chat(
             reply = await _safe_plain_chat(
                 tools_unavailable=True,
                 message=message,
-                repo=repo,
+                repo=active_repo,
                 history_msgs=history_msgs,
                 plaky_suffix=plaky_suffix,
                 provider=provider,
                 model=model,
                 resolved_provider=resolved_provider,
                 resolved_model=resolved_model,
-                extra_system_suffix=draft_md + intake_extra,
+                extra_system_suffix=repo_context_prompt + draft_md + intake_extra,
             )
     else:
         logger.info(
@@ -541,19 +653,19 @@ async def run_agent_chat(
         )
         reply = await _safe_plain_chat(
             message=message,
-            repo=repo,
+            repo=active_repo,
             history_msgs=history_msgs,
             plaky_suffix=plaky_suffix,
             provider=provider,
             model=model,
             resolved_provider=resolved_provider,
             resolved_model=resolved_model,
-            extra_system_suffix=draft_md + intake_extra,
+            extra_system_suffix=repo_context_prompt + draft_md + intake_extra,
         )
 
     session.add(
         AgentMessage(
-            session_pk=ag.id,
+            session_pk=agent_session_pk,
             role="assistant",
             content=reply,
             tool_calls_json=assistant_tool_calls_json,
@@ -595,10 +707,17 @@ async def iter_agent_chat_sse(
     res = await session.execute(q)
     ag: AgentSession | None = res.scalar_one_or_none()
 
+    resolution = resolve_repo(
+        explicit_repo=repo,
+        session_repo=ag.repo if ag is not None else None,
+        message=message,
+    )
+    active_repo = resolution.repo
+
     if ag is None:
         ag = AgentSession(
             session_id=sid,
-            repo=repo,
+            repo=active_repo,
             prompt_version=settings.prompt_version,
             created_at=datetime.utcnow(),
             last_active=datetime.utcnow(),
@@ -608,9 +727,13 @@ async def iter_agent_chat_sse(
         history_msgs: list[AgentMessage] = []
     else:
         ag.last_active = datetime.utcnow()
-        if repo and not ag.repo:
-            ag.repo = repo
+        if active_repo and active_repo != ag.repo:
+            ag.repo = active_repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
+
+    plaky_board_id, plaky_group_id, placement_note = _resolve_placement(
+        plaky_board_id, plaky_group_id, active_repo
+    )
 
     # Latency plan step 1: request id + per-stage wall clocks, logged as one line.
     _req_id = uuid.uuid4().hex[:8]
@@ -624,18 +747,48 @@ async def iter_agent_chat_sse(
     # hold it through the whole (possibly minutes-long) LLM/tool phase, and every concurrent
     # agent turn would die with "database is locked" after the busy timeout.
     await session.commit()
+    agent_session_pk = ag.id
+
+    yield _sse_event({"type": "session", "session_id": sid})
+
+    fast = await maybe_fast_path(
+        message,
+        repo=active_repo,
+        board_id=plaky_board_id,
+        group_id=plaky_group_id,
+    )
+    if fast is not None:
+        session.add(AgentMessage(session_pk=ag.id, role="assistant", content=fast.reply))
+        await session.flush()
+        yield _sse_event({"type": "token", "text": fast.reply})
+        yield _sse_event({"type": "done"})
+        logger.info(
+            "agent stream fast path intent=%s repo=%s source=%s",
+            fast.intent,
+            active_repo or "",
+            resolution.source,
+        )
+        return
+
+    cached_repo_json, cache_state = await load_planning_snapshot(session, active_repo or "")
+    repo_context_prompt = snapshot_prompt_block(cached_repo_json)
 
     # The Plaky create/patch protocol is dead weight when writes are off — the agent cannot
     # act on it. Team policy stays either way so it can still EXPLAIN the conventions.
     intake_extra = TEAM_TASK_POLICY + (TASK_CREATION_WORKFLOW if allow_writes else "")
+    if active_repo:
+        logger.info(
+            "agent stream repo context=%s source=%s cache=%s",
+            active_repo,
+            resolution.source,
+            cache_state,
+        )
     _t_hist = time.monotonic()
     draft_md, plaky_suffix = await asyncio.gather(
-        _load_draft_markdown(session, ag.id),
-        _plaky_system_suffix(plaky_board_id, plaky_group_id),
+        _load_draft_markdown(session, agent_session_pk),
+        _plaky_system_suffix(plaky_board_id, plaky_group_id, note=placement_note),
     )
     _t_ctx = time.monotonic()
-
-    yield _sse_event({"type": "session", "session_id": sid})
 
     parts: list[str] = []
     resolved_provider, resolved_model = _resolve_llm_context(provider, model, use_tools=use_tools)
@@ -669,11 +822,14 @@ async def iter_agent_chat_sse(
                 "**plaky_create_task** / **plaky_patch_item_fields** when field keys are not already explicit in context; "
                 "the API rejects invented field keys."
             )
-            if repo:
-                extra += f"\n## Repo context\n`{repo}`"
+            if active_repo:
+                extra += f"\n## Repo context\n`{active_repo}` (resolved from {resolution.source})"
+            extra += repo_context_prompt
             extra += plaky_suffix
             extra += draft_md + intake_extra
-            async with agent_tool_context(session, ag.id, plaky_board_id, plaky_group_id):
+            async with agent_tool_context(
+                session, agent_session_pk, plaky_board_id, plaky_group_id
+            ):
                 async for chunk in iter_tool_agent(
                     message,
                     chat_history=lc_hist,
@@ -689,10 +845,10 @@ async def iter_agent_chat_sse(
             logger.info("Agent chat stream: plain LLM path (session_id=%s)", sid)
             llm_messages = _build_plain_llm_messages(
                 message,
-                repo,
+                active_repo,
                 history_msgs,
                 plaky_suffix,
-                extra_system_suffix=draft_md + intake_extra,
+                extra_system_suffix=repo_context_prompt + draft_md + intake_extra,
             )
             async for chunk in chat_complete_stream(llm_messages, provider=provider, model=model):
                 if not chunk:
@@ -708,7 +864,7 @@ async def iter_agent_chat_sse(
             assistant_tool_calls_json = _serialize_tool_calls_json(trace_buf)
         session.add(
             AgentMessage(
-                session_pk=ag.id,
+                session_pk=agent_session_pk,
                 role="assistant",
                 content=reply,
                 tool_calls_json=assistant_tool_calls_json,

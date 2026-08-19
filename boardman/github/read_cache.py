@@ -32,6 +32,9 @@ logger = logging.getLogger(__name__)
 
 _entries: dict[str, tuple[float, Any]] = {}
 _locks: dict[str, asyncio.Lock] = {}
+_hits = 0
+_misses = 0
+_coalesced = 0
 
 
 def _ttl() -> float:
@@ -39,15 +42,25 @@ def _ttl() -> float:
 
 
 def clear_read_cache() -> None:
+    global _hits, _misses, _coalesced
     _entries.clear()
     _locks.clear()
+    _hits = 0
+    _misses = 0
+    _coalesced = 0
 
 
 def cache_stats() -> dict[str, int]:
     now = time.monotonic()
     ttl = _ttl()
     fresh = sum(1 for at, _ in _entries.values() if (now - at) < ttl)
-    return {"entries": len(_entries), "fresh": fresh}
+    return {
+        "entries": len(_entries),
+        "fresh": fresh,
+        "hits": _hits,
+        "misses": _misses,
+        "coalesced": _coalesced,
+    }
 
 
 async def cached(
@@ -58,22 +71,29 @@ async def cached(
     ``ok`` decides whether a result is worth caching — pass a predicate that returns False
     for error payloads, so a transient failure is retried rather than remembered.
     """
+    global _hits, _misses, _coalesced
     ttl = _ttl()
     if ttl <= 0:
+        _misses += 1
         return await fetch()
 
     now = time.monotonic()
     hit = _entries.get(key)
     if hit is not None and (now - hit[0]) < ttl:
+        _hits += 1
         logger.debug("github read cache hit: %s", key)
         return hit[1]
 
     lock = _locks.setdefault(key, asyncio.Lock())
+    if lock.locked():
+        _coalesced += 1
     async with lock:
         # Another caller may have filled it while we waited on the lock.
         hit = _entries.get(key)
         if hit is not None and (time.monotonic() - hit[0]) < ttl:
+            _hits += 1
             return hit[1]
+        _misses += 1
         value = await fetch()
         if ok(value):
             _entries[key] = (time.monotonic(), value)

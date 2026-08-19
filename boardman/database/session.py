@@ -48,7 +48,7 @@ async def init_db() -> None:
 
         if settings.database_url.startswith("sqlite"):
 
-            def _add_task_draft_column(sync_conn):
+            def _add_optional_columns(sync_conn):
                 r = sync_conn.execute(text("PRAGMA table_info(agent_sessions)"))
                 cols = [row[1] for row in r.fetchall()]
                 if "task_draft_json" not in cols:
@@ -56,4 +56,17 @@ async def init_db() -> None:
                         text("ALTER TABLE agent_sessions ADD COLUMN task_draft_json TEXT")
                     )
 
-            await conn.run_sync(_add_task_draft_column)
+                r = sync_conn.execute(text("PRAGMA table_info(project_contexts)"))
+                context_cols = [row[1] for row in r.fetchall()]
+                additions = {
+                    "context_json": "TEXT",
+                    "context_source_revision": "VARCHAR(255)",
+                    "context_fetched_at": "DATETIME",
+                }
+                for name, sql_type in additions.items():
+                    if name not in context_cols:
+                        sync_conn.execute(
+                            text(f"ALTER TABLE project_contexts ADD COLUMN {name} {sql_type}")
+                        )
+
+            await conn.run_sync(_add_optional_columns)

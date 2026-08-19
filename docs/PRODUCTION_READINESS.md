@@ -47,6 +47,13 @@ issue title/body edited -> re-syncs where the board can store it; Plaky's public
 issue closed            -> Completed, remembering the pre-close status
 issue reopened          -> RESUMES the pre-close status; no record -> owner ? Assigned
                            : NEEDS ASSIGNED (never a blanket In Progress)
+assistant creates a task-> same ladder as GitHub-driven tasks: a resolved assignee ->
+                           Assigned, nobody -> NEEDS ASSIGNED, and if the person column
+                           does not actually take, the status is walked back rather than
+                           claiming an owner. "assign it to Ali", "sergio QAs this" are
+                           fuzzy-matched to the roster in-process (person_match.py), so
+                           no workspace-user lookup turn is needed; an ambiguous name is
+                           refused with the candidates named
 PR opened (linked)      -> assignee = PR author; QA picked + @mentioned + requested;
                            non-draft -> Needs QA; draft -> follows assignee
 QA is never the author  -> the PR author is removed from the candidate pool (self

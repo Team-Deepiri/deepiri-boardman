@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import httpx
 from langchain_core.tools import StructuredTool
 
+from boardman.agent.repo_context import load_planning_snapshot, save_planning_snapshot
+from boardman.agent.tool_context import get_tool_db_session
 from boardman.github.code_search import scan_repo_defects, search_repo_code
 from boardman.github.http import shared_github_client
 from boardman.github.read_cache import cached, json_ok
@@ -24,6 +27,8 @@ from boardman.github.repo_hotspots import fetch_repo_hotspots
 from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.repos_config import list_workspace_repos
 from boardman.settings import settings
+
+logger = logging.getLogger(__name__)
 
 _NOTABLE_FILE_BASENAMES = {
     "readme.md",
@@ -345,11 +350,40 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
     common case, and re-fetching seven endpoints to answer "and what about its tests?"
     is latency the user pays for nothing.
     """
-    return await cached(
+    db = get_tool_db_session()
+    persistent, cache_state = await load_planning_snapshot(db, _canonical_owner_repo(owner_repo))
+    if persistent:
+        return persistent
+
+    result = await cached(
         f"planning:{(owner_repo or '').strip().lower()}:{commits_limit}",
         lambda: _github_repo_planning_context_uncached(owner_repo, commits_limit),
         ok=json_ok,
     )
+    if json_ok(result):
+        return result
+
+    # A stale structured snapshot is better than turning an optional GitHub outage into
+    # a blank repo. The payload labels itself as stale so the model does not mistake it
+    # for current review/CI state.
+    stale, stale_state = await load_planning_snapshot(
+        db, _canonical_owner_repo(owner_repo), allow_stale=True
+    )
+    if stale:
+        return stale
+    return result
+
+
+def _canonical_owner_repo(owner_repo: str) -> str:
+    raw = (owner_repo or "").strip()
+    parsed = parse_owner_repo(raw)
+    if parsed:
+        return f"{parsed[0]}/{parsed[1]}"
+    if raw and "/" not in raw:
+        from boardman.assignment.qa_picker import ensure_github_owner_repo
+
+        return ensure_github_owner_repo(raw)
+    return raw
 
 
 async def _github_repo_planning_context_uncached(owner_repo: str, commits_limit: int = 20) -> str:
@@ -416,10 +450,13 @@ async def _github_repo_planning_context_uncached(owner_repo: str, commits_limit:
         "ok": True,
         "repo": f"{owner}/{repo}",
         "structure": {
+            "description": getattr(meta, "description", ""),
             "language": getattr(meta, "language", ""),
+            "topics": getattr(meta, "topics", [])[:12],
             "default_branch": getattr(meta, "default_branch", ""),
             "size_kb": getattr(meta, "size_kb", 0),
             "top_level_dirs": getattr(meta, "top_level_dirs", []),
+            "important_paths": getattr(meta, "important_paths", [])[:40],
             "notable_files": notable,
             "max_depth": getattr(meta, "max_depth", 0),
         },
@@ -431,8 +468,49 @@ async def _github_repo_planning_context_uncached(owner_repo: str, commits_limit:
         "recent_commits_markdown": commits,
         "open_issues_markdown": issues,
         "open_pull_requests_markdown": prs_md,
+        "source_revision": str(getattr(meta, "pushed_at", "") or ""),
+        "routing": _repo_routing_summary(f"{owner}/{repo}"),
+        "retrieval": {
+            "layers": ["metadata", "structure", "direction", "activity"],
+            "live_state": "issues/prs are snapshots; PR review and CI require a live PR read",
+        },
     }
-    return _budget_json(out)
+    payload = _budget_json(out)
+    try:
+        parsed_payload = json.loads(payload)
+    except (TypeError, ValueError):
+        parsed_payload = None
+    if isinstance(parsed_payload, dict):
+        await save_planning_snapshot(
+            get_tool_db_session(),
+            f"{owner}/{repo}",
+            parsed_payload,
+            source_revision=str(getattr(meta, "pushed_at", "") or ""),
+        )
+    logger.debug(
+        "github planning context repo=%s payload_chars=%d source_revision=%s",
+        f"{owner}/{repo}",
+        len(payload),
+        str(getattr(meta, "pushed_at", "") or "")[:40],
+    )
+    return payload
+
+
+def _repo_routing_summary(full_name: str) -> dict[str, str]:
+    """Expose configured placement as compact context, without hitting Plaky."""
+    try:
+        from boardman.repos_config import get_routing
+
+        short = full_name.rsplit("/", 1)[-1]
+        routing = get_routing(full_name, short, settings.github_org)
+        return {
+            "category": str(routing.category or ""),
+            "table": str(routing.plaky_table or ""),
+            "board_id": str(routing.plaky_board_id or ""),
+            "group_id": str(routing.plaky_group_id or ""),
+        }
+    except Exception:
+        return {}
 
 
 async def _github_search_code(owner_repo: str, query: str) -> str:

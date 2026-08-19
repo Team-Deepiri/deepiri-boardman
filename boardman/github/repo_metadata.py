@@ -20,12 +20,15 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from boardman.github.read_cache import cached
+from boardman.github.repo_fetch import github_request
 from boardman.settings import settings
 
 
 @dataclass
 class RepoMetadata:
     full_name: str
+    description: str = ""
     language: str = ""
     topics: list[str] = field(default_factory=list)  # kept for compat; not used for classification
     size_kb: int = 0
@@ -33,7 +36,69 @@ class RepoMetadata:
     raw_signals: list[str] = field(default_factory=list)  # file:X  dir:X  lang:X  name:X
     max_depth: int = 0
     top_level_dirs: list[str] = field(default_factory=list)
+    important_paths: list[str] = field(default_factory=list)
     signal_counts: dict[str, int] = field(default_factory=dict)
+    pushed_at: str = ""
+
+
+async def fetch_repo_identity(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+) -> dict | None:
+    """Fetch/cache the cheap repository identity response.
+
+    Metadata, default-branch discovery, direction lookup, and hotspot analysis all need
+    this response. Sharing it prevents one planning turn from paying the same GitHub GET
+    several times.
+    """
+
+    async def _fetch() -> dict | None:
+        try:
+            response = await github_request(client, f"/repos/{owner}/{repo}")
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    return await cached(
+        f"repo-identity:{owner}/{repo}",
+        _fetch,
+        # A successful GitHub response may omit optional fields in fixtures or for
+        # enterprise-compatible APIs. The HTTP status is the failure signal here;
+        # metadata callers already provide safe defaults for missing identity fields.
+        ok=lambda value: isinstance(value, dict) and bool(value),
+    )
+
+
+async def fetch_repo_tree(
+    client: httpx.AsyncClient,
+    owner: str,
+    repo: str,
+    branch: str,
+) -> dict | None:
+    """Fetch/cache one recursive tree payload shared by metadata and hotspot readers."""
+
+    async def _fetch() -> dict | None:
+        try:
+            response = await github_request(
+                client,
+                f"/repos/{owner}/{repo}/git/trees/{branch}?recursive=1",
+            )
+            if response.status_code != 200:
+                return None
+            data = response.json()
+            return data if isinstance(data, dict) else None
+        except Exception:
+            return None
+
+    return await cached(
+        f"repo-tree:{owner}/{repo}@{branch}",
+        _fetch,
+        ok=lambda value: isinstance(value, dict) and isinstance(value.get("tree"), list),
+    )
 
 
 async def _fetch_file_tree_signals(
@@ -41,19 +106,17 @@ async def _fetch_file_tree_signals(
     owner: str,
     repo: str,
     branch: str,
-    headers: dict,
 ) -> tuple[list[str], int, list[str], dict[str, int]]:
     """
     Call GitHub git/trees API (recursive) and emit one signal per unique
     file basename and directory name. No file content is read.
     Returns (signals, max_depth, top_level_dirs, signal_counts).
     """
-    url = f"https://api.github.com/repos/{owner}/{repo}/git/trees/{branch}?recursive=1"
     try:
-        r = await client.get(url, headers=headers, timeout=15, follow_redirects=True)
-        if r.status_code != 200:
+        data = await fetch_repo_tree(client, owner, repo, branch)
+        if not data:
             return [], 0, [], {}
-        tree = r.json().get("tree", [])
+        tree = data.get("tree", [])
     except Exception:
         return [], 0, [], {}
 
@@ -128,25 +191,47 @@ async def fetch_repo_metadata(
     if not token:
         return None
 
-    gh_headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-    url = f"https://api.github.com/repos/{owner}/{repo}"
-
     try:
-        r = await client.get(url, headers=gh_headers, follow_redirects=True)
-        r.raise_for_status()
-        data = r.json()
+        data = await fetch_repo_identity(client, owner, repo)
+        if not data:
+            return None
         branch = data.get("default_branch", "main") or "main"
         full_name = data.get("full_name", f"{owner}/{repo}")
         lang = (data.get("language") or "").strip()
 
         tree_signals, max_depth, top_level_dirs, signal_counts = await _fetch_file_tree_signals(
-            client, owner, repo, branch, gh_headers
+            client, owner, repo, branch
         )
+        tree_data = await fetch_repo_tree(client, owner, repo, branch)
+        important_paths: list[str] = []
+        important_basenames = {
+            "agents.md",
+            "direction.md",
+            "dockerfile",
+            "docker-compose.yml",
+            "docker-compose.yaml",
+            "makefile",
+            "package.json",
+            "pyproject.toml",
+            "requirements.txt",
+            "go.mod",
+            "cargo.toml",
+            "pom.xml",
+            "readme.md",
+        }
+        for item in (tree_data or {}).get("tree", []):
+            path = str(item.get("path") or "")
+            base = path.rsplit("/", 1)[-1].casefold()
+            if (
+                base in important_basenames or path.casefold().startswith(".github/workflows/")
+            ) and len(important_paths) < 40:
+                important_paths.append(path)
         lang_signals = [f"lang:{lang.lower()}"] if lang else []
         name_sigs = _name_signals(full_name)
 
         return RepoMetadata(
             full_name=full_name,
+            description=str(data.get("description") or ""),
             language=lang,
             topics=data.get("topics", []) or [],
             size_kb=data.get("size", 0),
@@ -154,7 +239,9 @@ async def fetch_repo_metadata(
             raw_signals=tree_signals + lang_signals + name_sigs,
             max_depth=max_depth,
             top_level_dirs=top_level_dirs,
+            important_paths=important_paths,
             signal_counts=signal_counts,
+            pushed_at=str(data.get("pushed_at") or ""),
         )
     except Exception:
         return None

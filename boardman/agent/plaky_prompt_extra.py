@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 
-def plaky_placement_markdown(board_id: str | None, group_id: str | None) -> str:
+def plaky_placement_markdown(board_id: str | None, group_id: str | None, note: str = "") -> str:
     """Tell the model which board/group to use so it does not re-ask the user."""
     bid = (board_id or "").strip() or None
     gid = (group_id or "").strip() or None
@@ -30,5 +30,8 @@ def plaky_placement_markdown(board_id: str | None, group_id: str | None) -> str:
             "- **group_id**: not set — use **plaky_match_group** with the board_id above, "
             "or pick a group from the board schema block."
         )
+    if note.strip():
+        lines.append("")
+        lines.append(note.strip())
     lines.append("")
     return "\n".join(lines)

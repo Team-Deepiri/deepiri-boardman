@@ -59,6 +59,10 @@ class ScanRequest(BaseModel):
     dry_run: bool = False
     provider: str | None = None
     model: str | None = None
+    queue: bool = Field(
+        False,
+        description="If true, enqueue the scan to the SQLite worker; poll GET /agent/jobs/{job_id}.",
+    )
 
 
 class InitDirectionRequest(BaseModel):
@@ -219,6 +223,14 @@ async def agent_scan(
     session: AsyncSession = Depends(get_db),
 ) -> dict:
     await require_agent_rate_limit(request)
+    if body.queue:
+        if not settings.agent_async_enqueue_enabled:
+            raise HTTPException(
+                status_code=503, detail="Async agent enqueue is disabled in settings."
+            )
+        payload = body.model_dump(exclude={"queue"}, exclude_none=True)
+        job = await get_job_queue().enqueue_job("boardman_repo_scan_job", payload)
+        return {"ok": True, "queued": True, "job_id": job.job_id}
     result = await run_repo_scan(
         session,
         body.repo,

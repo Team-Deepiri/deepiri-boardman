@@ -119,9 +119,57 @@ def _raw() -> dict[str, Any]:
 
 
 def reload_team_assignments() -> None:
+    global _team_cfg_cache
+    _team_cfg_cache = None
     _raw.cache_clear()
     clear_support_team_cache()
     clear_identity_llm_cache()
+
+
+# Assembling the config hits the network: the GitHub support-team roster (TTL-cached
+# 120s) and then PlakyClient().list_workspace_users_sync(), which is a BLOCKING,
+# paginated HTTP call with no cache of its own. load_team_assignments() is called
+# several times per created task (create path, QA picker, field maps, draft merge), so
+# a 5-task batch stalled the event loop on that sync call over a dozen times and both
+# create lanes waited on it. The assembled config is stable for the life of a request
+# burst, so cache it for a short TTL; reload_team_assignments() still clears it.
+_TEAM_CFG_TTL_SECONDS = 120.0
+_team_cfg_cache: tuple[float, tuple[Any, ...], TeamAssignmentsConfig] | None = None
+
+
+def _config_stamp() -> tuple[Any, ...]:
+    """Identity of the source yaml, so an edited file is never served from cache."""
+    try:
+        path = _path()
+        st = path.stat()
+        return (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return ("missing",)
+
+
+def load_team_assignments(*, refresh: bool = False) -> TeamAssignmentsConfig:
+    """Assembled roster + field keys + policy, memoised for ``_TEAM_CFG_TTL_SECONDS``.
+
+    Keyed on the yaml's mtime/size as well as the clock: editing the file (or a test
+    writing its own) takes effect immediately rather than waiting out the TTL.
+    """
+    global _team_cfg_cache
+    now = time.monotonic()
+    stamp = _config_stamp()
+    # Snapshot once: reload_team_assignments() can null this from another thread
+    # between the check and the unpack.
+    snap = _team_cfg_cache
+    if not refresh and snap is not None:
+        stamped_at, stamped_src, cfg = snap
+        if stamped_src == stamp and now - stamped_at < _TEAM_CFG_TTL_SECONDS:
+            return cfg
+    if snap is not None and snap[1] != stamp:
+        # The yaml itself changed. _raw() is lru_cached with no arguments, so without
+        # this the rebuild would re-read the SAME stale parse forever.
+        _raw.cache_clear()
+    cfg = _build_team_assignments()
+    _team_cfg_cache = (now, stamp, cfg)
+    return cfg
 
 
 def ensure_team_assignments_file_exists() -> Path:
@@ -457,7 +505,7 @@ def _members_from_github_roster(data: dict[str, Any]) -> list[TeamMember]:
     return members
 
 
-def load_team_assignments() -> TeamAssignmentsConfig:
+def _build_team_assignments() -> TeamAssignmentsConfig:
     data = _raw()
     keys = data.get("plaky_field_keys") or {}
     if not isinstance(keys, dict):
