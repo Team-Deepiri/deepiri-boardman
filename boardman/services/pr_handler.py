@@ -1048,7 +1048,10 @@ async def handle_pr_synchronized(
     """New commits pushed (pull_request.synchronize): if a linked task is currently
     QA-rejected, the developer has addressed the review → the work is RESUBMITTED, not
     merely resumed. Employer: "developer made these changes so it needs QA again."
-    Boards without a 'Needs QA Again' option degrade to 'Needs QA'.
+
+    Needing QA again just means going back to Needs QA (Ali, 2026-08-19) — that is the
+    intended destination, not a fallback. A board that happens to define a dedicated
+    "…Again" column gets it; the Bots board does not, and Needs QA is correct there.
     """
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number

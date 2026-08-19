@@ -54,7 +54,14 @@ STATUS_NAMES = {
     "7": "QA Rejected",
     "1": "Completed",
 }
-TYPE_NAMES = {"0": "Story", "9": "Task", "10": "Bug", "12": "Research", "17": "Feature"}
+TYPE_NAMES = {
+    "0": "Story",
+    "9": "Task",
+    "10": "Bug",
+    "12": "Research",
+    "17": "Feature",
+    "18": "Refactor",
+}
 PRIORITY_NAMES = {"0": "VERY IMPORTANT", "1": "High", "2": "Medium", "3": "Low"}
 
 RESULTS: list[tuple[str, str, str, str]] = []  # section, verdict, line, evidence
@@ -481,14 +488,12 @@ async def section_2_3_4(client: httpx.AsyncClient, issue_num: int, tid: str) -> 
         "pull_request",
         pr_payload("labeled", pr_num, issue_num, labels=[{"name": "Refactor"}]),
     )
-    okl, seenl = await wait_field(
-        tid, "Type", lambda v: v in ("Research", "Story", "Task", "Bug"), timeout=60
-    )
+    okl, seenl = await wait_field(tid, "Type", "Refactor", timeout=60)
     record(
         S2,
         "PASS" if okl else "FAIL",
         "[hook] PR labels changing -> Plaky Type changes",
-        f"Type={seenl} (board has no Refactor option; degrades)",
+        f"Type={seenl} (Refactor label -> Refactor option, id 18)",
     )
 
     cm = f"pr activity {uuid.uuid4().hex[:6]}"

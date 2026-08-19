@@ -61,10 +61,10 @@ PR opened (no match)    -> a REAL linked task is created (title/type/priority fr
                            PR, assignee = author, Needs QA, QA assigned)
 PR labeled later        -> Type re-syncs (labels only; branch had its chance)
 QA rejects              -> QA Rejected (only the assigned QA can)
-dev pushes after reject -> Needs QA Again (resubmission)
+dev pushes after reject -> back to Needs QA (resubmission)
 QA comments             -> In QA (assigned QA counts even off the support roster)
 approval w/ failing CI  -> HELD: task does not read QA Verified while checks are red
-new commits after       -> QA Verified/Rejected invalidated -> Needs QA Again
+new commits after       -> QA Verified/Rejected invalidated -> back to Needs QA
   a verdict
 approve / dismiss       -> QA Verified / back to In QA
 merge (last open PR)    -> Completed        close unmerged (last PR) -> In Progress
@@ -119,10 +119,9 @@ false with confidence*. The standing protections:
 - [ ] Secrets out of `.env` into the host store; rotate anything that touched dev
 - [ ] `scripts/deploy_preflight.sh` green; `plaky_automation_matrix.py` + `--edge` green
       against the production board after first deploy
-- [ ] Ask the Plaky admin to add the remaining board options: Status "Needs QA Again"
-      and Type "Refactor". Type "Feature" now EXISTS (id 17, added by the admin and
-      confirmed live), so issues no longer degrade to Story. Until the other two land,
-      handlers degrade gracefully: NQA-Again→Needs QA, Refactor→Task
+- [x] Board vocabulary is complete. Type carries Story, Task, Bug, Research, Feature
+      (17) and Refactor (18) — both confirmed live on the Bots board. Status needs no
+      "Needs QA Again" column: a resubmission returns to Needs QA by design
 
 ## 6. Known gaps / accepted debt
 
@@ -133,7 +132,6 @@ false with confidence*. The standing protections:
 | ~~Reconciliation~~ | DONE: POST /api/v1/reconcile/{owner}/{repo} walks current open issues/PRs through the idempotent handlers (bounded, repeat-safe) |
 | Rolling history summarization | window of 16 recent messages suffices today |
 | CI latency/quality gate | the p50/p95 metrics now exist to gate on |
-| Bots board vocab gaps | Plaky-admin action, see checklist |
 | Renaming an existing task | Plaky API exposes no item update verb (Allow: GET/HEAD/DELETE); adding a "Details" text field to the board would at least let the body sync into a column |
 | Sub-15s five-task creates | bounded by Plaky burst shaping + model decode; needs the fast lane + a faster planning model |
 

@@ -290,7 +290,9 @@ async def resolve_plaky_status_patch(
         hints, neg = _WORKFLOW_NEEDS_QA_HINTS, ()
     elif intent == "workflow_needs_qa_again":
         # Only matches a dedicated "...AGAIN" column; otherwise the caller falls back to
-        # workflow_needs_qa (a board with a single "Needs QA" status reuses it).
+        # workflow_needs_qa. Returning to Needs QA is the INTENDED behavior (Ali:
+        # "needs QA again means it just goes back to Needs QA"), not a degradation —
+        # a separate column is optional and no board is expected to define one.
         hints, neg, require_substring = _WORKFLOW_NEEDS_QA_AGAIN_HINTS, (), "again"
     elif intent == "workflow_needs_assigned":
         hints, neg = _WORKFLOW_NEEDS_ASSIGNED_HINTS, _WORKFLOW_NEEDS_ASSIGNED_NEG
