@@ -283,11 +283,22 @@ def _ranked_choice(
 
 
 async def pick_qa_for_repo(
-    full_name: str, cfg: TeamAssignmentsConfig | None = None
+    full_name: str,
+    cfg: TeamAssignmentsConfig | None = None,
+    *,
+    exclude_login: str = "",
 ) -> tuple[str | None, str]:
     """
     Returns (plaky_person_id_or_value, reason_summary).
     Uses tier from repos.yml, or auto-classifies if not found.
+
+    ``exclude_login`` removes one GitHub login from the pool — the PR author. Nobody
+    reviews their own pull request, and assigning them is worse than useless: GitHub
+    refuses a self review, so the review request is skipped, the "@you are QA" comment
+    names the author, and the rejection path (the one branch that IS gated on the
+    assigned QA) becomes unreachable, so a real reviewer's "request changes" is
+    ignored. If excluding the author empties the pool, QA is left unassigned with a
+    reason rather than filled with a reviewer who cannot review.
     """
     cfg = cfg or load_team_assignments()
     fn = (full_name or "").strip()
@@ -330,6 +341,18 @@ async def pick_qa_for_repo(
         with_qa_role = [m for m in with_qa_role if not _is_excluded(m)]
         if not with_qa_role:
             return (None, "all QA-role members are on the qa_excluded list")
+
+    author = (exclude_login or "").strip().casefold()
+    if author:
+        with_qa_role = [
+            m for m in with_qa_role if (m.github_login or "").strip().casefold() != author
+        ]
+        if not with_qa_role:
+            return (
+                None,
+                f"the only eligible QA is the PR author ({exclude_login}); "
+                "nobody reviews their own pull request",
+            )
 
     qas = [m for m in with_qa_role if repo_matches_member(fn, m)]
     if not qas:

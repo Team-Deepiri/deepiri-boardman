@@ -311,7 +311,10 @@ async def _assign_qa_for_pr(
             why = f"bug task -> QA bug specialist {getattr(sm, 'display', specialist_name)}"
 
     if not qid:
-        qid, why = await _pick(repo_full)
+        # The author is never a candidate (self-review). GitHub refuses a review from
+        # the PR's own author, so assigning them leaves the task with a reviewer who
+        # cannot act, and the QA-gated rejection path stops responding to anyone.
+        qid, why = await _pick(repo_full, exclude_login=pr_author_login)
     if not qid:
         return {"skipped": "no eligible QA", "reason": why}
 

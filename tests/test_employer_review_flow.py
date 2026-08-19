@@ -285,7 +285,11 @@ async def test_assign_qa_for_pr_full_path(monkeypatch: pytest.MonkeyPatch) -> No
     reviewers: list[tuple[str, int, list[str]]] = []
     updates: list[Any] = []
 
-    async def fake_pick(repo_full: str):
+    picked_with: list[str] = []
+
+    async def fake_pick(repo_full: str, cfg: Any = None, *, exclude_login: str = ""):
+        # The PR author must reach the picker so they can be excluded from their own review.
+        picked_with.append(exclude_login)
         return "plaky-42", "qa=Regular QA ranking[...]"
 
     async def fake_key(bid: str, fallback: str) -> str:
@@ -327,6 +331,7 @@ async def test_assign_qa_for_pr_full_path(monkeypatch: pytest.MonkeyPatch) -> No
     assert updates and updates[0][1].qa_plaky_id == "plaky-42"
     assert comments and "@regular-qa" in comments[0][2]
     assert reviewers == [("Team-Deepiri/r", 9, ["regular-qa"])]
+    assert picked_with == ["someone-else"]  # the author reaches the picker to be excluded
 
 
 @pytest.mark.asyncio
@@ -441,3 +446,67 @@ def test_degraded_constraint_is_not_applied_on_the_normal_plain_path() -> None:
     src = inspect.getsource(svc.run_agent_chat) if hasattr(svc, "run_agent_chat") else ""
     # Exactly one call site should opt into degraded mode (the exception fallback).
     assert src.count("tools_unavailable=True") <= 1
+
+
+# --- nobody QAs their own pull request ---------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_pr_author_is_never_their_own_qa(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Live checklist run assigned Ali as QA on Ali's own PR. GitHub refuses a review
+    from the author, so that reviewer can never act and the QA-gated rejection path
+    stops responding to anyone."""
+    author = _member("qa-ali", display="Ali Ferris", login="Blasted-ctrl")
+    other = _member("qa-worker", display="Regular QA", login="regular-qa")
+    cfg = _cfg([author, other])
+
+    async def fake_fits(candidates: Any, full_name: str):
+        # Give the AUTHOR the best fit; the exclusion must still win.
+        return {m.id: (0.99 if m.id == "qa-ali" else 0.1, "d") for m in candidates}
+
+    async def fake_tier(fn: str) -> int:
+        return 2
+
+    monkeypatch.setattr(qp, "_github_fit_scores", fake_fits)
+    monkeypatch.setattr(qp, "_auto_classify_repo_tier", fake_tier)
+    qid, why = await qp.pick_qa_for_repo(
+        "Team-Deepiri/some-repo", cfg, exclude_login="Blasted-ctrl"
+    )
+    assert qid == "qa-worker", why
+
+
+@pytest.mark.asyncio
+async def test_sole_candidate_authoring_leaves_qa_unassigned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Better an honest empty QA field than a reviewer GitHub will not let review."""
+    author = _member("qa-ali", display="Ali Ferris", login="Blasted-ctrl")
+    cfg = _cfg([author])
+
+    async def fake_tier(fn: str) -> int:
+        return 2
+
+    monkeypatch.setattr(qp, "_auto_classify_repo_tier", fake_tier)
+    qid, why = await qp.pick_qa_for_repo(
+        "Team-Deepiri/some-repo", cfg, exclude_login="Blasted-ctrl"
+    )
+    assert qid is None
+    assert "own pull request" in why
+
+
+@pytest.mark.asyncio
+async def test_author_exclusion_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    author = _member("qa-ali", display="Ali Ferris", login="Blasted-ctrl")
+    other = _member("qa-worker", display="Regular QA", login="regular-qa")
+    cfg = _cfg([author, other])
+
+    async def fake_fits(candidates: Any, full_name: str):
+        return None
+
+    async def fake_tier(fn: str) -> int:
+        return 2
+
+    monkeypatch.setattr(qp, "_github_fit_scores", fake_fits)
+    monkeypatch.setattr(qp, "_auto_classify_repo_tier", fake_tier)
+    qid, _ = await qp.pick_qa_for_repo("Team-Deepiri/some-repo", cfg, exclude_login="blasted-CTRL")
+    assert qid == "qa-worker"

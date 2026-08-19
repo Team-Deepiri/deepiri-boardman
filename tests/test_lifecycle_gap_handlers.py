@@ -584,7 +584,7 @@ def _wire_specialist_env(monkeypatch, *, is_bug: bool, picked=("481106", "ranked
     async def fake_resolve(bid, fallback):
         return "person-4"
 
-    async def fake_pick(repo_full):
+    async def fake_pick(repo_full, cfg=None, *, exclude_login=""):
         return picked
 
     async def fake_update(task_id, inp):

@@ -19,7 +19,15 @@ assistant (gpt-5.1, LangChain tool-calling) reads repos and manages the board on
 request. SQLite for sessions/links/dedupe; webhooks in production, a polling loop
 (`TESTING_LIVE_PLAKY=true`, 15s) as the local stand-in.
 
-## 2. The state machine (verified: 33/33 matrix + 14/14 edge guards, live)
+## 2. The state machine
+
+Verified live three ways: `plaky_automation_matrix.py` (33/33 transitions + 14/14 edge
+guards), and `scripts/production_checklist.py`, which walks the employer checklist end to
+end — **52 pass, 0 fail, 1 documented limitation** on 2026-08-19. That runner opens a real
+GitHub issue and mutates it for real (label, priority, assignee, edit, comment, close,
+reopen) with nothing syncing it by hand, then drives the PR/QA/merge legs through the real
+webhook endpoint, asserting the live board after every step.
+
 
 ```
 issue opened            -> task on Bots/deepiri-boardman: NEEDS ASSIGNED
@@ -41,6 +49,14 @@ issue reopened          -> RESUMES the pre-close status; no record -> owner ? As
                            : NEEDS ASSIGNED (never a blanket In Progress)
 PR opened (linked)      -> assignee = PR author; QA picked + @mentioned + requested;
                            non-draft -> Needs QA; draft -> follows assignee
+QA is never the author  -> the PR author is removed from the candidate pool (self
+                           review). GitHub refuses a review from the PR's own author,
+                           so assigning them leaves a reviewer who cannot act and the
+                           QA-gated rejection path stops responding to anyone. If that
+                           empties the pool, QA stays unset with a reason.
+                           NOTE: an approval from ANY reviewer sets QA Verified by
+                           design; only "request changes" is restricted to the
+                           assigned QA.
 PR opened (no match)    -> a REAL linked task is created (title/type/priority from the
                            PR, assignee = author, Needs QA, QA assigned)
 PR labeled later        -> Type re-syncs (labels only; branch had its chance)
@@ -103,9 +119,10 @@ false with confidence*. The standing protections:
 - [ ] Secrets out of `.env` into the host store; rotate anything that touched dev
 - [ ] `scripts/deploy_preflight.sh` green; `plaky_automation_matrix.py` + `--edge` green
       against the production board after first deploy
-- [ ] Ask the Plaky admin to add board options: Status "Needs QA Again", Type "Feature"
-      and "Refactor" (handlers degrade gracefully until then: NQA-Again→Needs QA,
-      Feature→Story)
+- [ ] Ask the Plaky admin to add the remaining board options: Status "Needs QA Again"
+      and Type "Refactor". Type "Feature" now EXISTS (id 17, added by the admin and
+      confirmed live), so issues no longer degrade to Story. Until the other two land,
+      handlers degrade gracefully: NQA-Again→Needs QA, Refactor→Task
 
 ## 6. Known gaps / accepted debt
 
