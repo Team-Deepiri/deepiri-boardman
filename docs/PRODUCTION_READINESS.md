@@ -63,8 +63,11 @@ every tool call logs its wall time. Slowness is diagnosable from one log line.
 Every failure mode found this cycle was a variant of one disease: *stating something
 false with confidence*. The standing protections:
 
-- errors classify by SDK status code first — a 429 says "quota, resets in a minute",
-  never "check your API key"; unknown errors say "transient, re-send once"
+- errors classify by SDK status code first — a transient 429 says "quota, resets in a
+  minute" while an exhausted balance (429 insufficient_quota, 402, Anthropic's 400)
+  says "billing — add credits, re-sending will not help"; never "check your API key".
+  Gemini's transient throttle reuses OpenAI's billing sentence and stays rate_limited
+
 - a provider failure can no longer eat the user's message (persisted before the LLM runs)
 - caches never store failures; PR review/CI state is never cached
 - partial data is always labeled (`returned/total/truncated`, `UNAVAILABLE` sections)

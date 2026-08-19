@@ -56,6 +56,7 @@ ErrorCategory = Literal[
     "model_missing",
     "auth",
     "rate_limited",
+    "insufficient_quota",
     "timeout",
     "connectivity",
     "bad_request",
@@ -109,6 +110,33 @@ def _resolve_llm_context(
     return prov, mdl
 
 
+# OpenAI and Anthropic both answer 429 for two unrelated problems: a per-minute rate
+# limit (transient, re-send works) and an empty credit balance (billing; re-sending is
+# useless). Telling a user with no credits to "just re-send" is stating something false
+# with confidence, so the balance case must be split out by the error body.
+_QUOTA_EXHAUSTED_MARKERS = (
+    "insufficient_quota",
+    "credit_balance_exhausted",
+    "no credits remaining",
+    "credit balance",
+    "insufficient credits",
+    "requires more credits",
+    "billing hard limit",
+    "billing details",
+)
+
+
+def _looks_quota_exhausted(text: str, provider: str = "") -> bool:
+    low = text.lower()
+    markers = _QUOTA_EXHAUSTED_MARKERS
+    if provider in ("gemini", "google"):
+        # Gemini reuses OpenAI's "check your plan and billing details" sentence for
+        # TRANSIENT per-minute throttles (RetryInfo says retry in seconds), so on
+        # Gemini that phrase proves nothing about the balance.
+        markers = tuple(m for m in markers if m != "billing details")
+    return any(m in low for m in markers)
+
+
 def _classify_llm_error(exc: BaseException, *, provider: str) -> ErrorCategory:
     try:
         import httpx
@@ -121,9 +149,19 @@ def _classify_llm_error(exc: BaseException, *, provider: str) -> ErrorCategory:
             if st in (401, 403):
                 return "auth"
             if st == 429:
-                return "rate_limited"
+                return (
+                    "insufficient_quota"
+                    if _looks_quota_exhausted(low, provider)
+                    else "rate_limited"
+                )
+            if st == 402:
+                # Payment Required is unambiguous (OpenRouter's drained-balance signal).
+                return "insufficient_quota"
             if st == 400:
-                return "bad_request"
+                # Anthropic reports an empty balance as 400 invalid_request, not 429.
+                return (
+                    "insufficient_quota" if _looks_quota_exhausted(low, provider) else "bad_request"
+                )
             return "upstream_http"
         if isinstance(exc, httpx.ReadTimeout | httpx.TimeoutException):
             return "timeout"
@@ -149,17 +187,29 @@ def _classify_llm_error(exc: BaseException, *, provider: str) -> ErrorCategory:
         st = getattr(getattr(exc, "response", None), "status_code", None)
     if isinstance(st, int):
         if st == 429:
-            return "rate_limited"
+            return (
+                "insufficient_quota"
+                if _looks_quota_exhausted(str(exc), provider)
+                else "rate_limited"
+            )
+        if st == 402:
+            return "insufficient_quota"
         if st in (401, 403):
             return "auth"
         if st == 404:
             return "model_missing"
         if st == 400:
-            return "bad_request"
+            return (
+                "insufficient_quota"
+                if _looks_quota_exhausted(str(exc), provider)
+                else "bad_request"
+            )
 
     low = str(exc).lower()
     if "not found" in low and "model" in low:
         return "model_missing"
+    if _looks_quota_exhausted(low, provider):
+        return "insufficient_quota"
     if "rate limit" in low or "rate_limit_exceeded" in low or "tokens per min" in low:
         return "rate_limited"
     if "invalid api key" in low or "incorrect api key" in low:
@@ -168,6 +218,24 @@ def _classify_llm_error(exc: BaseException, *, provider: str) -> ErrorCategory:
 
 
 def _provider_hint(provider: str, category: ErrorCategory, model: str) -> str:
+    if category == "insufficient_quota":
+        if provider == "openai":
+            return (
+                "The OpenAI account has no credits remaining. This is a billing problem, "
+                "not a rate limit - re-sending will not help. Add credits at "
+                "https://platform.openai.com/settings/organization/billing/ and then "
+                "re-send the message."
+            )
+        if provider == "openrouter":
+            return (
+                "The OpenRouter account is out of credits. This is a billing problem, "
+                "not a rate limit - re-sending will not help. Add credits at "
+                "https://openrouter.ai/settings/credits and then re-send the message."
+            )
+        return (
+            "The provider account has run out of credit. This is a billing problem, not "
+            "a rate limit - re-sending will not help until the balance is topped up."
+        )
     if provider == "ollama":
         if category == "model_missing":
             return (
