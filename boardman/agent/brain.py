@@ -142,8 +142,20 @@ class ProjectState:
         )
 
 
-def resolve_identity(repo: str, *, default_branch: str = "") -> Identity:
-    """L0 for a repo name, from config only. Never raises, never blocks."""
+def resolve_identity(
+    repo: str,
+    *,
+    default_branch: str = "",
+    board_id: str = "",
+    group_id: str = "",
+) -> Identity:
+    """L0 for a repo name, from config only. Never raises, never blocks.
+
+    ``board_id`` / ``group_id`` are the placement the CALLER already resolved. That matters:
+    repos.yml pins exactly one repo, while the sync engine also discovers placement from
+    the Plaky catalog, so reading repos.yml alone reported most of the org as unrouted when
+    every one of them has a real board and group.
+    """
     name = (repo or "").strip()
     if not name:
         return Identity()
@@ -156,12 +168,21 @@ def resolve_identity(repo: str, *, default_branch: str = "") -> Identity:
     except Exception:
         routing = None
     if routing is None:
-        return Identity(repo_full_name=name, repo_short=short, default_branch=default_branch)
+        return Identity(
+            repo_full_name=name,
+            repo_short=short,
+            board_id=(board_id or "").strip(),
+            group_id=(group_id or "").strip(),
+            default_branch=default_branch,
+        )
     return Identity(
         repo_full_name=name,
         repo_short=short,
-        board_id=str(getattr(routing, "plaky_board_id", "") or "").strip(),
-        group_id=str(getattr(routing, "plaky_group_id", "") or "").strip(),
+        # The caller's resolved placement wins: it is what the write will actually use.
+        board_id=(board_id or "").strip()
+        or str(getattr(routing, "plaky_board_id", "") or "").strip(),
+        group_id=(group_id or "").strip()
+        or str(getattr(routing, "plaky_group_id", "") or "").strip(),
         table=str(getattr(routing, "plaky_table", "") or "").strip(),
         category=str(getattr(routing, "category", "") or "").strip(),
         default_branch=default_branch,
@@ -309,7 +330,13 @@ async def _load_live(session: AsyncSession | None, identity: Identity) -> LiveSt
     )
 
 
-async def get_project_state(session: AsyncSession | None, repo: str) -> ProjectState:
+async def get_project_state(
+    session: AsyncSession | None,
+    repo: str,
+    *,
+    board_id: str = "",
+    group_id: str = "",
+) -> ProjectState:
     """Everything known about ``repo`` without asking anyone.
 
     Safe to call on the interactive path: L0 is pure, L1 is one indexed row, L2 is four
@@ -322,7 +349,7 @@ async def get_project_state(session: AsyncSession | None, repo: str) -> ProjectS
     if isinstance(structure, dict):
         candidate = str(structure.get("default_branch") or "").strip()
         branch = "" if candidate.casefold() in ("", "unknown") else candidate
-    identity = resolve_identity(repo, default_branch=branch)
+    identity = resolve_identity(repo, default_branch=branch, board_id=board_id, group_id=group_id)
     live = await _load_live(session, identity)
     return ProjectState(identity=identity, briefing=briefing, live=live)
 
@@ -330,39 +357,49 @@ async def get_project_state(session: AsyncSession | None, repo: str) -> ProjectS
 #: repo -> monotonic time we last asked for a refresh. Stops a stale repo from enqueuing a
 #: refresh on every single turn while the first one is still running.
 _revalidating: dict[str, float] = {}
+_revalidation_tasks: set[Any] = set()
 _REVALIDATE_COOLDOWN = 300.0
 
 
-async def schedule_revalidation(state: ProjectState) -> str:
-    """Refresh a stale or missing briefing in the background. Returns a job id or "".
+def schedule_revalidation(state: ProjectState) -> bool:
+    """Refresh a stale or missing briefing in the background. True if one was started.
 
     The stale-while-revalidate half that was missing: the snapshot was already served to
-    the caller, and this makes the next caller's copy current. Deliberately fire and
-    forget — awaiting it here would put a full repo fetch back on the request path, which
-    is the cost this whole design exists to remove.
+    the caller, and this makes the next caller's copy current.
+
+    Returns without awaiting anything. Queuing the job writes a ``background_jobs`` row,
+    and a SQLite write on the request path can block behind another turn's write lock —
+    the chat path must never wait on work whose entire purpose is to be off it.
     """
+    import asyncio
     import time
 
     repo = state.identity.repo_full_name
     if "/" not in repo or state.briefing.state in ("fresh", "unavailable"):
-        return ""
+        return False
     now = time.monotonic()
     last = _revalidating.get(repo)
     if last is not None and (now - last) < _REVALIDATE_COOLDOWN:
-        return ""
+        return False
     _revalidating[repo] = now
-    try:
-        from boardman.jobs.deferred import enqueue_and_run_soon
 
-        job_id = await enqueue_and_run_soon("boardman_repo_refresh_job", {"repo": repo})
-    except Exception:
-        # A refresh that cannot be queued is not an error the asker should ever see.
-        _revalidating.pop(repo, None)
-        return ""
-    from boardman.observability.counters import bump
+    async def _queue() -> None:
+        try:
+            from boardman.jobs.deferred import enqueue_and_run_soon
+            from boardman.observability.counters import background_work, bump
 
-    bump("brain.revalidations")
-    return job_id
+            with background_work():
+                await enqueue_and_run_soon("boardman_repo_refresh_job", {"repo": repo})
+                bump("brain.revalidations")
+        except Exception:
+            # A refresh that cannot be queued is not an error the asker should ever see.
+            _revalidating.pop(repo, None)
+
+    task = asyncio.create_task(_queue(), name=f"revalidate:{repo}")
+    # Hold a reference: an un-awaited task can be garbage collected mid-flight.
+    _revalidation_tasks.add(task)
+    task.add_done_callback(_revalidation_tasks.discard)
+    return True
 
 
 def _age_phrase(seconds: float | None) -> str:

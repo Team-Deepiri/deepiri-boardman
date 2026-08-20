@@ -8,6 +8,7 @@ to remove.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta
 
@@ -330,9 +331,11 @@ async def test_a_stale_briefing_queues_exactly_one_refresh(db, monkeypatch) -> N
     state = await get_project_state(db, REPO)
     assert state.briefing.state == "stale"
 
-    assert await brain.schedule_revalidation(state) == "job-1"
+    assert brain.schedule_revalidation(state) is True
     # A second turn while the first refresh is still in flight must not queue another.
-    assert await brain.schedule_revalidation(state) == ""
+    assert brain.schedule_revalidation(state) is False
+    await asyncio.sleep(0)  # let the fire-and-forget task run
+    await asyncio.sleep(0)
     assert len(queued) == 1
     assert queued[0] == {"kind": "boardman_repo_refresh_job", "repo": REPO}
 
@@ -348,7 +351,7 @@ async def test_a_fresh_briefing_queues_nothing(db, monkeypatch) -> None:
     brain._revalidating.clear()
     await _seed(db, snapshot_age_s=5)
     state = await get_project_state(db, REPO)
-    assert await brain.schedule_revalidation(state) == ""
+    assert brain.schedule_revalidation(state) is False
 
 
 @pytest.mark.asyncio
@@ -365,7 +368,9 @@ async def test_a_missing_briefing_is_worth_fetching(db, monkeypatch) -> None:
     brain._revalidating.clear()
     state = await get_project_state(db, REPO)
     assert state.briefing.state == "miss"
-    assert await brain.schedule_revalidation(state) == "job-x"
+    assert brain.schedule_revalidation(state) is True
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
     assert queued == [REPO]
 
 
@@ -381,8 +386,10 @@ async def test_a_queue_failure_is_invisible_to_the_caller(db, monkeypatch) -> No
     brain._revalidating.clear()
     await _seed(db, snapshot_age_s=100_000)
     state = await get_project_state(db, REPO)
-    assert await brain.schedule_revalidation(state) == ""
-    # and the failure did not poison the cooldown, so the next turn may retry
+    assert brain.schedule_revalidation(state) is True  # started; the failure is inside
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    # the failure did not poison the cooldown, so the next turn may retry
     assert REPO not in brain._revalidating
 
 
@@ -401,7 +408,7 @@ async def test_an_unavailable_briefing_is_not_retried_in_a_loop(db, monkeypatch)
         briefing=Briefing(state="unavailable"),
         live=LiveState(),
     )
-    assert await brain.schedule_revalidation(state) == ""
+    assert brain.schedule_revalidation(state) is False
 
 
 # --- the sync engine's action names are the ones we read ---------------------------------
@@ -456,3 +463,24 @@ async def test_the_mapping_tables_are_matched_regardless_of_casing(db) -> None:
     await db.flush()
     state = await get_project_state(db, REPO)
     assert 77 in state.live.tracked_issues
+
+
+@pytest.mark.asyncio
+async def test_the_callers_resolved_placement_wins_over_repos_yml(db) -> None:
+    """repos.yml pins one repo; the sync engine also discovers placement from the Plaky
+    catalog. Reading repos.yml alone reported most of the org as unrouted when every one
+    of them has a real board and group."""
+    state = await get_project_state(db, "Team-Deepiri/diva", board_id="269030", group_id="933434")
+    assert state.identity.board_id == "269030"
+    assert state.identity.group_id == "933434"
+    text = render_project_state(state)
+    assert "board `269030`" in text
+    assert "not pinned in repos.yml" not in text
+
+
+@pytest.mark.asyncio
+async def test_an_unrouted_repo_with_no_caller_placement_still_refuses_to_claim(db) -> None:
+    state = await get_project_state(db, "Team-Deepiri/some-unknown-repo")
+    text = render_project_state(state)
+    assert "board `" not in text
+    assert "Do not say this repo is untracked" in text

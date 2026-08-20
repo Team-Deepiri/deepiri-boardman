@@ -557,7 +557,12 @@ async def run_agent_chat(
     # Answer small read-only intents without paying for an LLM/tool loop.
     # Everything already known about this repo, assembled without a single network
     # call. Built BEFORE the router so the router can answer from it.
-    project_state = await get_project_state(session, active_repo or "")
+    project_state = await get_project_state(
+        session,
+        active_repo or "",
+        board_id=plaky_board_id or "",
+        group_id=plaky_group_id or "",
+    )
 
     fast = await maybe_fast_path(
         message,
@@ -579,8 +584,9 @@ async def run_agent_chat(
 
     # The model gets the answer instead of instructions for finding it.
     repo_context_prompt = render_project_state(project_state)
-    # Serve what we have, then repair it behind the reply. This turn is already answered.
-    await schedule_revalidation(project_state)
+    # Serve what we have, then repair it behind the reply. Not awaited: this turn is
+    # already answered, and queuing the refresh is a DB write the asker must not wait on.
+    schedule_revalidation(project_state)
     cache_state = project_state.briefing.state
     if active_repo:
         logger.info(
@@ -787,7 +793,12 @@ async def iter_agent_chat_sse(
 
     # Everything already known about this repo, assembled without a single network
     # call. Built BEFORE the router so the router can answer from it.
-    project_state = await get_project_state(session, active_repo or "")
+    project_state = await get_project_state(
+        session,
+        active_repo or "",
+        board_id=plaky_board_id or "",
+        group_id=plaky_group_id or "",
+    )
 
     fast = await maybe_fast_path(
         message,
@@ -811,8 +822,9 @@ async def iter_agent_chat_sse(
 
     # The model gets the answer instead of instructions for finding it.
     repo_context_prompt = render_project_state(project_state)
-    # Serve what we have, then repair it behind the reply. This turn is already answered.
-    await schedule_revalidation(project_state)
+    # Serve what we have, then repair it behind the reply. Not awaited: this turn is
+    # already answered, and queuing the refresh is a DB write the asker must not wait on.
+    schedule_revalidation(project_state)
     cache_state = project_state.briefing.state
 
     # The Plaky create/patch protocol is dead weight when writes are off — the agent cannot
