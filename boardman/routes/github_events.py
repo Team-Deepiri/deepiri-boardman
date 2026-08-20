@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.models import GitHubWebhookDelivery
 from boardman.database.session import get_db
+from boardman.github.change_signal import note_repo_changed, repo_full_name_from_payload
 from boardman.github.webhooks import (
     IssueCommentEventPayload,
     IssueEventPayload,
@@ -113,6 +114,9 @@ async def dispatch_github_event(
             result = await handle_pr_converted_to_draft(payload, session)
 
     if result is not None:
+        # The sync is done and committed. Anything cached about this repo is now one
+        # event out of date, so drop it here rather than waiting out a TTL.
+        note_repo_changed(repo_full_name_from_payload(payload_dict), event=event_type)
         return result
     return {"ok": True, "message": "Event ignored"}
 

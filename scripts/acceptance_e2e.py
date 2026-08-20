@@ -133,6 +133,39 @@ async def ask(c: httpx.AsyncClient, api: str, message: str) -> tuple[str, float]
         return r.text[:400], elapsed
 
 
+async def _forget_synthetic(issue_number: int, pr_number: int) -> None:
+    """Drop this run's issue/PR mappings so they are not read back as real work."""
+    try:
+        from sqlalchemy import delete
+
+        from boardman.database.models import IssueTaskMap, PullRequestTaskLink, SyncLog
+        from boardman.database.session import async_session
+
+        short = REPO["name"]
+        async with async_session() as session:
+            await session.execute(
+                delete(IssueTaskMap).where(
+                    IssueTaskMap.github_repo == short,
+                    IssueTaskMap.github_issue_number.in_([issue_number, pr_number]),
+                )
+            )
+            await session.execute(
+                delete(PullRequestTaskLink).where(
+                    PullRequestTaskLink.github_repo == short,
+                    PullRequestTaskLink.github_pr_number.in_([issue_number, pr_number]),
+                )
+            )
+            await session.execute(
+                delete(SyncLog).where(
+                    SyncLog.github_repo == short,
+                    SyncLog.github_ref.in_([str(issue_number), str(pr_number)]),
+                )
+            )
+            await session.commit()
+    except Exception as e:  # cleanup is best effort; never fail a passing run over it
+        print(f"could not clean local mappings: {e}", flush=True)
+
+
 async def run(api: str, keep: bool) -> int:
     rep = Report()
     n = random.randint(810_000, 899_999)
@@ -401,6 +434,10 @@ async def run(api: str, keep: bool) -> int:
                 print(f"\ncleaned up Plaky task {task_id}", flush=True)
             except Exception as e:  # cleanup must never fail the run
                 print(f"\ncould not delete task {task_id}: {e}", flush=True)
+            # Delete the local mappings too. They outlive the Plaky task, and the
+            # assistant reads them as live state — several runs of this script left the
+            # board looking like it tracked dozens of issues that never existed.
+            await _forget_synthetic(n, pr_n)
 
     passed = sum(1 for _, _, ok in rep.rows if ok)
     print("\n" + "=" * 74)

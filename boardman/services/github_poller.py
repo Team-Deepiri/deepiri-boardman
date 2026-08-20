@@ -33,6 +33,7 @@ import httpx
 
 from boardman.database.models import SyncLog
 from boardman.database.session import async_session
+from boardman.github.change_signal import note_repo_changed, repo_full_name_from_payload
 from boardman.github.webhooks import (
     IssueCommentEventPayload,
     IssueEventPayload,
@@ -700,6 +701,11 @@ class GitHubEventPoller:
                     elif parsed.action == "closed":
                         result = await handle_pr_closed_without_merge(parsed, session)
                 await session.commit()
+                # The poller does NOT route through dispatch_github_event, so it needs
+                # its own line here. Without it, every event in a live TESTING_LIVE_PLAKY
+                # session leaves stale repo context behind while the webhook path looks
+                # correct in tests.
+                note_repo_changed(repo_full_name_from_payload(parsed))
                 return result
             except Exception:
                 await session.rollback()
@@ -767,6 +773,9 @@ class GitHubEventPoller:
                         (res or {}).get("ok"),
                     )
             await session.commit()
+            # A push is the one event that changes the code itself, so the tree, file
+            # and hotspot reads are the ones that must go.
+            note_repo_changed(full_name, event="push")
 
 
 _poller: GitHubEventPoller | None = None

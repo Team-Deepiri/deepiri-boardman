@@ -39,6 +39,18 @@ def _recursion_limit(allow_writes: bool = True) -> int:
     return 16 if allow_writes else 10
 
 
+def _graph_config(allow_writes: bool) -> dict[str, Any]:
+    """One config for every graph invocation, so the counters cannot be attached to some
+    paths and not others."""
+    from boardman.observability.langchain_counter import make_counting_callback
+
+    cfg: dict[str, Any] = {"recursion_limit": _recursion_limit(allow_writes)}
+    cb = make_counting_callback()
+    if cb is not None:
+        cfg["callbacks"] = [cb]
+    return cfg
+
+
 def _message_content_to_text(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -215,7 +227,7 @@ async def run_tool_agent(
     messages: list[BaseMessage] = list(chat_history) + [HumanMessage(content=user_input)]
     result = await graph.ainvoke(
         {"messages": messages},
-        config={"recursion_limit": _recursion_limit(allow_writes)},
+        config=_graph_config(allow_writes),
     )
     result_messages = result.get("messages", [])
     logger.info("agent turn tool time: %s", turn_timing())
@@ -235,7 +247,7 @@ async def run_tool_agent(
         try:
             result = await graph.ainvoke(
                 {"messages": list(result_messages) + [nudge]},
-                config={"recursion_limit": _recursion_limit(allow_writes)},
+                config=_graph_config(allow_writes),
             )
             retry_messages = result.get("messages", [])
             retry_out = _final_ai_text(retry_messages)
@@ -283,7 +295,7 @@ async def iter_tool_agent(
     async for event in graph.astream_events(
         {"messages": messages},
         version="v2",
-        config={"recursion_limit": _recursion_limit(allow_writes)},
+        config=_graph_config(allow_writes),
     ):
         kind = event.get("event")
         if trace_out is not None and kind == "on_chain_end":

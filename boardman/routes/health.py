@@ -13,6 +13,25 @@ async def health():
     return {"ok": True, "service": "deepiri-boardman"}
 
 
+@router.get("/metrics")
+async def metrics():
+    """Process-local counters, for the benchmark to diff around one request.
+
+    Read-only and unauthenticated on purpose: it exposes call counts and cache hit rates,
+    never payloads, ids, or anything from a board.
+    """
+    from boardman.observability.counters import cache_hit_rate, snapshot
+
+    snap = snapshot()
+    return {
+        "ok": True,
+        "counts": snap["counts"],
+        "gauges": snap["gauges"],
+        "cache_hit_rate": cache_hit_rate(snap),
+        "series_sizes": {k: len(v) for k, v in snap["series"].items()},
+    }
+
+
 @router.get("/mappings")
 async def list_mappings(session: AsyncSession = Depends(get_db)):
     result = await session.execute(select(IssueTaskMap))

@@ -60,6 +60,14 @@ class Settings(BaseSettings):
     agent_repo_context_cache_ttl_seconds: float = 900.0
     # Keep a stale snapshot available as a graceful fallback when GitHub is unavailable.
     agent_repo_context_stale_if_error_seconds: float = 86_400.0
+    # Periodic knowledge sweep (worker-owned). This is a RECONCILIATION net for what the
+    # webhooks missed, not a rescan: each cycle costs one cheap metadata call per repo and
+    # only refetches a repo whose `pushed_at` moved since its snapshot was built.
+    repo_knowledge_sweep_enabled: bool = True
+    repo_knowledge_sweep_interval_seconds: float = 600.0
+    # Bounded so one slow or broken repo cannot hold up the fleet.
+    repo_knowledge_sweep_concurrency: int = 3
+    repo_knowledge_sweep_max_repos: int = 25
     # Tunable analysis limits (Sorge review, PR #81): context budget for the repo
     # planning payload, PR review file cap, and code-search scope.
     llm_context_budget_chars: int = 20000

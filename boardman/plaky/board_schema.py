@@ -979,12 +979,15 @@ async def fetch_board_schema_bundle(board_id: str) -> dict[str, Any]:
             "normalized": None,
         }
 
+    from boardman.observability.counters import cache_hit, cache_miss
+
     ttl = float(settings.plaky_board_schema_cache_ttl_seconds or 0.0)
     if ttl > 0:
         now = time.monotonic()
         async with _schema_lock:
             hit = _schema_cache.get(bid)
             if hit is not None and (now - hit[0]) < ttl:
+                cache_hit("board_schema")
                 return hit[1]
 
     if ttl > 0:
@@ -1003,10 +1006,12 @@ async def fetch_board_schema_bundle(board_id: str) -> dict[str, Any]:
                 if isinstance(data, dict):
                     async with _schema_lock:
                         _schema_cache[bid] = (time.monotonic(), data)
+                    cache_hit("board_schema_redis")
                     return data
             except (json.JSONDecodeError, TypeError):
                 pass
 
+    cache_miss("board_schema")
     c = PlakyClient()
     groups_r, board_r = await asyncio.gather(c.list_groups(bid), c.get_board(bid))
     groups = groups_r.get("groups") or []

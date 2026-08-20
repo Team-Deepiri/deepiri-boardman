@@ -15,13 +15,17 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from boardman.agent.brain import (
+    get_project_state,
+    render_project_state,
+    schedule_revalidation,
+)
 from boardman.agent.fast_path import maybe_fast_path
 from boardman.agent.guardrails import has_confirm_token, looks_like_board_organize_request
 from boardman.agent.memory_store import db_messages_to_langchain
 from boardman.agent.org_roster import org_repo_roster_markdown
 from boardman.agent.plaky_prompt_extra import plaky_placement_markdown
 from boardman.agent.prompts import BOARD_MANAGER_SYSTEM, TASK_CREATION_WORKFLOW, TEAM_TASK_POLICY
-from boardman.agent.repo_context import load_planning_snapshot, snapshot_prompt_block
 from boardman.agent.repo_resolution import resolve_repo
 from boardman.agent.runner import iter_tool_agent, run_tool_agent
 from boardman.agent.task_draft import format_task_draft_for_prompt, load_task_draft
@@ -475,6 +479,18 @@ async def _plaky_system_suffix(
     return out
 
 
+def _record_context_size(extra: str) -> None:
+    """Size of the per-turn context blocks, so a prompt diet can be shown to have worked.
+
+    Only the variable part: the constant system prompt is a source-code fact, this is the
+    part that changes with the repo, the board, and the draft.
+    """
+    from boardman.observability.counters import observe, set_gauge
+
+    set_gauge("prompt.extra_chars", len(extra or ""))
+    observe("prompt.extra_chars", len(extra or ""))
+
+
 async def run_agent_chat(
     session: AsyncSession,
     *,
@@ -539,11 +555,16 @@ async def run_agent_chat(
     agent_session_pk = ag.id
 
     # Answer small read-only intents without paying for an LLM/tool loop.
+    # Everything already known about this repo, assembled without a single network
+    # call. Built BEFORE the router so the router can answer from it.
+    project_state = await get_project_state(session, active_repo or "")
+
     fast = await maybe_fast_path(
         message,
         repo=active_repo,
         board_id=plaky_board_id,
         group_id=plaky_group_id,
+        state=project_state,
     )
     if fast is not None:
         session.add(AgentMessage(session_pk=ag.id, role="assistant", content=fast.reply))
@@ -556,8 +577,11 @@ async def run_agent_chat(
         )
         return fast.reply, sid
 
-    cached_repo_json, cache_state = await load_planning_snapshot(session, active_repo or "")
-    repo_context_prompt = snapshot_prompt_block(cached_repo_json)
+    # The model gets the answer instead of instructions for finding it.
+    repo_context_prompt = render_project_state(project_state)
+    # Serve what we have, then repair it behind the reply. This turn is already answered.
+    await schedule_revalidation(project_state)
+    cache_state = project_state.briefing.state
     if active_repo:
         logger.info(
             "agent repo context=%s source=%s cache=%s",
@@ -622,6 +646,7 @@ async def run_agent_chat(
             extra += repo_context_prompt
             extra += plaky_suffix
             extra += draft_md + intake_extra
+            _record_context_size(extra)
             async with agent_tool_context(
                 session, agent_session_pk, plaky_board_id, plaky_group_id
             ):
@@ -760,11 +785,16 @@ async def iter_agent_chat_sse(
 
     yield _sse_event({"type": "session", "session_id": sid})
 
+    # Everything already known about this repo, assembled without a single network
+    # call. Built BEFORE the router so the router can answer from it.
+    project_state = await get_project_state(session, active_repo or "")
+
     fast = await maybe_fast_path(
         message,
         repo=active_repo,
         board_id=plaky_board_id,
         group_id=plaky_group_id,
+        state=project_state,
     )
     if fast is not None:
         session.add(AgentMessage(session_pk=ag.id, role="assistant", content=fast.reply))
@@ -779,8 +809,11 @@ async def iter_agent_chat_sse(
         )
         return
 
-    cached_repo_json, cache_state = await load_planning_snapshot(session, active_repo or "")
-    repo_context_prompt = snapshot_prompt_block(cached_repo_json)
+    # The model gets the answer instead of instructions for finding it.
+    repo_context_prompt = render_project_state(project_state)
+    # Serve what we have, then repair it behind the reply. This turn is already answered.
+    await schedule_revalidation(project_state)
+    cache_state = project_state.briefing.state
 
     # The Plaky create/patch protocol is dead weight when writes are off — the agent cannot
     # act on it. Team policy stays either way so it can still EXPLAIN the conventions.
@@ -843,6 +876,7 @@ async def iter_agent_chat_sse(
             extra += repo_context_prompt
             extra += plaky_suffix
             extra += draft_md + intake_extra
+            _record_context_size(extra)
             async with agent_tool_context(
                 session, agent_session_pk, plaky_board_id, plaky_group_id
             ):

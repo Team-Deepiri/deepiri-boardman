@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from boardman.agent.repo_context import merge_planning_snapshot
 from boardman.agent.task_draft import normalize_task_title
 from boardman.assignment.qa_picker import build_assignment_field_map
 from boardman.database.models import ProjectContext, ScanRun
@@ -333,10 +334,12 @@ async def run_repo_scan(
             {"last_scan_id": scan_row.id, "tasks_parsed": len(tasks), "tasks_created": created}
         )
         context_fetched_at = datetime.utcnow()
-        context_snapshot = {
+        # Only the four things the scan actually read. `structure`, the README and the
+        # code signals are deliberately absent: merge_planning_snapshot keeps whatever the
+        # full planning fetch stored for them rather than letting a scan blank them out.
+        scanned = {
             "ok": True,
             "repo": repo_full,
-            "structure": {"default_branch": "unknown", "top_level_dirs": [], "important_paths": []},
             "DIRECTION_md": direction[:8000],
             "recent_commits_markdown": commits[:3000],
             "open_issues_markdown": issues[:3000],
@@ -349,6 +352,9 @@ async def run_repo_scan(
             },
             "retrieval": {"layers": ["direction", "activity", "plaky"]},
         }
+        context_snapshot = merge_planning_snapshot(
+            pc.context_json if pc is not None else None, scanned
+        )
         if pc is None:
             session.add(
                 ProjectContext(

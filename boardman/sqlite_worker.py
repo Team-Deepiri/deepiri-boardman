@@ -18,6 +18,30 @@ from boardman.settings import settings
 _log = logging.getLogger(__name__)
 
 
+async def _repo_knowledge_loop() -> None:
+    """Keep cached repo knowledge honest without crawling anything.
+
+    A reconciliation net for what the webhooks missed. Each cycle costs one cheap
+    metadata call per repo; only a repo whose `pushed_at` actually moved is refetched, so
+    a quiet ten minutes costs almost nothing.
+    """
+    from boardman.services.repo_knowledge import sweep_repo_knowledge, sweep_targets
+
+    interval = max(60.0, float(settings.repo_knowledge_sweep_interval_seconds or 600.0))
+    while True:
+        await asyncio.sleep(interval)
+        if not (settings.github_pat or "").strip():
+            continue
+        try:
+            await sweep_repo_knowledge(
+                sweep_targets(),
+                concurrency=max(1, int(settings.repo_knowledge_sweep_concurrency or 3)),
+            )
+        except Exception:
+            # A sweep is an optimisation. It must never take the worker down with it.
+            _log.exception("repo knowledge sweep failed")
+
+
 async def _reconciliation_loop() -> None:
     """Optional bounded safety net for webhook outages, owned by the existing worker."""
     from boardman.repos_config import list_registered_repos
@@ -99,6 +123,13 @@ async def run_worker_forever() -> None:
     reconcile_task = None
     if settings.github_reconcile_enabled:
         reconcile_task = asyncio.create_task(_reconciliation_loop(), name="github-reconciliation")
+    knowledge_task = None
+    if settings.repo_knowledge_sweep_enabled:
+        knowledge_task = asyncio.create_task(_repo_knowledge_loop(), name="repo-knowledge-sweep")
+        _log.info(
+            "repo knowledge sweep every %.0fs (metadata-gated; only changed repos refetch)",
+            settings.repo_knowledge_sweep_interval_seconds,
+        )
     try:
         while True:
             row = await claim_next_job_row()
@@ -108,8 +139,9 @@ async def run_worker_forever() -> None:
             job_id, kind, payload = row
             await _run_one(job_id, kind, payload)
     finally:
-        if reconcile_task is not None:
-            reconcile_task.cancel()
+        for task in (reconcile_task, knowledge_task):
+            if task is not None:
+                task.cancel()
 
 
 def main() -> None:

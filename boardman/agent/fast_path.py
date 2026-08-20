@@ -80,18 +80,134 @@ def _format_task_list(payload: dict[str, Any], repo: str | None) -> str:
     return "\n".join(lines)
 
 
+_DEFAULT_BRANCH = re.compile(
+    r"\b(?:default|main|base)\s+branch\b|\bwhat\s+branch\b|\bwhich\s+branch\b", re.IGNORECASE
+)
+# "which task is issue 91", "is there a task for issue 4242", "issue 90 - which card?".
+# Both orders, because people write it both ways.
+_ISSUE_NUMBER = re.compile(
+    r"\b(?:issue|#)\s*#?(\d{1,6})\b.{0,40}\b(?:task|plaky|card|tracked|linked)\b"
+    r"|\b(?:task|plaky|card)\b.{0,40}\b(?:for|of|from|is|linked\s+to)\s+"
+    r"(?:issue\s*)?#?(\d{1,6})\b",
+    re.IGNORECASE,
+)
+_HOW_MANY_ISSUES = re.compile(
+    r"\bhow\s+many\b.{0,30}\bissues?\b|\bissue\s+count\b|\bcount\s+of\s+issues\b", re.IGNORECASE
+)
+_HOW_MANY_PRS = re.compile(
+    r"\bhow\s+many\b.{0,30}\b(?:prs?|pull\s+requests?)\b|\bpr\s+count\b", re.IGNORECASE
+)
+_ASKS_LIVE = re.compile(
+    r"\b(?:right\s+now|currently|live|check\s+github|as\s+of\s+now|latest)\b", re.IGNORECASE
+)
+
+
+def _answer_from_state(text: str, state: Any | None) -> FastPathResult | None:
+    """Answer from project state, or None to let the reasoning path handle it.
+
+    Only questions whose whole answer is a stored fact. Anything needing judgment,
+    ranking, code, or a value that could have changed since the last webhook goes to the
+    agent — the cost of being wrong here is a confident, instant falsehood.
+    """
+    if state is None or not getattr(getattr(state, "identity", None), "repo_full_name", ""):
+        return None
+    ident, live = state.identity, state.live
+
+    if _DEFAULT_BRANCH.search(text) and ident.default_branch:
+        return FastPathResult(
+            f"`{ident.repo_full_name}` builds from `{ident.default_branch}`.",
+            "default_branch",
+        )
+
+    # Counts come from the sync engine's own mapping tables, so they describe the BOARD.
+    # "right now" means the caller wants GitHub checked, and that is not this path's job.
+    if live.available and not _ASKS_LIVE.search(text):
+        if _HOW_MANY_ISSUES.search(text):
+            n = len(live.tracked_issues)
+            if n:
+                head = ", ".join(f"#{x}" for x in live.tracked_issues[:10])
+                more = "" if n <= 10 else f" and {n - 10} more"
+                return FastPathResult(
+                    f"{n} issue{'s' if n != 1 else ''} from `{ident.repo_full_name}` are on the "
+                    f"board: {head}{more}.",
+                    "issue_count",
+                )
+            return FastPathResult(
+                f"No issues from `{ident.repo_full_name}` are mapped to a Plaky task yet.",
+                "issue_count",
+            )
+
+        if _HOW_MANY_PRS.search(text):
+            n = len(live.active_prs)
+            if n:
+                rows = "\n".join(
+                    f"- PR #{p.number} -> task `{p.task_id}`"
+                    + (f" (issue #{p.issue_number})" if p.issue_number else "")
+                    for p in live.active_prs[:10]
+                )
+                return FastPathResult(
+                    f"{n} pull request{'s' if n != 1 else ''} on `{ident.repo_full_name}` are "
+                    f"linked to a live task, and {live.merged_prs} have merged:\n{rows}",
+                    "pr_count",
+                )
+            return FastPathResult(
+                f"No open pull requests on `{ident.repo_full_name}` are linked to a task; "
+                f"{live.merged_prs} have merged.",
+                "pr_count",
+            )
+
+        hit = _ISSUE_NUMBER.search(text)
+        if hit:
+            number = int(hit.group(1) or hit.group(2))
+            for pr in live.active_prs:
+                if pr.issue_number == number:
+                    return FastPathResult(
+                        f"Issue #{number} is task `{pr.task_id}`, with PR #{pr.number} open "
+                        f"against it.",
+                        "issue_task_lookup",
+                    )
+            if number in live.tracked_issues:
+                return FastPathResult(
+                    f"Issue #{number} is tracked on board `{ident.board_id}`.",
+                    "issue_task_lookup",
+                )
+            # Absence is a real answer here: the mapping table is the source of truth for
+            # whether an issue was ever synced.
+            return FastPathResult(
+                f"Issue #{number} has no Plaky task mapped in `{ident.repo_full_name}`.",
+                "issue_task_lookup",
+            )
+    return None
+
+
 async def maybe_fast_path(
     message: str,
     *,
     repo: str | None,
     board_id: str | None,
     group_id: str | None,
+    state: Any | None = None,
 ) -> FastPathResult | None:
-    """Handle only unambiguous, read-only intents; return None for normal reasoning."""
+    """Handle only unambiguous, read-only intents; return None for normal reasoning.
+
+    ``state`` is the :class:`~boardman.agent.brain.ProjectState` the caller already built.
+    Everything answered from it is a fact the process already had in memory, so the
+    question costs no LLM call, no tool round trip and no network request. Anything the
+    state cannot answer falls through to the normal reasoning path — a wrong fast answer
+    is far more expensive than a slow one.
+    """
 
     text = (message or "").strip()
     if not text:
         return None
+    if _WRITE_WORD.search(text):
+        # Nothing here writes. A message that asks for one must reach the agent, even if
+        # it also happens to match a read-shaped pattern.
+        return None
+
+    from_state = _answer_from_state(text, state)
+    if from_state is not None:
+        return from_state
 
     if _CURRENT_REPO.search(text):
         if repo:

@@ -173,10 +173,45 @@ async def plaky_create_tasks_job(payload: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+async def boardman_repo_refresh_job(payload: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild one repo's cached briefing, off the request path.
+
+    This is the revalidate half of stale-while-revalidate: the question that found a stale
+    snapshot was answered from it immediately, and this repairs it for the next one. It is
+    also what the periodic sweep calls when it sees a repo has moved on.
+
+    The planning fetch persists through ``get_tool_db_session()``, a ContextVar that is
+    unset outside a tool call — without the ``agent_tool_context`` wrapper the fetch
+    succeeds, the save silently no-ops, and the snapshot never gets any fresher.
+    """
+    import json as _json
+
+    from boardman.agent.tool_context import agent_tool_context
+    from boardman.agent.tools.github_tools import _github_repo_planning_context_uncached
+    from boardman.database.session import async_session
+
+    repo = str(payload.get("repo") or "").strip()
+    if "/" not in repo:
+        return {"ok": False, "error": "repo must be owner/name"}
+
+    async with async_session() as session:
+        async with agent_tool_context(session, 0, None, None):
+            raw = await _github_repo_planning_context_uncached(repo)
+        await session.commit()
+
+    try:
+        out = _json.loads(raw)
+    except ValueError:
+        return {"ok": False, "repo": repo, "error": str(raw)[:300]}
+    logger.info("repo refresh: %s ok=%s", repo, out.get("ok"))
+    return {"ok": bool(out.get("ok")), "repo": repo, "source_revision": out.get("source_revision")}
+
+
 JOB_HANDLERS: dict[str, JobHandler] = {
     "boardman_agent_chat_job": boardman_agent_chat_job,
     "boardman_github_webhook_job": boardman_github_webhook_job,
     "boardman_repo_scan_job": boardman_repo_scan_job,
+    "boardman_repo_refresh_job": boardman_repo_refresh_job,
     "plaky_create_tasks_job": plaky_create_tasks_job,
     "plaky_reorder_group_job": plaky_reorder_group_job,
 }

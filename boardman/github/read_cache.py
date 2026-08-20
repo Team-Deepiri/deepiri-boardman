@@ -50,6 +50,55 @@ def clear_read_cache() -> None:
     _coalesced = 0
 
 
+def _key_repo(key: str) -> str:
+    """The owner/repo a cache key belongs to, casefolded, or "".
+
+    Every namespace puts the slug immediately after its prefix and then ends, or continues
+    with ``:`` (a path, a limit) or ``@`` (a ref):
+
+        structure:team-deepiri/boardman        planning:team-deepiri/boardman:20
+        defects:team-deepiri/boardman          repo-identity:Team-Deepiri/boardman
+        repo-tree:Team-Deepiri/boardman@main   hotspots:Team-Deepiri/boardman@main:15
+        file:Team-Deepiri/boardman@main:README.md
+
+    Half the writers lowercase the slug and half do not, so the comparison has to
+    casefold both sides. A purge that misses half the keys leaves a MIXED-AGE context,
+    which is worse than a uniformly stale one.
+    """
+    _, _, rest = (key or "").partition(":")
+    if not rest:
+        return ""
+    slug = rest.split("@", 1)[0].split(":", 1)[0]
+    return slug.strip().casefold() if slug.count("/") == 1 else ""
+
+
+def invalidate_repo(full_name: str) -> int:
+    """Drop every cached read for one repo. Returns how many entries went.
+
+    Called when GitHub tells us the repo changed. Purging one repo rather than the whole
+    cache means a push to one project does not make every other project's next question
+    slow again.
+    """
+    want = (full_name or "").strip().casefold()
+    if "/" not in want:
+        return 0
+    doomed = [k for k in _entries if _key_repo(k) == want]
+    for k in doomed:
+        _entries.pop(k, None)
+    # Locks for keys nobody is waiting on; a held lock is left alone so an in-flight
+    # fetch is not orphaned, and it will be re-created on the next miss anyway.
+    for k in [k for k in list(_locks) if _key_repo(k) == want]:
+        lock = _locks.get(k)
+        if lock is not None and not lock.locked():
+            _locks.pop(k, None)
+    if doomed:
+        from boardman.observability.counters import bump
+
+        bump("cache.github_read.invalidated", len(doomed))
+        logger.info("github read cache: dropped %d entries for %s", len(doomed), full_name)
+    return len(doomed)
+
+
 def cache_stats() -> dict[str, int]:
     now = time.monotonic()
     ttl = _ttl()
@@ -71,29 +120,36 @@ async def cached(
     ``ok`` decides whether a result is worth caching — pass a predicate that returns False
     for error payloads, so a transient failure is retried rather than remembered.
     """
+    from boardman.observability.counters import bump, cache_hit, cache_miss
+
     global _hits, _misses, _coalesced
     ttl = _ttl()
     if ttl <= 0:
         _misses += 1
+        cache_miss("github_read")
         return await fetch()
 
     now = time.monotonic()
     hit = _entries.get(key)
     if hit is not None and (now - hit[0]) < ttl:
         _hits += 1
+        cache_hit("github_read")
         logger.debug("github read cache hit: %s", key)
         return hit[1]
 
     lock = _locks.setdefault(key, asyncio.Lock())
     if lock.locked():
         _coalesced += 1
+        bump("cache.github_read.coalesced")
     async with lock:
         # Another caller may have filled it while we waited on the lock.
         hit = _entries.get(key)
         if hit is not None and (time.monotonic() - hit[0]) < ttl:
             _hits += 1
+            cache_hit("github_read")
             return hit[1]
         _misses += 1
+        cache_miss("github_read")
         value = await fetch()
         if ok(value):
             _entries[key] = (time.monotonic(), value)

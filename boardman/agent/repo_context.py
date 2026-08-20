@@ -39,8 +39,11 @@ async def load_planning_snapshot(
     returned when explicitly requested by the caller as a degraded-mode fallback.
     """
 
+    from boardman.observability.counters import bump, cache_hit, cache_miss
+
     key = _repo_key(repo)
     if session is None or not key:
+        cache_miss("project_context")
         return None, "miss"
 
     try:
@@ -54,6 +57,7 @@ async def load_planning_snapshot(
         await session.rollback()
         return None, "unavailable"
     if row is None or not row.context_json or row.context_fetched_at is None:
+        cache_miss("project_context")
         return None, "miss"
 
     try:
@@ -61,6 +65,7 @@ async def load_planning_snapshot(
     except (TypeError, ValueError):
         return None, "miss"
     if not isinstance(payload, dict) or not payload.get("ok"):
+        cache_miss("project_context")
         return None, "miss"
 
     age = datetime.utcnow() - row.context_fetched_at
@@ -72,17 +77,23 @@ async def load_planning_snapshot(
         )
     )
     if fresh:
+        cache_hit("project_context")
         payload.setdefault("cache", {})
         payload["cache"].update(
             {"state": "persistent-hit", "age_seconds": round(age.total_seconds(), 1)}
         )
         return _payload_text(payload), "fresh"
     if allow_stale and stale_ok:
+        # A stale serve is still a hit for latency purposes; counted apart so the two are
+        # never confused when reading a benchmark.
+        cache_hit("project_context")
+        bump("cache.project_context.stale_served")
         payload.setdefault("cache", {})
         payload["cache"].update(
             {"state": "stale-fallback", "age_seconds": round(age.total_seconds(), 1)}
         )
         return _payload_text(payload), "stale"
+    cache_miss("project_context")
     return None, "miss"
 
 
@@ -117,6 +128,65 @@ async def save_planning_snapshot(
         direction = payload.get("DIRECTION_md")
         row.summary = str(direction or "")[:12_000] or None
     row.last_scanned = row.last_scanned or now
+
+
+#: Snapshot fields a partial writer must never blank out. The scan knows about DIRECTION,
+#: commits, issues and Plaky tasks; it knows nothing about the tree, the README or the
+#: code signals, and it must not answer for them.
+_RICH_FIELDS = (
+    "structure",
+    "readme_md",
+    "code_signals",
+    "open_pull_requests_markdown",
+    "notable_files",
+    "hotspots_markdown",
+)
+
+
+def merge_planning_snapshot(existing_json: str | None, incoming: dict[str, Any]) -> dict[str, Any]:
+    """Overlay a partial snapshot onto whatever is already stored.
+
+    Two writers share this row: the planning-context tool, which fetches everything, and
+    the repo scan, which fetches four things and used to write a stub for the rest. The
+    stub won: it stamped a fresh timestamp, so for the next fifteen minutes the assistant's
+    default context said ``Default branch: unknown`` about a repo it had fully read an hour
+    earlier. A partial write may add and replace what it knows, never blank what it does not.
+    """
+    base: dict[str, Any] = {}
+    if existing_json:
+        try:
+            loaded = json.loads(existing_json)
+            if isinstance(loaded, dict) and loaded.get("ok"):
+                base = loaded
+        except (TypeError, ValueError):
+            base = {}
+
+    merged = dict(base)
+    for key, value in incoming.items():
+        if key in _RICH_FIELDS and not _has_content(value) and _has_content(base.get(key)):
+            continue  # the incoming writer does not know this field; keep what we have
+        merged[key] = value
+    return merged
+
+
+def _has_content(value: Any) -> bool:
+    """True when a snapshot field actually says something.
+
+    ``{"default_branch": "unknown", "top_level_dirs": [], "important_paths": []}`` is a
+    shaped placeholder, not knowledge, and it has to lose to a real one.
+    """
+    if value is None or value == "" or value == [] or value == {}:
+        return False
+    if isinstance(value, dict):
+        real = {
+            k: v
+            for k, v in value.items()
+            if v not in (None, "", [], {}, "unknown", "unavailable", "none")
+        }
+        return bool(real)
+    if isinstance(value, str):
+        return bool(value.strip()) and not value.strip().startswith("(")
+    return True
 
 
 def snapshot_prompt_block(payload_json: str | None, *, max_chars: int = 6500) -> str:
