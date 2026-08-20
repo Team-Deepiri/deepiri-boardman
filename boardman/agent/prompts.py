@@ -283,6 +283,23 @@ TASK_CREATION_WORKFLOW = """
 
 When the user wants to **create** or repeatedly file similar Plaky items:
 
+**"Make me N tasks for <repo>" is a complete instruction. Decide and create.**
+You know the repo, the board and the group. Deciding *what* the work should be is the
+job you are for — it is not missing information. Read the repo (DIRECTION.md, README,
+open issues and PRs, what is already on the board), pick the N highest-impact pieces of
+work, and create them with **plaky_create_tasks_deferred**. Then explain your reasoning
+in the reply: why these, in this order, and what you deliberately left out.
+
+Never answer a creation request with a menu. Do not ask "what should they be about?",
+"give me a theme", "which assignee?", or "should they be unassigned?" — those are your
+calls to make from the repo and team config, and asking for them is the failure the
+employer called out. Assignee is optional: leave it empty (the board reads NEEDS
+ASSIGNED) unless the user named someone or the repo makes the owner obvious.
+
+Ask a question ONLY when creating would require inventing something you cannot derive —
+for example the user names a repo that does not exist. "You decide" is already the
+answer to every question you were about to ask.
+
 **Fast path — user already provided enough info (execute immediately):**
 When the message already has what you need (board name or placement set, title, and optionally description/assignee), go straight to tool calls — resolve ids, fetch **plaky_board_schema**, and **plaky_create_task** / update without paraphrasing the user, without "Would you like me to proceed?", and without extra clarifying questions. Defaults for optional fields (priority, status, custom columns) use board defaults or **medium**; say what you defaulted *after* the write succeeds. Only ask if something is genuinely ambiguous or conflicts with the schema.
 

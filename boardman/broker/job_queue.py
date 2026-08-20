@@ -51,8 +51,10 @@ class SqliteJobQueue:
                 "job_id": job_id,
                 "status": st,
             }
-            if st == "complete":
-                out["success"] = row.success if row.success is not None else True
+            # "incomplete" carries the REASON it failed. Withholding it left anyone
+            # asking "did my tasks land?" with a bare status and no way to find out.
+            if st in ("complete", "incomplete"):
+                out["success"] = row.success if row.success is not None else (st == "complete")
                 if row.result_json:
                     try:
                         out["result"] = json.loads(row.result_json)
@@ -122,6 +124,36 @@ async def claim_next_job_row() -> tuple[str, str, dict[str, Any]] | None:
             payload = json.loads(raw) if isinstance(raw, str) else {}
         except json.JSONDecodeError:
             logger.warning("job %s: bad payload JSON", jid)
+            payload = {}
+    return jid, kind, payload
+
+
+CLAIM_ONE_SQL = text("""
+UPDATE background_jobs
+SET status = 'running', started_at = :started
+WHERE id = :job_id AND status = 'pending'
+RETURNING id, kind, payload_json
+""")
+
+
+async def claim_job_by_id(job_id: str) -> tuple[str, str, dict[str, Any]] | None:
+    """Claim one job BY ID, or None if another runner already took it.
+
+    The API process runs deferred work itself so a queued task still lands when no
+    standalone worker is running. The atomic status flip is what keeps the two from
+    doing the work twice.
+    """
+    now = datetime.utcnow()
+    async with async_session() as session:
+        async with session.begin():
+            result = await session.execute(CLAIM_ONE_SQL, {"started": now, "job_id": job_id})
+            row = result.first()
+            if row is None:
+                return None
+            jid, kind, raw = row[0], row[1], row[2]
+        try:
+            payload = json.loads(raw) if isinstance(raw, str) else {}
+        except json.JSONDecodeError:
             payload = {}
     return jid, kind, payload
 

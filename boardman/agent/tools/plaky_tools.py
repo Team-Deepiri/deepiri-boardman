@@ -600,6 +600,78 @@ async def _plaky_create_task(
     return json.dumps(out, default=str)
 
 
+async def _plaky_create_tasks_deferred(
+    tasks_json: str,
+    board_id: str = "",
+    group_id: str = "",
+    auto_assign_team: bool = False,
+) -> str:
+    """Hand a batch of tasks to the board and return before the writes finish.
+
+    Plaky takes tens of seconds for five tasks, and none of that has to happen while the
+    person waits. The rows are validated here (cheap, local), persisted as a job, and
+    written behind the reply — so Boardman answers in a few seconds and the cards appear
+    on the board shortly after.
+
+    The receipt this returns describes what is BEING created, never what was created.
+    """
+    from boardman.agent.tool_context import get_context_plaky_board_id, get_context_plaky_group_id
+    from boardman.jobs.deferred import enqueue_and_run_soon
+
+    try:
+        rows = json.loads(tasks_json or "[]")
+    except ValueError as e:
+        return json.dumps({"ok": False, "message": f"tasks_json is not valid JSON: {e}"})
+    if not isinstance(rows, list) or not rows:
+        return json.dumps({"ok": False, "message": "tasks_json must be a non-empty JSON array"})
+    if len(rows) > 20:
+        return json.dumps({"ok": False, "message": "at most 20 tasks per call"})
+
+    clean: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict) or not str(row.get("title") or "").strip():
+            return json.dumps({"ok": False, "message": "every task needs a non-empty title"})
+        clean.append(row)
+
+    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip()
+    gid = (group_id or "").strip() or (get_context_plaky_group_id() or "").strip()
+    job_id = await enqueue_and_run_soon(
+        "plaky_create_tasks_job",
+        {
+            "tasks": clean,
+            "board_id": bid,
+            "group_id": gid,
+            "auto_assign_team": bool(auto_assign_team),
+        },
+    )
+
+    lines = [
+        f"{i + 1}.) **{str(r.get('title')).strip()}**"
+        + (f" — {str(r.get('priority')).strip()}" if r.get("priority") else "")
+        + (f" · {str(r.get('assignee')).strip()}" if r.get("assignee") else "")
+        for i, r in enumerate(clean)
+    ]
+    return json.dumps(
+        {
+            "ok": True,
+            "deferred": True,
+            "queued_count": len(clean),
+            "job_id": job_id,
+            "board_id": bid,
+            "group_id": gid,
+            "receipt_markdown": "\n".join(lines),
+            "note": (
+                "These are being written to Plaky now and will appear on the board in a few "
+                "seconds. Reply immediately with the receipt above and say they are landing "
+                "shortly. Say 'creating'/'landing', NEVER 'created' - the writes are still "
+                "in flight. Duplicates against the board are skipped during the write, so do "
+                "not promise every row is new."
+            ),
+        },
+        default=str,
+    )
+
+
 async def _plaky_patch_item_fields(board_id: str, item_id: str, fields_json: str) -> str:
     """PATCH custom/board fields on an existing item (v1/public). fields_json: {\"fieldKey\": value, ...}."""
     try:
@@ -1098,6 +1170,24 @@ def build_plaky_tools(*, allow_writes: bool) -> list[StructuredTool]:
                         "FALSE - QA is assigned at PR time per team flow, not at creation. "
                         "Creates run concurrently server-side. Returns one receipt per task "
                         "(ok, task_id, task_url, message)."
+                    ),
+                ),
+                StructuredTool.from_function(
+                    coroutine=_plaky_create_tasks_deferred,
+                    name="plaky_create_tasks_deferred",
+                    description=(
+                        "PREFERRED for creating 2+ Plaky tasks. Same rows as "
+                        "plaky_create_tasks, but it returns as soon as the work is handed "
+                        "off instead of waiting out the board writes, so you can answer in "
+                        "seconds while the cards land shortly after. "
+                        "Args: tasks_json = JSON array of {title (required), description?, "
+                        "priority?, repo_tag?, assignee? (plain name), qa? (plain name), "
+                        "field_values?}; board_id?/group_id? apply to all. "
+                        "It returns receipt_markdown listing what is BEING created - echo it "
+                        "and say the tasks are landing on the board now. Use the present or "
+                        "future tense: the writes are still in flight, so never say 'created' "
+                        "or claim ids. Use plaky_create_tasks instead ONLY when the user needs "
+                        "the task ids in this same reply."
                     ),
                 ),
                 StructuredTool.from_function(

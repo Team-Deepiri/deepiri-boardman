@@ -135,9 +135,48 @@ async def boardman_github_webhook_job(payload: dict[str, Any]) -> dict[str, Any]
     raise RuntimeError(last_error or "GitHub webhook synchronization failed")
 
 
+async def plaky_create_tasks_job(payload: dict[str, Any]) -> dict[str, Any]:
+    """Create a batch of Plaky tasks after the assistant has already replied.
+
+    The reply names what is being created; this does the writing. Whatever actually
+    happened (created, already existed, failed) is recorded on the job so a follow-up
+    question is answered from the outcome and not from the plan.
+    """
+    import json as _json
+
+    from boardman.agent.tools.plaky_tools import _plaky_create_tasks
+    from boardman.plaky.placement import plaky_placement_context
+
+    rows = payload.get("tasks") or []
+    if not isinstance(rows, list) or not rows:
+        return {"ok": False, "error": "no task rows in payload"}
+    bid = str(payload.get("board_id") or "").strip()
+    gid = str(payload.get("group_id") or "").strip()
+
+    async with plaky_placement_context(bid or None, gid or None):
+        raw = await _plaky_create_tasks(
+            _json.dumps(rows),
+            board_id=bid,
+            group_id=gid,
+            auto_assign_team=bool(payload.get("auto_assign_team")),
+        )
+    try:
+        out = _json.loads(raw)
+    except ValueError:
+        return {"ok": False, "error": str(raw)[:500]}
+    logger.info(
+        "deferred plaky create: %s created, %s already existed, %s failed",
+        out.get("created_count"),
+        out.get("already_existed_count"),
+        out.get("failed_count"),
+    )
+    return out
+
+
 JOB_HANDLERS: dict[str, JobHandler] = {
     "boardman_agent_chat_job": boardman_agent_chat_job,
     "boardman_github_webhook_job": boardman_github_webhook_job,
     "boardman_repo_scan_job": boardman_repo_scan_job,
+    "plaky_create_tasks_job": plaky_create_tasks_job,
     "plaky_reorder_group_job": plaky_reorder_group_job,
 }
