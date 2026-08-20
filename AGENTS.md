@@ -1,7 +1,7 @@
 # deepiri-boardman — agent context
 
 > Machine-oriented project brief. Humans: see [README.md](README.md) and [docs/](docs/).
-> Last verified: 2026-08-19 (canonical GitHub sync state, queued webhook worker path, durable activity mirroring, and reconciliation hardening added)
+> Last verified: 2026-08-20 (Boardman Brain: layered project state, event-driven cache invalidation, deterministic intent router, worker knowledge sweep, and /api/v1/metrics)
 
 ## Purpose
 
@@ -25,6 +25,7 @@ GitHub ↔ Plaky sync automation with an AI layer: webhook-driven task/comment/s
 | [docs/BOARDMAN_READINESS.md](docs/BOARDMAN_READINESS.md) | `boardman readiness`, Plaky inventory, go-live gates |
 | [docs/BOARDMAN_SUPPORT_SESSION.md](docs/BOARDMAN_SUPPORT_SESSION.md) | Support-session checklist, pass/fail signals |
 | [docs/AGENT_PLAN.md](docs/AGENT_PLAN.md) | Agent module layout, tools, memory (supplement to PLAN.md) |
+| [docs/BOARDMAN_BRAIN.md](docs/BOARDMAN_BRAIN.md) | How the assistant knows things: L0-L3 layers, event invalidation, the deterministic router, the knowledge sweep, and the measured effect |
 | [docs/AGENTS_MAINTENANCE.md](docs/AGENTS_MAINTENANCE.md) | **Required** — when agents must update docs after code changes |
 | [docs/NEW_FEATURES_PLAN.md](docs/NEW_FEATURES_PLAN.md) | Feature backlog with Done/Partial/Planned status per item |
 | [docs/ADDITIONAL_FEATURES.md](docs/ADDITIONAL_FEATURES.md) | **Future** ideas: alternate kanban providers, local bidirectional UI |
@@ -189,6 +190,7 @@ Secrets in `.env` (never commit). Key groups:
 | Assignment | `ASSIGNMENT_IDENTITY_LLM_*`, `PR_LINKING_*` |
 | Webhook/repair | `GITHUB_WEBHOOK_ASYNC_ENABLED`, `GITHUB_WEBHOOK_JOB_RETRIES`, `GITHUB_RECONCILE_ENABLED`, `GITHUB_RECONCILE_INTERVAL_SECONDS`, `GITHUB_RECONCILE_MAX_ITEMS` |
 | Queue | `QUEUE_WORKER_POLL_SECONDS` (worker); optional `AGENT_REDIS_URL` (cache only) |
+| Knowledge | `REPO_KNOWLEDGE_SWEEP_ENABLED`, `REPO_KNOWLEDGE_SWEEP_INTERVAL_SECONDS`, `REPO_KNOWLEDGE_SWEEP_CONCURRENCY`, `REPO_KNOWLEDGE_SWEEP_MAX_REPOS` |
 | Rate limit | `AGENT_RATE_LIMIT_*` |
 
 Full list: [.env.example](.env.example). Routing config: [repos.yml](repos.yml), [team_assignments.yml](team_assignments.yml).
@@ -215,11 +217,11 @@ Full list: [.env.example](.env.example). Routing config: [repos.yml](repos.yml),
 | `services/` | Webhook handlers, scan, PR linking, task mutations, webhook side effects |
 | `services/sync_state.py` | Pure canonical issue/PR metadata resolution shared by event and reconciliation paths |
 | `plaky/` | Plaky client (`create_task`, `get_tasks`, `add_comment`, `update_task_fields`, `create_subtask`, …), board schema, placement |
-| `agent/` | `runner.py` (LangChain), `service.py`, `fast_path.py`, `repo_resolution.py`, `repo_context.py`, prompts, guardrails, memory |
+| `agent/` | `runner.py` (LangChain), `service.py`, `brain.py` (L0-L2 project state), `fast_path.py` (deterministic router), `repo_resolution.py`, `repo_context.py`, prompts, guardrails, memory |
 | `agent/tools/` | `plaky_tools`, `repo_tools` (`scan_local_repo`), `github_tools`, `assignment_tools` |
 | `llm/` | Provider factory (Ollama, OpenAI, Anthropic, Gemini, OpenRouter) |
 | `assignment/` | QA tier classification, team assignment, identity matching |
-| `github/` | Org listing, webhook parsing, QA roster, tier team scan |
+| `github/` | Org listing, webhook parsing, QA roster, tier team scan, `change_signal.py` (event-driven cache invalidation), `org_activity.py` (busiest-repo ranking) |
 | `database/models.py` | `IssueTaskMap`, `PullRequestTaskLink`, `ScanRun`, `AgentSession`, `AgentMessage`, `ProjectContext`, `BackgroundJob`, … |
 
 ## DB tables (SQLite)
