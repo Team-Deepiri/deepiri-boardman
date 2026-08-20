@@ -539,6 +539,7 @@ _GITHUB_TOOL_NAMES = frozenset(
         "github_scan_defects",
         "github_list_pull_requests",
         "github_read_pull_request",
+        "github_org_activity",
     }
 )
 

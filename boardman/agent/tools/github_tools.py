@@ -717,8 +717,38 @@ def github_scan_defects_tool() -> StructuredTool:
     )
 
 
+async def _github_org_activity(limit: int = 8) -> str:
+    """Rank the org's repos by open issues and pull requests."""
+    import json as _json
+
+    from boardman.github.org_activity import org_activity_ranking
+
+    try:
+        out = await org_activity_ranking(limit=max(1, min(int(limit or 8), 25)))
+    except Exception as e:
+        return _json.dumps({"ok": False, "message": f"{type(e).__name__}: {e}"})
+    return _json.dumps(out, default=str)[:12000]
+
+
+def github_org_activity_tool() -> StructuredTool:
+    return StructuredTool.from_function(
+        coroutine=_github_org_activity,
+        name="github_org_activity",
+        description=(
+            "Rank EVERY repo in the org by how much open work it carries: open issues and "
+            "open pull requests, most active first. Use this for 'which repos are busiest', "
+            "'where is the team working', 'which repos get the most PRs or issues', or when "
+            "choosing which repos to watch. Cheap: it reuses the org listing already cached "
+            "this turn. NOTE open_issues_and_prs is GitHub's own count and INCLUDES pull "
+            "requests; open_issues/open_prs are split only for the busiest few, and a null "
+            "there means unknown, never zero. Args: optional limit (default 8)."
+        ),
+    )
+
+
 def build_github_tools() -> list[StructuredTool]:
     return [
+        github_org_activity_tool(),
         github_list_workspace_repos_tool(),
         github_repo_planning_context_tool(),
         github_repo_structure_tool(),

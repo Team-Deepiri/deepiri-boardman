@@ -83,6 +83,7 @@ def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
     # Base counts + code-reading tools (search/scan) + PR-reading tools (list/read),
-    # so a merge judgement rests on the PR itself rather than the repo around it.
-    assert len(build_all_tools(allow_writes=False)) == 23
-    assert len(build_all_tools(allow_writes=True)) == 31
+    # so a merge judgement rests on the PR itself rather than the repo around it, plus
+    # github_org_activity for "which repos are busiest".
+    assert len(build_all_tools(allow_writes=False)) == 24
+    assert len(build_all_tools(allow_writes=True)) == 32
