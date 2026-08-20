@@ -103,6 +103,9 @@ def resolve_issue_state(issue: Any, *, repo_full_name: str, repo_name: str) -> G
         assignees = [single_assignee]
     explicit_priority = (
         issue_field_priority(issue)
+        # GitHub Projects (org-level, 2024+) can set a top-level "priority" object
+        # on issues when the Priority field is configured. This is not a label; it is
+        # the sidebar Priority field, which has name/id/color like the Type field.
         or priority_from_github_label(_value(issue, "priority"))
         or next((p for p in (priority_from_github_label(lb) for lb in labels) if p), "")
     )

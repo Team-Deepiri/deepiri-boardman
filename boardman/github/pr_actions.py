@@ -20,8 +20,8 @@ _SCOPE_HINT = (
     "QA was still assigned in Plaky, but the GitHub @mention/reviewer request was skipped."
 )
 _NOT_FOUND_HINT = (
-    "target not found on GitHub (the PR/issue number does not exist in this repo) — "
-    "QA was still assigned in Plaky."
+    "target not found on GitHub (the PR/issue number does not exist in this repo, "
+    "or the PAT lacks read access to it) — QA was still assigned in Plaky."
 )
 
 

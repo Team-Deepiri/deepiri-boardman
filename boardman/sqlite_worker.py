@@ -91,7 +91,7 @@ async def _run_one(job_id: str, kind: str, payload: dict) -> None:
         return
     try:
         out = await handler(payload)
-        ok = not isinstance(out, dict) or out.get("ok", True) is not False
+        ok = bool(isinstance(out, dict) and out.get("ok", True))
         await mark_job_finished(
             job_id,
             success=ok,

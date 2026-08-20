@@ -99,6 +99,8 @@ def _looks_like_unfulfilled_preamble(text: str) -> bool:
     findings) are never treated as preamble even if they contain a stray "let me check".
     """
     t = (text or "").strip()
+    # Deliberately 600: a long answer may contain "let me check" in passing and
+    # is already substantive. A bare promise is short by nature.
     if not t or len(t) > 600:
         return False
     low = t.lower()

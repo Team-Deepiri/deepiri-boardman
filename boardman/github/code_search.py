@@ -64,7 +64,7 @@ async def _fetch_source_files(
                     or _MAX_BYTES_PER_FILE
                 ),
             )
-        except Exception:  # noqa: BLE001
+        except (httpx.HTTPError, OSError, ValueError):
             return path, ""
         if not isinstance(text, str) or text.startswith("(file unavailable"):
             return path, ""
