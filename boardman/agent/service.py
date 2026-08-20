@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 from boardman.agent.fast_path import maybe_fast_path
 from boardman.agent.guardrails import has_confirm_token, looks_like_board_organize_request
 from boardman.agent.memory_store import db_messages_to_langchain
+from boardman.agent.org_roster import org_repo_roster_markdown
 from boardman.agent.plaky_prompt_extra import plaky_placement_markdown
 from boardman.agent.prompts import BOARD_MANAGER_SYSTEM, TASK_CREATION_WORKFLOW, TEAM_TASK_POLICY
 from boardman.agent.repo_context import load_planning_snapshot, snapshot_prompt_block
@@ -576,6 +577,9 @@ async def run_agent_chat(
     # actually failed, this turn opens by correcting it instead of leaving the user
     # believing a task exists that does not.
     plaky_suffix += await recent_failed_task_writes(session)
+    # Boardman is the team's context engine; not knowing which repos exist is how it
+    # told Ali that aarflingo was not a Deepiri project.
+    plaky_suffix += await org_repo_roster_markdown()
 
     reply: str
     assistant_tool_calls_json: str | None = None
@@ -797,6 +801,9 @@ async def iter_agent_chat_sse(
     # actually failed, this turn opens by correcting it instead of leaving the user
     # believing a task exists that does not.
     plaky_suffix += await recent_failed_task_writes(session)
+    # Boardman is the team's context engine; not knowing which repos exist is how it
+    # told Ali that aarflingo was not a Deepiri project.
+    plaky_suffix += await org_repo_roster_markdown()
     _t_ctx = time.monotonic()
 
     parts: list[str] = []

@@ -345,6 +345,40 @@ async def _plaky_save_task_preferences(preferences_json: str) -> str:
     return json.dumps(out, default=str)
 
 
+async def _board_group_index(board_id: str) -> dict[str, str]:
+    """{group_id: group_name} for a board, or {} when the board cannot be read.
+
+    Empty means "unknown", never "no groups" — a failed read must not be treated as
+    proof that a group the caller named is invalid.
+    """
+    try:
+        res = await PlakyClient().list_groups(board_id)
+    except Exception:
+        return {}
+    if not res.get("ok", True):
+        return {}
+    out: dict[str, str] = {}
+    for g in res.get("groups") or []:
+        if isinstance(g, dict) and g.get("id"):
+            out[str(g["id"])] = str(g.get("title") or g.get("name") or "")
+    return out
+
+
+def _group_for_repo_name(groups: dict[str, str], repo: str) -> str:
+    """Group whose name matches a repo (Bots board names each group after its repo)."""
+    short = (repo or "").strip().rsplit("/", 1)[-1].casefold()
+    if not short:
+        return ""
+    for gid, name in groups.items():
+        if name.strip().casefold() == short:
+            return gid
+    for gid, name in groups.items():
+        n = name.strip().casefold()
+        if n and (n in short or short in n):
+            return gid
+    return ""
+
+
 def resolve_people_to_field_values(
     *,
     assignee: str,
@@ -636,6 +670,38 @@ async def _plaky_create_tasks_deferred(
     bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip()
     gid = (group_id or "").strip() or (get_context_plaky_group_id() or "").strip()
 
+    # Verify the placement is REAL before anything is written. Asked for tasks on
+    # deepiri-sorge, the model supplied board 218752 / group 269028 (269028 is the
+    # board, not a group); Plaky rejected all five rows with "Non-existent item group"
+    # and the user was told they had been created. Ids the model invents must never
+    # reach the write path.
+    placement_note = ""
+    if bid:
+        groups = await _board_group_index(bid)
+        if groups and gid not in groups:
+            repo_hint = str((clean[0] or {}).get("repo_tag") or "").strip()
+            fixed = _group_for_repo_name(groups, repo_hint)
+            if fixed:
+                placement_note = (
+                    f"group {gid or '(none)'} is not on board {bid}; used "
+                    f"{groups[fixed]} ({fixed}) which matches {repo_hint}"
+                )
+                gid = fixed
+            else:
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "message": (
+                            f"group_id {gid or '(none)'} does not exist on board {bid}. "
+                            "Do not guess placement ids. Valid groups on this board: "
+                            + ", ".join(f"{k} = {v}" for k, v in groups.items())
+                            + ". Call this tool again with one of those group_ids."
+                        ),
+                        "valid_groups": groups,
+                    },
+                    default=str,
+                )
+
     # Dedupe BEFORE replying. This is one board listing (~1s) and it is the only way the
     # reply can be true: deferring it too made Boardman announce "5 new tasks" while
     # three of them were already on the board. The slow part is the WRITES, so only
@@ -721,6 +787,8 @@ async def _plaky_create_tasks_deferred(
         "reasoning: why these pieces of work, in this order, and what you deliberately "
         "left out. The bare list on its own is not an acceptable answer."
     )
+    if placement_note:
+        note += f" Placement note: {placement_note}."
     if not dedupe_ok and bid:
         note += (
             " WARNING: the board listing failed, so duplicates could not be checked - "

@@ -6,6 +6,8 @@ the UI sends no board selection. Explicit UI selection still wins.
 
 from __future__ import annotations
 
+import pytest
+
 import boardman.repos_config as rc
 from boardman.agent.plaky_prompt_extra import plaky_placement_markdown
 from boardman.agent.service import _placement_fallback_from_routing, _resolve_placement
@@ -105,3 +107,46 @@ def test_note_lands_in_the_placement_markdown() -> None:
 def test_markdown_without_note_is_unchanged() -> None:
     md = plaky_placement_markdown("269028", "933385")
     assert "Routing note" not in md
+
+
+# --- the org roster: Boardman must know what repos exist ------------------------------
+
+
+@pytest.mark.asyncio
+async def test_roster_names_every_repo_and_forbids_claiming_absence(monkeypatch) -> None:
+    """Asked "what is aarflingo", Boardman said it was not a Deepiri project while
+    deepiri-aarflingo sat in the org. It cannot report absence from a partial view."""
+    import boardman.agent.org_roster as orm
+
+    async def fake_fetch(client, org, *, skip_archived=True):
+        return ["Team-Deepiri/deepiri-aarflingo", "Team-Deepiri/diri-cyrex"]
+
+    monkeypatch.setattr("boardman.github.org_repos.fetch_org_repository_full_names", fake_fetch)
+    monkeypatch.setattr(orm.settings, "github_org", "Team-Deepiri")
+    monkeypatch.setattr(orm.settings, "github_pat", "t")
+
+    out = await orm.org_repo_roster_markdown()
+    assert "deepiri-aarflingo" in out and "diri-cyrex" in out
+    assert "Never say a project does not exist" in out
+
+
+@pytest.mark.asyncio
+async def test_roster_is_silent_when_it_cannot_be_fetched(monkeypatch) -> None:
+    """A missing roster must not become a claim about what exists."""
+    import boardman.agent.org_roster as orm
+
+    async def boom(client, org, *, skip_archived=True):
+        raise RuntimeError("github down")
+
+    monkeypatch.setattr("boardman.github.org_repos.fetch_org_repository_full_names", boom)
+    monkeypatch.setattr(orm.settings, "github_org", "Team-Deepiri")
+    monkeypatch.setattr(orm.settings, "github_pat", "t")
+    assert await orm.org_repo_roster_markdown() == ""
+
+
+@pytest.mark.asyncio
+async def test_roster_needs_a_token(monkeypatch) -> None:
+    import boardman.agent.org_roster as orm
+
+    monkeypatch.setattr(orm.settings, "github_pat", "")
+    assert await orm.org_repo_roster_markdown() == ""
