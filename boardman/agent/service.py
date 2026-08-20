@@ -25,6 +25,7 @@ from boardman.agent.repo_resolution import resolve_repo
 from boardman.agent.runner import iter_tool_agent, run_tool_agent
 from boardman.agent.task_draft import format_task_draft_for_prompt, load_task_draft
 from boardman.agent.tool_context import agent_tool_context
+from boardman.agent.write_failures import recent_failed_task_writes
 from boardman.database.models import AgentMessage, AgentSession
 from boardman.llm.completion import chat_complete, chat_complete_stream
 from boardman.plaky.board_schema import fetch_board_schema_bundle
@@ -571,6 +572,10 @@ async def run_agent_chat(
         _load_draft_markdown(session, agent_session_pk),
         _plaky_system_suffix(plaky_board_id, plaky_group_id, note=placement_note),
     )
+    # Creation is reported as done because it lands in seconds. If one of those writes
+    # actually failed, this turn opens by correcting it instead of leaving the user
+    # believing a task exists that does not.
+    plaky_suffix += await recent_failed_task_writes(session)
 
     reply: str
     assistant_tool_calls_json: str | None = None
@@ -788,6 +793,10 @@ async def iter_agent_chat_sse(
         _load_draft_markdown(session, agent_session_pk),
         _plaky_system_suffix(plaky_board_id, plaky_group_id, note=placement_note),
     )
+    # Creation is reported as done because it lands in seconds. If one of those writes
+    # actually failed, this turn opens by correcting it instead of leaving the user
+    # believing a task exists that does not.
+    plaky_suffix += await recent_failed_task_writes(session)
     _t_ctx = time.monotonic()
 
     parts: list[str] = []

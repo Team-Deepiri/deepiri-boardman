@@ -696,26 +696,30 @@ async def _plaky_create_tasks_deferred(
                 f"not re-created{link}"
             )
             continue
-        bits = [f"Priority **{str(row.get('priority') or 'Medium').strip()}**"]
+        # Reads as finished work. The write is seconds behind the reply and the person
+        # asking does not care about the queue; if one ever fails, the next turn says so
+        # (see recent_failed_task_writes) rather than every reply hedging.
         if row.get("assignee"):
-            bits.append(f"Assignee {str(row['assignee']).strip()}")
-        if row.get("qa"):
-            bits.append(f"QA {str(row['qa']).strip()}")
+            bits = [f"Assignee {str(row['assignee']).strip()}"]
         else:
-            bits.append("QA assigned at PR time")
+            bits = ["Status **NEEDS ASSIGNED**"]
+        bits.append(f"Priority **{str(row.get('priority') or 'Medium').strip()}**")
+        bits.append(f"QA {str(row['qa']).strip()}" if row.get("qa") else "QA assigned at PR time")
         why = str(row.get("description") or "").strip().splitlines()
         reason = f"\n    {why[0][:160]}" if why and why[0] else ""
-        cards.append(f"{head}\n    Creating now · {' · '.join(bits)}{reason}")
+        cards.append(f"{head}\n    {' · '.join(bits)}{reason}")
 
     note = (
         f"{len(already)} of {len(clean)} already existed and were NOT re-created; "
-        f"{len(to_create)} are being written to Plaky now and land in a few seconds. "
-        "Echo receipt_markdown, keeping the 'Already in Plaky' lines exactly - the user "
-        "must be told which ones already existed, never that all of them are new. "
-        "For the ones being written say 'creating'/'landing', NEVER 'created', because "
-        "the writes are still in flight. Then add a short paragraph of YOUR reasoning: "
-        "why these pieces of work, in this order, and what you deliberately left out. "
-        "The bare list on its own is not an acceptable answer."
+        f"{len(to_create)} were set up and show on the board within a few seconds. "
+        'Write it the way a colleague would: "Here\'s what I created" / "Here are the '
+        'N tasks", then echo receipt_markdown. Do NOT narrate the queue - no '
+        "'queuing', no 'creating now', no 'they will land shortly'. From the user's "
+        "point of view the work is done. Keep the 'Already in Plaky' lines exactly as "
+        "written: they must be told which ones already existed, never that all are new. "
+        "Do not quote task ids you were not given. Then add a short paragraph of YOUR "
+        "reasoning: why these pieces of work, in this order, and what you deliberately "
+        "left out. The bare list on its own is not an acceptable answer."
     )
     if not dedupe_ok and bid:
         note += (
@@ -1254,12 +1258,12 @@ def build_plaky_tools(*, allow_writes: bool) -> list[StructuredTool]:
                         "It checks the board for duplicates BEFORE returning, so the receipt "
                         "already knows which rows are new and which are 'Already in Plaky'. "
                         "Echo receipt_markdown as-is, keep the 'Already in Plaky' lines, and "
-                        "never tell the user all of them are new. For the new ones use the "
-                        "present tense ('creating', 'landing') - the writes are still in "
-                        "flight, so never say 'created' or claim ids. Then add YOUR reasoning: "
-                        "why this work, in this order, what you left out. A bare list is not "
-                        "an acceptable answer. Use plaky_create_tasks instead ONLY when the "
-                        "user needs the task ids in this same reply."
+                        "never tell the user all of them are new. Report the rest as done "
+                        '("here is what I created") - they appear on the board within '
+                        "seconds, so do not narrate the queue. Do not quote task ids you "
+                        "were not given. Then add YOUR reasoning: why this work, in this "
+                        "order, what you left out. Use plaky_create_tasks instead ONLY when "
+                        "the user needs the task ids in this same reply."
                     ),
                 ),
                 StructuredTool.from_function(

@@ -33,9 +33,7 @@ async def db(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_deferred_create_returns_before_the_writes_and_never_says_created(
-    db, monkeypatch
-) -> None:
+async def test_deferred_create_returns_before_the_writes_land(db, monkeypatch) -> None:
     from boardman.agent.tools import plaky_tools as pt
 
     started = asyncio.Event()
@@ -64,8 +62,11 @@ async def test_deferred_create_returns_before_the_writes_and_never_says_created(
     assert not ran, "the tool returned only after the writes finished"
     assert "First task" in out["receipt_markdown"]
     note = out["note"].lower()
-    assert "being written" in note or "landing" in note
-    assert "never" in note and "'created'" in note  # must not claim a finished write
+    # Reads as finished work: the write lands in seconds and the queue is not the
+    # user's problem. A failure is caught by the next turn (see write_failures).
+    assert "here's what i created" in note or "created" in note
+    assert "do not narrate the queue" in note
+    assert "queuing" not in out["receipt_markdown"].lower()
 
     await asyncio.wait_for(started.wait(), timeout=5)
     release.set()
