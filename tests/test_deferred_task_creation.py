@@ -276,3 +276,72 @@ async def test_receipt_demands_reasoning_not_just_a_list(db, monkeypatch) -> Non
     assert "bare list" in out["note"].lower()
     assert "Because the sync drifts." in out["receipt_markdown"]
     await wait_for_deferred()
+
+
+# --- receipt text must never look like the assistant cut out mid-thought -------------
+
+
+def test_summary_never_ends_mid_word() -> None:
+    """A hard 160-char slice put "...provider fall" in front of the user, because the
+    model echoes this receipt verbatim."""
+    from boardman.agent.tools.plaky_tools import _summary_line
+
+    long = (
+        "Document a concrete production readiness checklist for deepiri-sorge based on "
+        "current README, workflows, and recent changes such as scheduler fixes, provider "
+        "fallback behaviour, and the retired model handling that landed last week in the "
+        "scheduler and provider layers of the service."
+    )
+    out = _summary_line(long)
+    assert len(out) <= 340
+    assert out.endswith("…") or out.endswith(".")
+    assert not out.endswith("provider fall")
+    # the last visible token is a whole word
+    assert out.rstrip("…").split()[-1] in long.split()
+
+
+def test_summary_prefers_a_sentence_boundary() -> None:
+    from boardman.agent.tools.plaky_tools import _summary_line
+
+    text = "Harden the scheduler under provider rate limits. " + ("x" * 400)
+    out = _summary_line(text)
+    assert out == "Harden the scheduler under provider rate limits."
+
+
+def test_short_descriptions_are_untouched() -> None:
+    from boardman.agent.tools.plaky_tools import _summary_line
+
+    assert _summary_line("Add rate limiting to the webhook endpoint.") == (
+        "Add rate limiting to the webhook endpoint."
+    )
+    assert _summary_line("") == ""
+
+
+@pytest.mark.asyncio
+async def test_receipt_card_carries_a_whole_sentence(db, monkeypatch) -> None:
+    from boardman.agent.tools import plaky_tools as pt
+
+    monkeypatch.setattr(pt, "PlakyClient", lambda: _FakePlaky([]))
+
+    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True}
+
+    monkeypatch.setitem(
+        __import__("boardman.jobs.handlers", fromlist=["JOB_HANDLERS"]).JOB_HANDLERS,
+        "plaky_create_tasks_job",
+        handler,
+    )
+    desc = (
+        "Review recent scheduler and provider changes around provider slot contention "
+        "and OpenRouter retired model handling, then identify any remaining gaps that "
+        "would let a review silently fail under rate limiting or model retirement."
+    )
+    out = json.loads(
+        await pt._plaky_create_tasks_deferred(
+            json.dumps([{"title": "T", "description": desc}]), board_id="B1"
+        )
+    )
+    card = out["receipt_markdown"]
+    assert "identify any r\n" not in card and not card.endswith("identify any r")
+    assert card.rstrip().endswith(("…", ".", "**"))
+    await wait_for_deferred()

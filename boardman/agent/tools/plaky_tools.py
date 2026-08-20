@@ -345,6 +345,29 @@ async def _plaky_save_task_preferences(preferences_json: str) -> str:
     return json.dumps(out, default=str)
 
 
+def _summary_line(text: str, limit: int = 320) -> str:
+    """One readable sentence from a task description.
+
+    A hard slice mid-word ("...provider fall") reached the user verbatim, because the
+    model is told to echo this receipt as written — it read as the assistant cutting
+    out mid-thought. End on a sentence, else on a word, and mark the cut so an elision
+    is obviously an elision.
+    """
+    first = next((ln.strip() for ln in (text or "").splitlines() if ln.strip()), "")
+    if not first or len(first) <= limit:
+        return first
+    window = first[: limit + 1]
+    # A complete first sentence is the best summary at any sensible length; the floor
+    # only rejects a fragment so short it says nothing.
+    best = -1
+    for stop in (". ", "! ", "? "):
+        best = max(best, window.rfind(stop))
+    if best >= 30:
+        return window[: best + 1].strip()
+    space = window.rfind(" ")
+    return (window[:space] if space >= limit // 2 else first[:limit]).rstrip(" ,;:-") + "…"
+
+
 async def _board_group_index(board_id: str) -> dict[str, str]:
     """{group_id: group_name} for a board, or {} when the board cannot be read.
 
@@ -771,8 +794,8 @@ async def _plaky_create_tasks_deferred(
             bits = ["Status **NEEDS ASSIGNED**"]
         bits.append(f"Priority **{str(row.get('priority') or 'Medium').strip()}**")
         bits.append(f"QA {str(row['qa']).strip()}" if row.get("qa") else "QA assigned at PR time")
-        why = str(row.get("description") or "").strip().splitlines()
-        reason = f"\n    {why[0][:160]}" if why and why[0] else ""
+        summary = _summary_line(str(row.get("description") or ""))
+        reason = f"\n    {summary}" if summary else ""
         cards.append(f"{head}\n    {' · '.join(bits)}{reason}")
 
     note = (
