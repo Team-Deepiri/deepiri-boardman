@@ -91,6 +91,10 @@ class TeamAssignmentsConfig:
     random_jitter: float = 0.12
     ambiguous_pr: AmbiguousPRConfig = field(default_factory=AmbiguousPRConfig)
     qa_excluded: list[str] = field(default_factory=lambda: list(DEFAULT_QA_EXCLUDED))
+    # People who may never be written into the DEVELOPER (Assignee) column, by
+    # display name or GitHub login. Role-based rules in developer_eligibility.py
+    # cover QA-only/IT accounts; this is the explicit override on top.
+    developer_excluded: list[str] = field(default_factory=list)
     qa_bug_specialist: str = DEFAULT_QA_BUG_SPECIALIST
     # The yaml `members:` list, kept even when the live GitHub roster wins. Policy roles
     # (e.g. the bug specialist) must resolve even for people outside the support team.
@@ -651,6 +655,9 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
         random_jitter=max(0.0, min(jitter, 0.5)),
         ambiguous_pr=ambiguous,
         qa_excluded=excluded,
+        developer_excluded=[
+            str(x).strip() for x in (data.get("developer_excluded") or []) if str(x).strip()
+        ],
         qa_bug_specialist=bug_specialist,
         fallback_members=_members_from_yaml() if has_explicit_members else [],
     )

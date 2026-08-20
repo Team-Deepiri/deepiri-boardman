@@ -140,9 +140,11 @@ _TYPE_FALLBACKS: dict[str, tuple[str, ...]] = {
     "refactoring": ("refactor", "chore", "task", "story"),
     "refactor": ("refactoring", "chore", "task", "story"),
     "research": ("spike", "investigation", "story", "task"),
-    "documentation": ("docs", "chore", "task", "story"),
-    "chore": ("task", "refactor", "story"),
-    "tests": ("test", "qa", "chore", "task"),
+    # The board vocabulary the team agreed on is Feature/Bug/Refactor/Research/Story,
+    # so these degrade to Story rather than reaching "task" first.
+    "documentation": ("docs", "story", "chore", "task"),
+    "chore": ("refactor", "story", "task"),
+    "tests": ("test", "qa", "refactor", "story", "task"),
     "task": ("feature", "story"),
 }
 

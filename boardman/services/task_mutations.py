@@ -9,6 +9,7 @@ from boardman.assignment.config import (
     load_team_assignments,
     sync_team_assignment_field_keys_from_board,
 )
+from boardman.assignment.developer_eligibility import filter_developer
 from boardman.assignment.qa_picker import (
     build_repo_field_map,
     ensure_github_owner_repo,
@@ -691,7 +692,7 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
         repo_value_format=repo_val_fmt,
         github_repos_value_format=gh_repos_val_fmt,
     )
-    eng_apply = engineer_plaky_id
+    eng_apply, eng_refusal = filter_developer(engineer_plaky_id)
     qa_apply = qa_plaky_id or (pick_qa_id if req.auto_assign_team else "")
     if eng_apply and engineer_field_key:
         field_values[engineer_field_key] = str(eng_apply).strip()
@@ -699,6 +700,14 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
         field_values[qa_field_key] = str(qa_apply).strip()
     if isinstance(req.field_values, dict) and req.field_values:
         field_values.update(req.field_values)
+    # Whatever route the person came in by - resolved argument, raw field_values from
+    # the HTTP API, or a name the assistant matched - a QA-only or excluded account may
+    # not end up in the developer column.
+    if engineer_field_key and field_values.get(engineer_field_key):
+        kept, refusal = filter_developer(str(field_values[engineer_field_key]))
+        if not kept:
+            field_values.pop(engineer_field_key, None)
+            eng_refusal = eng_refusal or refusal
 
     pri = plaky_create_legacy_priority_param(canon_priority)
     for pair in (
@@ -801,6 +810,10 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
             person_field_keys=person_keys or None,
         )
     result["post_create_assignment"] = post_assign
+    if eng_refusal:
+        # The caller asked for a developer who is not eligible. Say so instead of
+        # quietly creating the task with an empty Assignee.
+        result["developer_not_assigned"] = eng_refusal
     if tag_resolution_warnings:
         result["tag_resolution_warnings"] = tag_resolution_warnings
 
@@ -1000,6 +1013,7 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
 async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, Any]:
     plaky = PlakyClient()
     ops: dict[str, Any] = {}
+    developer_refusals: list[str] = []
 
     update_status_raw = (req.status or "").strip()
     update_status_plaky_key_raw = (req.status_plaky_field_key or "").strip()
@@ -1110,7 +1124,11 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
         if update_qa and qa_field_key:
             field_values[qa_field_key] = update_qa
         if update_engineer and engineer_field_key:
-            field_values[engineer_field_key] = update_engineer
+            update_engineer, upd_refusal = filter_developer(update_engineer)
+            if update_engineer:
+                field_values[engineer_field_key] = update_engineer
+            elif upd_refusal:
+                developer_refusals.append(upd_refusal)
         elif clear_engineer and engineer_field_key:
             field_values[engineer_field_key] = ""
 
@@ -1307,4 +1325,9 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
         return {"ok": False, "status": 400, "message": "No update fields provided"}
     op_results = [v for v in ops.values() if isinstance(v, dict)]
     ok = bool(op_results) and all(bool(v.get("ok")) for v in op_results if "ok" in v)
-    return {"ok": ok, "task_id": task_id, "operations": ops}
+    out: dict[str, Any] = {"ok": ok, "task_id": task_id, "operations": ops}
+    if developer_refusals:
+        # The requested developer was not eligible; the column was left alone rather
+        # than filled with a QA-only or excluded account.
+        out["developer_not_assigned"] = developer_refusals
+    return out

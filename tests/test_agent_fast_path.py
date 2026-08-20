@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -47,6 +49,63 @@ async def test_open_task_list_is_compact_and_read_only(monkeypatch) -> None:
     assert result.intent == "list_open_tasks"
     assert "Fix webhook retry" in result.reply
     assert calls == [("open", "board-1")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what's on the board right now?",
+        "whats on the board",
+        "what is in the plaky board currently",
+        "what does the board look like",
+        "anything left on the board?",
+    ],
+)
+async def test_asking_what_is_on_the_board_is_not_answered_with_routing_ids(
+    question: str, monkeypatch
+) -> None:
+    """It is a question about the work. Answering "board 269028, group 933385" is a
+    non-answer, and the routing pattern used to swallow every one of these.
+
+    get_routing is patched so the fast path CAN answer: without it the routing lookup
+    returns None for this fake repo and the test would pass with the guard removed.
+    """
+    monkeypatch.setattr(
+        "boardman.agent.fast_path.get_routing",
+        lambda *_a, **_k: SimpleNamespace(
+            plaky_board_id="269028", plaky_group_id="933385", plaky_table="deepiri-boardman"
+        ),
+    )
+    result = await maybe_fast_path(
+        question, repo="deepiri/boardman", board_id="269028", group_id="933385"
+    )
+    assert result is None or result.intent != "repo_routing"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "question",
+    [
+        "which board does this repo go to?",
+        "what board is this project routed to",
+        "which group does this task belong in",
+        # Says "in the board", but it is asking where work is FILED, not what is on it.
+        "which group on the board should this task go in?",
+    ],
+)
+async def test_genuine_routing_questions_still_take_the_fast_path(question, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "boardman.agent.fast_path.get_routing",
+        lambda *_a, **_k: SimpleNamespace(
+            plaky_board_id="269028", plaky_group_id="933385", plaky_table="deepiri-boardman"
+        ),
+    )
+    result = await maybe_fast_path(
+        question, repo="deepiri/boardman", board_id="269028", group_id="933385"
+    )
+    assert result is not None and result.intent == "repo_routing"
+    assert "269028" in result.reply
 
 
 @pytest.mark.asyncio

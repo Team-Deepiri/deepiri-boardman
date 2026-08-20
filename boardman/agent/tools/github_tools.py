@@ -136,6 +136,17 @@ async def _github_read_pull_request(owner_repo: str, pr_number: int) -> str:
     return render_pull_request_context(ctx)
 
 
+# Said at the point of decision, because a system-prompt rule about it was followed only
+# some of the time. GitHub is half the picture: Plaky carries work that is finished,
+# closed, or never had an issue, and "I don't see anything for that" after reading only
+# this listing has been wrong every time it mattered.
+_NOT_ON_GITHUB_NEXT_STEP = (
+    "This is GitHub only. If you did not find what the user asked about, call "
+    "plaky_list_tasks and search the board BEFORE saying it is not tracked, then name "
+    "both places you looked."
+)
+
+
 async def _github_list_pull_requests(owner_repo: str, state: str = "open") -> str:
     if not settings.github_pat:
         return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
@@ -174,7 +185,19 @@ async def _github_list_pull_requests(owner_repo: str, state: str = "open") -> st
         for p in prs
         if isinstance(p, dict)
     ]
-    return json.dumps({"ok": True, "state": want, "returned": len(slim), "pull_requests": slim})
+    return json.dumps(
+        {
+            "ok": True,
+            "state": want,
+            "returned": len(slim),
+            # One page of 30, newest first. Without this the model called 30 closed PRs
+            # "all 30 PRs" and ruled work out on the strength of a partial page.
+            "page_size": 30,
+            "truncated": len(slim) >= 30,
+            "next_step": _NOT_ON_GITHUB_NEXT_STEP,
+            "pull_requests": slim,
+        }
+    )
 
 
 async def _github_list_open_issues(owner_repo: str) -> str:
@@ -202,7 +225,16 @@ async def _github_list_open_issues(owner_repo: str) -> str:
             for i in issues
             if isinstance(i, dict) and "pull_request" not in i
         ]
-        return json.dumps({"ok": True, "issues": slim})
+        return json.dumps(
+            {
+                "ok": True,
+                "returned": len(slim),
+                "page_size": 30,
+                "truncated": len(slim) >= 30,
+                "next_step": _NOT_ON_GITHUB_NEXT_STEP,
+                "issues": slim,
+            }
+        )
 
 
 async def _github_fetch_direction(owner_repo: str) -> str:

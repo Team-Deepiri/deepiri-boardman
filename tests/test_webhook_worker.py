@@ -66,7 +66,9 @@ async def test_async_webhook_marks_delivery_and_enqueues_without_dispatch(
 
 
 @pytest.mark.asyncio
-async def test_worker_marks_false_handler_result_incomplete(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_worker_marks_false_handler_result_incomplete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     import boardman.sqlite_worker as worker
 
     finished: list[dict] = []
@@ -75,9 +77,7 @@ async def test_worker_marks_false_handler_result_incomplete(monkeypatch: pytest.
         return {"ok": False, "message": "temporary synchronization failure"}
 
     async def fake_mark(job_id: str, *, success: bool, status: str, result: dict) -> None:
-        finished.append(
-            {"job_id": job_id, "success": success, "status": status, "result": result}
-        )
+        finished.append({"job_id": job_id, "success": success, "status": status, "result": result})
 
     monkeypatch.setitem(worker.JOB_HANDLERS, "test_false_result", fake_handler)
     monkeypatch.setattr(worker, "mark_job_finished", fake_mark)
@@ -92,4 +92,3 @@ async def test_worker_marks_false_handler_result_incomplete(monkeypatch: pytest.
             "result": {"ok": False, "message": "temporary synchronization failure"},
         }
     ]
-

@@ -121,8 +121,18 @@ async def lifespan(app: FastAPI):
         from boardman.github.qa_contribution_profile import warm_qa_profiles_loop
 
         warmer_task = asyncio.create_task(warm_qa_profiles_loop(), name="qa-profile-warmer")
+
+    # The board schema and the team roster are the same for every question, so the first
+    # person to ask one should not be the one who waits for them.
+    import asyncio as _asyncio
+
+    from boardman.agent.warmup import warm_agent_caches
+
+    agent_warm_task = _asyncio.create_task(warm_agent_caches(), name="agent-cache-warmer")
     yield
 
+    if not agent_warm_task.done():
+        agent_warm_task.cancel()
     if warmer_task is not None:
         warmer_task.cancel()
     await stop_github_poller()

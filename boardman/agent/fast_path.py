@@ -32,6 +32,23 @@ _LIST_TASKS = re.compile(
     r"(?:plaky\s+)?(?:tasks?|items?)\b",
     re.IGNORECASE,
 )
+# "What's on the board right now?" is a question about the WORK, not about where work
+# gets filed - but it says "what" and "board", so the routing pattern above swallowed it
+# and answered with two ids. Anything asking what is on / in / sitting on a board, or
+# what a board looks like, belongs to the reasoning path that can actually read it.
+_BOARD_CONTENT = re.compile(
+    r"\b(?:what|what's|whats|anything|everything|how\s+many|who)\b[^?]{0,40}?"
+    r"\b(?:on|in|inside|left\s+on|sitting\s+on)\s+(?:the\s+|my\s+|our\s+)?"
+    r"(?:plaky\s+)?(?:board|group|table)\b"
+    r"|\b(?:board|group|table)\s+(?:right\s+now|currently|today|look\s+like|status)\b",
+    re.IGNORECASE,
+)
+# ...unless the question is plainly about WHERE work is filed, in which case the routing
+# answer is the right one even though it says "in the board".
+_ROUTING_VERB = re.compile(
+    r"\b(?:route[sd]?|routing|go(?:es)?\s+(?:in|into|to)|belongs?|put|file[sd]?|land)\b",
+    re.IGNORECASE,
+)
 _WRITE_WORD = re.compile(r"\b(?:create|make|add|update|move|close|delete|archive|assign)\b", re.I)
 
 
@@ -81,7 +98,8 @@ async def maybe_fast_path(
             return FastPathResult(f"You’re currently working with `{repo}`.", "current_repo")
         return FastPathResult("There is no active repository in this session.", "current_repo")
 
-    if repo and _ROUTING.search(text):
+    asks_for_content = bool(_BOARD_CONTENT.search(text)) and not _ROUTING_VERB.search(text)
+    if repo and _ROUTING.search(text) and not asks_for_content:
         short = repo.rsplit("/", 1)[-1]
         routing = get_routing(repo, short, settings.github_org)
         if routing:

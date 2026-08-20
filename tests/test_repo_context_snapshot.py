@@ -76,9 +76,7 @@ async def test_stale_snapshot_is_only_returned_in_explicit_degraded_mode(monkeyp
             raw, state = await load_planning_snapshot(session, "deepiri/boardman")
             assert raw is None
             assert state == "miss"
-            raw, state = await load_planning_snapshot(
-                session, "deepiri/boardman", allow_stale=True
-            )
+            raw, state = await load_planning_snapshot(session, "deepiri/boardman", allow_stale=True)
             assert raw is not None
             assert state == "stale"
             assert json.loads(raw)["cache"]["state"] == "stale-fallback"

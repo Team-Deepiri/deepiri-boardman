@@ -11,6 +11,7 @@ from boardman.assignment.config import infer_plaky_field_keys_from_normalized, l
 from boardman.assignment.qa_picker import build_repo_field_map, normalize_github_repo_inputs
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
+    field_row_item_key,
     plaky_repo_field_value_format,
     resolve_repo_tag_field_values_from_schema,
     validate_field_values_detailed,
@@ -31,10 +32,67 @@ from boardman.services.task_mutations import (
 )
 
 
-def _slim_task(t: dict) -> dict:
-    """Project a Plaky item down to what a PM actually needs, so a full board fits."""
+async def _person_names_async() -> dict[str, str]:
+    """{plaky user id: display name}, never blocking the event loop to get it.
+
+    Assembling the roster can hit GitHub and a synchronous, paginated Plaky call when
+    its 120s memo is cold. That work belongs on a worker thread: doing it inline stalls
+    every concurrent chat stream and webhook in the process.
+    """
+    import asyncio
+
+    try:
+        return await asyncio.to_thread(_person_names)
+    except Exception:
+        return {}
+
+
+def _person_names() -> dict[str, str]:
+    """{plaky user id: display name} from the local roster.
+
+    Prefer ``_person_names_async`` from async code: this can block on a cold memo.
+    """
+    try:
+        from boardman.assignment.config import load_team_assignments
+
+        cfg = load_team_assignments()
+    except Exception:
+        return {}
+    out: dict[str, str] = {}
+    for m in list(cfg.members) + list(getattr(cfg, "fallback_members", []) or []):
+        mid = str(getattr(m, "id", "") or "").strip()
+        name = str(getattr(m, "display", "") or getattr(m, "github_login", "") or "").strip()
+        if mid and name:
+            out.setdefault(mid, name)
+    return out
+
+
+def _named_users(users: Any, names: dict[str, str]) -> list[str]:
+    """Plaky's assignedUsers turned into people. Unknown ids keep their id."""
+    rows = users if isinstance(users, list) else [users]
+    out: list[str] = []
+    for u in rows:
+        if isinstance(u, dict):
+            uid = str(u.get("id") or u.get("userId") or u.get("user_id") or "").strip()
+            label = str(u.get("name") or u.get("displayName") or u.get("fullName") or "").strip()
+        else:
+            uid, label = str(u or "").strip(), ""
+        label = label or names.get(uid, "") or uid
+        if label:
+            out.append(label)
+    return out
+
+
+def _slim_task(t: dict, names: dict[str, str] | None = None) -> dict:
+    """Project a Plaky item down to what a PM actually needs, so a full board fits.
+
+    People come back from Plaky as bare numeric ids, and the assistant printed them:
+    "Assignee 481106" instead of "Ali F". The roster is loaded config, so naming them
+    costs nothing and is the difference between an answer and a lookup table.
+    """
     if not isinstance(t, dict):
         return {}
+    names = names if names is not None else _person_names()
     out = {
         "id": t.get("id") or t.get("taskId"),
         "title": t.get("title") or t.get("name"),
@@ -48,7 +106,12 @@ def _slim_task(t: dict) -> dict:
             v = f.get("value") or {}
             users = v.get("assignedUsers") if isinstance(v, dict) else None
             if users:
-                people.append({"field": f.get("title") or f.get("key"), "users": users})
+                people.append(
+                    {
+                        "field": f.get("title") or f.get("key"),
+                        "users": _named_users(users, names) or users,
+                    }
+                )
         elif f.get("type") == "STATUS" and not out.get("status"):
             out["status"] = f.get("value")
     if people:
@@ -56,21 +119,40 @@ def _slim_task(t: dict) -> dict:
     return {k: v for k, v in out.items() if v not in (None, "", [])}
 
 
-def _envelope(payload: dict, items: list, *, limit: int = 60) -> str:
+def _envelope(
+    payload: dict, items: list, *, limit: int = 60, names: dict[str, str] | None = None
+) -> str:
     """Serialize a list result with an explicit count envelope.
 
     A raw ``json.dumps(...)[:12000]`` cut mid-object and handed the model invalid JSON with
     no signal that anything was missing — that is how 13 of 37 board items got reported as
     the whole board. Trim by ITEM COUNT and always state returned/total.
     """
-    shown = [_slim_task(t) for t in items[:limit]]
+    names = _person_names() if names is None else names
+    shown = [_slim_task(t, names) for t in items[:limit]]
+    # Counts over EVERY item, so a summary line about the backlog is available without
+    # reciting it. Reading back fifty untouched titles is slow to produce and tells the
+    # person less than "38 unassigned" plus the handful that have an owner.
+    by_status: dict[str, int] = {}
+    owners = 0
+    for row in (_slim_task(t, names) for t in items):
+        key = str(row.get("status") or "unknown")
+        by_status[key] = by_status.get(key, 0) + 1
+        if row.get("assignees"):
+            owners += 1
     body = {
         "ok": payload.get("ok"),
         "message": payload.get("message"),
         "returned": len(shown),
         "total": len(items),
         "truncated": len(items) > len(shown),
+        "count_by_status": by_status,
+        "with_owner_count": owners,
         "tasks": shown,
+        "how_to_answer": (
+            "Lead with the items that have an owner or a status past NEEDS ASSIGNED. "
+            "Summarise the rest from count_by_status instead of listing them."
+        ),
     }
     if body["truncated"]:
         body["note"] = (
@@ -100,7 +182,7 @@ async def _plaky_list_tasks(status: str = "all", board_id: str = "") -> str:
     if isinstance(tasks, list):
         payload = dict(r)
         payload["applied_status_filter"] = status
-        return _envelope(payload, tasks)
+        return _envelope(payload, tasks, names=await _person_names_async())
     return json.dumps(r, default=str)[:12000]
 
 
@@ -368,6 +450,144 @@ def _summary_line(text: str, limit: int = 320) -> str:
     return (window[:space] if space >= limit // 2 else first[:limit]).rstrip(" ,;:-") + "…"
 
 
+async def _placement_label(
+    board_id: str, group_id: str, groups: dict[str, str] | None = None
+) -> str:
+    """ "Bots → deepiri-sorge" for a receipt.
+
+    The board name comes from the cached schema bundle. Pass ``groups`` when the caller
+    has already listed them: ``list_groups`` is not cached, so re-listing would put a
+    whole extra round trip on the reply the person is waiting for.
+    """
+    bid, gid = (board_id or "").strip(), (group_id or "").strip()
+    if not bid:
+        return ""
+    board_name = ""
+    try:
+        bundle = await fetch_board_schema_bundle(bid)
+        normalized = bundle.get("normalized") if isinstance(bundle, dict) else None
+        if isinstance(normalized, dict):
+            board_name = str(normalized.get("board_name") or "").strip()
+    except Exception:
+        board_name = ""
+    if groups is None:
+        groups = await _board_group_index(bid) if gid else {}
+    group_name = groups.get(gid, "") if gid else ""
+    left = board_name or f"board {bid}"
+    return f"{left} → {group_name}" if group_name else left
+
+
+async def _option_index(board_id: str) -> dict[str, tuple[str, dict[str, str]]]:
+    """{field key: (column label, {option id: option name})} from the cached schema.
+
+    Used to print "Type **Bug**" instead of "status-7 = 10" on a receipt. Read-only and
+    cache-backed, so it adds no request to the create path.
+    """
+    out: dict[str, tuple[str, dict[str, str]]] = {}
+    bid = (board_id or "").strip()
+    if not bid:
+        return out
+    try:
+        bundle = await fetch_board_schema_bundle(bid)
+    except Exception:
+        return out
+    normalized = bundle.get("normalized") if isinstance(bundle, dict) else None
+    for f in (normalized or {}).get("fields") or []:
+        if not isinstance(f, dict):
+            continue
+        key = field_row_item_key(f)
+        if not key:
+            continue
+        opts = {
+            str(o.get("id")): str(o.get("name") or "")
+            for o in (f.get("options") or [])
+            if isinstance(o, dict) and o.get("id") is not None
+        }
+        if opts:
+            out[key] = (str(f.get("name") or f.get("title") or "").strip(), opts)
+    return out
+
+
+def _resolved_people(
+    row: dict[str, Any],
+    normalized: dict[str, Any] | None,
+    names: dict[str, str],
+) -> tuple[str, str, list[str]]:
+    """(assignee display, qa display, complaints) for one create row.
+
+    Runs the SAME resolver the write runs, so the receipt can only name a person the
+    board is actually going to get. A name that does not resolve comes back in the third
+    element so the reply says so instead of quietly dropping it.
+    """
+    typed_assignee = str(row.get("assignee") or "").strip()
+    typed_qa = str(row.get("qa") or "").strip()
+    if not typed_assignee and not typed_qa:
+        return "", "", []
+    try:
+        people_fv, notes = resolve_people_to_field_values(
+            assignee=typed_assignee, qa=typed_qa, normalized=normalized
+        )
+        keys = infer_plaky_field_keys_from_normalized(normalized) if normalized else {}
+    except Exception:
+        # Never fail a create receipt over a name lookup; say nothing about people.
+        return "", "", []
+    explicit = row.get("field_values") if isinstance(row.get("field_values"), dict) else {}
+
+    def landed(role_key: str, typed: str) -> str:
+        key = (keys.get(role_key) or "").strip()
+        if not key or key in explicit:
+            return ""
+        pid = str(people_fv.get(key) or "").strip()
+        return names.get(pid, "") or pid if pid else ""
+
+    assignee_name = landed("engineer", typed_assignee)
+    qa_name = landed("qa", typed_qa)
+    complaints: list[str] = []
+    if typed_assignee and not assignee_name:
+        complaints.append(f"{typed_assignee!r} was not assigned")
+    if typed_qa and not qa_name:
+        complaints.append(f"QA {typed_qa!r} was not set")
+    if complaints and notes:
+        complaints[-1] += f" ({notes[-1]})"
+    return assignee_name, qa_name, complaints
+
+
+def _labelled_option(
+    index: dict[str, tuple[str, dict[str, str]]], field_values: Any, want: str
+) -> str:
+    """Option NAME the row sets on the column called ``want``, or "".
+
+    Exact label first. Substring matching alone read "QA Status" as the Status column and
+    "Subtype" as the Type column, and dict order decided which one won.
+    """
+    if not isinstance(field_values, dict):
+        return ""
+    exact = [k for k in field_values if index.get(str(k), ("", {}))[0].casefold() == want]
+    loose = [
+        k
+        for k in field_values
+        if k not in exact
+        and want in index.get(str(k), ("", {}))[0].casefold()
+        and "sub" not in index.get(str(k), ("", {}))[0].casefold()
+    ]
+    for key in exact + loose:
+        _label, opts = index.get(str(key), ("", {}))
+        value = field_values[key]
+        if isinstance(value, dict):
+            value = value.get("id") or value.get("value") or value.get("optionId")
+        if isinstance(value, list) and value:
+            value = value[0]
+        # The model writes these columns either way: "status-7": "10" from the schema, or
+        # "status-7": "Bug" from the option list. Both have to read back as Bug.
+        name = opts.get(str(value), "")
+        if not name:
+            wanted = str(value).strip().casefold()
+            name = next((n for n in opts.values() if n.casefold() == wanted), "")
+        if name:
+            return name
+    return ""
+
+
 async def _board_group_index(board_id: str) -> dict[str, str]:
     """{group_id: group_name} for a board, or {} when the board cannot be read.
 
@@ -415,6 +635,7 @@ def resolve_people_to_field_values(
     leaving the column empty, and the note names the near-misses so the assistant can
     ask instead of guessing.
     """
+    from boardman.assignment.developer_eligibility import developer_eligibility
     from boardman.assignment.person_match import (
         ambiguous_candidates,
         best_member_for_name,
@@ -450,6 +671,13 @@ def resolve_people_to_field_values(
                 f"{role} {name!r} matched {hit.member.display!r} but they have no Plaky id"
             )
             continue
+        if role == "assignee":
+            # The developer column has hard eligibility rules; being asked nicely is
+            # not one of the ways past them.
+            verdict = developer_eligibility(hit.member, cfg)
+            if not verdict.ok:
+                notes.append(f"assignee {name!r} not set: {verdict.reason}")
+                continue
         out[key] = member_id
         notes.append(f"{role} -> {hit.member.display} ({hit.reason}, {hit.score:.2f})")
     return out, notes
@@ -699,6 +927,7 @@ async def _plaky_create_tasks_deferred(
     # and the user was told they had been created. Ids the model invents must never
     # reach the write path.
     placement_note = ""
+    groups: dict[str, str] = {}
     if bid:
         groups = await _board_group_index(bid)
         if groups and gid not in groups:
@@ -773,6 +1002,21 @@ async def _plaky_create_tasks_deferred(
             },
         )
 
+    # Say where the work went, once, so the user can find it without asking. Both names
+    # come from caches this call already warmed (the schema bundle and the group index),
+    # so the header costs no extra request.
+    where = await _placement_label(bid, gid, groups)
+    opt_index = await _option_index(bid)
+    person_names = await _person_names_async()
+    normalized: dict[str, Any] | None = None
+    if bid and any(r.get("assignee") or r.get("qa") for r in clean):
+        try:
+            schema = await fetch_board_schema_bundle(bid)
+            normalized = schema.get("normalized") if isinstance(schema, dict) else None
+            normalized = normalized if isinstance(normalized, dict) else None
+        except Exception:
+            normalized = None
+
     cards: list[str] = []
     for i, row in enumerate(clean):
         title = str(row.get("title")).strip()
@@ -788,12 +1032,24 @@ async def _plaky_create_tasks_deferred(
         # Reads as finished work. The write is seconds behind the reply and the person
         # asking does not care about the queue; if one ever fails, the next turn says so
         # (see recent_failed_task_writes) rather than every reply hedging.
-        if row.get("assignee"):
-            bits = [f"Assignee {str(row['assignee']).strip()}"]
+        fv = row.get("field_values")
+        row_status = _labelled_option(opt_index, fv, "status")
+        # Resolve the typed names HERE, with the same matcher and the same eligibility
+        # gate the write uses. Printing "Assignee Quinn - Status Assigned" from raw model
+        # input told the user a person owned the task while the matcher refused the name
+        # and the board wrote NEEDS ASSIGNED.
+        assignee_name, qa_name, unresolved = _resolved_people(row, normalized, person_names)
+        if assignee_name:
+            bits = [f"Assignee {assignee_name}", f"Status **{row_status or 'Assigned'}**"]
         else:
-            bits = ["Status **NEEDS ASSIGNED**"]
+            bits = [f"Status **{row_status or 'NEEDS ASSIGNED'}**"]
+        row_type = _labelled_option(opt_index, fv, "type")
+        if row_type:
+            bits.append(f"Type **{row_type}**")
         bits.append(f"Priority **{str(row.get('priority') or 'Medium').strip()}**")
-        bits.append(f"QA {str(row['qa']).strip()}" if row.get("qa") else "QA assigned at PR time")
+        bits.append(f"QA {qa_name}" if qa_name else "QA assigned at PR time")
+        for miss in unresolved:
+            bits.append(f"⚠ {miss}")
         summary = _summary_line(str(row.get("description") or ""))
         reason = f"\n    {summary}" if summary else ""
         cards.append(f"{head}\n    {' · '.join(bits)}{reason}")
@@ -801,8 +1057,10 @@ async def _plaky_create_tasks_deferred(
     note = (
         f"{len(already)} of {len(clean)} already existed and were NOT re-created; "
         f"{len(to_create)} were set up and show on the board within a few seconds. "
-        'Write it the way a colleague would: "Here\'s what I created" / "Here are the '
-        'N tasks", then echo receipt_markdown. Do NOT narrate the queue - no '
+        'Write it the way a colleague would: "Here\'s what I created:" / "Here are the '
+        'N tasks:", then echo receipt_markdown. receipt_markdown ALREADY opens with the '
+        "board and group, so do not name them again in your lead-in. Do NOT narrate the "
+        "queue - no "
         "'queuing', no 'creating now', no 'they will land shortly'. From the user's "
         "point of view the work is done. Keep the 'Already in Plaky' lines exactly as "
         "written: they must be told which ones already existed, never that all are new. "
@@ -828,7 +1086,8 @@ async def _plaky_create_tasks_deferred(
             "job_id": job_id,
             "board_id": bid,
             "group_id": gid,
-            "receipt_markdown": "\n\n".join(cards),
+            "placement": where,
+            "receipt_markdown": (f"On **{where}**:\n\n" if where else "") + "\n\n".join(cards),
             "note": note,
         },
         default=str,

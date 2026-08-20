@@ -5,7 +5,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from boardman.settings import settings
 
-_engine_kwargs = {"echo": False}
+# Validate a pooled connection before handing it out. A cancelled request (the client
+# closing an SSE stream mid-answer is the common one) can leave its aiosqlite connection
+# closed but still pooled; the next checkout then died on its FIRST query with
+# "no active connection", and every later chat turn hit the same poisoned connection
+# until the process restarted. The check is a trivial round trip on a local file.
+_engine_kwargs: dict[str, object] = {"echo": False, "pool_pre_ping": True}
 if settings.database_url.startswith("sqlite"):
     # Wait longer on write contention instead of failing fast with "database is locked".
     _engine_kwargs["connect_args"] = {"timeout": 30}

@@ -136,11 +136,49 @@ async def test_issue_label_sync_recomputes_priority_and_type(
     assert captured and captured[0][0] == "task-12"
     assert captured[0][1].task_type == "Bug"
     assert captured[0][1].priority == "High"
-    assert captured[0][1].clear_engineer_assignee is True
+    # A label event carries no ownership information. It used to empty the Assignee
+    # column, which wiped the developer working the open PR whenever anyone re-labelled
+    # the issue; only assigned/unassigned may touch the person now.
+    assert captured[0][1].clear_engineer_assignee is False
 
     payload.issue.labels = [{"name": "bug"}, {"name": "Low-priority"}]
     await issue_handler.handle_issue_labels_changed(payload, db_session)
     assert captured[-1][1].priority == "Low"
+
+
+@pytest.mark.asyncio
+async def test_unassigning_on_github_does_clear_the_developer(
+    db_session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The event that genuinely says nobody owns it still empties the column."""
+    db_session.add(IssueTaskMap(github_repo="app", github_issue_number=13, plaky_task_id="task-13"))
+    await db_session.flush()
+    captured: list[Any] = []
+
+    async def fake_routing(*args: Any, **kwargs: Any) -> None:
+        return None
+
+    async def fake_update(task_id: str, req: Any) -> dict[str, Any]:
+        captured.append((task_id, req))
+        return {"ok": True}
+
+    monkeypatch.setattr(issue_handler, "get_routing_async", fake_routing)
+    monkeypatch.setattr("boardman.services.task_mutations.update_task_internal", fake_update)
+
+    payload = IssueEventPayload(
+        action="unassigned",
+        issue={
+            "number": 13,
+            "title": "Orphaned",
+            "body": "",
+            "html_url": "u",
+            "labels": [],
+            "assignees": [],
+        },
+        repository={"full_name": "acme/app", "name": "app"},
+    )
+    await issue_handler.handle_issue_labels_changed(payload, db_session)
+    assert captured and captured[0][1].clear_engineer_assignee is True
 
 
 @pytest.mark.asyncio
@@ -179,9 +217,7 @@ async def test_replayed_issue_open_repairs_existing_task_priority(
 
 
 @pytest.mark.asyncio
-async def test_issue_edit_syncs_title_and_body(
-    db_session, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_issue_edit_syncs_title_and_body(db_session, monkeypatch: pytest.MonkeyPatch) -> None:
     db_session.add(IssueTaskMap(github_repo="app", github_issue_number=15, plaky_task_id="task-15"))
     await db_session.flush()
     captured: list[Any] = []
@@ -197,9 +233,7 @@ async def test_issue_edit_syncs_title_and_body(
         return {"ok": True}
 
     monkeypatch.setattr(issue_handler, "get_routing_async", fake_routing)
-    monkeypatch.setattr(
-        "boardman.plaky.dynamic_qa_status.resolve_plaky_status_patch", fake_status
-    )
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_plaky_status_patch", fake_status)
     monkeypatch.setattr("boardman.services.task_mutations.update_task_internal", fake_update)
 
     payload = IssueEventPayload(

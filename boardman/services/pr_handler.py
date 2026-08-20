@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import load_team_assignments
-from boardman.database.models import PullRequestTaskLink, SyncLog
+from boardman.database.models import IssueTaskMap, PullRequestTaskLink, SyncLog
 from boardman.github.webhooks import PullRequestEventPayload, PullRequestReviewCommentEventPayload
 from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status_id
 from boardman.plaky.client import PlakyClient
@@ -132,7 +132,10 @@ async def _apply_pr_type_and_assignee(
             task_id,
             UpdateTaskInput(
                 task_type=canon_type,
-                priority=pr_state.priority,
+                # Priority set on the ISSUE is the human's call. A PR carrying no
+                # priority label has no opinion, and sending its guess reset tasks
+                # marked VERY IMPORTANT back to Medium the moment a fix was opened.
+                priority=pr_state.priority if pr_state.priority_explicit else None,
                 plaky_board_id=bid or None,
                 diff_only=True,
             ),
@@ -162,6 +165,19 @@ async def _apply_pr_type_and_assignee(
     if not plaky_id:
         out["assignee"] = {"skipped": "no_plaky_match", "login": author.get("login")}
         return out
+    # Decide eligibility BEFORE resolving a status: writing "Assigned" and then having
+    # the developer refused downstream leaves the board saying Assigned with an empty
+    # Assignee column, which is the one state the workflow rules forbid.
+    from boardman.assignment.developer_eligibility import filter_developer
+
+    plaky_id, refusal = filter_developer(plaky_id)
+    if not plaky_id:
+        out["assignee"] = {
+            "skipped": "not_a_developer",
+            "login": author.get("login"),
+            "reason": refusal,
+        }
+        return out
 
     # Resolve "Assigned" status from the live board (no hardcoded label).
     assigned_status_key: str | None = None
@@ -180,13 +196,18 @@ async def _apply_pr_type_and_assignee(
             plaky_board_id=bid,
         ),
     )
+    # "filled" reports the WRITE, not the intent. Hardcoding True logged and returned a
+    # developer assignment that the column never received.
+    refused = res.get("developer_not_assigned") or ""
     out["assignee"] = {
-        "filled": True,
+        "filled": bool(res.get("ok")) and not refused,
         "plaky_id": plaky_id,
         "login": author.get("login"),
         "status": assigned_status_val or None,
         "ok": res.get("ok"),
     }
+    if refused:
+        out["assignee"]["reason"] = refused
     return out
 
 
@@ -373,6 +394,7 @@ async def _maybe_triage_ambiguous_pr(
     payload: PullRequestEventPayload,
     session: AsyncSession,
     top_scored: Sequence[Any] | None = None,
+    orphan_issue_number: int = 0,
 ) -> dict[str, Any] | None:
     """A PR that matches no existing task gets a REAL task, not a triage stub.
 
@@ -530,6 +552,22 @@ async def _maybe_triage_ambiguous_pr(
     if task_id:
         reservation.plaky_task_id = task_id
         reservation.link_source = "pr_task_created"
+        # The PR named an issue that has no task yet. Claim that issue for THIS card, so
+        # when the issue itself syncs it updates this one instead of opening a second
+        # card for the same piece of work.
+        if orphan_issue_number:
+            try:
+                async with session.begin_nested():
+                    session.add(
+                        IssueTaskMap(
+                            github_repo=repo_name,
+                            github_issue_number=orphan_issue_number,
+                            plaky_task_id=task_id,
+                        )
+                    )
+                    await session.flush()
+            except IntegrityError:
+                pass  # the issue got its own task in the meantime; leave that one alone
         plaky = PlakyClient()
         await plaky.add_comment(
             task_id,
@@ -657,7 +695,10 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
             session.add(log)
             results.append({"issue": issue_num, "task_id": mapping.plaky_task_id})
 
-    if not linked_issues:
+    # Gate on whether anything was actually LINKED, not on whether the body named an
+    # issue: a PR saying 'Fixes #12' where #12 has no Plaky task used to fall through
+    # both branches and end up with no task and no link row at all.
+    if not results:
         pipe_top: Sequence[Any] | None = None
         run_pipe = settings.pr_linking_pipeline_enabled and await should_run_pipeline(
             payload.pull_request.body
@@ -761,10 +802,20 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
 
             await session.commit()
 
-        triage = await _maybe_triage_ambiguous_pr(payload, session, top_scored=pipe_top)
+        triage = await _maybe_triage_ambiguous_pr(
+            payload,
+            session,
+            top_scored=pipe_top,
+            orphan_issue_number=int(linked_issues[0]) if linked_issues else 0,
+        )
         if triage is not None:
             return triage
-        return {"ok": True, "skipped": True, "message": "No linked issues found"}
+        message = (
+            f"named issue(s) {sorted(linked_issues)} but none has a Plaky task"
+            if linked_issues
+            else "No linked issues found"
+        )
+        return {"ok": True, "skipped": True, "message": message}
 
     await session.commit()
     return {"ok": True, "linked": results}
@@ -846,7 +897,7 @@ async def handle_pr_edited(
                     title=(state.title or None) if task_id in standalone_ids else None,
                     description=standalone_description if task_id in standalone_ids else None,
                     task_type=state.task_type,
-                    priority=state.priority,
+                    priority=state.priority if state.priority_explicit else None,
                     engineer_plaky_id=engineer_id or None,
                     plaky_board_id=board_id or None,
                     status=status_value or None,
@@ -1484,7 +1535,7 @@ async def handle_pr_labels_changed(
             tid,
             UpdateTaskInput(
                 task_type=canon_type,
-                priority=pr_state.priority,
+                priority=pr_state.priority if pr_state.priority_explicit else None,
                 plaky_board_id=bid or None,
                 diff_only=True,
             ),

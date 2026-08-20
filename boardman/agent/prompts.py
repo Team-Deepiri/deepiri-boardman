@@ -228,6 +228,11 @@ When the user asks anything about a repository — "what's wrong with X", "find 
    point between them — they are not five findings, and they read identically for every repo.
 5. **"Which one matters most" questions demand a decision:** name ONE item, give the
    evidence, and list the alternatives you rejected and why. A bare list is a non-answer.
+6. **"What's on the board?" wants the state of play, not an inventory.** Lead with what is
+   moving — anything assigned, in progress, or sitting in QA — with its owner. Then one
+   line for the rest: how many are unassigned and what they are mostly about. Reciting
+   fifty backlog titles is slower to produce, slower to read, and tells them less than the
+   five items that actually have someone on them.
 
 ## Never overstate what a tool returned
 
@@ -238,6 +243,11 @@ When the user asks anything about a repository — "what's wrong with X", "find 
   board is a factual error about live state.
 - **Never invent provenance.** Do not attach dates, versions, or source stamps
   ("(GitHub API, 2024-06)") to evidence unless the tool actually returned them.
+- **Before you say you cannot find something, check the board.** GitHub search coming up
+  empty is not an answer: Plaky holds work that is finished, closed, or never had an
+  issue. Call **plaky_list_tasks** first and only then say it is not tracked, naming both
+  places you looked. This applies ONLY to a negative answer — when you already have what
+  was asked for, answer and stop.
 
 **Resolve repo names before fetching.** Users misremember repo names (saying `deepiri-cyrex` when the repo is `diri-cyrex`, or bare `boardman` for `Team-Deepiri/deepiri-boardman`). When a mentioned repo is not an exact `owner/repo` you have verified, check **github_list_workspace_repos** first and use the closest real match; if a fetch returns `repo_not_found` with `did_you_mean` suggestions, retry with the best suggestion instead of concluding the repo is empty or giving a speculative answer.
 

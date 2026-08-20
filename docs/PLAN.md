@@ -64,7 +64,8 @@ Secret: GITHUB_WEBHOOK_SECRET
 
 `boardman/services/sync_state.py` is the pure resolver for GitHub-owned task fields. Issue
 Type precedence is native GitHub Type, then labels, then `Feature`; PR Type comes from the
-branch/labels; explicit priority labels beat text heuristics; an issue's first assignee or
+branch/labels; explicit priority labels map `Low`/`Medium`/`High` directly and `Urgent` to
+`Very Important`, beating text heuristics; an issue's first assignee or
 a PR's explicit assignee/author is the developer owner. Event handlers and reconciliation
 both pass that state through diff-only Plaky mutations, so replaying an event is a no-op
 when the board already matches.

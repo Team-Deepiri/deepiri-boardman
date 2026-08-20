@@ -822,6 +822,13 @@ export default function App() {
             <p className="main__subtitle">
               <strong>Deepiri</strong> Board Manager Agent
             </p>
+            <p className="main__status" role="status" aria-live="polite">
+              {loading
+                ? "Generating — press Esc or Stop to interrupt."
+                : selectedRepos[0]
+                  ? `Scoped to ${selectedRepos[0]}.`
+                  : "Repo scope follows your selection or the repository named in your message."}
+            </p>
           </div>
         </header>
 

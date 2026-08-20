@@ -117,9 +117,11 @@ def test_task_projection_keeps_status_and_assignees_only() -> None:
                     "value": {"assignedUsers": [476634]},
                 },
             ],
-        }
+        },
+        {"476634": "Sergio Vargas"},
     )
     assert slim["id"] == 7 and slim["title"] == "Fix retry crash"
     assert slim["status"] == "In QA"
-    assert slim["assignees"][0]["users"] == [476634]
+    # The id is what Plaky returns; the person is what the answer has to say.
+    assert slim["assignees"][0]["users"] == ["Sergio Vargas"]
     assert "fields" not in slim  # the bulk that used to blow the size budget

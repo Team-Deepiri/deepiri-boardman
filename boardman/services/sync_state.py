@@ -137,6 +137,9 @@ def resolve_pr_state(pr: Any, *, repo_full_name: str, repo_name: str) -> GitHubS
     # A PR author owns the work when GitHub has no explicit PR assignee.  This
     # is the canonical initial-owner rule used both on open and later edits.
     author = _login(user)
+    explicit_priority = next(
+        (p for p in (priority_from_github_label(lb) for lb in labels) if p), ""
+    )
     return GitHubSyncState(
         entity="pull_request",
         repo_full_name=repo_full_name,
@@ -148,10 +151,14 @@ def resolve_pr_state(pr: Any, *, repo_full_name: str, repo_name: str) -> GitHubS
         labels=labels,
         native_type="",
         task_type=infer_task_type_from_pr(head_ref, labels) or "Feature",
-        priority=infer_priority_from_text(
+        priority=explicit_priority
+        or infer_priority_from_text(
             str(_value(pr, "title", "") or ""), str(_value(pr, "body", "") or ""), labels
         ),
-        priority_explicit=False,
+        # Only a priority LABEL on the PR is a statement of priority. Wording guessed
+        # from a PR title is not, and writing it downgraded issues that had been marked
+        # Urgent by hand: the PR that fixed them reset the column to Medium.
+        priority_explicit=bool(explicit_priority),
         assignee_login=assignee or author,
         author_login=author,
         state=str(_value(pr, "state", "open") or "open").strip().casefold(),
@@ -161,10 +168,20 @@ def resolve_pr_state(pr: Any, *, repo_full_name: str, repo_name: str) -> GitHubS
     )
 
 
-def issue_status_intent(state: GitHubSyncState) -> str:
+def issue_status_intent(state: GitHubSyncState, *, engineer_plaky_id: str | None = None) -> str:
+    """The one rule for what an issue's status should be.
+
+    Claiming "Assigned" requires a person who will actually land in the Assignee
+    column. A GitHub assignee that resolves to nobody on the board would otherwise
+    write Assigned onto a task with an empty Assignee — the state the board rules
+    forbid. ``engineer_plaky_id`` is a three-way signal: None means the caller has not
+    resolved anyone yet (fall back to the GitHub login), "" means it resolved and found
+    nobody, and an id means that person is being written.
+    """
     if state.state == "closed":
         return "workflow_completed"
-    return "workflow_assigned" if state.assignee_login else "workflow_needs_assigned"
+    owner = state.assignee_login if engineer_plaky_id is None else engineer_plaky_id.strip()
+    return "workflow_assigned" if owner else "workflow_needs_assigned"
 
 
 def pr_label_task_type(labels: Any) -> str:

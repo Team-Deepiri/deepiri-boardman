@@ -64,16 +64,26 @@ def _issue_task_text(state: Any, routing: Any | None) -> tuple[str, str]:
 
 
 async def _resolve_issue_engineer_id(login: str) -> str:
+    """The Plaky id that will actually land in the Assignee column, or "".
+
+    The eligibility gate runs HERE rather than only in the write path: the status the
+    caller derives has to agree with the person the caller writes. Filtering only on the
+    way out produced the one state the board rules forbid, a task reading Assigned with
+    nobody in the Assignee column.
+    """
     if not login:
         return ""
+    from boardman.assignment.developer_eligibility import filter_developer
     from boardman.plaky.dynamic_qa_status import (
         github_actor_payload,
         resolve_github_user_to_plaky_user_id,
     )
 
-    return str(
+    resolved = str(
         await resolve_github_user_to_plaky_user_id(github_actor_payload({"login": login})) or ""
     ).strip()
+    kept, _reason = filter_developer(resolved)
+    return kept
 
 
 async def _post_create_patch_failed(session: AsyncSession, task_id: str) -> bool:
@@ -121,12 +131,27 @@ async def handle_issue_changed(
     title, description = _issue_task_text(state, routing)
     engineer_id = await _resolve_issue_engineer_id(state.assignee_login)
 
+    # Only events that actually carry ownership information may move the status. A
+    # label, milestone or edit event knows nothing about where the work has got to, and
+    # forcing an assignee-derived status on every one of them dragged tasks sitting at
+    # In Progress / Needs QA / In QA back to Assigned — or to NEEDS ASSIGNED, wiping the
+    # developer working the open PR, since ownership normally arrives via the PR flow.
+    # Closing is different: a closed issue is finished regardless of who owned it.
+    owns_assignment = payload.action in ("assigned", "unassigned")
+    # A replayed `opened` whose post-create patch failed is the one non-ownership event
+    # that MUST set status: that replay exists to repair the write that did not land, and
+    # status is the field it was built to repair.
+    repairing = event_label == "issue_opened_reconciled" and await _post_create_patch_failed(
+        session, str(mapping.plaky_task_id)
+    )
     status_value = ""
     status_field_key: str | None = None
-    if board_id:
+    if board_id and (state.state == "closed" or owns_assignment or repairing):
         from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
-        resolved = await resolve_plaky_status_patch(board_id, intent=issue_status_intent(state))
+        resolved = await resolve_plaky_status_patch(
+            board_id, intent=issue_status_intent(state, engineer_plaky_id=engineer_id)
+        )
         if resolved:
             status_field_key, status_value = resolved[0], resolved[1]
     if not status_value and state.state == "closed":
@@ -139,9 +164,7 @@ async def handle_issue_changed(
     # ride every later event would stomp a lead's hand-tuned board value with
     # "Medium" whenever someone touches an unrelated label — and the poller replays
     # `opened` for every issue inside its catch-up window on each restart.
-    push_priority = state.priority_explicit
-    if not push_priority and event_label == "issue_opened_reconciled":
-        push_priority = await _post_create_patch_failed(session, str(mapping.plaky_task_id))
+    push_priority = state.priority_explicit or repairing
     update = UpdateTaskInput(
         title=title if sync_text else None,
         description=description if sync_text else None,
@@ -150,7 +173,9 @@ async def handle_issue_changed(
         task_type=state.task_type,
         priority=state.priority if push_priority else None,
         engineer_plaky_id=engineer_id or None,
-        clear_engineer_assignee=not state.assignee_login,
+        # Only an assignment event may EMPTY the column. A label change carrying no
+        # assignee is not evidence that nobody owns the work.
+        clear_engineer_assignee=owns_assignment and not state.assignee_login,
         plaky_board_id=board_id or None,
         diff_only=True,
     )
@@ -364,7 +389,8 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     if bid and task_id:
         from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
-        intent = "workflow_assigned" if engineer_plaky_id else "workflow_needs_assigned"
+        # Same rule as every other path, not a second copy of it.
+        intent = issue_status_intent(issue_state, engineer_plaky_id=engineer_plaky_id or "")
         rp = await resolve_plaky_status_patch(bid, intent=intent)
         if rp:
             status_key, status_val = rp[0], rp[1]
