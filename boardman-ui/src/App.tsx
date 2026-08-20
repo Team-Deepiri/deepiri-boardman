@@ -87,13 +87,12 @@ async function sendChatStream(
   }
   const reader = res.body?.getReader();
   if (!reader) throw new Error("No response body");
-  // Abort mid-stream: cancel the reader too, otherwise the response body keeps draining in
-  // the background and tokens from a stopped answer land in the next one.
+  // Abort mid-stream: cancel the reader so the response body stops draining in the
+  // background. { once: true } handles cleanup; no manual removeEventListener needed.
   const onAbort = () => void reader.cancel().catch(() => {});
   signal?.addEventListener("abort", onAbort, { once: true });
   const dec = new TextDecoder();
   let buf = "";
-  try {
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -114,9 +113,6 @@ async function sendChatStream(
       else if (j.type === "token") onToken(j.text);
       else if (j.type === "error") throw new Error(j.message || "stream error");
     }
-  }
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
   }
 }
 

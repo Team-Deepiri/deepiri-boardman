@@ -32,6 +32,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.models import IssueTaskMap, ProjectContext, PullRequestTaskLink, SyncLog
 
+logger = __import__("logging").getLogger(__name__)
+
 # How far back "recent activity" looks. Long enough to cover a working day, short enough
 # that "recently" means something.
 _ACTIVITY_WINDOW = timedelta(days=3)
@@ -165,7 +167,8 @@ def resolve_identity(
         from boardman.settings import settings
 
         routing = get_routing(name, short, settings.github_org)
-    except Exception:
+    except (ImportError, AttributeError, KeyError, TypeError) as exc:
+        logger.debug("routing unavailable for %s: %s", name, exc)
         routing = None
     if routing is None:
         return Identity(
@@ -391,9 +394,13 @@ def schedule_revalidation(state: ProjectState) -> bool:
             with background_work():
                 await enqueue_and_run_soon("boardman_repo_refresh_job", {"repo": repo})
                 bump("brain.revalidations")
-        except Exception:
-            # A refresh that cannot be queued is not an error the asker should ever see.
+        except (
+            OSError,
+            RuntimeError,
+            Exception,
+        ) as exc:  # noqa: BLE001 — queue down is invisible to the user
             _revalidating.pop(repo, None)
+            logger.debug("revalidation queue failed for %s: %s", repo, exc)
 
     task = asyncio.create_task(_queue(), name=f"revalidate:{repo}")
     # Hold a reference: an un-awaited task can be garbage collected mid-flight.

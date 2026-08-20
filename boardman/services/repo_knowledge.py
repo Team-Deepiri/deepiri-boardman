@@ -17,6 +17,7 @@ import asyncio
 import logging
 from typing import Any
 
+import httpx
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -59,7 +60,7 @@ async def current_revision(repo: str) -> tuple[str, str]:
                 },
                 timeout=20.0,
             )
-    except Exception as e:
+    except (httpx.HTTPError, OSError, ValueError) as e:
         return "", f"{type(e).__name__}: {e}"
     if r.status_code != 200:
         return "", f"HTTP {r.status_code}"

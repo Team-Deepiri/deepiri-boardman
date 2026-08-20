@@ -18,6 +18,8 @@ import asyncio
 import logging
 from typing import Any
 
+import httpx
+
 logger = logging.getLogger(__name__)
 
 # Splitting issues from PRs costs one call per repo, so only the head of the list pays it.
@@ -38,7 +40,7 @@ async def _open_pr_count(client: Any, full_name: str, headers: dict[str, str]) -
             f"https://api.github.com/repos/{owner}/{name}/pulls?state=open&per_page=100",
             headers=headers,
         )
-    except Exception:
+    except (httpx.HTTPError, OSError, ValueError):
         return None
     if r.status_code != 200:
         return None

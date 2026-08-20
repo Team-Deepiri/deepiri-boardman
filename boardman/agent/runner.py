@@ -233,7 +233,15 @@ async def run_tool_agent(
     if _looks_like_unfulfilled_preamble(out):
         # The turn ended on a promise ("Let me fetch this now.") instead of an answer.
         # Give it exactly one more round to deliver, using everything it already gathered.
-        logger.info("agent returned an unfulfilled preamble; forcing one completion round")
+        # Logged with the triggering text so false positives show up in production.
+        from boardman.observability.counters import bump
+
+        bump("agent.preamble_retry")
+        logger.info(
+            "agent returned an unfulfilled preamble (%d chars: %r); forcing one completion round",
+            len(out),
+            out[:120],
+        )
         nudge = HumanMessage(
             content=(
                 "You ended your turn by describing what you were going to do instead of "
@@ -249,9 +257,15 @@ async def run_tool_agent(
             retry_messages = result.get("messages", [])
             retry_out = _final_ai_text(retry_messages)
             if retry_out and not _looks_like_unfulfilled_preamble(retry_out):
+                logger.info("preamble retry delivered (%d chars, was %d)", len(retry_out), len(out))
+                bump("agent.preamble_retry_helped")
                 out, result_messages = retry_out, retry_messages
+            else:
+                logger.info("preamble retry did not improve the reply; keeping original")
+                bump("agent.preamble_retry_no_help")
         except Exception as e:  # noqa: BLE001 — keep the original reply if the retry fails
             logger.warning("preamble completion round failed: %s", e)
+            bump("agent.preamble_retry_failed")
 
     logger.info("LangChain agent finished (output length=%d)", len(out))
     text = out or "(No assistant text returned.)"
