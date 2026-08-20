@@ -1,3 +1,5 @@
+"""GitHub webhook receiver and event dispatch."""
+
 import json
 from typing import Any
 

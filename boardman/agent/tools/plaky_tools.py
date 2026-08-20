@@ -43,7 +43,7 @@ async def _person_names_async() -> dict[str, str]:
 
     try:
         return await asyncio.to_thread(_person_names)
-    except Exception:
+    except Exception:  # noqa: BLE001 — person names are cosmetic; unknown ids keep their id
         return {}
 
 
@@ -468,7 +468,9 @@ async def _placement_label(
         normalized = bundle.get("normalized") if isinstance(bundle, dict) else None
         if isinstance(normalized, dict):
             board_name = str(normalized.get("board_name") or "").strip()
-    except Exception:
+    except (
+        Exception
+    ):  # noqa: BLE001 — board name is cosmetic; a missing one shows the board id instead
         board_name = ""
     if groups is None:
         groups = await _board_group_index(bid) if gid else {}
@@ -489,7 +491,7 @@ async def _option_index(board_id: str) -> dict[str, tuple[str, dict[str, str]]]:
         return out
     try:
         bundle = await fetch_board_schema_bundle(bid)
-    except Exception:
+    except Exception:  # noqa: BLE001 — option index is cosmetic; a missing one skips the label
         return out
     normalized = bundle.get("normalized") if isinstance(bundle, dict) else None
     for f in (normalized or {}).get("fields") or []:

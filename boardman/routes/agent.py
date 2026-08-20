@@ -1,3 +1,5 @@
+"""HTTP endpoints for the Boardman assistant (chat, streaming, job polling)."""
+
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 

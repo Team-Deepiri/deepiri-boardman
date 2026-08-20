@@ -1,3 +1,5 @@
+"""Parse raw GitHub webhook payloads into typed event models."""
+
 import hashlib
 import hmac
 from typing import Any

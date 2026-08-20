@@ -1,3 +1,5 @@
+"""FastAPI application factory and lifespan management."""
+
 import logging
 from contextlib import asynccontextmanager
 

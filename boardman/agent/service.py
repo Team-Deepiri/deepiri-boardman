@@ -102,7 +102,7 @@ def _default_model_for_provider(provider: str) -> str:
             from boardman.llm.ollama_autodetect import effective_ollama_model
 
             return effective_ollama_model(None)
-        except Exception:
+        except Exception:  # noqa: BLE001 — Ollama may not be reachable; the label is cosmetic
             return "auto-selected from Ollama"
     return (settings.llm_model or "").strip() or "unspecified"
 
@@ -441,7 +441,7 @@ def _placement_fallback_from_routing(repo: str | None) -> tuple[str | None, str 
             (routing.plaky_group_id or "").strip() or None,
             note,
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 — routing is optional; the agent works without placement
         logger.exception("placement fallback from repos.yml failed")
         return None, None, ""
 
@@ -469,7 +469,7 @@ async def _plaky_system_suffix(
         try:
             bundle = await fetch_board_schema_bundle(bid)
             out += bundle.get("markdown") or ""
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — the schema is optional context, not a gate
             logger.warning("Could not load Plaky board schema bundle for %s: %s", bid, e)
             out += (
                 f"\n\n## Current Plaky board schema (from API)\n"
@@ -670,7 +670,7 @@ async def run_agent_chat(
                     reply = str(tool_out)
                 if preview_notice:
                     reply = preview_notice + "\n" + reply
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — tool agent failure falls back to plain chat
             logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
             assistant_tool_calls_json = _runtime_error_trace(e)
             reply = await _safe_plain_chat(
@@ -952,7 +952,7 @@ async def iter_agent_chat_sse(
         )
         yield _sse_event({"type": "done"})
 
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 — the SSE stream must close cleanly on any error
         logger.exception("Agent chat stream failed")
         err = _format_llm_failure(e, provider=resolved_provider, model=resolved_model)
         try:
@@ -967,7 +967,9 @@ async def iter_agent_chat_sse(
                 )
             )
             await session.commit()
-        except Exception:
+        except (
+            Exception
+        ):  # noqa: BLE001 — failure marker is best-effort; losing it means the next turn corrects
             logger.exception("could not persist failure marker")
         yield _sse_event({"type": "error", "message": err})
 

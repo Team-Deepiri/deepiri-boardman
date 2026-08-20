@@ -1,3 +1,5 @@
+"""SQLAlchemy async engine and session factory for SQLite."""
+
 from collections.abc import AsyncIterator
 
 from sqlalchemy import event

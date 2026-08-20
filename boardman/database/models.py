@@ -1,3 +1,5 @@
+"""SQLAlchemy ORM models: the tables that back the sync engine, the agent, and the job queue."""
+
 from datetime import datetime
 
 from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, UniqueConstraint

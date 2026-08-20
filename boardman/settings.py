@@ -1,3 +1,5 @@
+"""Pydantic-settings configuration (all env vars live here)."""
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
