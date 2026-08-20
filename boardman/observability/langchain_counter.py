@@ -37,6 +37,11 @@ def make_counting_callback() -> Any:
     from boardman.observability.counters import bump, observe
 
     class _Counter(AsyncCallbackHandler):
+        def __init__(self) -> None:
+            super().__init__()
+            # A fresh handler per graph invocation, so this flag is per TURN.
+            self._recorded_first = False
+
         async def on_chat_model_start(self, serialized: Any, messages: Any, **kwargs: Any) -> None:
             bump("llm.calls")
             bump("llm.calls.agent")
@@ -46,11 +51,15 @@ def make_counting_callback() -> Any:
                     chars += len(str(getattr(m, "content", "") or ""))
             if chars:
                 observe("llm.prompt_chars", chars)
-                # The turn's FIRST model call carries the system prompt; later rounds
-                # carry it plus tool output, so the first is the context-budget number.
-                from boardman.observability.counters import set_gauge
+                # The turn's FIRST model call carries the system prompt; later rounds carry
+                # it PLUS every tool result so far. Recording the last one made the gauge a
+                # measure of how much a tool returned, and comparing two turns that made
+                # different numbers of tool calls compared nothing at all.
+                if not self._recorded_first:
+                    self._recorded_first = True
+                    from boardman.observability.counters import set_gauge
 
-                set_gauge("llm.last_prompt_chars", chars)
+                    set_gauge("llm.last_prompt_chars", chars)
 
         async def on_llm_start(self, serialized: Any, prompts: Any, **kwargs: Any) -> None:
             # Text-completion models never reach on_chat_model_start.

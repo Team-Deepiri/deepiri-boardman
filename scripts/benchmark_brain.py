@@ -82,11 +82,19 @@ class Meter:
         delta = {k: v for k, v in delta.items() if v}
         hits = sum(v for k, v in delta.items() if k.startswith("cache.") and k.endswith(".hit"))
         misses = sum(v for k, v in delta.items() if k.startswith("cache.") and k.endswith(".miss"))
+        # ".background" counters are deferred jobs that happened to overlap the request.
+        # Charging them to it reports the opposite of what happened: a refresh whose whole
+        # purpose is to be off the request path would look like eight calls the question
+        # made. Reported, never conflated.
         return {
             "llm_calls": delta.get("llm.calls", 0),
             "tool_calls": delta.get("tool.calls", 0),
             "github_requests": delta.get("github.requests", 0),
             "plaky_requests": delta.get("plaky.requests", 0),
+            "background_requests": (
+                delta.get("github.requests.background", 0)
+                + delta.get("plaky.requests.background", 0)
+            ),
             "cache_hits": hits,
             "cache_misses": misses,
             "cache_hit_rate": round(hits / (hits + misses), 3) if (hits + misses) else None,
@@ -114,6 +122,7 @@ async def ask_stream(
     t0 = time.monotonic()
     first: float | None = None
     chars = 0
+    server_err = ""
     try:
         async with client.stream("POST", f"{base}/agent/chat/stream", json=payload) as r:
             async for line in r.aiter_lines():
@@ -127,13 +136,18 @@ async def ask_stream(
                     if first is None:
                         first = time.monotonic() - t0
                     chars += len(str(evt.get("text") or evt.get("token") or ""))
-                elif evt.get("type") in ("done", "error"):
+                elif evt.get("type") == "error":
+                    # A provider outage answers in 0.3s. Counted as a success it would
+                    # read as the fastest result the benchmark has ever produced.
+                    server_err = f"server error: {str(evt.get('message') or 'unknown')[:120]}"
+                    break
+                elif evt.get("type") == "done":
                     break
     except Exception as e:
         total = time.monotonic() - t0
         return (first if first is not None else total, total, chars, f"{type(e).__name__}: {e}")
     total = time.monotonic() - t0
-    return (first if first is not None else total, total, chars, "")
+    return (first if first is not None else total, total, chars, server_err)
 
 
 async def run_scenario(
@@ -147,7 +161,8 @@ async def run_scenario(
     chars = 0
 
     errors: list[str] = []
-    for i in range(repeats):
+    counted_run = 0
+    for _i in range(repeats):
         before = await meter.read()
         ttft, total, c, err = await ask_stream(client, base, prompt, writes)
         after = await meter.read()
@@ -155,8 +170,12 @@ async def run_scenario(
         if err:
             errors.append(err[:120])
             continue
-        if i == 0 or not first_call:
+        # Counters come from the FIRST successful run and latency from all of them, so
+        # the row says which run its counts describe rather than implying they are a
+        # property of the median.
+        if not first_call:
             first_call, chars = d, c
+            counted_run = len(totals) + 1
         else:
             # Later repeats of the SAME question are the cache-hit measurement.
             warm.append(total)
@@ -172,6 +191,7 @@ async def run_scenario(
         "warm_p50": pct(warm, 0.5) if warm else None,
         "reply_chars": chars,
         "runs_ok": len(totals),
+        "counts_from_run": counted_run,
         "errors": errors,
         **first_call,
     }
@@ -182,6 +202,7 @@ async def run_scenario(
         f"warm={row['warm_p50'] if row['warm_p50'] is not None else '-':>6} "
         f"llm={row.get('llm_calls')} tools={row.get('tool_calls')} "
         f"gh={row.get('github_requests')} plaky={row.get('plaky_requests')} "
+        f"bg={row.get('background_requests')} "
         f"ctx={row.get('context_chars')} hit={row.get('cache_hit_rate')}",
         flush=True,
     )
@@ -290,8 +311,14 @@ def compare(now: dict[str, Any], prev: dict[str, Any]) -> int:
         old_total = old.get("total_p50") or 0
         new_total = row.get("total_p50") or 0
         flag = ""
+        if not row.get("runs_ok", 1):
+            # Every run failed. Its 0.0s must never read as an improvement, and it must
+            # not pass the gate in silence — a total outage would otherwise be the best
+            # result this benchmark has ever recorded.
+            flag = f"  <-- ALL {len(row.get('errors') or [])} RUNS FAILED"
+            regressions += 1
         # Same 25% budget the older benchmark used, and only for meaningful durations.
-        if old_total > 1.0 and new_total > old_total * 1.25:
+        elif old_total > 1.0 and new_total > old_total * 1.25:
             flag = "  <-- REGRESSION"
             regressions += 1
         api_old = (old.get("github_requests") or 0) + (old.get("plaky_requests") or 0)
@@ -314,6 +341,10 @@ async def main() -> int:
     ap.add_argument("--only", default="", help="comma-separated scenario names")
     ap.add_argument("--with-writes", action="store_true")
     ap.add_argument("--skip-concurrent", action="store_true")
+    ap.add_argument("--no-warmup", action="store_true", help="measure the first call too")
+    ap.add_argument(
+        "--settle", type=float, default=6.0, help="seconds to let background work finish"
+    )
     args = ap.parse_args()
 
     base = args.base.rstrip("/")
@@ -326,11 +357,20 @@ async def main() -> int:
         if not only or COLD in only:
             if only:  # cold only makes sense as the very first request after a restart
                 rows.append(await run_cold(client, base))
-        for name, (prompt, writes) in SCENARIOS.items():
-            if only and name not in only:
-                continue
-            if writes and not args.with_writes:
-                continue
+        wanted = [
+            (n, p, w)
+            for n, (p, w) in SCENARIOS.items()
+            if (not only or n in only) and (not w or args.with_writes)
+        ]
+        if wanted and not args.no_warmup:
+            # One pass first so the numbers describe steady state rather than one-time
+            # repairs. A stale snapshot triggers a background refresh; that refresh is real
+            # work and it is reported, but it is not what the tenth caller of the day pays.
+            print("  (warm-up pass; not measured)", flush=True)
+            for _name, prompt, writes in wanted:
+                await ask_stream(client, base, prompt, writes)
+            await asyncio.sleep(args.settle)
+        for name, prompt, writes in wanted:
             rows.append(await run_scenario(client, base, name, prompt, writes, args.repeats))
         if not args.skip_concurrent and (not only or CONCURRENT in only):
             rows.append(await run_concurrent(client, base))
@@ -342,7 +382,13 @@ async def main() -> int:
     out = {"label": args.label, "base": base, "repeats": args.repeats, "rows": rows}
     (RESULTS / f"{args.label}.json").write_text(json.dumps(out, indent=2), encoding="utf-8")
 
-    read_rows = [r for r in rows if r.get("total_p50")]
+    failed = [r for r in rows if r.get("errors") and not r.get("runs_ok")]
+    if failed:
+        print("")
+        print("SCENARIOS THAT NEVER COMPLETED (their numbers mean nothing):", flush=True)
+        for r in failed:
+            print(f"  {r['scenario']}: {(r.get('errors') or ['?'])[0]}", flush=True)
+    read_rows = [r for r in rows if r.get("total_p50") and r.get("runs_ok")]
     if read_rows:
         print(
             f"\nmedian total across scenarios: "

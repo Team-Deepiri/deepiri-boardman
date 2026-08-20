@@ -26,7 +26,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -40,19 +40,27 @@ _ACTIVITY_LIMIT = 12
 # Sync actions worth telling a human about. The log carries roughly thirty kinds, most of
 # them bookkeeping; these are the ones that answer "what happened".
 _NOTABLE_ACTIONS = {
-    "issue_synced": "issue synced",
+    # Verified against the action strings the handlers actually write AND against the live
+    # sync_log. Six of the names here used to be invented, so issue closes, reopens, PR
+    # closures and reviews were dropped and the assistant reported a busy repo as quiet.
+    # tests/test_brain.py pins every key against the source so it cannot drift again.
     "issue_created": "task created from issue",
-    "github_issue_closed": "issue closed",
-    "github_issue_reopened": "issue reopened",
+    "issue_closed": "issue closed",
+    "issue_reopened": "issue reopened",
+    "issue_edited_synced": "issue text updated",
+    "issue_labels_synced": "issue labels synced",
     "pr_linked": "PR linked",
-    "pr_linked_fuzzy": "PR linked (fuzzy)",
-    "pr_merged": "PR merged",
-    "pr_closed": "PR closed",
-    "pr_metadata_synced": "PR metadata synced",
-    "pr_review_submitted": "review submitted",
+    "pr_linked_fuzzy": "PR linked (fuzzy match)",
     "pr_ambiguous_triage": "task created from PR",
-    "qa_assigned": "QA assigned",
+    "pr_merged": "PR merged",
+    "pr_closed_without_merge": "PR closed without merging",
+    "pr_metadata_synced": "PR metadata synced",
     "pr_labels_synced": "PR labels synced",
+    "pr_review_plaky_status": "review moved the task",
+    "pr_review_synced": "review synced",
+    "pr_review_dismissed": "review dismissed",
+    "pr_resubmitted_needs_qa_again": "fix pushed, back to QA",
+    "pr_converted_to_draft": "PR went back to draft",
 }
 
 
@@ -109,7 +117,11 @@ class LiveState:
     """L2. Everything the sync engine already knows, read from SQLite."""
 
     tracked_issues: list[int] = field(default_factory=list)
+    # One row per (repo, PR, issue), so a PR closing three issues appears three times.
+    # `active_prs` keeps every row because the issue-to-task lookup needs them; the COUNTS
+    # are distinct PR numbers, which is what anybody asking "how many PRs" means.
     active_prs: list[TrackedPR] = field(default_factory=list)
+    open_pr_count: int = 0
     merged_prs: int = 0
     recent: list[Activity] = field(default_factory=list)
     last_event_at: datetime | None = None
@@ -199,12 +211,16 @@ async def _load_live(session: AsyncSession | None, identity: Identity) -> LiveSt
     short = identity.repo_short
     if session is None or not short:
         return LiveState(available=False)
+    # The sync engine writes whatever casing GitHub sent; a user typing "Deepiri-Boardman"
+    # resolves to the same repo but would match no rows, and the assistant would report a
+    # busy repo as having nothing on the board at all.
+    short_ci = func.lower(short)
     try:
         issues = list(
             (
                 await session.execute(
                     select(IssueTaskMap.github_issue_number)
-                    .where(IssueTaskMap.github_repo == short)
+                    .where(func.lower(IssueTaskMap.github_repo) == short_ci)
                     .order_by(IssueTaskMap.github_issue_number.desc())
                 )
             ).scalars()
@@ -216,7 +232,7 @@ async def _load_live(session: AsyncSession | None, identity: Identity) -> LiveSt
                 await session.execute(
                     select(PullRequestTaskLink)
                     .where(
-                        PullRequestTaskLink.github_repo == short,
+                        func.lower(PullRequestTaskLink.github_repo) == short_ci,
                         PullRequestTaskLink.merged_at.is_(None),
                         PullRequestTaskLink.withdrawn_at.is_(None),
                     )
@@ -225,23 +241,24 @@ async def _load_live(session: AsyncSession | None, identity: Identity) -> LiveSt
             ).scalars()
         )
         merged = len(
-            list(
-                (
+            {
+                int(n)
+                for n in (
                     await session.execute(
-                        select(PullRequestTaskLink.id).where(
-                            PullRequestTaskLink.github_repo == short,
+                        select(PullRequestTaskLink.github_pr_number).where(
+                            func.lower(PullRequestTaskLink.github_repo) == short_ci,
                             PullRequestTaskLink.merged_at.is_not(None),
                         )
                     )
                 ).scalars()
-            )
+            }
         )
         since = datetime.utcnow() - _ACTIVITY_WINDOW
         log_rows = list(
             (
                 await session.execute(
                     select(SyncLog)
-                    .where(SyncLog.github_repo == short, SyncLog.created_at >= since)
+                    .where(func.lower(SyncLog.github_repo) == short_ci, SyncLog.created_at >= since)
                     .order_by(SyncLog.created_at.desc())
                     .limit(60)
                 )
@@ -272,18 +289,20 @@ async def _load_live(session: AsyncSession | None, identity: Identity) -> LiveSt
         if len(recent) >= _ACTIVITY_LIMIT:
             break
 
+    active = [
+        TrackedPR(
+            number=int(r.github_pr_number),
+            task_id=str(r.plaky_task_id or ""),
+            issue_number=int(r.github_issue_number or 0),
+            link_source=str(r.link_source or ""),
+        )
+        for r in pr_rows
+        if not str(r.plaky_task_id or "").startswith("pending:")
+    ]
     return LiveState(
         tracked_issues=[int(n) for n in issues],
-        active_prs=[
-            TrackedPR(
-                number=int(r.github_pr_number),
-                task_id=str(r.plaky_task_id or ""),
-                issue_number=int(r.github_issue_number or 0),
-                link_source=str(r.link_source or ""),
-            )
-            for r in pr_rows
-            if not str(r.plaky_task_id or "").startswith("pending:")
-        ],
+        active_prs=active,
+        open_pr_count=len({p.number for p in active}),
         merged_prs=merged,
         recent=recent,
         last_event_at=log_rows[0].created_at if log_rows else None,
@@ -374,11 +393,23 @@ def render_project_state(state: ProjectState, *, max_chars: int = 6500) -> str:
 
     lines: list[str] = ["\n## Project state (cached; no lookup needed for these facts)"]
     lines.append(f"- repo: `{ident.repo_full_name}`")
-    if ident.routed:
+    if ident.board_id:
         table = f" ({ident.table})" if ident.table else ""
-        lines.append(f"- plaky: board `{ident.board_id}` group `{ident.group_id}`{table}")
+        group = (
+            f" group `{ident.group_id}`"
+            if ident.group_id
+            else " group resolved from the board when work is filed"
+        )
+        lines.append(f"- plaky: board `{ident.board_id}`{group}{table}")
     else:
-        lines.append("- plaky: no routing configured for this repo")
+        # NOT "this repo has no routing". resolve_identity reads repos.yml only, while the
+        # sync engine also auto-discovers placement from the Plaky catalog — so a repo
+        # absent here is still routed and does get tasks filed. Saying otherwise told the
+        # model a repo was untracked when the board had been taking its work for weeks.
+        lines.append(
+            "- plaky: not pinned in repos.yml; the sync engine discovers its board and "
+            "group when it files work. Do not say this repo is untracked."
+        )
     if ident.default_branch:
         lines.append(f"- default branch: `{ident.default_branch}`")
     if structure.get("language"):

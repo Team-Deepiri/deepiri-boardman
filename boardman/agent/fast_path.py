@@ -80,26 +80,83 @@ def _format_task_list(payload: dict[str, Any], repo: str | None) -> str:
     return "\n".join(lines)
 
 
+# "what IS the default branch" only. The earlier pattern fired on any sentence containing
+# "what branch" or "main branch" — including "what branch should I cut this fix from" and
+# "why did main branch CI go red" — and ended the turn with a one-line branch name.
 _DEFAULT_BRANCH = re.compile(
-    r"\b(?:default|main|base)\s+branch\b|\bwhat\s+branch\b|\bwhich\s+branch\b", re.IGNORECASE
-)
-# "which task is issue 91", "is there a task for issue 4242", "issue 90 - which card?".
-# Both orders, because people write it both ways.
-_ISSUE_NUMBER = re.compile(
-    r"\b(?:issue|#)\s*#?(\d{1,6})\b.{0,40}\b(?:task|plaky|card|tracked|linked)\b"
-    r"|\b(?:task|plaky|card)\b.{0,40}\b(?:for|of|from|is|linked\s+to)\s+"
-    r"(?:issue\s*)?#?(\d{1,6})\b",
+    r"^\s*(?:what(?:'s| is)?|which)\s+(?:is\s+)?(?:the\s+)?"
+    r"(?:default|main|base|primary)\s+branch\b"
+    r"|\bwhat(?:'s| is)\s+(?:the\s+)?default\s+branch\b"
+    r"|\bdefault\s+branch\s+(?:is|of|for)\b",
     re.IGNORECASE,
 )
+# "which task is issue 91", "is there a task for issue 4242". The number must be attached
+# to the word issue or a #, otherwise "which task is 3 days old" read 3 as an issue number
+# and asserted it was unmapped.
+_ISSUE_NUMBER = re.compile(
+    r"\bissue\s*#?(\d{1,6})\b.{0,40}\b(?:task|plaky|card|tracked|linked)\b"
+    r"|\b(?:task|plaky|card)\b.{0,40}\b(?:for|of|from|is|linked\s+to)\s+"
+    r"(?:issue\s*#?|#)(\d{1,6})\b",
+    re.IGNORECASE,
+)
+# The mapping tables answer "how many are ON THE BOARD", never "how many are open on
+# GitHub" — a closed issue keeps its row forever. A question that says "open" is therefore
+# a different question and must not be answered from here.
 _HOW_MANY_ISSUES = re.compile(
-    r"\bhow\s+many\b.{0,30}\bissues?\b|\bissue\s+count\b|\bcount\s+of\s+issues\b", re.IGNORECASE
+    r"\bhow\s+many\b[^?]{0,30}\bissues?\b|\bissue\s+count\b|\bcount\s+of\s+issues\b",
+    re.IGNORECASE,
 )
 _HOW_MANY_PRS = re.compile(
-    r"\bhow\s+many\b.{0,30}\b(?:prs?|pull\s+requests?)\b|\bpr\s+count\b", re.IGNORECASE
+    r"\bhow\s+many\b[^?]{0,30}\b(?:prs?|pull\s+requests?)\b|\bpr\s+count\b",
+    re.IGNORECASE,
 )
+# Anything asking for the CURRENT state of the world means go and look. Deliberately
+# generous: a needless LLM call costs seconds, a stale answer costs trust.
 _ASKS_LIVE = re.compile(
-    r"\b(?:right\s+now|currently|live|check\s+github|as\s+of\s+now|latest)\b", re.IGNORECASE
+    r"\b(?:right\s+now|now|currently|current|today|live|latest|at\s+the\s+moment|"
+    r"check\s+github|as\s+of\s+now|up\s+to\s+date|still)\b",
+    re.IGNORECASE,
 )
+# "open"/"closed"/"merged" are GitHub facts. The board mapping knows what was ever synced,
+# not what is open, so questions about open work are not ours to answer from cache.
+_ASKS_OPEN = re.compile(r"\b(?:open|closed|merged|unresolved|outstanding)\b", re.IGNORECASE)
+# An owner/name slug mentioned anywhere in the question.
+_REPO_MENTION = re.compile(r"\b([A-Za-z0-9._-]+/[A-Za-z0-9._-]+)\b")
+
+
+class TrackedPRView:
+    """One pull request, gathering the issues its link rows name."""
+
+    def __init__(self, task_id: str) -> None:
+        self.task_id = task_id
+        self.issues: set[int] = set()
+
+    def issue_suffix(self) -> str:
+        if not self.issues:
+            return ""
+        nums = ", ".join(f"#{i}" for i in sorted(self.issues))
+        return f" (issue{'s' if len(self.issues) > 1 else ''} {nums})"
+
+
+def _names_a_different_repo(text: str, ident: Any) -> bool:
+    """True when the question is plainly about some OTHER repo than the state describes.
+
+    The session repo only switches for slugs listed in repos.yml, which holds one entry,
+    so "what is the default branch of deepiri-sorge?" arrives carrying boardman's state.
+    Answering from it is a confident, instant, wrong answer about the wrong project.
+    """
+    short = str(getattr(ident, "repo_short", "") or "").casefold()
+    full = str(getattr(ident, "repo_full_name", "") or "").casefold()
+    for slug in _REPO_MENTION.findall(text):
+        low = slug.casefold()
+        if low != full and low.rsplit("/", 1)[-1] != short:
+            return True
+    # Bare short names, restricted to shapes that look like this org's repos so ordinary
+    # hyphenated words never trip it.
+    for word in re.findall(r"\b(?:deepiri|diri)-[a-z0-9-]+\b", text.casefold()):
+        if word != short:
+            return True
+    return False
 
 
 def _answer_from_state(text: str, state: Any | None) -> FastPathResult | None:
@@ -112,6 +169,14 @@ def _answer_from_state(text: str, state: Any | None) -> FastPathResult | None:
     if state is None or not getattr(getattr(state, "identity", None), "repo_full_name", ""):
         return None
     ident, live = state.identity, state.live
+    if _names_a_different_repo(text, ident):
+        # The session repo only changes for slugs listed in repos.yml. Without this, a
+        # question about deepiri-sorge is answered from boardman's state.
+        return None
+    # "right now", "currently", "today" all mean go and look. Once, at the top, so no
+    # intent can be added later that quietly forgets to check.
+    if _ASKS_LIVE.search(text):
+        return None
 
     if _DEFAULT_BRANCH.search(text) and ident.default_branch:
         return FastPathResult(
@@ -119,17 +184,20 @@ def _answer_from_state(text: str, state: Any | None) -> FastPathResult | None:
             "default_branch",
         )
 
-    # Counts come from the sync engine's own mapping tables, so they describe the BOARD.
-    # "right now" means the caller wants GitHub checked, and that is not this path's job.
-    if live.available and not _ASKS_LIVE.search(text):
-        if _HOW_MANY_ISSUES.search(text):
+    # Counts come from the sync engine's own mapping tables, so they describe the BOARD:
+    # every issue ever synced, closed ones included. A question about OPEN issues is a
+    # GitHub question and belongs to the agent.
+    asks_open = bool(_ASKS_OPEN.search(text))
+    if live.available:
+        if _HOW_MANY_ISSUES.search(text) and not asks_open:
             n = len(live.tracked_issues)
             if n:
                 head = ", ".join(f"#{x}" for x in live.tracked_issues[:10])
                 more = "" if n <= 10 else f" and {n - 10} more"
                 return FastPathResult(
-                    f"{n} issue{'s' if n != 1 else ''} from `{ident.repo_full_name}` are on the "
-                    f"board: {head}{more}.",
+                    f"{n} issue{'s' if n != 1 else ''} from `{ident.repo_full_name}` have a "
+                    f"Plaky task, open and closed together: {head}{more}. Ask about open "
+                    f"issues if you want the live GitHub count.",
                     "issue_count",
                 )
             return FastPathResult(
@@ -137,21 +205,30 @@ def _answer_from_state(text: str, state: Any | None) -> FastPathResult | None:
                 "issue_count",
             )
 
-        if _HOW_MANY_PRS.search(text):
-            n = len(live.active_prs)
+        if _HOW_MANY_PRS.search(text) and not asks_open:
+            n = live.open_pr_count
             if n:
+                # One line per PULL REQUEST. pr_task_links holds a row per (PR, issue), so
+                # listing rows printed a PR that closes three issues three times, and
+                # counting rows called one PR "three pull requests".
+                by_pr: dict[int, TrackedPRView] = {}
+                for link in live.active_prs:
+                    view = by_pr.setdefault(link.number, TrackedPRView(link.task_id))
+                    if link.issue_number:
+                        view.issues.add(link.issue_number)
                 rows = "\n".join(
-                    f"- PR #{p.number} -> task `{p.task_id}`"
-                    + (f" (issue #{p.issue_number})" if p.issue_number else "")
-                    for p in live.active_prs[:10]
+                    f"- PR #{num} -> task `{view.task_id}`" + view.issue_suffix()
+                    for num, view in list(by_pr.items())[:10]
                 )
                 return FastPathResult(
-                    f"{n} pull request{'s' if n != 1 else ''} on `{ident.repo_full_name}` are "
-                    f"linked to a live task, and {live.merged_prs} have merged:\n{rows}",
+                    f"{n} pull request{'s' if n != 1 else ''} on `{ident.repo_full_name}` "
+                    f"{'are' if n != 1 else 'is'} linked to a live task, and "
+                    f"{live.merged_prs} {'have' if live.merged_prs != 1 else 'has'} "
+                    f"merged:\n{rows}",
                     "pr_count",
                 )
             return FastPathResult(
-                f"No open pull requests on `{ident.repo_full_name}` are linked to a task; "
+                f"No pull requests on `{ident.repo_full_name}` are linked to a live task; "
                 f"{live.merged_prs} have merged.",
                 "pr_count",
             )
@@ -167,8 +244,9 @@ def _answer_from_state(text: str, state: Any | None) -> FastPathResult | None:
                         "issue_task_lookup",
                     )
             if number in live.tracked_issues:
+                where = f" on board `{ident.board_id}`" if ident.board_id else ""
                 return FastPathResult(
-                    f"Issue #{number} is tracked on board `{ident.board_id}`.",
+                    f"Issue #{number} has a Plaky task{where}.",
                     "issue_task_lookup",
                 )
             # Absence is a real answer here: the mapping table is the source of truth for

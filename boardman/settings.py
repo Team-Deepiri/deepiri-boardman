@@ -184,7 +184,9 @@ class Settings(BaseSettings):
     agent_recursion_limit: int = 0
     # When True, LangChain AgentExecutor prints step traces (noisy; dev only)
     agent_langchain_verbose: bool = False
-    prompt_version: str = "2026-04-09"
+    # Bumped when the system prompt changes shape, so sessions are never compared across
+    # prompt generations. 2026-08-20: structured project state became the default context.
+    prompt_version: str = "2026-08-20"
 
     cors_origins: str = (
         "http://localhost:5176,http://127.0.0.1:5176,"

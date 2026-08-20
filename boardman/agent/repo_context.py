@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.models import ProjectContext
@@ -119,8 +119,23 @@ async def save_planning_snapshot(
         return
     now = datetime.utcnow()
     if row is None:
-        row = ProjectContext(repo=repo)
-        session.add(row)
+        # project_contexts.repo is UNIQUE, and after stale-while-revalidate two writers can
+        # be in flight for the same repo at once: the refresh job's own session and the
+        # tool's save through the REQUEST's session. A bare add() lets the loser's
+        # IntegrityError surface at the chat turn's commit and fail an answer that had
+        # already been produced. Contain it in a savepoint and take whoever won.
+        candidate = ProjectContext(repo=repo)
+        try:
+            async with session.begin_nested():
+                session.add(candidate)
+                await session.flush()
+            row = candidate
+        except IntegrityError:
+            row = (
+                await session.execute(select(ProjectContext).where(ProjectContext.repo == repo))
+            ).scalar_one_or_none()
+            if row is None:
+                return
     row.context_json = _payload_text(payload)
     row.context_source_revision = (source_revision or "").strip()[:255] or None
     row.context_fetched_at = now

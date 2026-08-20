@@ -226,7 +226,7 @@ async def test_repeated_sync_rows_collapse_to_one_line(db) -> None:
     for _ in range(8):
         db.add(
             SyncLog(
-                action="issue_synced",
+                action="issue_labels_synced",
                 github_repo=SHORT,
                 github_ref="90",
                 created_at=datetime.utcnow(),
@@ -292,7 +292,10 @@ def test_render_never_claims_routing_it_does_not_have() -> None:
         live=LiveState(available=False),
     )
     text = render_project_state(state)
-    assert "no routing configured" in text
+    # It must not CLAIM the repo is untracked: repos.yml is not the only router, and the
+    # sync engine discovers placement from the Plaky catalog when it files work.
+    assert "not pinned in repos.yml" in text
+    assert "Do not say this repo is untracked" in text
     assert "board `" not in text
 
 
@@ -399,3 +402,57 @@ async def test_an_unavailable_briefing_is_not_retried_in_a_loop(db, monkeypatch)
         live=LiveState(),
     )
     assert await brain.schedule_revalidation(state) == ""
+
+
+# --- the sync engine's action names are the ones we read ---------------------------------
+
+
+def test_every_notable_action_is_a_name_the_sync_engine_actually_writes() -> None:
+    """Six of these were invented, so issue closes, reopens, PR closures and reviews were
+    dropped and a busy repo rendered as having had no activity at all. Pinned against the
+    source so it can never drift back."""
+    from pathlib import Path
+
+    from boardman.agent.brain import _NOTABLE_ACTIONS
+
+    root = Path(__file__).resolve().parent.parent / "boardman"
+    sources = "\n".join(p.read_text(encoding="utf-8", errors="replace") for p in root.rglob("*.py"))
+    missing = [key for key in _NOTABLE_ACTIONS if f'"{key}"' not in sources]
+    assert not missing, f"action names no writer produces: {missing}"
+
+
+@pytest.mark.asyncio
+async def test_a_pr_closing_three_issues_is_one_pull_request(db) -> None:
+    """pr_task_links holds one row per (repo, PR, issue)."""
+    for issue in (10, 11, 12):
+        db.add(
+            PullRequestTaskLink(
+                github_repo=SHORT, github_pr_number=88, github_issue_number=issue, plaky_task_id="t"
+            )
+        )
+    for issue in (20, 21):
+        db.add(
+            PullRequestTaskLink(
+                github_repo=SHORT,
+                github_pr_number=70,
+                github_issue_number=issue,
+                plaky_task_id="t2",
+                merged_at=datetime.utcnow(),
+            )
+        )
+    await db.flush()
+    state = await get_project_state(db, REPO)
+    assert state.live.open_pr_count == 1, "one open PR, not three link rows"
+    assert state.live.merged_prs == 1, "one merged PR, not two link rows"
+    assert len(state.live.active_prs) == 3, "the rows are kept for issue lookups"
+
+
+@pytest.mark.asyncio
+async def test_the_mapping_tables_are_matched_regardless_of_casing(db) -> None:
+    """GitHub sends whatever casing the repo has; a user can type another."""
+    db.add(
+        IssueTaskMap(github_repo="Deepiri-Boardman", github_issue_number=77, plaky_task_id="t77")
+    )
+    await db.flush()
+    state = await get_project_state(db, REPO)
+    assert 77 in state.live.tracked_issues

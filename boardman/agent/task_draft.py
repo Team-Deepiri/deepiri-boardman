@@ -129,6 +129,13 @@ async def save_task_draft_merge(
 def format_task_draft_for_prompt(draft: dict[str, Any]) -> str:
     fv = draft.get("field_values") or {}
     summary = draft.get("summary") or ""
+    if not fv and not summary:
+        # Nothing saved means nothing to say. This branch used to spend 600 characters on
+        # every single turn telling the model to ask the user who the engineer and QA
+        # should be before creating anything — which is precisely the interrogation the
+        # team asked to be rid of. Silence here IS the instruction: defaults are resolved
+        # deterministically, and the receipt reports what was chosen.
+        return ""
     lines = [
         "",
         "## Saved task defaults (this chat session)",

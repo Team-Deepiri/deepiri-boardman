@@ -32,6 +32,11 @@ logger = logging.getLogger(__name__)
 
 _entries: dict[str, tuple[float, Any]] = {}
 _locks: dict[str, asyncio.Lock] = {}
+# repo -> how many times it has been invalidated. A fetch that started before a push and
+# returns after it would otherwise write the PRE-push value back into an empty cache, and
+# the invalidation would have achieved nothing: the key was not in _entries yet when the
+# purge ran, so there was nothing to drop.
+_epochs: dict[str, int] = {}
 _hits = 0
 _misses = 0
 _coalesced = 0
@@ -45,6 +50,7 @@ def clear_read_cache() -> None:
     global _hits, _misses, _coalesced
     _entries.clear()
     _locks.clear()
+    _epochs.clear()
     _hits = 0
     _misses = 0
     _coalesced = 0
@@ -82,6 +88,9 @@ def invalidate_repo(full_name: str) -> int:
     want = (full_name or "").strip().casefold()
     if "/" not in want:
         return 0
+    # Bumped before anything is dropped, and even when nothing is cached — the in-flight
+    # case is exactly the one where `doomed` is empty.
+    _epochs[want] = _epochs.get(want, 0) + 1
     doomed = [k for k in _entries if _key_repo(k) == want]
     for k in doomed:
         _entries.pop(k, None)
@@ -150,7 +159,14 @@ async def cached(
             return hit[1]
         _misses += 1
         cache_miss("github_read")
+        repo = _key_repo(key)
+        epoch_before = _epochs.get(repo, 0)
         value = await fetch()
+        if _epochs.get(repo, 0) != epoch_before:
+            # The repo changed while this was in flight. The value is already history;
+            # return it to this caller but never let it become the cached answer.
+            bump("cache.github_read.discarded_stale_fetch")
+            return value
         if ok(value):
             _entries[key] = (time.monotonic(), value)
         return value

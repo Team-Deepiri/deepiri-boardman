@@ -12,7 +12,15 @@ nothing here is on a hot loop — a chat turn bumps these a few dozen times at m
 from __future__ import annotations
 
 import threading
+from contextvars import ContextVar
 from typing import Any
+
+#: True while the current task is background work (a deferred job, a sweep), so its calls
+#: are not billed to whatever request happened to be in flight at the time. Without this a
+#: stale-while-revalidate refresh — the whole point of which is to be off the request path
+#: — shows up as eight GitHub calls "made by" the question that triggered it, and the
+#: benchmark reports the opposite of what happened.
+_background: ContextVar[bool] = ContextVar("boardman_background_work", default=False)
 
 _lock = threading.Lock()
 _counts: dict[str, int] = {}
@@ -24,8 +32,44 @@ _series: dict[str, list[float]] = {}
 _SERIES_CAP = 512
 
 
+class background_work:  # noqa: N801 - reads as a verb at the call site
+    """Mark everything inside as background, so its cost is not billed to a request.
+
+    async with background_work():
+        await refresh_everything()
+    """
+
+    def __init__(self) -> None:
+        self._token: Any = None
+
+    def __enter__(self) -> None:
+        self._token = _background.set(True)
+
+    def __exit__(self, *_exc: Any) -> bool:
+        if self._token is not None:
+            _background.reset(self._token)
+        return False
+
+    async def __aenter__(self) -> None:
+        self.__enter__()
+
+    async def __aexit__(self, *exc: Any) -> bool:
+        return self.__exit__(*exc)
+
+
+def in_background() -> bool:
+    return bool(_background.get())
+
+
 def bump(name: str, n: int = 1) -> None:
-    """Add to a counter. Counters only ever go up; the reader diffs snapshots."""
+    """Add to a counter. Counters only ever go up; the reader diffs snapshots.
+
+    Work running under :class:`background_work` is counted under a ``.background`` name so
+    a reader can tell "the assistant made this call" from "a refresh happened to be
+    running at the same time".
+    """
+    if _background.get():
+        name = f"{name}.background"
     with _lock:
         _counts[name] = _counts.get(name, 0) + n
 

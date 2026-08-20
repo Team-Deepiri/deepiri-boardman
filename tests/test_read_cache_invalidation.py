@@ -127,3 +127,46 @@ def test_idle_locks_are_cleaned_up() -> None:
 )
 def test_key_repo_parsing(key: str, expected: str) -> None:
     assert read_cache._key_repo(key) == expected
+
+
+# --- a purge that lands while a fetch is in flight ---------------------------------------
+
+
+def test_a_fetch_started_before_a_push_does_not_write_its_answer_back() -> None:
+    """The race the naive purge could not see: at t=0 a tree fetch starts and the key is
+    not in _entries yet. At t=0.4 a push invalidates the repo and finds nothing to drop.
+    At t=1.2 the fetch returns the PRE-push tree and caches it for five minutes."""
+
+    async def scenario() -> None:
+        key = "repo-tree:Team-Deepiri/deepiri-boardman@main"
+        started = asyncio.Event()
+
+        async def slow_fetch() -> str:
+            started.set()
+            await asyncio.sleep(0.05)
+            return "tree as it was BEFORE the push"
+
+        task = asyncio.create_task(read_cache.cached(key, slow_fetch, ok=lambda _v: True))
+        await started.wait()
+        assert key not in read_cache._entries, "precondition: nothing cached yet"
+
+        invalidate_repo("Team-Deepiri/deepiri-boardman")
+        value = await task
+
+        assert value == "tree as it was BEFORE the push", "the caller still gets its answer"
+        assert key not in read_cache._entries, "but the pre-push value must not be cached"
+
+    asyncio.run(scenario())
+
+
+def test_a_fetch_with_no_purge_still_caches_normally() -> None:
+    async def scenario() -> None:
+        key = "repo-tree:Team-Deepiri/deepiri-boardman@main"
+
+        async def fetch() -> str:
+            return "current tree"
+
+        assert await read_cache.cached(key, fetch, ok=lambda _v: True) == "current tree"
+        assert key in read_cache._entries
+
+    asyncio.run(scenario())

@@ -24,7 +24,15 @@ _running: set[asyncio.Task[Any]] = set()
 
 async def _run_claimed(job_id: str) -> None:
     from boardman.jobs.handlers import JOB_HANDLERS
+    from boardman.observability.counters import background_work
 
+    # Everything below runs behind a reply that has already gone out. Its API calls belong
+    # to the job, not to whatever request happened to be in flight when it started.
+    with background_work():
+        await _run_claimed_inner(job_id, JOB_HANDLERS)
+
+
+async def _run_claimed_inner(job_id: str, JOB_HANDLERS: dict[str, Any]) -> None:
     claimed = await claim_job_by_id(job_id)
     if claimed is None:
         return  # the standalone worker got there first

@@ -37,6 +37,8 @@ def _state(
         live=LiveState(
             tracked_issues=issues if issues is not None else [92, 91, 90],
             active_prs=prs if prs is not None else [],
+            # Derived exactly as _load_live derives it: distinct PR numbers, not link rows.
+            open_pr_count=len({p.number for p in (prs or [])}),
             merged_prs=merged,
             available=available,
         ),
@@ -57,8 +59,9 @@ async def _ask(text: str, state: ProjectState | None = None):
     "question",
     [
         "what is the default branch?",
-        "which branch does boardman build from",
-        "what branch is main here",
+        "what's the default branch",
+        "which is the default branch",
+        "the default branch is what exactly",
     ],
 )
 async def test_default_branch_is_answered_from_state(question: str) -> None:
@@ -205,3 +208,92 @@ async def test_the_router_makes_no_network_call(monkeypatch) -> None:
     monkeypatch.setattr(httpx.Client, "send", explode)
     for q in ("what is the default branch?", "how many issues are on the board?"):
         assert await _ask(q) is not None
+
+
+# --- the loose matches an adversarial review found ---------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what branch should I cut this fix from?",
+        "why did the main branch CI go red?",
+        "which branch has the QA changes?",
+        "should this branch be rebased?",
+    ],
+)
+async def test_branch_questions_that_are_not_about_the_default_branch(question: str) -> None:
+    """The old pattern answered every one of these with a one-line branch name and ended
+    the turn."""
+    result = await _ask(question)
+    assert result is None or result.intent != "default_branch"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "question",
+    [
+        "how many open issues are there?",
+        "how many issues are still open",
+        "how many closed issues do we have",
+        "how many PRs are open",
+        "how many merged pull requests",
+    ],
+)
+async def test_open_and_closed_counts_are_github_questions(question: str) -> None:
+    """issue_task_map keeps a row for every issue ever synced, closed ones included, so
+    it can answer "how many are on the board" and never "how many are open"."""
+    assert await _ask(question) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "question",
+    [
+        "what is the default branch of deepiri-sorge?",
+        "how many issues does Team-Deepiri/diva have on the board?",
+        "which task is issue 5 in diri-cyrex",
+    ],
+)
+async def test_a_question_about_another_repo_is_never_answered_from_this_repos_state(
+    question: str,
+) -> None:
+    """The session repo only switches for slugs in repos.yml, so these arrive carrying
+    boardman's state. Answering from it is a confident answer about the wrong project."""
+    assert await _ask(question) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "question",
+    [
+        "which task is 3 days old?",
+        "is there a task with 5 subtasks?",
+        "which card has 2 reviewers",
+    ],
+)
+async def test_a_number_near_the_word_task_is_not_an_issue_number(question: str) -> None:
+    """ "which task is 3 days old" resolved 3 as an issue number and asserted it unmapped."""
+    result = await _ask(question)
+    assert result is None or result.intent != "issue_task_lookup"
+
+
+@pytest.mark.asyncio
+async def test_a_pr_closing_several_issues_is_counted_once() -> None:
+    """pr_task_links holds one row per (PR, issue). Counting rows reported one PR as three."""
+    prs = [
+        TrackedPR(number=88, task_id="t", issue_number=10, link_source="issue_keyword"),
+        TrackedPR(number=88, task_id="t", issue_number=11, link_source="issue_keyword"),
+        TrackedPR(number=88, task_id="t", issue_number=12, link_source="issue_keyword"),
+    ]
+    state = ProjectState(
+        identity=_state().identity,
+        briefing=Briefing(payload={"ok": True}, state="fresh"),
+        live=LiveState(active_prs=prs, open_pr_count=1, merged_prs=0, available=True),
+    )
+    result = await _ask("how many pull requests are linked?", state)
+    assert result is not None
+    assert result.reply.startswith("1 pull request "), result.reply
+    assert result.reply.count("PR #88") == 1
+    assert "#10, #11, #12" in result.reply
