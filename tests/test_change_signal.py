@@ -183,3 +183,57 @@ def test_the_hook_runs_after_the_commit_not_before() -> None:
     commit_at = src.index("await session.commit()")
     hook_at = src.index("note_repo_changed(")
     assert commit_at < hook_at, "the invalidation hook must come after the commit"
+
+
+# --- a repo appearing or disappearing changes the org listing ----------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("event", ["repository", "create", "delete"])
+async def test_a_repository_event_forgets_the_org_listing(db_session, event: str) -> None:
+    """The org listing is cached for ten minutes with no other way to learn that a repo was
+    created, renamed or removed, so a new repo was invisible until the TTL happened to lapse.
+    Raised by a Sorge review on PR #88."""
+    from boardman.github import org_repos
+    from boardman.routes import github_events
+
+    org_repos._org_repos_cache[("team-deepiri", True)] = (1.0e12, ["Team-Deepiri/old"])
+    org_repos._org_rows_cache[("team-deepiri", True)] = (
+        1.0e12,
+        [{"full_name": "Team-Deepiri/old"}],
+    )
+    _seed_boardman_cache()
+
+    result = await github_events.dispatch_github_event(
+        event, {"action": "created", "repository": REPO}, db_session
+    )
+
+    assert result["ok"] is True
+    assert "invalidated" in result["message"]
+    assert not org_repos._org_repos_cache, "the stale org listing must be dropped"
+    assert not org_repos._org_rows_cache, "and its activity rows with it"
+    assert read_cache.cache_stats()["entries"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_ordinary_event_leaves_the_org_listing_alone(db_session, monkeypatch) -> None:
+    """Only repo-shaped events touch it; an issue does not."""
+    from boardman.github import org_repos
+    from boardman.routes import github_events
+
+    async def fake_handler(_p, _s):
+        return {"ok": True}
+
+    monkeypatch.setattr(github_events, "handle_issue_opened", fake_handler)
+    org_repos._org_repos_cache[("team-deepiri", True)] = (1.0e12, ["Team-Deepiri/x"])
+    await github_events.dispatch_github_event(
+        "issues",
+        {
+            "action": "opened",
+            "issue": {"number": 1, "title": "t", "html_url": "u", "labels": []},
+            "repository": REPO,
+        },
+        db_session,
+    )
+    assert org_repos._org_repos_cache, "an issue event says nothing about which repos exist"
+    org_repos.clear_org_repos_cache()

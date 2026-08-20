@@ -50,6 +50,23 @@ async def dispatch_github_event(
     session: AsyncSession,
 ) -> dict[str, Any]:
     """Dispatch a parsed GitHub event for both HTTP and worker execution paths."""
+    # A repo appearing, disappearing or being renamed changes the org listing, which is
+    # cached for ten minutes and has no other way to learn about it — a new repo was
+    # invisible to the assistant until the TTL happened to lapse. No handler owns this
+    # event; the only correct response is to forget what we listed.
+    if event_type in ("repository", "create", "delete"):
+        from boardman.github.org_repos import clear_org_repos_cache
+
+        clear_org_repos_cache()
+        full_name = repo_full_name_from_payload(payload_dict)
+        note_repo_changed(full_name, event=event_type)
+        return {
+            "ok": True,
+            "message": "org repository listing invalidated",
+            "event": event_type,
+            "repo": full_name,
+        }
+
     payload = parse_webhook_payload(event_type, payload_dict)
     if not payload:
         return {"ok": False, "message": "Unsupported event type"}

@@ -10,24 +10,21 @@ from typing import Any
 from langchain_core.messages import AIMessage, AnyMessage, BaseMessage, HumanMessage, ToolMessage
 
 from boardman.agent.prompts import BOARD_MANAGER_SYSTEM
-from boardman.agent.tool_timing import start_turn, turn_timing, with_timing
+from boardman.agent.tool_timing import start_turn, turn_timing
 from boardman.agent.tools import build_all_tools
 from boardman.llm.factory import get_chat_model
 from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
 
-# PDF plan step 3: process-level immutable tool registry. build_all_tools is memoized,
-# but with_timing used to re-wrap (and re-run pydantic schema inference) every turn.
-_timed_tools_cache: dict[bool, list] = {}
-
 
 def _timed_tools(allow_writes: bool) -> list:
-    cached = _timed_tools_cache.get(allow_writes)
-    if cached is None:
-        cached = with_timing(build_all_tools(allow_writes=allow_writes))
-        _timed_tools_cache[allow_writes] = cached
-    return cached
+    """Process-level immutable tool registry, timing wrapper included.
+
+    The cache lives in build_all_tools and is keyed on both variants. Holding a second
+    cache of the wrapped copies here meant two layers memoising the same tools.
+    """
+    return build_all_tools(allow_writes=allow_writes, timed=True)
 
 
 def _recursion_limit(allow_writes: bool = True) -> int:

@@ -22,7 +22,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Events that change the CODE, so file/tree/hotspot/defect reads are now wrong.
-_CODE_EVENTS = frozenset({"push", "create", "delete", "release"})
+_CODE_EVENTS = frozenset({"push", "create", "delete", "release", "repository"})
 
 # Events that change the WORK (issues, PRs, reviews, labels) but not the tree. The
 # planning payload embeds issue and PR listings, so it goes stale too; the tree does not.
