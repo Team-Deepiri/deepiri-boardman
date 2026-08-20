@@ -635,38 +635,106 @@ async def _plaky_create_tasks_deferred(
 
     bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip()
     gid = (group_id or "").strip() or (get_context_plaky_group_id() or "").strip()
-    job_id = await enqueue_and_run_soon(
-        "plaky_create_tasks_job",
-        {
-            "tasks": clean,
-            "board_id": bid,
-            "group_id": gid,
-            "auto_assign_team": bool(auto_assign_team),
-        },
-    )
 
-    lines = [
-        f"{i + 1}.) **{str(r.get('title')).strip()}**"
-        + (f" — {str(r.get('priority')).strip()}" if r.get("priority") else "")
-        + (f" · {str(r.get('assignee')).strip()}" if r.get("assignee") else "")
-        for i, r in enumerate(clean)
-    ]
+    # Dedupe BEFORE replying. This is one board listing (~1s) and it is the only way the
+    # reply can be true: deferring it too made Boardman announce "5 new tasks" while
+    # three of them were already on the board. The slow part is the WRITES, so only
+    # those go behind the reply.
+    existing: list[dict[str, Any]] = []
+    dedupe_ok = False
+    if bid:
+        try:
+            listing = await PlakyClient().get_tasks(board_id=bid, status="all")
+            existing = [t for t in (listing.get("tasks") or []) if isinstance(t, dict)]
+            dedupe_ok = bool(listing.get("ok", True))
+        except Exception:
+            dedupe_ok = False
+
+    already: list[dict[str, Any]] = []
+    to_create: list[dict[str, Any]] = []
+    for row in clean:
+        hit = None
+        for ex in existing:
+            ex_title = str(ex.get("name") or ex.get("title") or "")
+            if _titles_match(str(row["title"]), ex_title):
+                hit = ex
+                break
+        if hit is None:
+            to_create.append(row)
+        else:
+            ex_id = str(hit.get("id") or "")
+            already.append(
+                {
+                    "title": str(row["title"]).strip(),
+                    "existing_title": str(hit.get("name") or hit.get("title") or ""),
+                    "task_id": ex_id,
+                    "task_url": f"https://app.plaky.com/task/{ex_id}" if ex_id else "",
+                }
+            )
+
+    job_id = ""
+    if to_create:
+        job_id = await enqueue_and_run_soon(
+            "plaky_create_tasks_job",
+            {
+                "tasks": to_create,
+                "board_id": bid,
+                "group_id": gid,
+                "auto_assign_team": bool(auto_assign_team),
+            },
+        )
+
+    cards: list[str] = []
+    for i, row in enumerate(clean):
+        title = str(row.get("title")).strip()
+        head = f"{i + 1}.) **{title}**"
+        dupe = next((a for a in already if a["title"] == title), None)
+        if dupe:
+            link = f" · [open in Plaky]({dupe['task_url']})" if dupe["task_url"] else ""
+            cards.append(
+                f"{head}\n    Already in Plaky as **{dupe['existing_title']}** — "
+                f"not re-created{link}"
+            )
+            continue
+        bits = [f"Priority **{str(row.get('priority') or 'Medium').strip()}**"]
+        if row.get("assignee"):
+            bits.append(f"Assignee {str(row['assignee']).strip()}")
+        if row.get("qa"):
+            bits.append(f"QA {str(row['qa']).strip()}")
+        else:
+            bits.append("QA assigned at PR time")
+        why = str(row.get("description") or "").strip().splitlines()
+        reason = f"\n    {why[0][:160]}" if why and why[0] else ""
+        cards.append(f"{head}\n    Creating now · {' · '.join(bits)}{reason}")
+
+    note = (
+        f"{len(already)} of {len(clean)} already existed and were NOT re-created; "
+        f"{len(to_create)} are being written to Plaky now and land in a few seconds. "
+        "Echo receipt_markdown, keeping the 'Already in Plaky' lines exactly - the user "
+        "must be told which ones already existed, never that all of them are new. "
+        "For the ones being written say 'creating'/'landing', NEVER 'created', because "
+        "the writes are still in flight. Then add a short paragraph of YOUR reasoning: "
+        "why these pieces of work, in this order, and what you deliberately left out. "
+        "The bare list on its own is not an acceptable answer."
+    )
+    if not dedupe_ok and bid:
+        note += (
+            " WARNING: the board listing failed, so duplicates could not be checked - "
+            "say that some of these may already exist rather than claiming they are new."
+        )
     return json.dumps(
         {
             "ok": True,
             "deferred": True,
-            "queued_count": len(clean),
+            "queued_count": len(to_create),
+            "already_existed_count": len(already),
+            "already_existed": already,
+            "dedupe_checked": dedupe_ok,
             "job_id": job_id,
             "board_id": bid,
             "group_id": gid,
-            "receipt_markdown": "\n".join(lines),
-            "note": (
-                "These are being written to Plaky now and will appear on the board in a few "
-                "seconds. Reply immediately with the receipt above and say they are landing "
-                "shortly. Say 'creating'/'landing', NEVER 'created' - the writes are still "
-                "in flight. Duplicates against the board are skipped during the write, so do "
-                "not promise every row is new."
-            ),
+            "receipt_markdown": "\n\n".join(cards),
+            "note": note,
         },
         default=str,
     )
@@ -1183,11 +1251,15 @@ def build_plaky_tools(*, allow_writes: bool) -> list[StructuredTool]:
                         "Args: tasks_json = JSON array of {title (required), description?, "
                         "priority?, repo_tag?, assignee? (plain name), qa? (plain name), "
                         "field_values?}; board_id?/group_id? apply to all. "
-                        "It returns receipt_markdown listing what is BEING created - echo it "
-                        "and say the tasks are landing on the board now. Use the present or "
-                        "future tense: the writes are still in flight, so never say 'created' "
-                        "or claim ids. Use plaky_create_tasks instead ONLY when the user needs "
-                        "the task ids in this same reply."
+                        "It checks the board for duplicates BEFORE returning, so the receipt "
+                        "already knows which rows are new and which are 'Already in Plaky'. "
+                        "Echo receipt_markdown as-is, keep the 'Already in Plaky' lines, and "
+                        "never tell the user all of them are new. For the new ones use the "
+                        "present tense ('creating', 'landing') - the writes are still in "
+                        "flight, so never say 'created' or claim ids. Then add YOUR reasoning: "
+                        "why this work, in this order, what you left out. A bare list is not "
+                        "an acceptable answer. Use plaky_create_tasks instead ONLY when the "
+                        "user needs the task ids in this same reply."
                     ),
                 ),
                 StructuredTool.from_function(

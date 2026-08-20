@@ -158,3 +158,120 @@ async def test_nothing_is_queued_when_validation_fails(db) -> None:
             (await session.execute(__import__("sqlalchemy").select(BackgroundJob))).scalars().all()
         )
     assert rows == []
+
+
+# --- the regression: what already exists must be known BEFORE Boardman speaks ---------
+
+
+class _FakePlaky:
+    """A board that already carries two of the requested titles."""
+
+    def __init__(self, titles: list[str]) -> None:
+        self._titles = titles
+
+    async def get_tasks(self, board_id=None, status="all"):
+        return {
+            "ok": True,
+            "tasks": [{"id": f"exist-{i}", "name": t} for i, t in enumerate(self._titles)],
+        }
+
+
+@pytest.mark.asyncio
+async def test_existing_tasks_are_reported_as_already_in_plaky_not_as_new(db, monkeypatch) -> None:
+    """Deferring the dedupe made Boardman announce '5 new tasks' while three were
+    already on the board. The listing is cheap; only the WRITES may happen later."""
+    from boardman.agent.tools import plaky_tools as pt
+
+    monkeypatch.setattr(
+        pt, "PlakyClient", lambda: _FakePlaky(["Ship bidirectional sync", "Harden production"])
+    )
+    queued: list[dict[str, Any]] = []
+
+    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+        queued.append(payload)
+        return {"ok": True}
+
+    monkeypatch.setitem(
+        __import__("boardman.jobs.handlers", fromlist=["JOB_HANDLERS"]).JOB_HANDLERS,
+        "plaky_create_tasks_job",
+        handler,
+    )
+
+    rows = [
+        {"title": "Ship bidirectional sync"},
+        {"title": "A genuinely new caching task"},
+        {"title": "Harden production"},
+    ]
+    out = json.loads(await pt._plaky_create_tasks_deferred(json.dumps(rows), board_id="B1"))
+
+    assert out["already_existed_count"] == 2
+    assert out["queued_count"] == 1
+    assert out["dedupe_checked"] is True
+    assert out["receipt_markdown"].count("Already in Plaky") == 2
+    assert "2 of 3 already existed" in out["note"]
+    await wait_for_deferred()
+    # Only the genuinely new row is written.
+    assert [r["title"] for r in queued[0]["tasks"]] == ["A genuinely new caching task"]
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_queued_when_every_row_already_exists(db, monkeypatch) -> None:
+    from boardman.agent.tools import plaky_tools as pt
+
+    monkeypatch.setattr(pt, "PlakyClient", lambda: _FakePlaky(["Only task"]))
+    out = json.loads(
+        await pt._plaky_create_tasks_deferred(json.dumps([{"title": "Only task"}]), board_id="B1")
+    )
+    assert out["queued_count"] == 0 and out["already_existed_count"] == 1
+    assert out["job_id"] == ""  # no write job at all
+
+
+@pytest.mark.asyncio
+async def test_a_failed_listing_is_admitted_not_assumed_clean(db, monkeypatch) -> None:
+    """If duplicates could not be checked, say so — do not claim the rows are new."""
+    from boardman.agent.tools import plaky_tools as pt
+
+    class Boom:
+        async def get_tasks(self, board_id=None, status="all"):
+            raise RuntimeError("plaky down")
+
+    monkeypatch.setattr(pt, "PlakyClient", Boom)
+
+    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True}
+
+    monkeypatch.setitem(
+        __import__("boardman.jobs.handlers", fromlist=["JOB_HANDLERS"]).JOB_HANDLERS,
+        "plaky_create_tasks_job",
+        handler,
+    )
+    out = json.loads(
+        await pt._plaky_create_tasks_deferred(json.dumps([{"title": "T"}]), board_id="B1")
+    )
+    assert out["dedupe_checked"] is False
+    assert "may already exist" in out["note"]
+
+
+@pytest.mark.asyncio
+async def test_receipt_demands_reasoning_not_just_a_list(db, monkeypatch) -> None:
+    from boardman.agent.tools import plaky_tools as pt
+
+    monkeypatch.setattr(pt, "PlakyClient", lambda: _FakePlaky([]))
+
+    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+        return {"ok": True}
+
+    monkeypatch.setitem(
+        __import__("boardman.jobs.handlers", fromlist=["JOB_HANDLERS"]).JOB_HANDLERS,
+        "plaky_create_tasks_job",
+        handler,
+    )
+    out = json.loads(
+        await pt._plaky_create_tasks_deferred(
+            json.dumps([{"title": "T", "description": "Because the sync drifts."}]), board_id="B1"
+        )
+    )
+    assert "reasoning" in out["note"].lower()
+    assert "bare list" in out["note"].lower()
+    assert "Because the sync drifts." in out["receipt_markdown"]
+    await wait_for_deferred()
