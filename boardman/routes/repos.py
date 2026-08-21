@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
@@ -10,6 +12,8 @@ from boardman.assignment.tier_classifier import classify_repo_tier, classify_rep
 from boardman.github.repo_metadata import fetch_repo_metadata, fetch_repos_metadata
 from boardman.repos_config import _load_raw, routing_yaml_candidate_map_keys, update_repo_tiers
 from boardman.settings import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/repos", tags=["repos"])
 
@@ -49,6 +53,7 @@ async def classify_all_repos() -> ClassifyReposResponse:
             results=tier_map,
         )
     except Exception as e:  # noqa: BLE001 - GitHub API failure degrades gracefully
+        logger.warning("repo classification failed: %s", e, exc_info=True)
         return ClassifyReposResponse(ok=False, error=str(e))
     finally:
         await client.aclose()

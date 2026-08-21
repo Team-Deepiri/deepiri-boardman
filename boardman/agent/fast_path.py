@@ -283,8 +283,11 @@ async def maybe_fast_path(
         # it also happens to match a read-shaped pattern.
         return None
 
+    from boardman.observability.counters import bump
+
     from_state = _answer_from_state(text, state)
     if from_state is not None:
+        bump(f"fast_path.hit.{from_state.intent}")
         return from_state
 
     if _CURRENT_REPO.search(text):
