@@ -137,6 +137,8 @@ class Settings(BaseSettings):
     # ONLY while this process runs. History from before startup is never replayed. Set false
     # in production, where real GitHub webhooks deliver events instead.
     testing_live_plaky: bool = False
+    # Comma-separated owner/repo list, or "all"/"*" to watch every non-archived repo in
+    # github_org that resolves to a Plaky board (github_poller.resolve_poller_repos).
     testing_live_plaky_repos: str = "Team-Deepiri/deepiri-boardman"
     testing_live_plaky_poll_seconds: float = 60.0
     # On startup the poller baselines existing events (no pre-start history replay). To avoid a

@@ -42,6 +42,7 @@ from boardman.github.webhooks import (
     PullRequestReviewEventPayload,
     parse_webhook_payload,
 )
+from boardman.observability.degradation import log_degraded
 from boardman.services.comment_dedupe import comment_already_synced
 from boardman.services.issue_handler import find_plaky_task_by_issue, handle_issue_opened
 from boardman.services.pr_handler import (
@@ -143,13 +144,85 @@ EVENTS_FEED_TYPES = frozenset(
 )
 
 
+# Sentinels that mean "watch every eligible repo" instead of a hand-written list.
+_WATCH_ALL_TOKENS = {"*", "all", "auto"}
+
+
+def watch_all_requested() -> bool:
+    """True when TESTING_LIVE_PLAKY_REPOS asks for every eligible repo rather than a list."""
+    raw = (settings.testing_live_plaky_repos or "").strip().casefold()
+    return raw in _WATCH_ALL_TOKENS
+
+
 def poller_repos() -> list[str]:
+    """The explicitly configured repo list. Empty when the config asks to watch everything.
+
+    Kept sync and literal: it is what the config SAYS. `resolve_poller_repos` is what the
+    poller actually watches, because "everything" needs the org listing and each repo's
+    Plaky routing before it is knowable.
+    """
+    if watch_all_requested():
+        return []
     out: list[str] = []
     for chunk in (settings.testing_live_plaky_repos or "").replace("\n", ",").split(","):
         s = chunk.strip()
         if s and "/" in s and s not in out:
             out.append(s)
     return out
+
+
+async def resolve_poller_repos() -> tuple[list[str], list[tuple[str, str]]]:
+    """(repos to watch, [(repo, why it was excluded)]).
+
+    An explicit TESTING_LIVE_PLAKY_REPOS is honoured as-is: naming a repo is a decision,
+    and second-guessing it would make the setting useless for debugging one repo.
+
+    Otherwise every repo in the org is a candidate, and a repo is watched only when it can
+    actually be synchronized: not archived, and resolving to a real Plaky board. The
+    excluded ones are RETURNED, not silently dropped -- "diri-cyrex is archived" and
+    "diva has no Plaky board" are the answer to "why isn't my repo syncing", and that
+    answer has to be visible without reading the code.
+    """
+    explicit = poller_repos()
+    if explicit:
+        return explicit, []
+    if not watch_all_requested():
+        return [], []
+
+    org = (settings.github_org or "").strip()
+    if not org or not (settings.github_pat or "").strip():
+        return [], [("(org listing)", "GITHUB_ORG and GITHUB_PAT are both required")]
+
+    from boardman.github.http import github_http_client
+    from boardman.github.org_repos import fetch_org_repository_full_names
+    from boardman.repos_config import get_routing_async
+
+    try:
+        # skip_archived: an archived repo cannot receive new activity, so watching it
+        # spends rate limit on a guaranteed-empty answer.
+        names = await fetch_org_repository_full_names(github_http_client(), org, skip_archived=True)
+    except Exception as exc:  # noqa: BLE001 - the poller must not die on a listing failure
+        log_degraded(_log, f"resolve_poller_repos: listing {org}", exc)
+        return [], [("(org listing)", f"could not list {org}: {type(exc).__name__}: {exc}")]
+
+    watched: list[str] = []
+    excluded: list[tuple[str, str]] = []
+    for full in sorted({str(n).strip() for n in names if str(n or "").strip()}):
+        short = full.rsplit("/", 1)[-1]
+        try:
+            routing = await get_routing_async(full, short, org)
+        except Exception as exc:  # noqa: BLE001 - one bad repo must not stop the fleet
+            log_degraded(_log, f"resolve_poller_repos: routing for {full}", exc)
+            excluded.append((full, f"routing lookup failed: {type(exc).__name__}"))
+            continue
+        board_id = str(getattr(routing, "plaky_board_id", "") or "").strip()
+        if not board_id:
+            # Never invent a destination: a task written to the wrong board is worse
+            # than a repo that visibly is not being watched.
+            excluded.append((full, "no Plaky board resolves for this repo"))
+            continue
+        watched.append(full)
+    return watched, excluded
 
 
 class GitHubEventPoller:
@@ -189,13 +262,19 @@ class GitHubEventPoller:
 
     async def _run(self) -> None:
         interval = max(15.0, float(settings.testing_live_plaky_poll_seconds or 60.0))
-        repos = poller_repos()
+        repos, excluded = await resolve_poller_repos()
+        for repo, why in excluded:
+            _log.warning("TESTING_LIVE_PLAKY: not watching %s — %s", repo, why)
         _log.info(
-            "TESTING_LIVE_PLAKY: GitHub poller started — repos=%s interval=%.0fs "
-            "(Plaky updates apply only while this instance runs)",
+            "TESTING_LIVE_PLAKY: GitHub poller started — watching %d repo(s)=%s "
+            "(%d excluded) interval=%.0fs (Plaky updates apply only while this instance runs)",
+            len(repos),
             repos,
+            len(excluded),
             interval,
         )
+        if not repos:
+            _log.warning("TESTING_LIVE_PLAKY: no eligible repos to watch; poller idle")
         while not self._stop.is_set():
             for repo in repos:
                 # Real-time REST endpoints (no events-feed lag) for the creation/push actions,
@@ -794,9 +873,11 @@ def start_github_poller_if_enabled() -> GitHubEventPoller | None:
     global _poller
     if not settings.testing_live_plaky:
         return None
-    if not poller_repos():
+    if not poller_repos() and not watch_all_requested():
         _log.warning(
-            "TESTING_LIVE_PLAKY=true but TESTING_LIVE_PLAKY_REPOS is empty — poller not started"
+            "TESTING_LIVE_PLAKY=true but TESTING_LIVE_PLAKY_REPOS is empty — poller not "
+            "started. Set it to a comma-separated owner/repo list, or to `all` to watch "
+            "every non-archived repo that resolves to a Plaky board."
         )
         return None
     if _poller is None:
