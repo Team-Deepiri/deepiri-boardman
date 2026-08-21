@@ -1,16 +1,19 @@
 """Which repos the local poller actually watches.
 
-The pinned list named three repos out of an org of 48. `all` watches the org instead --
+The pinned list named three repos out of an org of 60. `all` watches the org instead --
 but only the repos that can genuinely be synchronized, and it says out loud why it skipped
 the rest. "no Plaky board resolves for this repo" is the answer to "why isn't my repo
 syncing", and that answer must not require reading the source.
 
-Checked against the live org and Plaky catalog on 2026-08-21: 31 repos resolve to a board
-(one via an explicit repos.yml entry, the rest via a Plaky group named after the repo) and
-17 resolve to nothing and are excluded. Worth recording because two of them were expected
-to be ineligible and are not: diri-cyrex is NOT archived on GitHub, and diva DOES have a
-Plaky group (board 269030). Neither placement is invented -- both come from a group that
-carries the repo's name.
+Checked against the live org and Plaky catalog on 2026-08-21: of 60 non-archived repos, 43
+resolve to a board (one via an explicit repos.yml entry, the rest via a Plaky group named
+after the repo) and 17 resolve to nothing and are excluded. Worth recording because two of
+them were expected to be ineligible and are not: diri-cyrex is NOT archived on GitHub, and
+diva DOES have a Plaky group (board 269030). Neither placement is invented -- both come
+from a group that carries the repo's name.
+
+43 repos is also what makes the rate budget matter: at the configured 15s that would be
+~62,000 GitHub calls/hour against a 5,000 limit, so the poller throttles itself to 310s.
 """
 
 from __future__ import annotations
