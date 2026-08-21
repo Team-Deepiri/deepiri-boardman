@@ -151,14 +151,21 @@ _WATCH_ALL_TOKENS = {"*", "all", "auto"}
 # that first org listing happened to fail.
 _WATCH_LIST_REFRESH_CYCLES = 20
 # GitHub allows 5000 authenticated requests/hour, and the agent's own tools spend from the
-# same budget. The poller makes roughly this many calls per repo per cycle (direct issue,
-# PR and commit reads, plus the events feed).
-_CALLS_PER_REPO_PER_CYCLE = 4
-# Chosen so the configuration that was already running (3 repos at 15s = 2,880 calls/hour)
-# keeps its interval exactly, while a 31-repo watch list is slowed instead of spending six
-# times GitHub's entire allowance. The remaining ~2,000/hour is the assistant's: it is the
-# interactive thing, and a poller that starves it has made the product worse to keep a
+# same budget. Per repo per cycle the poller makes four fixed calls (issues, pulls, the
+# events feed, the default-branch commits) plus one per OPEN PR branch. Six is that four
+# plus a working allowance of two open PRs; branches are pruned when a PR closes, so this
+# no longer drifts upward with every PR a repo has ever had. It is an estimate, and it is
+# deliberately the pessimistic one -- underestimating here means the throttle logs
+# protection it is not delivering.
+_CALLS_PER_REPO_PER_CYCLE = 6
+# What the poller may spend of GitHub's 5,000/hour, leaving the rest for the assistant --
+# the interactive thing, and a poller that starves it has made the product worse to keep a
 # background loop punctual.
+#
+# This DOES slow the configuration that was already running: 3 repos at 15s is ~4,300
+# calls/hour once open PR branches are counted, not the 2,880 an earlier version of this
+# comment claimed from a four-call estimate. That config was quietly spending most of the
+# hourly allowance. 15s becomes about 22s, which is the honest price of the interval.
 _POLLER_HOURLY_CALL_BUDGET = 3000
 
 
@@ -571,8 +578,15 @@ class GitHubEventPoller:
 
             # newly requested reviewers (webhook-only event, derived from requested_reviewers)
             head_ref = str(((pr.get("head") or {}) or {}).get("ref") or "").strip()
+            branches = proc.setdefault("pr_branches", set())
             if head_ref and pr.get("state") == "open":
-                proc.setdefault("pr_branches", set()).add(head_ref)
+                branches.add(head_ref)
+            elif head_ref:
+                # Drop it when the PR closes. This set drives one /commits call each per
+                # cycle, and it only ever grew: a repo accumulated a branch per PR it had
+                # ever seen, so the real call rate climbed past whatever the throttle
+                # thought it was spending.
+                branches.discard(head_ref)
 
             reviewers_now = {
                 str((u or {}).get("login") or "").strip()

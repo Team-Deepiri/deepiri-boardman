@@ -328,3 +328,69 @@ async def test_the_current_status_lookup_compares_the_field_not_just_the_option_
 
     assert same_field != "", "the real Status column still resolves"
     assert other_field == "", "an id collision on another column resolves to nothing"
+
+
+@pytest.mark.asyncio
+async def test_a_late_link_fills_the_assignee_without_claiming_assigned(monkeypatch) -> None:
+    """The other door into the same regression: filling an empty engineer column also
+    writes Assigned, which on a late link drags an In-QA card backwards."""
+    from boardman.services import pr_handler as ph
+
+    writes: list[Any] = []
+
+    async def fake_update(task_id, inp):
+        writes.append(inp)
+        return {"ok": True}
+
+    async def fake_resolve(board_id, *, intent):
+        return ("status_key", intent)
+
+    async def fake_current(_board_id, _task_id, _field_key):
+        return "workflow_in_qa"
+
+    async def fake_person(*_a, **_k):
+        return ""
+
+    async def fake_keys(_bid):
+        return {"engineer": "person-1"}
+
+    async def fake_plaky_id(*_a, **_k):
+        return "plaky-user-1"
+
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_plaky_status_patch", fake_resolve)
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.current_status_intent", fake_current)
+    monkeypatch.setattr(
+        "boardman.plaky.dynamic_qa_status.resolve_github_user_to_plaky_user_id", fake_plaky_id
+    )
+    monkeypatch.setattr("boardman.plaky.board_aware.board_person_field_keys", fake_keys)
+    monkeypatch.setattr(ph, "update_task_internal", fake_update)
+    monkeypatch.setattr(ph, "_current_person_field_value", fake_person)
+    monkeypatch.setattr(
+        "boardman.assignment.developer_eligibility.filter_developer",
+        lambda pid: (pid, ""),
+    )
+
+    pr = {
+        "number": 88,
+        "title": "t",
+        "body": "Fixes #94",
+        "html_url": f"https://github.com/{FULL}/pull/88",
+        "state": "open",
+        "merged": False,
+        "user": {"login": "ali-ferris"},
+        "head": {"ref": "feat/x"},
+        "labels": [],
+    }
+
+    await ph._apply_pr_type_and_assignee(
+        None,
+        task_id=TASK,
+        board_id=BOARD,
+        pull_request=pr,
+        repo_full=FULL,
+        allow_status_regression=False,
+    )
+
+    person_writes = [w for w in writes if getattr(w, "engineer_plaky_id", None)]
+    assert person_writes, "the assignee is still filled"
+    assert all(w.status is None for w in person_writes), "but Assigned is not claimed"

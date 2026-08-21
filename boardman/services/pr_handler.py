@@ -111,6 +111,7 @@ async def _apply_pr_type_and_assignee(
     board_id: str,
     pull_request: Any,
     repo_full: str,
+    allow_status_regression: bool = True,
 ) -> dict[str, Any]:
     """On a confident PR↔task link: set Type from branch/labels, and fill the developer assignee
     (and move to "Assigned") when the task has no assignee yet.
@@ -196,6 +197,20 @@ async def _apply_pr_type_and_assignee(
     rp = await resolve_plaky_status_patch(bid, intent="workflow_assigned")
     if rp:
         assigned_status_key, assigned_status_val = rp[0], rp[1]
+    if assigned_status_val and not allow_status_regression:
+        # Filling an empty engineer column is right at any time; announcing "Assigned"
+        # while QA is reviewing is not. This is the same regression the late-link guard
+        # closes for Needs QA, reached through the assignee door instead.
+        from boardman.plaky.dynamic_qa_status import current_status_intent
+
+        now_at = await current_status_intent(bid, task_id, assigned_status_key or "")
+        if status_intent_would_regress(now_at, "workflow_assigned"):
+            _log.info(
+                "task %s is at %s; filling the assignee without claiming Assigned",
+                task_id,
+                now_at,
+            )
+            assigned_status_key, assigned_status_val = None, ""
 
     res = await update_task_internal(
         task_id,
@@ -388,19 +403,21 @@ async def _maybe_set_needs_qa(
 ) -> None:
     st = _needs_qa_status_value()
     status_field_key: str | None = None
+    guard_field_key = ""
     bid = (board_id or "").strip()
     if bid:
         from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
-        # Resolved even when `st` came from settings: the VALUE may be configured, but the
-        # regression guard below still needs to know which column to read. Looking it up
-        # only in the `not st` branch made the guard a silent no-op on every deployment
-        # that sets PLAKY_STATUS_NEEDS_QA.
         resolved = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
         if resolved:
-            status_field_key = resolved[0]
+            # Two different uses, deliberately kept apart. The guard below needs to know
+            # which COLUMN to read, always. The write only takes the key when the VALUE
+            # came from the board too: handing update_task_internal a key sends it down
+            # the direct-key branch, skipping the label -> option-id resolution that a
+            # configured PLAKY_STATUS_NEEDS_QA ("Needs QA ✅") depends on.
+            guard_field_key = resolved[0] or ""
             if not st:
-                st = resolved[1]
+                status_field_key, st = resolved[0], resolved[1]
     if not st:
         return
     if is_draft and settings.plaky_skip_needs_qa_for_draft:
@@ -410,7 +427,7 @@ async def _maybe_set_needs_qa(
         # right for a new PR and wrong for a task already in or past QA.
         from boardman.plaky.dynamic_qa_status import current_status_intent
 
-        now_at = await current_status_intent(bid, task_id, status_field_key or "")
+        now_at = await current_status_intent(bid, task_id, guard_field_key)
         if status_would_move_backwards(now_at, "workflow_needs_qa"):
             _log.info("task %s is at %s; not asking for QA again from a late link", task_id, now_at)
             return
@@ -700,6 +717,7 @@ async def _link_pr_to_issue_task(
         board_id=board_id,
         pull_request=payload.pull_request,
         repo_full=payload.repository.full_name,
+        allow_status_regression=not is_late_link,
     )
     pr_user0 = payload.pull_request.user or {}
     qa_res = await _assign_qa_for_pr(

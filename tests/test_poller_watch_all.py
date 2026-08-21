@@ -180,15 +180,21 @@ def test_an_empty_repo_setting_still_refuses_to_start(monkeypatch) -> None:
 def test_the_interval_stretches_to_fit_the_api_budget() -> None:
     """31 repos at 15s is ~30,000 GitHub calls/hour against a 5,000/hour limit the
     assistant's own tools also spend from."""
-    from boardman.services.github_poller import _POLLER_HOURLY_CALL_BUDGET
+    from boardman.services.github_poller import (
+        _CALLS_PER_REPO_PER_CYCLE,
+        _POLLER_HOURLY_CALL_BUDGET,
+    )
     from boardman.services.github_poller import GitHubEventPoller as P
 
-    # The configuration that was already running must not be slowed down by this.
-    assert P._safe_interval(15.0, 3) == 15.0, "3 repos at 15s stays at 15s"
+    # Even three repos at 15s is over budget once open PR branches are counted, so it is
+    # stretched too -- modestly, and honestly.
+    small = P._safe_interval(15.0, 3)
+    assert 15.0 < small < 30.0, small
+    assert (3600.0 / small) * 3 * _CALLS_PER_REPO_PER_CYCLE <= _POLLER_HOURLY_CALL_BUDGET + 1
 
     stretched = P._safe_interval(15.0, 31)
     assert stretched > 15.0
-    calls_per_hour = (3600.0 / stretched) * 31 * 4
+    calls_per_hour = (3600.0 / stretched) * 31 * _CALLS_PER_REPO_PER_CYCLE
     assert calls_per_hour <= _POLLER_HOURLY_CALL_BUDGET + 1, calls_per_hour
     # And it never speeds anything UP: a generous interval is left alone.
     assert P._safe_interval(600.0, 31) == 600.0
