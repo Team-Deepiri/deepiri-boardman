@@ -281,28 +281,51 @@ async def test_a_plain_issue_comment_edit_reaches_the_board_once(db_session, pos
     assert "GitHub comment edited" in posted[1][1]
 
 
-@pytest.mark.asyncio
-async def test_a_pause_request_added_by_an_edit_still_pauses(
-    db_session, posted, monkeypatch
-) -> None:
-    """An edit is a real comment: the workflow it triggers must run, exactly once."""
-    await _link_pr_to_task(db_session)
-    paused: list[str] = []
+@pytest.fixture()
+def pause_calls(monkeypatch):
+    calls: list[str] = []
 
     async def fake_resolve(bid, configured, intent):
         return ("status_key", "paused-id")
 
     async def fake_status(task_id, value, board_id, *, status_field_key=None):
-        paused.append(task_id)
+        calls.append(task_id)
         return {"ok": True}
 
     monkeypatch.setattr(rh, "_resolve_status", fake_resolve)
     monkeypatch.setattr(rh, "_update_plaky_task_status", fake_status)
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_a_new_pause_comment_pauses(db_session, posted, pause_calls) -> None:
+    await _link_pr_to_task(db_session)
 
     await rh.handle_issue_comment_on_pr(_comment_event("created", "looks good"), db_session)
-    assert paused == []
+    assert pause_calls == []
 
     await rh.handle_issue_comment_on_pr(
-        _comment_event("edited", "actually, pause this for now"), db_session
+        _comment_event("created", "pause this for now", comment_id=999), db_session
     )
-    assert paused == [TASK]
+    assert pause_calls == [TASK]
+
+
+@pytest.mark.asyncio
+async def test_editing_an_old_comment_does_not_re_drive_the_workflow(
+    db_session, posted, pause_calls
+) -> None:
+    """A typo fix on a week-old "pausing this" must not drag a finished task back."""
+    await _link_pr_to_task(db_session)
+    await rh.handle_issue_comment_on_pr(
+        _comment_event("created", "pausing this while we discuss"), db_session
+    )
+    assert pause_calls == [TASK]
+    pause_calls.clear()
+
+    res = await rh.handle_issue_comment_on_pr(
+        _comment_event("edited", "pausing this while we discuss it"), db_session
+    )
+
+    assert pause_calls == [], "the state machine does not re-run on an edit"
+    assert res["event"] == "pr_comment_edit_mirrored"
+    assert len(posted) == 2, "but the correction IS on the board"

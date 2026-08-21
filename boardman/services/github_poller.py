@@ -146,6 +146,20 @@ EVENTS_FEED_TYPES = frozenset(
 
 # Sentinels that mean "watch every eligible repo" instead of a hand-written list.
 _WATCH_ALL_TOKENS = {"*", "all", "auto"}
+# How many poll cycles between re-resolving the watch list. Repos gain Plaky groups and
+# new repos appear; a list resolved once at startup also strands the poller on nothing if
+# that first org listing happened to fail.
+_WATCH_LIST_REFRESH_CYCLES = 20
+# GitHub allows 5000 authenticated requests/hour, and the agent's own tools spend from the
+# same budget. The poller makes roughly this many calls per repo per cycle (direct issue,
+# PR and commit reads, plus the events feed).
+_CALLS_PER_REPO_PER_CYCLE = 4
+# Chosen so the configuration that was already running (3 repos at 15s = 2,880 calls/hour)
+# keeps its interval exactly, while a 31-repo watch list is slowed instead of spending six
+# times GitHub's entire allowance. The remaining ~2,000/hour is the assistant's: it is the
+# interactive thing, and a poller that starves it has made the product worse to keep a
+# background loop punctual.
+_POLLER_HOURLY_CALL_BUDGET = 3000
 
 
 def watch_all_requested() -> bool:
@@ -245,6 +259,32 @@ class GitHubEventPoller:
         self._baseline_dt: dict[str, datetime] = {}
         self._processed: dict[str, dict[str, set]] = {}
 
+    @staticmethod
+    def _safe_interval(configured: float, repo_count: int) -> float:
+        """Stretch the poll interval so the watch list fits inside the API budget.
+
+        A 15s interval over three repos is 2,880 calls/hour. The same interval over the
+        31 repos `all` resolves to is nearly 30,000 — six times GitHub's entire hourly
+        allowance, shared with the agent's own tools. Rather than silently rate-limiting
+        the assistant, slow the loop down to what the budget affords and say so.
+        """
+        if repo_count <= 0:
+            return configured
+        cycles_per_hour = _POLLER_HOURLY_CALL_BUDGET / (repo_count * _CALLS_PER_REPO_PER_CYCLE)
+        needed = 3600.0 / cycles_per_hour if cycles_per_hour > 0 else configured
+        if needed <= configured:
+            return configured
+        _log.warning(
+            "TESTING_LIVE_PLAKY: %d repos at %.0fs would spend ~%.0f GitHub calls/hour; "
+            "polling every %.0fs instead to stay inside the ~%d/hour the poller may use",
+            repo_count,
+            configured,
+            (3600.0 / configured) * repo_count * _CALLS_PER_REPO_PER_CYCLE,
+            needed,
+            _POLLER_HOURLY_CALL_BUDGET,
+        )
+        return needed
+
     def _gh_headers(self) -> dict[str, str]:
         return {
             "Authorization": f"Bearer {settings.github_pat}",
@@ -267,10 +307,11 @@ class GitHubEventPoller:
             self._task = None
 
     async def _run(self) -> None:
-        interval = max(15.0, float(settings.testing_live_plaky_poll_seconds or 60.0))
+        configured_interval = max(15.0, float(settings.testing_live_plaky_poll_seconds or 60.0))
         repos, excluded = await resolve_poller_repos()
         for repo, why in excluded:
             _log.warning("TESTING_LIVE_PLAKY: not watching %s — %s", repo, why)
+        interval = self._safe_interval(configured_interval, len(repos))
         _log.info(
             "TESTING_LIVE_PLAKY: GitHub poller started — watching %d repo(s)=%s "
             "(%d excluded) interval=%.0fs (Plaky updates apply only while this instance runs)",
@@ -281,7 +322,26 @@ class GitHubEventPoller:
         )
         if not repos:
             _log.warning("TESTING_LIVE_PLAKY: no eligible repos to watch; poller idle")
+        cycles = 0
         while not self._stop.is_set():
+            # Re-resolve periodically. The watch list is derived from the org listing and
+            # each repo's Plaky placement, and both change: a repo gets a Plaky group, a
+            # new repo appears, or the first resolve hit a transient GitHub failure and
+            # left this loop with nothing to do for the life of the process.
+            if cycles and cycles % _WATCH_LIST_REFRESH_CYCLES == 0:
+                fresh, fresh_excluded = await resolve_poller_repos()
+                if fresh and set(fresh) != set(repos):
+                    _log.info(
+                        "TESTING_LIVE_PLAKY: watch list changed — now %d repo(s) (%d excluded)",
+                        len(fresh),
+                        len(fresh_excluded),
+                    )
+                    repos = fresh
+                    interval = self._safe_interval(configured_interval, len(repos))
+                elif fresh and not repos:
+                    repos = fresh
+                    interval = self._safe_interval(configured_interval, len(repos))
+            cycles += 1
             for repo in repos:
                 # Real-time REST endpoints (no events-feed lag) for the creation/push actions,
                 # then the events feed for reviews + comments (which have no simple "since" list).

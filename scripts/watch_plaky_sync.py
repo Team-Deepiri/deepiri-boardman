@@ -112,11 +112,18 @@ async def option_names_for_board(board_id: str) -> dict[str, dict[str, str]]:
 async def watched_placements() -> list[tuple[str, str, str]]:
     """[(repo, board_id, group_id)] for everything the poller is configured to watch."""
     from boardman.repos_config import get_routing_async
-    from boardman.services.github_poller import poller_repos
+    from boardman.services.github_poller import resolve_poller_repos
     from boardman.settings import settings
 
+    # resolve_poller_repos, not poller_repos: the latter is empty under the `all`
+    # sentinel, so this script would report "nothing to watch" on exactly the
+    # configuration the poller is running.
+    repos, excluded = await resolve_poller_repos()
+    for repo, why in excluded:
+        print(f"  - {repo} excluded: {why}", flush=True)
+
     out: list[tuple[str, str, str]] = []
-    for full in poller_repos():
+    for full in repos:
         short = full.rsplit("/", 1)[-1]
         routing = await get_routing_async(full, short, settings.github_org)
         board = str(getattr(routing, "plaky_board_id", "") or "").strip()

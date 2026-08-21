@@ -154,7 +154,10 @@ class Settings(BaseSettings):
     github_webhook_async_enabled: bool = False
     github_webhook_job_retries: int = 2
     github_reconcile_enabled: bool = False
-    github_reconcile_interval_seconds: float = 15.0
+    # The reconciliation sweep is a safety net for deliveries the webhook missed, not a
+    # poller. Every cycle costs GitHub calls per registered repo, on the same rate limit
+    # the agent's own tools spend. Lower it in .env for a local test, not here.
+    github_reconcile_interval_seconds: float = 900.0
     github_reconcile_max_items: int = 50
     github_pat: str | None = None
     github_org: str = "deepiri-org"

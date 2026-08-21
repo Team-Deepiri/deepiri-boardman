@@ -578,6 +578,19 @@ async def handle_issue_comment_on_pr(
         )
     await session.commit()
 
+    if is_revision:
+        # The MIRROR follows an edit; the workflow does not. A comment's instruction is
+        # acted on when it is made. Re-running the state machine on every edit means
+        # fixing a typo in a week-old "pausing this while we discuss" drags a finished
+        # task back to Paused, and re-driving In QA / Needs QA Again from stale text is
+        # the same class of mistake. The correction is on the board either way.
+        return {
+            "ok": True,
+            "event": "pr_comment_edit_mirrored",
+            "mirrored": mirrored,
+            "workflow_skipped": "an edited comment updates the record, not the state",
+        }
+
     # --- Pause: any commenter saying "pause"/"paused"/"on hold" pauses the work. ---
     from boardman.github.pr_signals import comment_mentions_qa_or_support, comment_requests_pause
 

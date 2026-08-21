@@ -20,6 +20,7 @@ from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status
 from boardman.plaky.client import PlakyClient
 from boardman.services.comment_dedupe import github_activity_marker, mirror_github_activity
 from boardman.services.issue_handler import (
+    explicit_issue_numbers,
     find_plaky_task_by_issue,
     get_linked_issue_numbers,
     linked_issue_numbers_for_pr,
@@ -891,6 +892,7 @@ async def reconcile_pr_issue_links(
         repo_full_name=payload.repository.full_name,
         repo_name=repo_name,
     )
+    written = explicit_issue_numbers(payload.pull_request.body, payload.pull_request.title)
     referenced = linked_issue_numbers_for_pr(
         body=payload.pull_request.body,
         title=payload.pull_request.title,
@@ -944,8 +946,12 @@ async def reconcile_pr_issue_links(
         linked.append({"issue": int(issue_num), "task_id": mapping.plaky_task_id})
 
     withdrawn: list[dict[str, Any]] = []
-    if linked:
-        # Only now: the PR unambiguously points somewhere else AND that somewhere exists.
+    # A branch name is a convention, not a statement. It may introduce a link where there
+    # was none, but it must never be the reason a curated one is torn down: a PR on
+    # `94-add-retries` whose body loses `Fixes #95` would otherwise silently move to
+    # issue 94's task and withdraw the working 95 link.
+    if linked and written:
+        # Only now: the author WROTE a different issue, and that issue has a task.
         now = datetime.utcnow()
         for row in rows:
             if int(row.github_issue_number) in referenced:
@@ -1548,8 +1554,15 @@ async def handle_pr_review_comment(
         fallback=f"{repo_name}:{pr_number}:{commenter_login}:{comment_body}",
     )
     comment_url = str(comment.get("html_url") or "").strip()
+    # Same rule as conversation comments: Plaky cannot edit a posted comment, so an edit
+    # is its own labelled entry, deduped on (comment id, GitHub text). Without this an
+    # edited inline review comment matched the plain marker and vanished silently.
+    is_revision = str(getattr(payload, "action", "") or "") == "edited"
+    review_label = (
+        "GitHub inline review comment edited" if is_revision else "GitHub inline review comment"
+    )
     comment_text = (
-        f"💬 **GitHub inline review comment** by `{commenter_login}` on PR #{pr_number}:\n\n"
+        f"💬 **{review_label}** by `{commenter_login}` on PR #{pr_number}:\n\n"
         f"> {comment_body[:1000].replace(chr(10), chr(10) + '> ')}"
     )
     if comment_url:
@@ -1567,6 +1580,8 @@ async def handle_pr_review_comment(
                 board_id=board_id,
                 github_repo=repo_name,
                 github_ref=str(pr_number),
+                is_revision=is_revision,
+                revision_body=comment_body,
             )
         )
     await session.commit()
