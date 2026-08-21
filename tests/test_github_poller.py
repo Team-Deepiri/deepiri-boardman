@@ -780,21 +780,19 @@ async def test_direct_poll_detects_label_change(monkeypatch: pytest.MonkeyPatch)
     assert seen[1][1] == ["bug", "NEEDS HELP"]
 
 
-@pytest.mark.asyncio
-async def test_a_closed_pr_does_not_drop_a_branch_a_live_pr_still_uses(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Two PRs can share a head ref (close, then reopen cleanly). Keying the watched
-    branches on the ref let the closed one silently end commit polling for the live one."""
-    proc: dict = {"pr_branches": {}}
+def test_a_closed_pr_does_not_drop_a_branch_a_live_pr_still_uses() -> None:
+    """Two PRs can share a head ref (close one, open another from the same branch). Keying
+    the watched branches on the ref let the closed one end commit polling for the live
+    one, so this exercises the real bookkeeping rather than a copy of it."""
+    branches: dict[int, str] = {}
     ref = "fix/78-retry"
 
     # The list comes back newest-first, so the OPEN PR is seen before the closed one.
-    for num, state in ((79, "open"), (78, "closed")):
-        branches = proc.setdefault("pr_branches", {})
-        if state == "open":
-            branches[num] = ref
-        else:
-            branches.pop(num, None)
+    gp.track_pr_branch(branches, 79, ref, "open")
+    gp.track_pr_branch(branches, 78, ref, "closed")
 
-    assert set(proc["pr_branches"].values()) == {ref}, "the live PR's branch survives"
+    assert set(branches.values()) == {ref}, "the live PR's branch survives"
+    assert branches == {79: ref}
+
+    gp.track_pr_branch(branches, 79, ref, "closed")
+    assert branches == {}, "and it is forgotten once nothing is open on it"

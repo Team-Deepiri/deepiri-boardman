@@ -172,6 +172,21 @@ _CALLS_PER_REPO_PER_CYCLE = 6
 _POLLER_HOURLY_CALL_BUDGET = 3000
 
 
+def track_pr_branch(branches: dict[int, str], pr_number: int, head_ref: str, state: str) -> None:
+    """Remember the head ref of an OPEN PR, and forget it once the PR is not.
+
+    Keyed by PR NUMBER, not by branch. Two PRs can share a head ref -- close one and open
+    another from the same branch -- and keying on the ref let the closed one drop a branch
+    the live one still needs, silently ending commit polling for it. Forgetting on close is
+    what keeps this from growing forever: each entry costs one /commits call per cycle,
+    which is what the rate budget is built on.
+    """
+    if head_ref and state == "open":
+        branches[pr_number] = head_ref
+    else:
+        branches.pop(pr_number, None)
+
+
 def watch_all_requested() -> bool:
     """True when TESTING_LIVE_PLAKY_REPOS asks for every eligible repo rather than a list."""
     raw = (settings.testing_live_plaky_repos or "").strip().casefold()
@@ -588,16 +603,12 @@ class GitHubEventPoller:
 
             # newly requested reviewers (webhook-only event, derived from requested_reviewers)
             head_ref = str(((pr.get("head") or {}) or {}).get("ref") or "").strip()
-            # Keyed by PR NUMBER, not by branch: two PRs can share a head ref (close and
-            # reopen cleanly), and keying on the ref let the closed one drop a branch the
-            # live one still needs, silently ending commit polling for it. Dropping the
-            # entry when a PR closes is what keeps this from growing forever -- it drives
-            # one /commits call each per cycle, which the rate budget is built on.
-            branches = proc.setdefault("pr_branches", {})
-            if head_ref and pr.get("state") == "open":
-                branches[num] = head_ref
-            else:
-                branches.pop(num, None)
+            track_pr_branch(
+                proc.setdefault("pr_branches", {}),
+                num,
+                head_ref,
+                str(pr.get("state") or ""),
+            )
 
             reviewers_now = {
                 str((u or {}).get("login") or "").strip()

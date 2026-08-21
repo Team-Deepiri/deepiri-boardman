@@ -526,9 +526,9 @@ async def test_reopening_a_pr_brings_its_links_back(db_session) -> None:
     """Closing without merging withdraws the links, and nothing on the opened path clears
     that once a triage record exists -- so every later event resolved to no task."""
     from boardman.services.pr_task_registry import (
-        distinct_task_ids_for_pr,
         mark_pr_withdrawn,
         revive_pr_links,
+        task_ids_for_open_pr,
     )
 
     db_session.add(
@@ -544,12 +544,12 @@ async def test_reopening_a_pr_brings_its_links_back(db_session) -> None:
 
     await mark_pr_withdrawn(db_session, github_repo=REPO, github_pr_number=88)
     await db_session.commit()
-    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == []
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == []
 
     await revive_pr_links(db_session, github_repo=REPO, github_pr_number=88)
     await db_session.commit()
 
-    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == [
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == [
         TASK_94
     ]
 
@@ -558,9 +558,9 @@ async def test_reopening_a_pr_brings_its_links_back(db_session) -> None:
 async def test_reopening_does_not_revive_a_superseded_card(db_session, workflow) -> None:
     """Reopening a PR does not un-say which issue it closes."""
     from boardman.services.pr_task_registry import (
-        distinct_task_ids_for_pr,
         mark_pr_withdrawn,
         revive_pr_links,
+        task_ids_for_open_pr,
     )
 
     await _seed_issue_task(db_session, 94, TASK_94)
@@ -581,7 +581,7 @@ async def test_reopening_does_not_revive_a_superseded_card(db_session, workflow)
     await revive_pr_links(db_session, github_repo=REPO, github_pr_number=88)
     await db_session.commit()
 
-    live = await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88)
+    live = await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88)
     assert live == [TASK_94], "the issue's task comes back; the superseded card stays retired"
 
 
@@ -660,9 +660,9 @@ async def test_repointing_a_pr_does_not_rewind_the_old_issues_card(db_session, w
 async def test_reopening_does_not_resurrect_a_repointed_link(db_session, workflow) -> None:
     """A link retired because the PR names a different issue must not come back either."""
     from boardman.services.pr_task_registry import (
-        distinct_task_ids_for_pr,
         mark_pr_withdrawn,
         revive_pr_links,
+        task_ids_for_open_pr,
     )
 
     await _seed_issue_task(db_session, 94, TASK_94)
@@ -675,7 +675,7 @@ async def test_reopening_does_not_resurrect_a_repointed_link(db_session, workflo
     await revive_pr_links(db_session, github_repo=REPO, github_pr_number=88)
     await db_session.commit()
 
-    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == [
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == [
         TASK_95
     ], "one card, the one the PR actually names"
 
@@ -751,10 +751,7 @@ async def test_reopening_revives_links_from_any_entry_point(
 ) -> None:
     """The poller dispatches `reopened` straight to handle_pr_opened, so the revive has to
     live there and not in the HTTP route."""
-    from boardman.services.pr_task_registry import (
-        distinct_task_ids_for_pr,
-        mark_pr_withdrawn,
-    )
+    from boardman.services.pr_task_registry import mark_pr_withdrawn, task_ids_for_open_pr
 
     await _seed_issue_task(db_session, 94, TASK_94)
     db_session.add(
@@ -769,7 +766,7 @@ async def test_reopening_revives_links_from_any_entry_point(
     await db_session.commit()
     await mark_pr_withdrawn(db_session, github_repo=REPO, github_pr_number=88)
     await db_session.commit()
-    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == []
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == []
 
     async def ok(*_a, **_k):
         return {"ok": True}
@@ -780,7 +777,7 @@ async def test_reopening_revives_links_from_any_entry_point(
 
     await ph.handle_pr_opened(payload, db_session)
 
-    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == [
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == [
         TASK_94
     ]
 
@@ -882,7 +879,7 @@ async def test_any_event_on_an_open_pr_clears_a_stale_withdrawal(
     """Keying recovery on `reopened` alone was too narrow: that delivery can be lost, and
     the poller's closed-PR memory does not survive a restart. Either way the PR resolved
     to zero tasks forever once the resolver started honouring the flag."""
-    from boardman.services.pr_task_registry import distinct_task_ids_for_pr, mark_pr_withdrawn
+    from boardman.services.pr_task_registry import mark_pr_withdrawn, task_ids_for_open_pr
 
     db_session.add(
         PullRequestTaskLink(
@@ -896,12 +893,12 @@ async def test_any_event_on_an_open_pr_clears_a_stale_withdrawal(
     await db_session.commit()
     await mark_pr_withdrawn(db_session, github_repo=REPO, github_pr_number=88)
     await db_session.commit()
-    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == []
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == []
 
     # An ordinary edit, not a reopen.
     await ph.handle_pr_edited(_pr("no issue reference"), db_session)
 
-    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == [
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == [
         "7183844"
     ]
 
@@ -909,7 +906,7 @@ async def test_any_event_on_an_open_pr_clears_a_stale_withdrawal(
 @pytest.mark.asyncio
 async def test_a_closed_pr_event_does_not_revive_anything(db_session, workflow) -> None:
     """Only seeing the PR OPEN is proof the withdrawal is stale."""
-    from boardman.services.pr_task_registry import distinct_task_ids_for_pr, mark_pr_withdrawn
+    from boardman.services.pr_task_registry import mark_pr_withdrawn, task_ids_for_open_pr
 
     db_session.add(
         PullRequestTaskLink(
@@ -928,4 +925,29 @@ async def test_a_closed_pr_event_does_not_revive_anything(db_session, workflow) 
     payload.pull_request.state = "closed"
     await ph._ensure_links_live(payload, db_session)
 
-    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == []
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == []
+
+
+@pytest.mark.asyncio
+async def test_a_card_this_pr_already_owns_is_not_announced_twice(db_session, workflow) -> None:
+    """Triage records the issue in IssueTaskMap but writes an issue_number=0 registry row,
+    so the next edit re-links the PR to the card triage just created. Correct, but it must
+    not post a second "PR Linked" notice -- while everything else still runs."""
+    same = "7183844"
+    await _seed_issue_task(db_session, 94, same)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id=same,
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+
+    await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+
+    assert workflow["comments"] == [], "no second notice on a card this PR already owns"
+    assert workflow["type_and_assignee"] == [same], "the rest of the pipeline still ran"
+    assert workflow["qa"] == [same]

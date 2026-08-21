@@ -197,16 +197,23 @@ async def distinct_task_ids_for_pr(
     github_repo: str,
     github_pr_number: int,
 ) -> list[str]:
-    # withdrawn_at is what "this link is no longer live" MEANS, so the resolver every
-    # write path goes through has to honour it. It did not, which made retiring a
-    # superseded standalone task cosmetic: the retired card kept receiving every comment
-    # and status change alongside the real one. merged_at is deliberately NOT filtered --
-    # a merged PR's task is still the task that PR drove, and the merge handlers read
-    # this after stamping it.
+    # Filters on the link SOURCE, not on withdrawn_at, because the two withdrawal
+    # reasons mean different things:
+    #
+    #   superseded   the PR now names an issue whose task owns this work. Permanent. The
+    #                retired card has been told it will receive no further updates, and
+    #                it must stop receiving them -- otherwise one PR drives two cards.
+    #   PR closed    provisional. The PR can come back, and `reopened` is the only event
+    #                that clears it: a lost delivery or a poller restart (its closed-PR
+    #                memory is in-process) would otherwise strand the PR forever, with
+    #                reviews, comments and labels resolving to nothing.
+    #
+    # Callers that specifically want only-live links have `task_ids_for_open_pr`.
+    # merged_at is not filtered either: a merged PR's task is still the task it drove.
     q = select(PullRequestTaskLink.plaky_task_id).where(
         PullRequestTaskLink.github_repo == github_repo,
         PullRequestTaskLink.github_pr_number == github_pr_number,
-        PullRequestTaskLink.withdrawn_at.is_(None),
+        PullRequestTaskLink.link_source != _SUPERSEDED_LINK_SOURCE,
     )
     r = await session.execute(q)
     seen: set[str] = set()

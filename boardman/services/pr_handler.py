@@ -678,6 +678,7 @@ async def _link_pr_to_issue_task(
     is_draft: bool,
     headline: str,
     is_late_link: bool = False,
+    announce: bool = True,
 ) -> None:
     """Attach one PR to the Plaky task an issue already owns, and run the PR workflow.
 
@@ -699,18 +700,21 @@ async def _link_pr_to_issue_task(
         github_issue_number=int(issue_number),
         link_source="issue_keyword",
     )
-    marker = f"github:pr-link-notice:{repo_name}:{pr_number}:{issue_number}"
-    await mirror_github_activity(
-        session,
-        plaky,
-        task_id=mapping.plaky_task_id,
-        action="pr_link_notice",
-        marker=marker,
-        body=format_pr_notice_with_url(headline=headline, pr_number=pr_number, pr_url=pr_url),
-        board_id=board_id or "",
-        github_repo=repo_name,
-        github_ref=str(pr_number),
-    )
+    if announce:
+        # Skipped when the card already belongs to this PR: triage created it for this
+        # very PR, so a second "PR Linked" notice would just be noise on the same card.
+        # Only the notice is skipped -- the rest of the pipeline still runs.
+        await mirror_github_activity(
+            session,
+            plaky,
+            task_id=mapping.plaky_task_id,
+            action="pr_link_notice",
+            marker=f"github:pr-link-notice:{repo_name}:{pr_number}:{issue_number}",
+            body=format_pr_notice_with_url(headline=headline, pr_number=pr_number, pr_url=pr_url),
+            board_id=board_id or "",
+            github_repo=repo_name,
+            github_ref=str(pr_number),
+        )
     await _apply_pr_type_and_assignee(
         plaky,
         task_id=mapping.plaky_task_id,
@@ -1074,6 +1078,11 @@ async def reconcile_pr_issue_links(
             "referenced": referenced,
         }
 
+    # Tasks this PR is already attached to. Triage records the issue in IssueTaskMap but
+    # only writes an issue_number=0 registry row, so the next `edited` re-links the PR to
+    # the very card triage created -- correct, but it must not announce itself twice.
+    already_ours = {str(row.plaky_task_id) for row in all_rows}
+
     linked: list[dict[str, Any]] = []
     unresolved: list[int] = []
     for issue_num in referenced:
@@ -1093,6 +1102,7 @@ async def reconcile_pr_issue_links(
             is_draft=is_draft,
             headline="**PR Linked:**",
             is_late_link=True,
+            announce=str(mapping.plaky_task_id) not in already_ours,
         )
         linked.append({"issue": int(issue_num), "task_id": mapping.plaky_task_id})
 
