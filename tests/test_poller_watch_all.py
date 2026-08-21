@@ -37,7 +37,9 @@ def _with_org_repos(monkeypatch, names: list[str]) -> None:
     monkeypatch.setattr("boardman.github.org_repos.fetch_org_repository_full_names", fake_names)
 
 
-def _with_boards(monkeypatch, boards: dict[str, str]) -> None:
+def _with_boards(
+    monkeypatch, boards: dict[str, str], sources: dict[str, str] | None = None
+) -> None:
     class Routing:
         def __init__(self, board_id: str) -> None:
             self.plaky_board_id = board_id
@@ -45,7 +47,8 @@ def _with_boards(monkeypatch, boards: dict[str, str]) -> None:
 
     async def fake_routing(full, _short, _org, with_source=False):
         r = Routing(boards.get(full, ""))
-        return (r, "discovered:group_slug_match") if with_source else r
+        src = (sources or {}).get(full, "discovered:group_slug_match")
+        return (r, src) if with_source else r
 
     monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
 
@@ -204,3 +207,40 @@ def test_the_interval_is_unchanged_when_nothing_is_watched() -> None:
     from boardman.services.github_poller import GitHubEventPoller as P
 
     assert P._safe_interval(15.0, 0) == 15.0
+
+
+@pytest.mark.asyncio
+async def test_the_org_default_board_is_not_a_destination(monkeypatch, _org) -> None:
+    """repos.yml `defaults` answers for EVERY repo, so accepting it while sweeping would
+    file all of them onto one shared board and call that a placement."""
+    monkeypatch.setattr(settings, "testing_live_plaky_repos", "all")
+    _with_org_repos(monkeypatch, ["Team-Deepiri/configured", "Team-Deepiri/unconfigured"])
+    _with_boards(
+        monkeypatch,
+        {"Team-Deepiri/configured": "269031", "Team-Deepiri/unconfigured": "269031"},
+        sources={
+            "Team-Deepiri/configured": "explicit",
+            "Team-Deepiri/unconfigured": "org_default",
+        },
+    )
+
+    watched, excluded = await gp.resolve_poller_repos()
+
+    assert watched == ["Team-Deepiri/configured"]
+    assert excluded == [
+        (
+            "Team-Deepiri/unconfigured",
+            "only the org-default board resolves; no placement of its own",
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_list_still_honours_an_org_default(monkeypatch, _org) -> None:
+    """Naming a repo is a decision. The default is only refused while sweeping."""
+    monkeypatch.setattr(settings, "testing_live_plaky_repos", "Team-Deepiri/unconfigured")
+
+    watched, excluded = await gp.resolve_poller_repos()
+
+    assert watched == ["Team-Deepiri/unconfigured"]
+    assert excluded == []

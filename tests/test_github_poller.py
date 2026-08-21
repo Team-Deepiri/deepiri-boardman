@@ -690,7 +690,9 @@ async def test_commit_poll_covers_open_pr_branches(monkeypatch: pytest.MonkeyPat
                 ]
             )
 
-    proc = {"commits": set(), "pr_branches": {"fix/78-retry"}}
+    # pr_branches is keyed by PR number so a closed PR cannot drop a branch a live PR
+    # still needs; the values are the refs to poll.
+    proc = {"commits": set(), "pr_branches": {78: "fix/78-retry"}}
     await poller._poll_commits(Client(), "o/r", "2026-01-01T00:00:00Z", proc)
 
     # Both the default branch and the PR's head branch were queried.
@@ -776,3 +778,23 @@ async def test_direct_poll_detects_label_change(monkeypatch: pytest.MonkeyPatch)
 
     assert [a for a, _ in seen] == ["opened", "labeled", "labeled"]
     assert seen[1][1] == ["bug", "NEEDS HELP"]
+
+
+@pytest.mark.asyncio
+async def test_a_closed_pr_does_not_drop_a_branch_a_live_pr_still_uses(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Two PRs can share a head ref (close, then reopen cleanly). Keying the watched
+    branches on the ref let the closed one silently end commit polling for the live one."""
+    proc: dict = {"pr_branches": {}}
+    ref = "fix/78-retry"
+
+    # The list comes back newest-first, so the OPEN PR is seen before the closed one.
+    for num, state in ((79, "open"), (78, "closed")):
+        branches = proc.setdefault("pr_branches", {})
+        if state == "open":
+            branches[num] = ref
+        else:
+            branches.pop(num, None)
+
+    assert set(proc["pr_branches"].values()) == {ref}, "the live PR's branch survives"

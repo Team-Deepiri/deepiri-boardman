@@ -146,6 +146,9 @@ EVENTS_FEED_TYPES = frozenset(
 
 # Sentinels that mean "watch every eligible repo" instead of a hand-written list.
 _WATCH_ALL_TOKENS = {"*", "all", "auto"}
+# `get_routing`'s source for the repos.yml `defaults` block, which answers for every repo
+# in the org. Fine when a human named the repo; not a destination when we are sweeping.
+_ORG_DEFAULT_SOURCE = "org_default"
 # How many poll cycles between re-resolving the watch list. Repos gain Plaky groups and
 # new repos appear; a list resolved once at startup also strands the poller on nothing if
 # that first org listing happened to fail.
@@ -244,6 +247,13 @@ async def resolve_poller_repos() -> tuple[list[str], list[tuple[str, str]]]:
             # Never invent a destination: a task written to the wrong board is worse
             # than a repo that visibly is not being watched.
             excluded.append((full, "no Plaky board resolves for this repo"))
+            continue
+        if str(source or "").startswith(_ORG_DEFAULT_SOURCE):
+            # repos.yml `defaults` answers for EVERY repo in the org, so accepting it
+            # here would file all 48 repos' issues and PRs onto one shared board and call
+            # that a destination. A default is a fallback for a repo somebody chose to
+            # configure, not evidence that this repo belongs anywhere.
+            excluded.append((full, "only the org-default board resolves; no placement of its own"))
             continue
         _log.info(
             "TESTING_LIVE_PLAKY: watching %s -> board %s (placement: %s)", full, board_id, source
@@ -401,7 +411,7 @@ class GitHubEventPoller:
                 # Head branches of open PRs. GET /commits defaults to the DEFAULT branch, so
                 # without these a developer's "Fixes #12" commit on a feature branch is never
                 # seen — which is where essentially all real work happens.
-                "pr_branches": set(),
+                "pr_branches": {},
                 "commits": set(),
             }
             _log.info(
@@ -578,15 +588,16 @@ class GitHubEventPoller:
 
             # newly requested reviewers (webhook-only event, derived from requested_reviewers)
             head_ref = str(((pr.get("head") or {}) or {}).get("ref") or "").strip()
-            branches = proc.setdefault("pr_branches", set())
+            # Keyed by PR NUMBER, not by branch: two PRs can share a head ref (close and
+            # reopen cleanly), and keying on the ref let the closed one drop a branch the
+            # live one still needs, silently ending commit polling for it. Dropping the
+            # entry when a PR closes is what keeps this from growing forever -- it drives
+            # one /commits call each per cycle, which the rate budget is built on.
+            branches = proc.setdefault("pr_branches", {})
             if head_ref and pr.get("state") == "open":
-                branches.add(head_ref)
-            elif head_ref:
-                # Drop it when the PR closes. This set drives one /commits call each per
-                # cycle, and it only ever grew: a repo accumulated a branch per PR it had
-                # ever seen, so the real call rate climbed past whatever the throttle
-                # thought it was spending.
-                branches.discard(head_ref)
+                branches[num] = head_ref
+            else:
+                branches.pop(num, None)
 
             reviewers_now = {
                 str((u or {}).get("login") or "").strip()
@@ -652,7 +663,7 @@ class GitHubEventPoller:
         never fired outside of direct-to-main pushes. SHA dedupe makes the overlap free.
         """
         branches: list[str] = [""]  # "" = repo default branch
-        branches += sorted(proc.get("pr_branches") or set())
+        branches += sorted(set((proc.get("pr_branches") or {}).values()))
 
         normalized: list[dict] = []
         actor = ""

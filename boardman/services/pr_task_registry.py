@@ -119,14 +119,17 @@ async def mark_pr_merged(
     github_pr_number: int,
 ) -> list[PullRequestTaskLink]:
     """Mark all registry rows for this PR as merged (may span multiple issues/tasks)."""
-    # withdrawn_at too: a card retired because the PR now points at an issue's task has
-    # already been told it will not receive further updates, and merging the PR must not
-    # then flip it to Completed.
+    # Superseded rows only, not every withdrawn one. A card retired because the PR now
+    # points at an issue's task has been told it will receive no further updates, so
+    # merging must not flip it to Completed. A row withdrawn merely because the PR closed
+    # is a different thing: if the reopen was missed -- a lost delivery, or a poller
+    # restart, whose closed-PR memory is in-process -- excluding it would leave the task
+    # stuck forever when the PR finally merges.
     q = select(PullRequestTaskLink).where(
         PullRequestTaskLink.github_repo == github_repo,
         PullRequestTaskLink.github_pr_number == github_pr_number,
         PullRequestTaskLink.merged_at.is_(None),
-        PullRequestTaskLink.withdrawn_at.is_(None),
+        PullRequestTaskLink.link_source != _SUPERSEDED_LINK_SOURCE,
     )
     r = await session.execute(q)
     rows = list(r.scalars())
