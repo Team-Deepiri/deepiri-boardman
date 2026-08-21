@@ -15,6 +15,8 @@ import asyncio
 import logging
 import time
 
+from boardman.observability.degradation import log_degraded
+
 _log = logging.getLogger(__name__)
 
 
@@ -32,7 +34,7 @@ def _board_ids() -> list[str]:
             if bid and bid not in ids:
                 ids.append(bid)
     except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
-        pass
+        log_degraded(_log, "_board_ids: list_registered_repos")
     return ids[:4]  # a handful of boards; this is a warm-up, not a crawl
 
 

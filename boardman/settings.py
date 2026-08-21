@@ -3,6 +3,38 @@
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# --- Analysis/context limits, defined once (Sorge review, PR #88) --------------------
+# These doubled as literals inside the modules that consume them ("or 16", "or 200"),
+# so a change here silently disagreed with the fallback there. They now live in exactly
+# one place: the Field default below *and* the module fallback both read these names.
+DEFAULT_LLM_CONTEXT_BUDGET_CHARS = 20_000
+DEFAULT_GITHUB_PR_MAX_FILES = 40
+DEFAULT_GITHUB_PR_MAX_BODY_CHARS = 4_000
+DEFAULT_GITHUB_CODE_SEARCH_MAX_FILES = 16
+DEFAULT_GITHUB_CODE_SEARCH_MAX_BYTES_PER_FILE = 120_000
+# Splitting open issues from open PRs costs one extra GitHub call per repo, so only the
+# head of the activity ranking pays it. 8 covers the repos anyone actually asks about.
+DEFAULT_GITHUB_ORG_ACTIVITY_SPLIT_TOP_N = 8
+# 200 repo names is ~1.7KB of system prompt. Large orgs truncate with a visible note.
+DEFAULT_AGENT_ORG_ROSTER_MAX_NAMES = 200
+# Above this many characters a reply is substantive even if it contains "let me check",
+# so the unfulfilled-preamble guard stops looking. See boardman/agent/runner.py.
+DEFAULT_AGENT_PREAMBLE_MAX_CHARS = 600
+
+
+def positive_or_default(raw: object, default: int) -> int:
+    """Read a limit that slices a list or a string.
+
+    Anything <= 0 (or unparseable) means "unset" and yields `default`. A negative would
+    otherwise reach the wrong end of the sequence -- `names[:-1]` silently drops a real
+    repo while the caller still reports the list as complete.
+    """
+    try:
+        n = int(raw)  # type: ignore[call-overload]  # any object; TypeError is handled
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -72,11 +104,21 @@ class Settings(BaseSettings):
     repo_knowledge_sweep_max_repos: int = 25
     # Tunable analysis limits (Sorge review, PR #81): context budget for the repo
     # planning payload, PR review file cap, and code-search scope.
-    llm_context_budget_chars: int = 20000
-    github_pr_max_files: int = 40
-    github_pr_max_body_chars: int = 4000
-    github_code_search_max_files: int = 16
-    github_code_search_max_bytes_per_file: int = 120_000
+    llm_context_budget_chars: int = DEFAULT_LLM_CONTEXT_BUDGET_CHARS
+    github_pr_max_files: int = DEFAULT_GITHUB_PR_MAX_FILES
+    github_pr_max_body_chars: int = DEFAULT_GITHUB_PR_MAX_BODY_CHARS
+    github_code_search_max_files: int = DEFAULT_GITHUB_CODE_SEARCH_MAX_FILES
+    github_code_search_max_bytes_per_file: int = DEFAULT_GITHUB_CODE_SEARCH_MAX_BYTES_PER_FILE
+    # How many of the busiest repos get their open issues split from their open PRs.
+    # 0 means "make no extra calls"; a negative value asks for the default.
+    github_org_activity_split_top_n: int = DEFAULT_GITHUB_ORG_ACTIVITY_SPLIT_TOP_N
+    # Extra committed-artifact detections for repo hotspots, beyond the built-in list in
+    # boardman/github/repo_hotspots.py. Format: "filename_suffix:why it matters",
+    # SEMICOLON-separated, because reasons are prose and prose contains commas. A marker
+    # is a filename ENDING of at least 3 characters (endswith, not substring). e.g.
+    # "id_ed25519:private SSH key tracked in git;.tfstate:terraform state, with secrets".
+    # Lets a deployment add a new sensitive file type without a code change.
+    github_extra_artifact_rules: str = ""
     # QA GitHub-fit scoring knobs (see assignment/qa_picker.py for semantics).
     qa_fit_weight_direct: float = 0.0  # 0 = use the module default
     qa_fit_scoring_timeout_seconds: float = 0.0  # 0 = use the module default
@@ -110,7 +152,7 @@ class Settings(BaseSettings):
     github_webhook_async_enabled: bool = False
     github_webhook_job_retries: int = 2
     github_reconcile_enabled: bool = False
-    github_reconcile_interval_seconds: float = 900.0
+    github_reconcile_interval_seconds: float = 15.0
     github_reconcile_max_items: int = 50
     github_pat: str | None = None
     github_org: str = "deepiri-org"
@@ -186,6 +228,12 @@ class Settings(BaseSettings):
     agent_recursion_limit: int = 0
     # When True, LangChain AgentExecutor prints step traces (noisy; dev only)
     agent_langchain_verbose: bool = False
+    # Repo names injected into every system prompt (see boardman/agent/org_roster.py).
+    agent_org_roster_max_names: int = DEFAULT_AGENT_ORG_ROSTER_MAX_NAMES
+    # Length ceiling for the unfulfilled-preamble guard (boardman/agent/runner.py). Raise
+    # it if a model starts shipping longer bare promises; lower it if real short answers
+    # are being retried. 0 = use DEFAULT_AGENT_PREAMBLE_MAX_CHARS.
+    agent_preamble_max_chars: int = DEFAULT_AGENT_PREAMBLE_MAX_CHARS
     # Bumped when the system prompt changes shape, so sessions are never compared across
     # prompt generations. 2026-08-20: structured project state became the default context.
     prompt_version: str = "2026-08-20"

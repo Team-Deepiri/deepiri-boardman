@@ -111,7 +111,7 @@ async def post_hook(client: httpx.AsyncClient, event: str, payload: dict) -> dic
     )
     try:
         return r.json()
-    except Exception:
+    except ValueError:  # non-JSON body: the raw text below is the whole report
         return {"ok": False, "raw": r.text[:200]}
 
 

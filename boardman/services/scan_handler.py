@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -22,10 +23,13 @@ from boardman.github.repo_fetch import (
 )
 from boardman.llm.completion import chat_complete, parse_json_tasks
 from boardman.llm.ollama_autodetect import effective_ollama_model
+from boardman.observability.degradation import log_degraded
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing_async
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
 
 
 def _normalize_task_fields(raw: Any) -> dict[str, Any]:
@@ -386,6 +390,7 @@ async def run_repo_scan(
             "warnings": parse_warnings + routing_warnings,
         }
     except Exception as e:  # noqa: BLE001 - graceful degradation
+        log_degraded(_log, f"run_repo_scan({repo_full}): fetch, draft and file tasks", e)
         scan_row.error = str(e)[:2000]
         await session.flush()
         return {"ok": False, "message": str(e), "scan_id": scan_row.id}

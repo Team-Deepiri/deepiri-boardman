@@ -1,6 +1,7 @@
 """GitHub webhook receiver and event dispatch."""
 
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -19,6 +20,7 @@ from boardman.github.webhooks import (
     parse_webhook_payload,
     verify_signature,
 )
+from boardman.observability.degradation import log_degraded
 from boardman.services.issue_handler import (
     handle_issue_closed,
     handle_issue_edited,
@@ -42,6 +44,8 @@ from boardman.services.pr_review_handler import (
     handle_pull_request_review,
 )
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -200,7 +204,13 @@ async def github_webhook(
 
     try:
         payload_dict = json.loads(raw_body.decode("utf-8"))
-    except Exception:  # noqa: BLE001 - cache/warm-up failure is not a service failure
+    except Exception:  # noqa: BLE001 - the delivery row MUST reach a terminal state
+        # A body that is not UTF-8 JSON is a malformed delivery, not a Boardman failure:
+        # 400 and record it as processed so GitHub stops retrying it. Deliberately broad:
+        # a 500 escaping here would leave the row at "processing" and every redelivery of
+        # that id would short-circuit on "already queued" forever. log_degraded keeps the
+        # ValueError/UnicodeDecodeError case quiet and gives anything else a traceback.
+        log_degraded(_log, "github_webhook: parsing the delivery body")
         await _mark_delivery("processed", "invalid_json")
         return Response(
             content=json.dumps({"ok": False, "message": "Invalid JSON"}), status_code=400

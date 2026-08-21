@@ -16,6 +16,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from boardman.observability.degradation import log_unexpected
 from boardman.plaky.name_match import rank_plaky_rows
 from boardman.plaky.plaky_catalog import (
     PlakyBoardEntry,
@@ -138,6 +139,7 @@ async def resolve_placement_for_repo(
         catalog, cache_label = await get_plaky_catalog(force=force_catalog_refresh)
     except Exception as exc:  # noqa: BLE001 - observability failure must not affect the request
         _log.warning("plaky placement: catalog unavailable for %r: %s", full_name, exc)
+        log_unexpected(_log, "resolve_placement_for_repo: get_plaky_catalog")
         return None
     result = discover_placement_from_catalog(
         catalog, full_name, short_name, description=description

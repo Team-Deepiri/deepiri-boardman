@@ -3,6 +3,7 @@ import json
 import logging
 import re
 import uuid
+from collections.abc import Iterable
 from typing import Any
 
 from sqlalchemy import select
@@ -22,7 +23,77 @@ from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
-ISSUE_LINK_RE = re.compile(r"(?:Closes|Fixes|Resolves)\s+#(\d+)", re.IGNORECASE)
+# GitHub's own closing keywords, in every tense it accepts: close/closes/closed,
+# fix/fixes/fixed, resolve/resolves/resolved. Only these link a PR to an issue -- "refs
+# #12" cites an issue without closing it, and treating that as a link would attach a PR
+# to work it merely mentions.
+_CLOSING_KEYWORD = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+ISSUE_LINK_RE = re.compile(rf"{_CLOSING_KEYWORD}\s+#(\d+)", re.IGNORECASE)
+# The same keywords in front of a full issue URL, which is what GitHub's UI inserts when
+# you pick an issue from the "Development" panel or paste a link.
+ISSUE_LINK_URL_RE = re.compile(
+    rf"{_CLOSING_KEYWORD}\s+https?://github\.com/[\w.\-]+/[\w.\-]+/issues/(\d+)",
+    re.IGNORECASE,
+)
+# Branch conventions, used ONLY when nothing explicit was written. Two shapes:
+#   issue-94-… / issue/94 / gh-94       (an unambiguous prefix)
+#   94-add-retries / fix/94-add-retries  (a number that LEADS a descriptor)
+# The trailing-descriptor requirement is what keeps `release-2024` from being read as
+# issue 2024: there, the number ends the branch name rather than introducing anything.
+_BRANCH_PREFIXED_RE = re.compile(r"(?:^|[/_-])(?:issue|gh)[-_/]?(\d{1,6})(?![0-9])", re.IGNORECASE)
+_BRANCH_LEADING_NUMBER_RE = re.compile(r"(?:^|/)(\d{1,6})[-_]+[a-z]", re.IGNORECASE)
+
+
+def _ordered_unique(values: Iterable[int]) -> list[int]:
+    seen: set[int] = set()
+    out: list[int] = []
+    for v in values:
+        if v > 0 and v not in seen:
+            seen.add(v)
+            out.append(v)
+    return out
+
+
+def explicit_issue_numbers(*texts: str | None) -> list[int]:
+    """Issue numbers a human explicitly tied this PR to, across every text given."""
+    found: list[int] = []
+    for text in texts:
+        if not text:
+            continue
+        # URLs first: "Fixes https://github.com/o/r/issues/94" also contains no "#94",
+        # so the two patterns never double-count the same reference.
+        found.extend(int(m.group(1)) for m in ISSUE_LINK_URL_RE.finditer(text))
+        found.extend(int(m.group(1)) for m in ISSUE_LINK_RE.finditer(text))
+    return _ordered_unique(found)
+
+
+def branch_issue_numbers(head_ref: str | None) -> list[int]:
+    """Issue numbers implied by a branch name. A weaker signal than a closing keyword."""
+    ref = (head_ref or "").strip()
+    if not ref:
+        return []
+    found = [int(m.group(1)) for m in _BRANCH_PREFIXED_RE.finditer(ref)]
+    found.extend(int(m.group(1)) for m in _BRANCH_LEADING_NUMBER_RE.finditer(ref))
+    return _ordered_unique(found)
+
+
+def linked_issue_numbers_for_pr(
+    *,
+    body: str | None = None,
+    title: str | None = None,
+    head_ref: str | None = None,
+) -> list[int]:
+    """Every issue this PR claims to close, most authoritative source first.
+
+    A closing keyword anywhere the author wrote it -- body or title -- is authoritative.
+    The branch name is a convention, not a statement, so it is consulted only when the
+    author wrote nothing explicit; otherwise a branch called `94-…` would silently add
+    issue 94 to a PR whose body says it fixes 95.
+    """
+    explicit = explicit_issue_numbers(body, title)
+    if explicit:
+        return explicit
+    return branch_issue_numbers(head_ref)
 
 
 def _issue_assignee_login(issue: Any) -> str:
@@ -440,9 +511,12 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
 
 
 async def get_linked_issue_numbers(pr_body: str | None) -> list[int]:
-    if not pr_body:
-        return []
-    return [int(m.group(1)) for m in ISSUE_LINK_RE.finditer(pr_body)]
+    """Body-only view of the closing keywords, kept for callers that only have a body.
+
+    Prefer `linked_issue_numbers_for_pr`, which also reads the title and (as a last
+    resort) the branch name.
+    """
+    return explicit_issue_numbers(pr_body)
 
 
 async def find_plaky_task_by_issue(

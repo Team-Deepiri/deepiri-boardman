@@ -16,6 +16,7 @@ import httpx
 
 from boardman.assignment.tier_classifier import classify_repo_tier
 from boardman.github.repo_metadata import fetch_repo_metadata
+from boardman.observability.degradation import log_unexpected
 
 _log = logging.getLogger(__name__)
 
@@ -103,6 +104,7 @@ async def infer_qa_tier_from_pr_activity(
                 Exception
             ) as e:  # noqa: BLE001 - observability failure must not affect the request
                 _log.debug("search issues %s: %s", q, e)
+                log_unexpected(_log, f"infer_qa_tier_from_pr_activity: GET search q={q}", e)
                 break
             if r.status_code != 200:
                 break

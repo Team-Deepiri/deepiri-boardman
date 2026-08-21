@@ -30,9 +30,11 @@ ROOT = Path(__file__).resolve().parent.parent
 # drifts from repos.yml or the Plaky catalog.
 WATCHED_REPOS_ENV = "TESTING_LIVE_PLAKY_REPOS"
 
-# Hardcoded for speed: this script runs standalone and the option names change
-# only when the team reconfigures a board column. If a status is added, update here.
-OPTION_NAMES: dict[str, dict[str, str]] = {
+# Last-resort fallback ONLY. The real option names are read from each watched board at
+# startup (see option_names_for_board), so a status the team adds or renames shows up here
+# without editing this file. This copy is what the script falls back to when the schema
+# call fails, so a network blip degrades to slightly stale labels instead of raw ids.
+FALLBACK_OPTION_NAMES: dict[str, dict[str, str]] = {
     "Status": {
         "0": "NEEDS ASSIGNED",
         "8": "Assigned",
@@ -59,6 +61,54 @@ OPTION_NAMES: dict[str, dict[str, str]] = {
 }
 
 
+async def option_names_for_board(board_id: str) -> dict[str, dict[str, str]]:
+    """{field title: {option id: label}} read live from the board's own schema.
+
+    Hardcoding these made the script brittle: a status added or renamed in Plaky printed
+    as a bare id, and nobody noticed until a diff looked wrong. The schema bundle already
+    normalizes options across Plaky's API shapes, so ask it instead of guessing.
+    """
+    from boardman.plaky.board_schema import fetch_board_schema_bundle
+
+    try:
+        bundle = await fetch_board_schema_bundle(board_id)
+    except Exception as e:  # noqa: BLE001 - a watcher must never die on a schema read
+        print(
+            f"  ! schema for board {board_id} unavailable ({e}); using fallback labels", flush=True
+        )
+        # Copy per column, like the success path below: the caller must never be handed
+        # the module constant itself.
+        return {k: dict(v) for k, v in FALLBACK_OPTION_NAMES.items()}
+
+    normalized = bundle.get("normalized") if isinstance(bundle, dict) else None
+    # Start from the hardcoded map and OVERLAY the live labels, per column. Replacing a
+    # column outright loses any id the schema described without a usable id/name pair, and
+    # those ids would then print raw where the old table used to name them.
+    out: dict[str, dict[str, str]] = {k: dict(v) for k, v in FALLBACK_OPTION_NAMES.items()}
+    described = 0
+    for field in (normalized or {}).get("fields") or []:
+        if not isinstance(field, dict):
+            continue
+        title = str(field.get("name") or "").strip()
+        options = field.get("options")
+        if not title or not isinstance(options, list):
+            continue
+        labels = {
+            str(o.get("id")): str(o.get("name") or "").strip()
+            for o in options
+            if isinstance(o, dict) and o.get("id") is not None and str(o.get("name") or "").strip()
+        }
+        if labels:
+            described += 1
+            out.setdefault(title, {}).update(labels)
+    if not described:
+        print(
+            f"  ! board {board_id} returned no option labels; using fallback labels",
+            flush=True,
+        )
+    return out
+
+
 async def watched_placements() -> list[tuple[str, str, str]]:
     """[(repo, board_id, group_id)] for everything the poller is configured to watch."""
     from boardman.repos_config import get_routing_async
@@ -83,14 +133,24 @@ def _people(value: Any) -> list[str]:
     return sorted(str(u) for u in (users or []))
 
 
-async def snapshot(board: str, group: str, names: dict[str, str]) -> dict[str, dict[str, Any]]:
-    """{task_id: fields} for one group, as the board currently reads."""
+async def snapshot(
+    board: str,
+    group: str,
+    names: dict[str, str],
+    options: dict[str, dict[str, str]] | None = None,
+) -> dict[str, dict[str, Any]]:
+    """{task_id: fields} for one group, as the board currently reads.
+
+    `options` is that board's live {field title: {option id: label}} map; omit it and the
+    hardcoded fallback is used.
+    """
     from boardman.plaky.client import PlakyClient
 
+    option_names = options if options is not None else FALLBACK_OPTION_NAMES
     client = PlakyClient()
     try:
         listing = await client.list_board_items(board, max_pages=3)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - one unreadable board must not stop the watch
         print(f"  ! could not read board {board}: {e}", flush=True)
         return {}
     out: dict[str, dict[str, Any]] = {}
@@ -104,8 +164,8 @@ async def snapshot(board: str, group: str, names: dict[str, str]) -> dict[str, d
             if not isinstance(f, dict):
                 continue
             title, value = str(f.get("title") or ""), f.get("value")
-            if f.get("type") == "STATUS" and title in OPTION_NAMES:
-                row[title] = OPTION_NAMES[title].get(str(value), str(value))
+            if f.get("type") == "STATUS" and title in option_names:
+                row[title] = option_names[title].get(str(value), str(value))
             elif f.get("type") == "PERSON":
                 ids = _people(value)
                 row[title] = [names.get(i, i) for i in ids]
@@ -154,7 +214,13 @@ async def main() -> int:
     for repo, board, group in places:
         print(f"  {repo:<34} board {board} group {group or '(whole board)'}", flush=True)
 
-    state = {(b, g): await snapshot(b, g, names) for _repo, b, g in places}
+    # One schema read per DISTINCT board (several repos often share one), reused for
+    # every cycle below. Reading per repo meant duplicate calls and duplicate warnings.
+    options: dict[str, dict[str, dict[str, str]]] = {}
+    for _repo, b, _g in places:
+        if b not in options:
+            options[b] = await option_names_for_board(b)
+    state = {(b, g): await snapshot(b, g, names, options.get(b)) for _repo, b, g in places}
     for (b, g), rows in state.items():
         print(f"  baseline: board {b} group {g or '*'} has {len(rows)} tasks", flush=True)
 
@@ -165,7 +231,7 @@ async def main() -> int:
         await asyncio.sleep(max(10.0, args.interval))
         cycle += 1
         for repo, b, g in places:
-            fresh = await snapshot(b, g, names)
+            fresh = await snapshot(b, g, names, options.get(b))
             if not fresh:
                 continue
             changes = diff(state[(b, g)], fresh)

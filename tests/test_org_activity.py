@@ -11,6 +11,7 @@ import pytest
 
 from boardman.github import org_activity
 from boardman.github.org_activity import format_activity_markdown, org_activity_ranking
+from boardman.settings import settings
 
 ROWS = [
     {"full_name": "o/busy", "open_issues_and_prs": 30, "pushed_at": "2026-08-20T10:00:00Z"},
@@ -21,7 +22,7 @@ ROWS = [
 
 @pytest.fixture()
 def _wired(monkeypatch):
-    monkeypatch.setattr(org_activity, "_SPLIT_TOP_N", 2)
+    monkeypatch.setattr(settings, "github_org_activity_split_top_n", 2)
     monkeypatch.setattr(
         "boardman.github.org_repos.cached_org_repo_rows", lambda *_a, **_k: list(ROWS)
     )
@@ -104,3 +105,72 @@ async def test_no_repos_is_reported_not_faked(monkeypatch) -> None:
 
 def test_markdown_of_a_failure_says_so() -> None:
     assert "Could not rank" in format_activity_markdown({"ok": False, "message": "nope"})
+
+
+@pytest.mark.asyncio
+async def test_the_split_depth_comes_from_settings_when_not_passed(monkeypatch, _wired) -> None:
+    """How far down the ranking pays the extra call per repo is a deployment trade-off,
+    not a literal in the module (Sorge review, PR #88)."""
+    seen: list[str] = []
+
+    async def fake_prs(_client, full_name, _headers):
+        seen.append(full_name)
+        return 1
+
+    monkeypatch.setattr(org_activity, "_open_pr_count", fake_prs)
+    monkeypatch.setattr(settings, "github_org_activity_split_top_n", 1)
+    await org_activity_ranking(limit=5)
+    assert seen == ["o/busy"], "only the configured head should pay for the split"
+
+    seen.clear()
+    monkeypatch.setattr(settings, "github_org_activity_split_top_n", 3)
+    await org_activity_ranking(limit=5)
+    assert seen == ["o/busy", "o/mid", "o/quiet"]
+
+
+@pytest.mark.asyncio
+async def test_an_explicit_split_top_still_wins(monkeypatch, _wired) -> None:
+    seen: list[str] = []
+
+    async def fake_prs(_client, full_name, _headers):
+        seen.append(full_name)
+        return 1
+
+    monkeypatch.setattr(org_activity, "_open_pr_count", fake_prs)
+    monkeypatch.setattr(settings, "github_org_activity_split_top_n", 3)
+    await org_activity_ranking(limit=5, split_top=1)
+    assert seen == ["o/busy"]
+
+
+@pytest.mark.asyncio
+async def test_split_top_zero_still_means_split_nothing(monkeypatch, _wired) -> None:
+    """0 asked for no extra calls before this setting existed; it must keep meaning that."""
+    seen: list[str] = []
+
+    async def fake_prs(_client, full_name, _headers):
+        seen.append(full_name)
+        return 1
+
+    monkeypatch.setattr(org_activity, "_open_pr_count", fake_prs)
+    monkeypatch.setattr(settings, "github_org_activity_split_top_n", 8)
+    out = await org_activity_ranking(limit=5, split_top=0)
+
+    assert seen == []
+    assert all("open_prs" not in row for row in out["ranked"])
+
+
+@pytest.mark.asyncio
+async def test_no_split_is_paid_for_a_row_the_limit_discards(monkeypatch, _wired) -> None:
+    """Each split is one rate-limited GitHub call; spending it on a discarded row is waste."""
+    seen: list[str] = []
+
+    async def fake_prs(_client, full_name, _headers):
+        seen.append(full_name)
+        return 1
+
+    monkeypatch.setattr(org_activity, "_open_pr_count", fake_prs)
+    monkeypatch.setattr(settings, "github_org_activity_split_top_n", 8)
+    out = await org_activity_ranking(limit=1)
+
+    assert seen == ["o/busy"], "8 configured, but only 1 row is returned"
+    assert len(out["ranked"]) == 1

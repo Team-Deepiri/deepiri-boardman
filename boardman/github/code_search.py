@@ -22,7 +22,13 @@ import httpx
 
 from boardman.github.repo_fetch import fetch_repo_file_text
 from boardman.github.repo_hotspots import fetch_repo_hotspots
-from boardman.settings import settings
+from boardman.observability.degradation import log_degraded
+from boardman.settings import (
+    DEFAULT_GITHUB_CODE_SEARCH_MAX_BYTES_PER_FILE,
+    DEFAULT_GITHUB_CODE_SEARCH_MAX_FILES,
+    positive_or_default,
+    settings,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -50,39 +56,44 @@ DEFECT_PROBES: tuple[tuple[str, str, str], ...] = (
     ("silent_pass", r"^\s*except[^\n]*:\s*\n\s*pass\s*$", "exception silently discarded"),
 )
 
-# Fallbacks when settings are unset (0). Defined here rather than duplicated at call sites.
-_MAX_FILES = int(settings.github_code_search_max_files or 16)
-_MAX_BYTES_PER_FILE = int(settings.github_code_search_max_bytes_per_file or 120_000)
+# The numbers themselves live in settings.py (DEFAULT_GITHUB_CODE_SEARCH_*) so the Field
+# default and this fallback cannot drift apart. Read through these two helpers rather than
+# re-deriving `getattr(settings, ...) or <literal>` at each call site.
+
+
+def _max_files() -> int:
+    """How many of the repo's largest source files a scan reads. <=0/unset -> the default."""
+    return positive_or_default(
+        getattr(settings, "github_code_search_max_files", 0), DEFAULT_GITHUB_CODE_SEARCH_MAX_FILES
+    )
+
+
+def _max_bytes_per_file() -> int:
+    """Per-file read ceiling in characters. <=0/unset -> the default."""
+    return positive_or_default(
+        getattr(settings, "github_code_search_max_bytes_per_file", 0),
+        DEFAULT_GITHUB_CODE_SEARCH_MAX_BYTES_PER_FILE,
+    )
 
 
 async def _fetch_source_files(
     client: httpx.AsyncClient, owner: str, repo: str, paths: list[str]
 ) -> list[tuple[str, str]]:
+    limit = _max_bytes_per_file()
+
     async def one(path: str) -> tuple[str, str]:
         try:
-            text = await fetch_repo_file_text(
-                client,
-                owner,
-                repo,
-                path,
-                max_chars=int(
-                    getattr(settings, "github_code_search_max_bytes_per_file", 0)
-                    or _MAX_BYTES_PER_FILE
-                ),
-            )
+            text = await fetch_repo_file_text(client, owner, repo, path, max_chars=limit)
         except (httpx.HTTPError, OSError, ValueError):
+            # Expected: the file moved, GitHub rate-limited us, the blob is not text.
+            # One unreadable file must not lose the other fifteen.
+            return path, ""
+        except Exception as exc:  # noqa: BLE001 - unexpected: degrade, but leave a traceback
+            log_degraded(_log, f"code search: reading {owner}/{repo}:{path}", exc)
             return path, ""
         if not isinstance(text, str) or text.startswith("(file unavailable"):
             return path, ""
-        return (
-            path,
-            text[
-                : int(
-                    getattr(settings, "github_code_search_max_bytes_per_file", 0)
-                    or _MAX_BYTES_PER_FILE
-                )
-            ],
-        )
+        return path, text[:limit]
 
     return list(await asyncio.gather(*[one(p) for p in paths]))
 
@@ -102,13 +113,11 @@ async def search_repo_code(
         client,
         owner,
         repo,
-        top_n=int(getattr(settings, "github_code_search_max_files", 0) or _MAX_FILES),
+        top_n=_max_files(),
     )
     if not hot:
         return None
-    paths = [f["path"] for f in (hot.get("largest_source_files") or [])][
-        : int(getattr(settings, "github_code_search_max_files", 0) or _MAX_FILES)
-    ]
+    paths = [f["path"] for f in (hot.get("largest_source_files") or [])][: _max_files()]
     files = await _fetch_source_files(client, owner, repo, paths)
 
     needle = query.strip().casefold()
@@ -144,13 +153,11 @@ async def scan_repo_defects(
         client,
         owner,
         repo,
-        top_n=int(getattr(settings, "github_code_search_max_files", 0) or _MAX_FILES),
+        top_n=_max_files(),
     )
     if not hot:
         return None
-    paths = [f["path"] for f in (hot.get("largest_source_files") or [])][
-        : int(getattr(settings, "github_code_search_max_files", 0) or _MAX_FILES)
-    ]
+    paths = [f["path"] for f in (hot.get("largest_source_files") or [])][: _max_files()]
     files = await _fetch_source_files(client, owner, repo, paths)
 
     findings: list[dict[str, Any]] = []
@@ -183,9 +190,7 @@ async def scan_repo_defects(
         )
 
     searched = [p for p, t in files if t]
-    max_bytes = int(
-        getattr(settings, "github_code_search_max_bytes_per_file", 0) or _MAX_BYTES_PER_FILE
-    )
+    max_bytes = _max_bytes_per_file()
     return {
         "ok": True,
         "repo": f"{owner}/{repo}",

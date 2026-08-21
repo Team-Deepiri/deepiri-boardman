@@ -675,7 +675,9 @@ class GitHubEventPoller:
                 elif isinstance(parsed, PullRequestReviewEventPayload):
                     result = await handle_pull_request_review(parsed, session)
                 elif isinstance(parsed, PullRequestReviewCommentEventPayload):
-                    if parsed.action == "created":
+                    # Same actions the webhook route accepts, so a poller-driven local
+                    # run and production see identical events.
+                    if parsed.action in ("created", "edited"):
                         result = await handle_pr_review_comment(parsed, session)
                 elif isinstance(parsed, IssueCommentEventPayload):
                     result = await handle_issue_comment_on_pr(parsed, session)

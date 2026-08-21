@@ -12,7 +12,8 @@ import re
 from collections.abc import Sequence
 
 from boardman.llm.factory import get_chat_model
-from boardman.llm.ollama_autodetect import effective_ollama_model
+from boardman.llm.ollama_autodetect import NoOllamaModelAvailable, effective_ollama_model
+from boardman.observability.degradation import log_unexpected
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -126,8 +127,13 @@ def llm_rerank_pr_candidates(
             )
         tid, conf, reason = _parse_rerank(str(content), allowed)
         return tid, conf, reason
+    except NoOllamaModelAvailable as e:
+        # Every PR webhook reaches this path on a box with nothing pulled.
+        _log.info("PR-task rerank skipped: %s", e)
+        return None, 0.0, str(e)
     except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
         _log.warning("PR-task rerank LLM failed: %s", e)
+        log_unexpected(_log, "llm_rerank_pr_candidates: invoke", e)
         return None, 0.0, str(e)
 
 

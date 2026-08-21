@@ -23,6 +23,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.models import ProjectContext
+from boardman.observability.degradation import log_unexpected
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,7 @@ async def sweep_repo_knowledge(
                 Exception
             ) as e:  # noqa: BLE001 - observability failure must not affect the request
                 logger.warning("knowledge sweep failed for %s: %s", repo, e)
+                log_unexpected(logger, f"sweep_repo_knowledge: refresh_if_moved({repo})", e)
                 return {"repo": repo, "action": "error", "error": str(e)[:200]}
 
     results = await asyncio.gather(*(one(r) for r in repos), return_exceptions=False)

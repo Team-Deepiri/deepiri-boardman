@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from typing import Any
+
+from boardman.observability.degradation import log_degraded
+
+_log = logging.getLogger(__name__)
 
 # LLMs often invent Jira-like keys; reject before hitting Plaky.
 _PLACEHOLDER_FIELD_KEY = re.compile(
@@ -1062,7 +1067,7 @@ async def fetch_board_schema_bundle(board_id: str) -> dict[str, Any]:
                         normalized.get("fields") or [], stubs
                     )
             except Exception:  # noqa: BLE001 - failure is silenced for resilience
-                pass
+                log_degraded(_log, "fetch_board_schema_bundle: list_board_items")
         ok_groups = bool(groups_r.get("ok"))
         ok = ok_board or ok_groups
         msg_parts = []

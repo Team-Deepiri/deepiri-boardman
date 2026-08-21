@@ -11,7 +11,12 @@ is only ever attached to the agent graph, never to a hot loop.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+from boardman.observability.degradation import log_degraded
+
+_log = logging.getLogger(__name__)
 
 
 def _prompt_chars(prompts: Any, kwargs: dict[str, Any]) -> int:
@@ -31,9 +36,14 @@ def make_counting_callback() -> Any:
     """A LangChain callback handler that records model calls, or None if unavailable."""
     try:
         from langchain_core.callbacks.base import AsyncCallbackHandler
-    except (
-        Exception
-    ):  # pragma: no cover - langchain always present in this service  # noqa: BLE001 - sync failure must not crash the service
+    except Exception as exc:  # noqa: BLE001 - a counter must never break a chat turn
+        # _graph_config() calls this unprotected on every agent turn, so ANY import-time
+        # failure has to end here -- narrowing to ImportError would 500 the request. It
+        # also means this runs per turn: a missing module is one line, not a stack trace.
+        if isinstance(exc, ImportError):
+            _log.debug("langchain_core callbacks unavailable; model calls will not be counted")
+        else:
+            log_degraded(_log, "make_counting_callback: import langchain_core callbacks", exc)
         return None
 
     from boardman.observability.counters import bump, observe

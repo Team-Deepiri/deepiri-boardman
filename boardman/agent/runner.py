@@ -13,7 +13,12 @@ from boardman.agent.prompts import BOARD_MANAGER_SYSTEM
 from boardman.agent.tool_timing import start_turn, turn_timing
 from boardman.agent.tools import build_all_tools
 from boardman.llm.factory import get_chat_model
-from boardman.settings import settings
+from boardman.observability.degradation import log_unexpected
+from boardman.settings import (
+    DEFAULT_AGENT_PREAMBLE_MAX_CHARS,
+    positive_or_default,
+    settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +78,14 @@ def _final_ai_text(messages: list[AnyMessage]) -> str:
 
 # "Let me fetch that now." shipped as a FINAL answer is a dead end for the user: the model
 # announced a tool call that never landed. Detect that shape so we can force one more round.
+#
+# MAINTENANCE: this is a heuristic over how models phrase intent, so it dates as model
+# styles change. Each entry below was observed in a real dead-end reply, and the guard is
+# built to fail safe -- a false negative costs the user one bad answer they can retry, a
+# false positive costs one extra LLM round and keeps the original reply either way (see
+# _looks_like_unfulfilled_preamble). Add a phrase when a new dead-end shape shows up in
+# the logs; the `agent.preamble_retry_*` counters say whether the guard is earning its
+# keep (helped vs no_help). Match on the lowercased reply, so keep entries lowercase.
 _PREAMBLE_PATTERNS = (
     "let me fetch",
     "let me check",
@@ -92,6 +105,21 @@ _PREAMBLE_PATTERNS = (
 )
 
 
+def _preamble_max_chars() -> int:
+    """Length above which a reply counts as substantive regardless of its wording.
+
+    A bare promise ("let me pull that up") is short by nature, while a long answer can
+    mention "let me check" in passing and still be the real thing. 600 characters is
+    roughly a full paragraph -- comfortably longer than any promise seen in the logs and
+    shorter than any real finding. It is a tuning knob rather than a law, so it lives in
+    settings (AGENT_PREAMBLE_MAX_CHARS) and can be moved without a code change.
+    """
+    # <= 0 is unset: a negative ceiling would disable the guard entirely and silently.
+    return positive_or_default(
+        getattr(settings, "agent_preamble_max_chars", 0), DEFAULT_AGENT_PREAMBLE_MAX_CHARS
+    )
+
+
 def _looks_like_unfulfilled_preamble(text: str) -> bool:
     """True when the reply only PROMISES work instead of delivering it.
 
@@ -99,9 +127,7 @@ def _looks_like_unfulfilled_preamble(text: str) -> bool:
     findings) are never treated as preamble even if they contain a stray "let me check".
     """
     t = (text or "").strip()
-    # Deliberately 600: a long answer may contain "let me check" in passing and
-    # is already substantive. A bare promise is short by nature.
-    if not t or len(t) > 600:
+    if not t or len(t) > _preamble_max_chars():
         return False
     low = t.lower()
     if not any(p in low for p in _PREAMBLE_PATTERNS):
@@ -267,7 +293,11 @@ async def run_tool_agent(
                 logger.info("preamble retry did not improve the reply; keeping original")
                 bump("agent.preamble_retry_no_help")
         except Exception as e:  # noqa: BLE001 — keep the original reply if the retry fails
+            # Keep the warning: this is the only line saying why the user got a bare
+            # promise back, and every failure mode of an extra LLM round trip is one
+            # log_degraded would route to DEBUG and drop at the shipped LOG_LEVEL.
             logger.warning("preamble completion round failed: %s", e)
+            log_unexpected(logger, "preamble completion round", e)
             bump("agent.preamble_retry_failed")
 
     logger.info("LangChain agent finished (output length=%d)", len(out))

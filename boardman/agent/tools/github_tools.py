@@ -25,8 +25,13 @@ from boardman.github.repo_fetch import (
 )
 from boardman.github.repo_hotspots import fetch_repo_hotspots
 from boardman.github.repo_metadata import fetch_repo_metadata
+from boardman.observability.degradation import log_degraded
 from boardman.repos_config import list_workspace_repos
-from boardman.settings import settings
+from boardman.settings import (
+    DEFAULT_LLM_CONTEXT_BUDGET_CHARS,
+    positive_or_default,
+    settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +70,7 @@ async def _workspace_repo_suggestions(
         repos = await list_workspace_repos(client)
         names = list(repos.keys())
     except Exception:  # noqa: BLE001 - GitHub API failure degrades gracefully
+        log_degraded(logger, "_workspace_repo_suggestions: list_workspace_repos")
         return []
     want = (requested or "").split("/")[-1].strip().lower()
     if not want or not names:
@@ -325,7 +331,15 @@ async def _github_repo_structure_uncached(owner_repo: str) -> str:
 
 
 def _context_budget() -> int:
-    return int(getattr(settings, "llm_context_budget_chars", 0) or 24000)
+    """Character budget for the repo planning payload. 0/unset -> the settings default.
+
+    The literal fallback here read 24000 while the setting itself defaulted to 20000 --
+    exactly the drift that keeping the number in one place prevents.
+    """
+    # <= 0 is unset: this slices the payload, so a negative would trim from the wrong end.
+    return positive_or_default(
+        getattr(settings, "llm_context_budget_chars", 0), DEFAULT_LLM_CONTEXT_BUDGET_CHARS
+    )
 
 
 # Longest first: a repo's own docs earn more room than the commit list.
@@ -535,6 +549,10 @@ def _repo_routing_summary(full_name: str) -> dict[str, str]:
 
         short = full_name.rsplit("/", 1)[-1]
         routing = get_routing(full_name, short, settings.github_org)
+        if routing is None:
+            # No repos.yml entry and no usable org default: a repo outside the org has
+            # no configured placement, which is a fact about the config, not a failure.
+            return {}
         return {
             "category": str(routing.category or ""),
             "table": str(routing.plaky_table or ""),
@@ -542,6 +560,7 @@ def _repo_routing_summary(full_name: str) -> dict[str, str]:
             "group_id": str(routing.plaky_group_id or ""),
         }
     except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
+        log_degraded(logger, "_repo_routing_summary: get_routing")
         return {}
 
 
@@ -726,6 +745,7 @@ async def _github_org_activity(limit: int = 8) -> str:
     try:
         out = await org_activity_ranking(limit=max(1, min(int(limit or 8), 25)))
     except Exception as e:  # noqa: BLE001 - graceful degradation
+        log_degraded(logger, "_github_org_activity: org_activity_ranking")
         return _json.dumps({"ok": False, "message": f"{type(e).__name__}: {e}"})
     return _json.dumps(out, default=str)[:12000]
 

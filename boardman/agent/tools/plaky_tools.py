@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from langchain_core.tools import StructuredTool
 
 from boardman.assignment.config import infer_plaky_field_keys_from_normalized, load_team_assignments
 from boardman.assignment.qa_picker import build_repo_field_map, normalize_github_repo_inputs
+from boardman.observability.degradation import log_degraded
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
     field_row_item_key,
@@ -31,6 +33,8 @@ from boardman.services.task_mutations import (
     update_task_internal,
 )
 
+_log = logging.getLogger(__name__)
+
 
 async def _person_names_async() -> dict[str, str]:
     """{plaky user id: display name}, never blocking the event loop to get it.
@@ -44,6 +48,7 @@ async def _person_names_async() -> dict[str, str]:
     try:
         return await asyncio.to_thread(_person_names)
     except Exception:  # noqa: BLE001 — person names are cosmetic; unknown ids keep their id
+        log_degraded(_log, "_person_names_async: to_thread")
         return {}
 
 
@@ -57,6 +62,7 @@ def _person_names() -> dict[str, str]:
 
         cfg = load_team_assignments()
     except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
+        log_degraded(_log, "_person_names: load_team_assignments")
         return {}
     out: dict[str, str] = {}
     for m in list(cfg.members) + list(getattr(cfg, "fallback_members", []) or []):
@@ -471,6 +477,7 @@ async def _placement_label(
     except (
         Exception
     ):  # noqa: BLE001 — board name is cosmetic; a missing one shows the board id instead
+        log_degraded(_log, "_placement_label: fetch_board_schema_bundle")
         board_name = ""
     if groups is None:
         groups = await _board_group_index(bid) if gid else {}
@@ -492,6 +499,7 @@ async def _option_index(board_id: str) -> dict[str, tuple[str, dict[str, str]]]:
     try:
         bundle = await fetch_board_schema_bundle(bid)
     except Exception:  # noqa: BLE001 — option index is cosmetic; a missing one skips the label
+        log_degraded(_log, "_option_index: fetch_board_schema_bundle")
         return out
     normalized = bundle.get("normalized") if isinstance(bundle, dict) else None
     for f in (normalized or {}).get("fields") or []:
@@ -532,6 +540,7 @@ def _resolved_people(
         keys = infer_plaky_field_keys_from_normalized(normalized) if normalized else {}
     except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
         # Never fail a create receipt over a name lookup; say nothing about people.
+        log_degraded(_log, "_resolved_people: resolving typed names to person fields")
         return "", "", []
     explicit = row.get("field_values") if isinstance(row.get("field_values"), dict) else {}
 
@@ -599,6 +608,7 @@ async def _board_group_index(board_id: str) -> dict[str, str]:
     try:
         res = await PlakyClient().list_groups(board_id)
     except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
+        log_degraded(_log, "_board_group_index: list_groups")
         return {}
     if not res.get("ok", True):
         return {}
@@ -968,6 +978,7 @@ async def _plaky_create_tasks_deferred(
             existing = [t for t in (listing.get("tasks") or []) if isinstance(t, dict)]
             dedupe_ok = bool(listing.get("ok", True))
         except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
+            log_degraded(_log, "_plaky_create_tasks_deferred: get_tasks")
             dedupe_ok = False
 
     already: list[dict[str, Any]] = []
@@ -1017,6 +1028,7 @@ async def _plaky_create_tasks_deferred(
             normalized = schema.get("normalized") if isinstance(schema, dict) else None
             normalized = normalized if isinstance(normalized, dict) else None
         except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
+            log_degraded(_log, "_plaky_create_tasks_deferred: fetch_board_schema_bundle")
             normalized = None
 
     cards: list[str] = []
@@ -1321,6 +1333,7 @@ async def _plaky_create_tasks(
             listing = await PlakyClient().get_tasks(board_id=dedupe_bid, status="all")
             existing = [t for t in (listing.get("tasks") or []) if isinstance(t, dict)]
         except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
+            log_degraded(_log, "_plaky_create_tasks: get_tasks")
             existing = []  # dedupe is best-effort; creation must not die on a listing blip
 
     # Plaky's create endpoint is ~0.2s solo but shapes concurrent bursts hard (measured

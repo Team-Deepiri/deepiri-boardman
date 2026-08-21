@@ -6,6 +6,7 @@ import json
 import logging
 import uuid
 from collections.abc import Sequence
+from datetime import datetime
 from typing import Any
 
 from sqlalchemy import select
@@ -18,7 +19,11 @@ from boardman.github.webhooks import PullRequestEventPayload, PullRequestReviewC
 from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status_id
 from boardman.plaky.client import PlakyClient
 from boardman.services.comment_dedupe import github_activity_marker, mirror_github_activity
-from boardman.services.issue_handler import find_plaky_task_by_issue, get_linked_issue_numbers
+from boardman.services.issue_handler import (
+    find_plaky_task_by_issue,
+    get_linked_issue_numbers,
+    linked_issue_numbers_for_pr,
+)
 from boardman.services.pr_link_comment import format_pr_notice_with_url
 from boardman.services.pr_task_linking import (
     format_triage_comment,
@@ -622,6 +627,79 @@ async def _maybe_triage_ambiguous_pr(
     }
 
 
+async def _link_pr_to_issue_task(
+    session: AsyncSession,
+    plaky: PlakyClient,
+    *,
+    payload: PullRequestEventPayload,
+    issue_number: int,
+    mapping: Any,
+    board_id: str,
+    is_draft: bool,
+    headline: str,
+) -> None:
+    """Attach one PR to the Plaky task an issue already owns, and run the PR workflow.
+
+    One body for two callers: `opened`, and `edited` when a PR gains a closing keyword it
+    did not have before. A PR that is linked late must land in the same state as one
+    linked at creation -- same notice, same type/assignee, same QA assignment, same
+    Needs QA gate -- or "when did you add Fixes #94" becomes a thing people have to know.
+    Every step below is idempotent, so a replayed edit re-runs it without duplicating.
+    """
+    repo_name = payload.repository.name
+    pr_number = payload.pull_request.number
+    pr_url = payload.pull_request.html_url
+
+    await upsert_pr_task_link(
+        session,
+        github_repo=repo_name,
+        github_pr_number=pr_number,
+        plaky_task_id=mapping.plaky_task_id,
+        github_issue_number=int(issue_number),
+        link_source="issue_keyword",
+    )
+    marker = f"github:pr-link-notice:{repo_name}:{pr_number}:{issue_number}"
+    await mirror_github_activity(
+        session,
+        plaky,
+        task_id=mapping.plaky_task_id,
+        action="pr_link_notice",
+        marker=marker,
+        body=format_pr_notice_with_url(headline=headline, pr_number=pr_number, pr_url=pr_url),
+        board_id=board_id or "",
+        github_repo=repo_name,
+        github_ref=str(pr_number),
+    )
+    await _apply_pr_type_and_assignee(
+        plaky,
+        task_id=mapping.plaky_task_id,
+        board_id=board_id,
+        pull_request=payload.pull_request,
+        repo_full=payload.repository.full_name,
+    )
+    pr_user0 = payload.pull_request.user or {}
+    qa_res = await _assign_qa_for_pr(
+        plaky,
+        task_id=mapping.plaky_task_id,
+        board_id=board_id,
+        repo_full=payload.repository.full_name,
+        pr_number=pr_number,
+        pr_author_login=(str(pr_user0.get("login") or "") if isinstance(pr_user0, dict) else ""),
+        task_url=mapping.plaky_task_url or "",
+    )
+    _log.info("PR #%s QA assignment: %s", pr_number, {k: qa_res[k] for k in list(qa_res)[:3]})
+    await _maybe_set_needs_qa(plaky, mapping.plaky_task_id, is_draft, board_id)
+    session.add(
+        SyncLog(
+            action="pr_linked",
+            github_repo=repo_name,
+            github_ref=str(pr_number),
+            plaky_task_id=mapping.plaky_task_id,
+            detail=json.dumps({"issue_number": issue_number, "pr_url": pr_url}),
+        )
+    )
+
+
 async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSession) -> dict:
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
@@ -647,52 +725,16 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
     for issue_num in linked_issues:
         mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
         if mapping:
-            await upsert_pr_task_link(
+            await _link_pr_to_issue_task(
                 session,
-                github_repo=repo_name,
-                github_pr_number=pr_number,
-                plaky_task_id=mapping.plaky_task_id,
-                github_issue_number=int(issue_num),
-                link_source="issue_keyword",
-            )
-            comment = format_pr_notice_with_url(
+                plaky,
+                payload=payload,
+                issue_number=int(issue_num),
+                mapping=mapping,
+                board_id=board_id,
+                is_draft=is_draft,
                 headline="**PR Opened:**",
-                pr_number=pr_number,
-                pr_url=pr_url,
             )
-            await plaky.add_comment(mapping.plaky_task_id, comment, board_id=board_id or None)
-            await _apply_pr_type_and_assignee(
-                plaky,
-                task_id=mapping.plaky_task_id,
-                board_id=board_id,
-                pull_request=payload.pull_request,
-                repo_full=full_name,
-            )
-            pr_user0 = payload.pull_request.user or {}
-            qa_res = await _assign_qa_for_pr(
-                plaky,
-                task_id=mapping.plaky_task_id,
-                board_id=board_id,
-                repo_full=full_name,
-                pr_number=pr_number,
-                pr_author_login=(
-                    str(pr_user0.get("login") or "") if isinstance(pr_user0, dict) else ""
-                ),
-                task_url=mapping.plaky_task_url or "",
-            )
-            _log.info(
-                "PR #%s QA assignment: %s", pr_number, {k: qa_res[k] for k in list(qa_res)[:3]}
-            )
-            await _maybe_set_needs_qa(plaky, mapping.plaky_task_id, is_draft, board_id)
-
-            log = SyncLog(
-                action="pr_linked",
-                github_repo=repo_name,
-                github_ref=str(pr_number),
-                plaky_task_id=mapping.plaky_task_id,
-                detail=json.dumps({"issue_number": issue_num, "pr_url": pr_url}),
-            )
-            session.add(log)
             results.append({"issue": issue_num, "task_id": mapping.plaky_task_id})
 
     # Gate on whether anything was actually LINKED, not on whether the body named an
@@ -821,21 +863,144 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
     return {"ok": True, "linked": results}
 
 
+async def reconcile_pr_issue_links(
+    payload: PullRequestEventPayload,
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """Re-resolve a PR's explicit issue relationships against its canonical link rows.
+
+    The bug this exists for: a PR opened without `Fixes #94` and edited later to add it
+    stayed unlinked forever, because `edited` treated any already-linked PR as
+    metadata-only. GitHub is authoritative for the relationship, and the author states it
+    whenever they state it -- at open or three days later -- so every `edited` re-reads it.
+
+    Rules, in order:
+      * nothing explicit written -> change nothing. A fuzzy or human-curated link stands.
+      * the same issues as the existing links -> change nothing. Repeated deliveries of
+        the same edit are therefore no-ops, which is what makes this idempotent.
+      * a newly named issue that already owns a Plaky task -> link the PR to THAT task and
+        run the same workflow `opened` runs. Never create a second task for it.
+      * an issue that is no longer named -> withdraw that link, but only once a new
+        reference has actually resolved. A body edited to name nothing, or to name an
+        issue with no task yet, must not tear down a working mapping.
+    """
+    repo_name = payload.repository.name
+    pr_number = payload.pull_request.number
+    state = resolve_pr_state(
+        payload.pull_request,
+        repo_full_name=payload.repository.full_name,
+        repo_name=repo_name,
+    )
+    referenced = linked_issue_numbers_for_pr(
+        body=payload.pull_request.body,
+        title=payload.pull_request.title,
+        head_ref=state.head_ref,
+    )
+    if not referenced:
+        return {"ok": True, "changed": False, "reason": "no explicit issue reference"}
+
+    rows = list(
+        (
+            await session.execute(
+                select(PullRequestTaskLink).where(
+                    PullRequestTaskLink.github_repo == repo_name,
+                    PullRequestTaskLink.github_pr_number == pr_number,
+                    PullRequestTaskLink.github_issue_number != 0,
+                    PullRequestTaskLink.withdrawn_at.is_(None),
+                )
+            )
+        ).scalars()
+    )
+    existing = {int(row.github_issue_number) for row in rows}
+    if existing == set(referenced):
+        return {"ok": True, "changed": False, "reason": "issue relationships unchanged"}
+
+    from boardman.repos_config import get_routing_async
+
+    routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
+    plaky = PlakyClient()
+    is_draft = bool(payload.pull_request.draft)
+
+    linked: list[dict[str, Any]] = []
+    unresolved: list[int] = []
+    for issue_num in referenced:
+        mapping = await find_plaky_task_by_issue(repo_name, int(issue_num), session)
+        if not mapping or not mapping.plaky_task_id:
+            unresolved.append(int(issue_num))
+            continue
+        if int(issue_num) in existing:
+            continue  # already the canonical link; nothing to re-run
+        await _link_pr_to_issue_task(
+            session,
+            plaky,
+            payload=payload,
+            issue_number=int(issue_num),
+            mapping=mapping,
+            board_id=board_id,
+            is_draft=is_draft,
+            headline="**PR Linked:**",
+        )
+        linked.append({"issue": int(issue_num), "task_id": mapping.plaky_task_id})
+
+    withdrawn: list[dict[str, Any]] = []
+    if linked:
+        # Only now: the PR unambiguously points somewhere else AND that somewhere exists.
+        now = datetime.utcnow()
+        for row in rows:
+            if int(row.github_issue_number) in referenced:
+                continue
+            row.withdrawn_at = now
+            withdrawn.append(
+                {"issue": int(row.github_issue_number), "task_id": str(row.plaky_task_id)}
+            )
+            session.add(
+                SyncLog(
+                    action="pr_link_withdrawn",
+                    github_repo=repo_name,
+                    github_ref=str(pr_number),
+                    plaky_task_id=str(row.plaky_task_id),
+                    detail=json.dumps(
+                        {
+                            "issue_number": int(row.github_issue_number),
+                            "reason": "PR now references a different issue",
+                            "now_references": referenced,
+                        },
+                        default=str,
+                    ),
+                )
+            )
+
+    if linked or withdrawn:
+        await session.commit()
+    return {
+        "ok": True,
+        "changed": bool(linked or withdrawn),
+        "referenced": referenced,
+        "linked": linked,
+        "withdrawn": withdrawn,
+        "unresolved_issues": unresolved,
+    }
+
+
 async def handle_pr_edited(
     payload: PullRequestEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
-    """PR metadata edited: unlinked PRs get one more shot at linking; linked PRs update metadata.
+    """PR metadata edited: re-resolve issue relationships, then sync metadata.
 
-    A PR opened without `Fixes #N` that is later edited to include one (or given a
-    clearer title) re-runs the full opened pipeline. Already-linked PRs are left
-    alone — automation must not churn a link a human may have curated.
+    A PR opened without `Fixes #N` that is later edited to include one links to that
+    issue's existing Plaky task (see `reconcile_pr_issue_links`). A PR that names no
+    issue at all and has no task falls through to the full opened pipeline.
     """
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     state = (payload.pull_request.state or "").strip().casefold()
     if state and state != "open":
         return {"ok": True, "skipped": True, "message": "PR not open; edit ignored"}
+
+    relink = await reconcile_pr_issue_links(payload, session)
+
     task_ids = await distinct_task_ids_for_pr(
         session, github_repo=repo_name, github_pr_number=pr_number
     )
@@ -932,8 +1097,12 @@ async def handle_pr_edited(
             "skipped": all_failed,
             "event": "pr_metadata_synced",
             "updated": plaky_results,
+            "relink": relink,
         }
-    return await handle_pr_opened(payload, session)
+    opened = await handle_pr_opened(payload, session)
+    if isinstance(opened, dict):
+        opened.setdefault("relink", relink)
+    return opened
 
 
 async def handle_pr_converted_to_draft(

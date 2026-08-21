@@ -15,6 +15,7 @@ or encodes domain knowledge — that emerges from frequency across the org's rep
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 
@@ -22,7 +23,10 @@ import httpx
 
 from boardman.github.read_cache import cached
 from boardman.github.repo_fetch import github_request
+from boardman.observability.degradation import log_degraded
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass
@@ -61,6 +65,7 @@ async def fetch_repo_identity(
             data = response.json()
             return data if isinstance(data, dict) else None
         except Exception:  # noqa: BLE001 - graceful degradation
+            log_degraded(_log, "fetch_repo_identity._fetch: github_request")
             return None
 
     return await cached(
@@ -92,6 +97,7 @@ async def fetch_repo_tree(
             data = response.json()
             return data if isinstance(data, dict) else None
         except Exception:  # noqa: BLE001 - graceful degradation
+            log_degraded(_log, "fetch_repo_tree._fetch: github_request")
             return None
 
     return await cached(
@@ -118,6 +124,7 @@ async def _fetch_file_tree_signals(
             return [], 0, [], {}
         tree = data.get("tree", [])
     except Exception:  # noqa: BLE001 - graceful degradation
+        log_degraded(_log, "_fetch_file_tree_signals: fetch_repo_tree")
         return [], 0, [], {}
 
     signals: list[str] = []
@@ -244,6 +251,7 @@ async def fetch_repo_metadata(
             pushed_at=str(data.get("pushed_at") or ""),
         )
     except Exception:  # noqa: BLE001 - graceful degradation
+        log_degraded(_log, "fetch_repo_metadata: fetch_repo_identity")
         return None
 
 

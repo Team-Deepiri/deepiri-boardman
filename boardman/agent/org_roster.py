@@ -17,13 +17,28 @@ import logging
 
 import httpx
 
-from boardman.settings import settings
+from boardman.observability.degradation import log_degraded
+from boardman.settings import (
+    DEFAULT_AGENT_ORG_ROSTER_MAX_NAMES,
+    positive_or_default,
+    settings,
+)
 
 logger = logging.getLogger(__name__)
 
-# Capped to keep the system prompt under the context budget. 200 names is ~1.7KB;
-# a larger org truncates with a clear note rather than blowing the budget silently.
-MAX_NAMES = 200
+
+def _max_names() -> int:
+    """How many repo names the roster prints before truncating.
+
+    Capped to keep the system prompt under the context budget: 200 names is ~1.7KB. An
+    org larger than the cap is a real deployment difference rather than a code question,
+    so the ceiling is a setting (AGENT_ORG_ROSTER_MAX_NAMES). Anything <= 0 means unset:
+    a negative would slice `shorts[:-1]` and drop a real repo while the prompt still
+    claimed the list was complete.
+    """
+    return positive_or_default(
+        getattr(settings, "agent_org_roster_max_names", 0), DEFAULT_AGENT_ORG_ROSTER_MAX_NAMES
+    )
 
 
 async def org_repo_roster_markdown() -> str:
@@ -42,30 +57,44 @@ async def org_repo_roster_markdown() -> str:
     except (httpx.HTTPError, OSError, ValueError):
         logger.warning("org roster unavailable for this turn", exc_info=True)
         return ""
-    except Exception:  # noqa: BLE001 - logged and handled
-        logger.exception("org roster failed unexpectedly")
+    except Exception as exc:  # noqa: BLE001 - logged and handled
+        log_degraded(logger, f"org roster for {org}", exc)
         return ""
     shorts = sorted({n.rsplit("/", 1)[-1] for n in names if n})
     if not shorts:
         return ""
-    shown = shorts[:MAX_NAMES]
+    shown = shorts[: _max_names()]
+    hidden = len(shorts) - len(shown)
 
     return "\n".join(
         [
             "",
             f"## Repositories in {org} ({len(shorts)})",
             "",
-            "This is the full list. A name the user says almost always maps to one of "
+            (
+                "This is the full list. "
+                if not hidden
+                else f"These are {len(shown)} of the {len(shorts)} repositories in the org; "
+                f"{hidden} more are not shown here. "
+            )
+            + "A name the user says almost always maps to one of "
             "these, usually by dropping or adding the `deepiri-`/`diri-` prefix — "
             '"aarflingo" is `deepiri-aarflingo`, "cyrex" is `diri-cyrex`.',
             "",
             ", ".join(f"`{s}`" for s in shown)
-            + (f" …and {len(shorts) - len(shown)} more" if len(shorts) > len(shown) else ""),
+            + (f" …and {hidden} more repositories not listed here" if hidden else ""),
             "",
             "**Never say a project does not exist or that you do not recognise it "
             "without checking this list first.** If it is here, it is real: read it with "
-            "the repo-context tools and answer from what is actually in it. Only after "
-            "it is genuinely absent from this list may you say you cannot find it.",
+            "the repo-context tools and answer from what is actually in it."
+            + (
+                " Only after it is genuinely absent from this list may you say you "
+                "cannot find it."
+                if not hidden
+                else " If it is NOT here, the list above is truncated — say the name is "
+                "not in the portion you can see and try the repo-context tools anyway, "
+                "rather than claiming the repository does not exist."
+            ),
             "",
         ]
     )

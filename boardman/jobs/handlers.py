@@ -6,6 +6,8 @@ import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+from boardman.observability.degradation import log_degraded
+
 logger = logging.getLogger(__name__)
 
 JobHandler = Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]
@@ -91,6 +93,15 @@ async def boardman_repo_scan_job(payload: dict[str, Any]) -> dict[str, Any]:
             return {"ok": False, "error": str(e)}
 
 
+class _SoftSyncFailure(RuntimeError):
+    """A handler reported ``{"ok": False}``: an outcome the retry loop expects, not a crash.
+
+    Raised only to reach the retry/bookkeeping path below. Keeping it a distinct type is
+    what stops a routine retry from being logged as an unexpected failure with a full
+    stack trace on every attempt (Sorge review, PR #88).
+    """
+
+
 async def boardman_github_webhook_job(payload: dict[str, Any]) -> dict[str, Any]:
     """Process one verified GitHub delivery off the HTTP request path."""
     import asyncio
@@ -113,7 +124,9 @@ async def boardman_github_webhook_job(payload: dict[str, Any]) -> dict[str, Any]
             try:
                 result = await dispatch_github_event(event_type, body, session)
                 if not result.get("ok", True):
-                    raise RuntimeError(str(result.get("message") or "synchronization failed"))
+                    # Raised to reach the retry/bookkeeping below, not because anything
+                    # crashed. _SoftSyncFailure keeps it out of the unexpected bucket.
+                    raise _SoftSyncFailure(str(result.get("message") or "synchronization failed"))
                 if delivery_id:
                     row = await session.get(GitHubWebhookDelivery, delivery_id)
                     if row:
@@ -122,6 +135,12 @@ async def boardman_github_webhook_job(payload: dict[str, Any]) -> dict[str, Any]
                 await session.commit()
                 return {**result, "delivery_id": delivery_id, "attempt": attempt}
             except Exception as exc:  # noqa: BLE001 - graceful degradation
+                if isinstance(exc, _SoftSyncFailure):
+                    # A handler said {"ok": False}. That is a reported outcome and the
+                    # retry below is the response to it, so it gets a line, not a trace.
+                    logger.info("webhook job attempt %d/%d: %s", attempt, attempts, exc)
+                else:
+                    log_degraded(logger, "boardman_github_webhook_job: dispatch_github_event", exc)
                 last_error = str(exc)[:500]
                 await session.rollback()
                 if delivery_id:

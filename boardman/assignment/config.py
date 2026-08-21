@@ -17,6 +17,7 @@ from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.assignment.llm_identity_match import clear_identity_llm_cache
 from boardman.assignment.repo_rules import QaRepoRules, default_qa_repo_rules
 from boardman.github.team_roster import clear_support_team_cache, get_cached_support_team_roster
+from boardman.observability.degradation import log_unexpected
 from boardman.plaky.board_schema import (
     field_likely_github_repo_column,
     field_likely_person_column,
@@ -209,10 +210,10 @@ def _refresh_in_background(stamp: tuple[Any, ...]) -> None:
         try:
             cfg = _build_team_assignments()
             _team_cfg_cache = (time.monotonic(), stamp, cfg)
-        except (
-            Exception
-        ):  # a failed refresh keeps the previous answer, it never clears it  # noqa: BLE001 - observability failure must not affect the request
+        # A failed refresh keeps the previous answer; it never clears it.
+        except Exception as exc:  # noqa: BLE001 - the cached roster is still served
             _log.warning("background roster refresh failed; keeping the cached roster")
+            log_unexpected(_log, "_refresh_in_background: _build_team_assignments", exc)
         finally:
             _team_cfg_refreshing = False
 

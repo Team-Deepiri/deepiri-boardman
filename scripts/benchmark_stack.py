@@ -159,7 +159,8 @@ async def amain() -> int:
 
     try:
         tags_json = r_tags.json()
-    except Exception:
+    except ValueError as e:
+        lines.append(f"  → /api/tags returned non-JSON ({e}); model list unavailable")
         tags_json = None
     model = _pick_model(tags_json)
     lines.append(f"[Ollama] using model: {model!r}")
@@ -224,8 +225,8 @@ async def amain() -> int:
                 body = ra.json()
                 reply = (body.get("reply") or "")[:120]
                 lines.append(f"  → reply preview: {reply!r}")
-            except Exception:
-                pass
+            except (ValueError, AttributeError) as e:
+                lines.append(f"  → reply body was not the expected JSON ({e})")
         elif ra is None:
             lines.append("  → request failed (timeout/refused)")
     elif skip_agent:

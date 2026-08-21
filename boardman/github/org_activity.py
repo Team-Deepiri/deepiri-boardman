@@ -22,9 +22,25 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Splitting issues from PRs costs one call per repo, so only the head of the list pays it.
-# Configurable via the limit/split_top args on org_activity_ranking; this is the default.
-_SPLIT_TOP_N = 8
+
+def _split_top_n() -> int:
+    """How many of the busiest repos get their issue/PR split read.
+
+    Splitting issues from PRs costs one extra GitHub call per repo, so only the head of
+    the list pays it. How far down the head runs is a cost/detail trade-off that differs
+    per deployment, so it is a setting (GITHUB_ORG_ACTIVITY_SPLIT_TOP_N) rather than a
+    literal here; callers can still override per call via ``split_top``.
+
+    0 is a meaningful value -- "make no extra calls at all" -- so it is honoured rather
+    than treated as unset. A negative number asks for the default.
+    """
+    from boardman.settings import DEFAULT_GITHUB_ORG_ACTIVITY_SPLIT_TOP_N, settings
+
+    try:
+        n = int(getattr(settings, "github_org_activity_split_top_n", -1))
+    except (TypeError, ValueError):
+        return DEFAULT_GITHUB_ORG_ACTIVITY_SPLIT_TOP_N
+    return n if n >= 0 else DEFAULT_GITHUB_ORG_ACTIVITY_SPLIT_TOP_N
 
 
 async def _open_pr_count(client: Any, full_name: str, headers: dict[str, str]) -> int | None:
@@ -52,12 +68,15 @@ async def _open_pr_count(client: Any, full_name: str, headers: dict[str, str]) -
     return len(rows) if isinstance(rows, list) else None
 
 
-async def org_activity_ranking(*, limit: int = 8, split_top: int = _SPLIT_TOP_N) -> dict[str, Any]:
+async def org_activity_ranking(*, limit: int = 8, split_top: int | None = None) -> dict[str, Any]:
     """Repos ranked by open work, most active first.
 
     Returns rows with ``open_issues_and_prs`` for every repo, and for the busiest few, a
     real ``open_prs`` / ``open_issues`` split. Rows the split could not be read for say so
-    rather than guessing.
+    rather than guessing. ``split_top=None`` uses the configured default (see
+    _split_top_n); ``split_top=0`` still means "split nothing", as it always did. Any
+    ``split_top`` is capped at ``limit``, because a row past the limit is discarded before
+    it is returned and its extra GitHub call would buy nothing.
     """
     from boardman.github.http import github_http_client
     from boardman.github.org_repos import (
@@ -87,7 +106,11 @@ async def org_activity_ranking(*, limit: int = 8, split_top: int = _SPLIT_TOP_N)
         key=lambda r: (int(r.get("open_issues_and_prs") or 0), str(r.get("pushed_at") or "")),
         reverse=True,
     )
-    head = ranked[: max(0, min(int(split_top), len(ranked)))]
+    effective_split_top = _split_top_n() if split_top is None else int(split_top)
+    # Never pay for a split on a row the final `[: limit]` slice throws away: with
+    # limit=3 and the default split of 8, that was five wasted rate-limited calls.
+    effective_split_top = min(effective_split_top, max(1, int(limit)))
+    head = ranked[: max(0, min(effective_split_top, len(ranked)))]
 
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
     sem = asyncio.Semaphore(4)

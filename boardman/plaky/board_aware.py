@@ -21,6 +21,7 @@ import time
 from typing import Any
 
 from boardman.assignment.config import infer_plaky_field_keys_from_normalized
+from boardman.observability.degradation import log_unexpected
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.settings import settings
@@ -56,6 +57,7 @@ async def _board_groups(board_id: str, plaky: PlakyClient | None = None) -> list
         res = await client.list_groups(bid)
     except Exception as exc:  # noqa: BLE001 - observability failure must not affect the request
         logger.warning("board_aware: list_groups(%s) failed: %s", bid, exc)
+        log_unexpected(logger, "_board_groups: list_groups")
         return cached[1] if cached else []
     groups = res.get("groups") if isinstance(res, dict) and res.get("ok") else None
     if not isinstance(groups, list):
@@ -105,6 +107,7 @@ async def board_person_field_keys(board_id: str | None) -> dict[str, str] | None
         bundle = await fetch_board_schema_bundle(bid)
     except Exception as exc:  # noqa: BLE001 - observability failure must not affect the request
         logger.warning("board_aware: schema fetch for board %s failed: %s", bid, exc)
+        log_unexpected(logger, "board_person_field_keys: fetch_board_schema_bundle")
         return None
     if not isinstance(bundle, dict) or not bundle.get("ok"):
         return None

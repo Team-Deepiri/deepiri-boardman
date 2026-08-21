@@ -24,6 +24,7 @@ from urllib.parse import quote
 import httpx
 
 from boardman.github.qa_activity_inference import _decay_weight
+from boardman.observability.degradation import log_unexpected
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -130,6 +131,7 @@ def _maybe_load_disk_cache() -> None:
         )
     except Exception as e:  # noqa: BLE001 — cache corruption must never break picking
         _log.warning("qa profiles: could not load disk cache: %s", e)
+        log_unexpected(_log, "_maybe_load_disk_cache: reading and rebuilding the cache", e)
 
 
 # Debounce: writes at most once per 30 seconds. The warmer updates 11 profiles in a
@@ -179,6 +181,7 @@ def _save_disk_cache(*, force: bool = False) -> None:
         os.replace(tmp, path)
     except Exception as e:  # noqa: BLE001
         _log.debug("qa profiles: could not save disk cache: %s", e)
+        log_unexpected(_log, "_save_disk_cache: open")
 
 
 def clear_contribution_caches() -> None:
@@ -204,6 +207,7 @@ async def fetch_repo_info(client: httpx.AsyncClient, full_name: str) -> RepoInfo
         r = await client.get(f"https://api.github.com/repos/{full_name}", headers=_gh_headers())
     except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
         _log.debug("repo info %s: %s", full_name, e)
+        log_unexpected(_log, f"fetch_repo_info: GET /repos/{full_name}", e)
         return hit[1] if hit else None
     if r.status_code != 200:
         return hit[1] if hit else None
@@ -269,6 +273,7 @@ async def fetch_contribution_profile(
                 Exception
             ) as e:  # noqa: BLE001 - observability failure must not affect the request
                 _log.debug("profile search %s: %s", q, e)
+                log_unexpected(_log, f"fetch_contribution_profile: GET /search/issues?q={q}", e)
                 break
             if r.status_code != 200:
                 # Still throttled or auth problem — keep whatever we have.
@@ -387,4 +392,5 @@ async def warm_qa_profiles_loop(*, member_delay_seconds: float = 5.0) -> None:
             raise
         except Exception as e:  # noqa: BLE001 — warming must never crash the app
             _log.warning("qa profile warmer error: %s", e)
+            log_unexpected(_log, "warm_qa_profiles_loop: warming one round of profiles", e)
         await asyncio.sleep(PROFILE_TTL_SECONDS / 2)

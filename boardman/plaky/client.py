@@ -8,6 +8,7 @@ from typing import Any
 import httpx
 
 from boardman.github.http import shared_plaky_client
+from boardman.observability.degradation import log_degraded
 from boardman.plaky.placement import context_board_id, context_group_id
 from boardman.settings import settings
 
@@ -855,7 +856,7 @@ class PlakyClient:
                     if any(tok in name for tok in ("description", "details", "desc", "summary")):
                         description_fields.append(key)
         except Exception:  # noqa: BLE001 - failure is silenced for resilience
-            pass
+            log_degraded(_log, "PlakyClient._enforce_item_text: fetch_board_schema_bundle")
 
         patch_values: dict[str, Any] = {}
         if title is not None:
@@ -938,7 +939,7 @@ class PlakyClient:
                         ):
                             description_fields.append(key)
             except Exception:  # noqa: BLE001 - failure is silenced for resilience
-                pass
+                log_degraded(_log, "PlakyClient._create_item_hierarchy: fetch_board_schema_bundle")
             text_fields: list[dict[str, Any]] = []
             for k in title_fields:
                 text_fields.append({"itemFieldKey": k, "value": title})
@@ -1353,6 +1354,7 @@ class PlakyClient:
                 resolved[k] = out_v
             values = resolved
         except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
+            log_degraded(_log, "PlakyClient.patch_item_field_values: fetch_board_schema_bundle")
             pass  # schema unavailable: the candidate ladder below still works, just slower
 
         def _bulk_bodies_for(mapping: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1758,7 +1760,7 @@ class PlakyClient:
                                 if ov and ol:
                                     status_value_labels[ov] = ol
             except Exception:  # noqa: BLE001 - failure is silenced for resilience
-                pass
+                log_degraded(_log, "PlakyClient.get_tasks: get_board")
             listed = await self.list_board_items(bid, max_pages=5)
             if not listed.get("ok"):
                 return {
@@ -2141,6 +2143,7 @@ class PlakyClient:
                         else ""
                     )
             except Exception:  # noqa: BLE001 - graceful degradation
+                log_degraded(_log, "PlakyClient._create_subtask_via_public_items: list_groups")
                 gid = ""
         if not gid:
             return {

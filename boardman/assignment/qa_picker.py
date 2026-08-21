@@ -28,6 +28,7 @@ from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, load_t
 from boardman.assignment.repo_rules import qa_tier_allows_repo
 from boardman.assignment.tier_classifier import classify_repo_tier
 from boardman.github.repo_metadata import fetch_repo_metadata
+from boardman.observability.degradation import log_unexpected
 from boardman.repos_config import get_routing
 from boardman.settings import settings
 
@@ -402,6 +403,7 @@ async def pick_qa_for_repo(
         )
     except Exception as e:  # noqa: BLE001 — never block assignment on scoring (incl. timeout)
         _log.warning("qa_picker: GitHub fit scoring unavailable for %s: %s", fn, e)
+        log_unexpected(_log, f"pick_qa_for_repo: _github_fit_scores({fn})", e)
 
     if fits:
         chosen, rank_detail = _ranked_choice(qas, cfg, fits)

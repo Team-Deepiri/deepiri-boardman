@@ -61,7 +61,7 @@ async def _post(c: httpx.AsyncClient, event: str, delivery: str, payload: dict) 
     )
     try:
         return r.json()
-    except Exception:
+    except ValueError:  # non-JSON body: the raw text below is the whole report
         return {"ok": False, "raw": r.text[:200]}
 
 

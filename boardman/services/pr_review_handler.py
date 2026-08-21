@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +14,7 @@ from boardman.github.pr_actions import is_boardman_comment
 from boardman.github.repo_fetch import fetch_pr_assignees_and_reviewers_logins
 from boardman.github.support_qa import support_team_logins_casefold
 from boardman.github.webhooks import IssueCommentEventPayload, PullRequestReviewEventPayload
+from boardman.observability.degradation import log_degraded
 from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status_id
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.dynamic_qa_status import (
@@ -30,6 +32,8 @@ from boardman.services.pr_handler import _update_plaky_task_status
 from boardman.services.pr_task_registry import distinct_task_ids_for_pr
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
 
 
 def _qa_approved_status() -> str:
@@ -137,6 +141,7 @@ async def _failing_required_checks(full_name: str, pr_number: int) -> list[str]:
                 bad.append(str(run.get("name") or "check"))
         return bad
     except Exception:  # noqa: BLE001 - graceful degradation
+        log_degraded(_log, "_failing_required_checks: GET /commits/{ref}/check-runs")
         return []
 
 
@@ -424,6 +429,8 @@ async def handle_pull_request_review(
 async def _sync_plain_issue_comment(
     payload: IssueCommentEventPayload,
     session: AsyncSession,
+    *,
+    is_revision: bool = False,
 ) -> dict[str, Any]:
     """Comments on a plain GitHub issue land on the linked Plaky task (QA discussion in one place)."""
     from boardman.services.issue_handler import find_plaky_task_by_issue
@@ -454,9 +461,8 @@ async def _sync_plain_issue_comment(
 
     excerpt = comment_body[:700] + ("…" if len(comment_body) > 700 else "")
     quoted = "> " + excerpt.replace("\n", "\n> ")
-    text = (
-        f"💬 **GitHub comment** by `{commenter or 'unknown'}` on issue #{issue_number}:\n\n{quoted}"
-    )
+    label = "GitHub comment edited" if is_revision else "GitHub comment"
+    text = f"💬 **{label}** by `{commenter or 'unknown'}` on issue #{issue_number}:\n\n{quoted}"
     if comment_url:
         text += f"\n\n{comment_url}"
 
@@ -476,6 +482,8 @@ async def _sync_plain_issue_comment(
         board_id=bid,
         github_repo=repo_name,
         github_ref=str(issue_number),
+        is_revision=is_revision,
+        revision_body=comment_body,
     )
     await session.commit()
     return {
@@ -491,8 +499,12 @@ async def handle_issue_comment_on_pr(
     payload: IssueCommentEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
-    if payload.action != "created":
-        return {"ok": True, "message": "ignored non-created comment"}
+    # `edited` is handled too: a comment corrected on GitHub used to be dropped here, so
+    # the board kept showing the wrong text with no sign anything had changed. The mirror
+    # is keyed on (comment, wording), so an edit lands once and redeliveries land never.
+    if payload.action not in ("created", "edited"):
+        return {"ok": True, "message": f"ignored {payload.action} comment"}
+    is_revision = payload.action == "edited"
 
     # Boardman's own comments must never drive the state machine. It posts as the PAT
     # owner — usually a support-team member — so without this its QA-assignment comment
@@ -504,7 +516,7 @@ async def handle_issue_comment_on_pr(
         return {"ok": True, "skipped": True, "message": "ignored Boardman's own comment"}
 
     if not payload.issue.pull_request:
-        return await _sync_plain_issue_comment(payload, session)
+        return await _sync_plain_issue_comment(payload, session, is_revision=is_revision)
 
     repo_name = payload.repository.name
     pr_number = payload.issue.number
@@ -537,8 +549,11 @@ async def handle_issue_comment_on_pr(
         fallback=f"{repo_name}:{pr_number}:{commenter}:{comment_body}",
     )
     comment_excerpt = comment_body[:700] + ("…" if len(comment_body) > 700 else "")
+    # Plaky cannot edit a comment it already posted, so an edit arrives as its own entry.
+    # Labelling it is the difference between a visible correction and an apparent duplicate.
+    mirror_label = "GitHub PR comment edited" if is_revision else "GitHub PR comment"
     mirror_text = (
-        f"💬 **GitHub PR comment** by `{commenter or 'unknown'}` on PR #{pr_number}:\n\n"
+        f"💬 **{mirror_label}** by `{commenter or 'unknown'}` on PR #{pr_number}:\n\n"
         f"> {comment_excerpt.replace(chr(10), chr(10) + '> ')}"
     )
     if comment_url:
@@ -557,6 +572,8 @@ async def handle_issue_comment_on_pr(
                 board_id=bid,
                 github_repo=repo_name,
                 github_ref=str(pr_number),
+                is_revision=is_revision,
+                revision_body=comment_body,
             )
         )
     await session.commit()

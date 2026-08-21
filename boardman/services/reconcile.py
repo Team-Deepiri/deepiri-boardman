@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.github.http import github_http_client
 from boardman.github.webhooks import IssueEventPayload, PullRequestEventPayload
+from boardman.observability.degradation import log_degraded
 from boardman.services.issue_handler import (
     find_plaky_task_by_issue,
     handle_issue_opened,
@@ -120,6 +121,7 @@ async def reconcile_repo(
                 if res.get("event") == "issue_labels_synced":
                     out["issues_resynced"] += 1
         except Exception as e:  # noqa: BLE001 - sync failure must not crash the service
+            log_degraded(logger, f"reconcile_repo: reconciling issue #{num}", e)
             out["errors"].append(f"issue #{num}: {type(e).__name__}: {e}"[:200])
 
     r2 = await client.get(
@@ -184,6 +186,7 @@ async def reconcile_repo(
                 out["prs_relinked"] += 1
                 logger.info("reconcile: PR #%s was unlinked; repaired", num)
         except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
+            log_degraded(logger, f"reconcile_repo: reconciling PR #{num}", e)
             out["errors"].append(f"PR #{num}: {type(e).__name__}: {e}"[:200])
 
     out["ok"] = not out["errors"]

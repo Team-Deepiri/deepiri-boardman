@@ -18,7 +18,8 @@ from boardman.assignment.identity_common import (
     plaky_email_addresses,
 )
 from boardman.llm.factory import get_chat_model
-from boardman.llm.ollama_autodetect import effective_ollama_model
+from boardman.llm.ollama_autodetect import NoOllamaModelAvailable, effective_ollama_model
+from boardman.observability.degradation import log_unexpected
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -109,8 +110,12 @@ def _cached_same_person(key: str) -> float | None:
                 getattr(b, "text", str(b)) if not isinstance(b, str) else b for b in content
             )
         return _parse_confidence(str(content))
+    except NoOllamaModelAvailable as e:
+        _log.info("identity LLM skipped: %s", e)
+        return None
     except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
         _log.warning("identity LLM call failed: %s", e)
+        log_unexpected(_log, "_cached_same_person: invoke", e)
         return None
 
 

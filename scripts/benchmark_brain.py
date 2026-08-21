@@ -72,7 +72,8 @@ class Meter:
         try:
             r = await self.client.get(f"{self.base}/metrics", timeout=15)
             return r.json() if r.status_code == 200 else {}
-        except Exception:
+        except (httpx.HTTPError, OSError, ValueError) as e:
+            print(f"  ! /metrics unreadable ({type(e).__name__}: {e}); counters will read 0")
             return {}
 
     @staticmethod
@@ -143,7 +144,9 @@ async def ask_stream(
                     break
                 elif evt.get("type") == "done":
                     break
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - the failure IS the measurement, reported below
+        # A run that died is not a fast run: the timings come back with the error attached
+        # so `compare` can never read an outage as the best result ever recorded.
         total = time.monotonic() - t0
         return (first if first is not None else total, total, chars, f"{type(e).__name__}: {e}")
     total = time.monotonic() - t0
@@ -268,12 +271,23 @@ async def cleanup_bench_tasks() -> int:
     """Delete anything the write scenario created. Titles are prefixed [bench]."""
     try:
         from boardman.plaky.client import PlakyClient
-    except Exception:
+    except Exception as e:  # noqa: BLE001 - importing settings validates the env too
+        # Not just ImportError: pydantic-settings raises ValidationError at import time
+        # when an env var is malformed, and giving up there would leave [bench] tasks
+        # sitting on the live board.
+        print(f"  ! cannot clean up bench tasks: {type(e).__name__}: {e}", flush=True)
         return 0
     c = PlakyClient()
     try:
         listing = await c.get_tasks(board_id=BOARD, status="all")
-    except Exception:
+    except Exception as e:  # noqa: BLE001 - cleanup runs before the results are written
+        # Nothing here may escape: this is called ahead of the JSON write, so a failure
+        # to list the board would throw away the run's measurements as well as the tasks.
+        print(
+            f"  ! cannot list board {BOARD} to clean up ({type(e).__name__}: {e}); "
+            "leaving bench tasks",
+            flush=True,
+        )
         return 0
     removed = 0
     for t in listing.get("tasks") or []:
@@ -282,8 +296,8 @@ async def cleanup_bench_tasks() -> int:
             try:
                 await c.delete_board_item(BOARD, str(t.get("id")))
                 removed += 1
-            except Exception:
-                pass
+            except Exception as e:  # noqa: BLE001 - cleanup is best effort
+                print(f"  ! could not delete {t.get('id')}: {type(e).__name__}: {e}", flush=True)
     return removed
 
 

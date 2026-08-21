@@ -33,6 +33,7 @@ from boardman.agent.tool_context import agent_tool_context
 from boardman.agent.write_failures import recent_failed_task_writes
 from boardman.database.models import AgentMessage, AgentSession
 from boardman.llm.completion import chat_complete, chat_complete_stream
+from boardman.observability.degradation import log_degraded, log_unexpected
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.settings import settings
 
@@ -98,11 +99,26 @@ def _default_model_for_provider(provider: str) -> str:
         explicit = (settings.llm_model or "").strip()
         if explicit:
             return explicit
+        # Imported OUTSIDE the call's try: an `except NoOllamaModelAvailable` naming a
+        # symbol the try body binds raises NameError while handling, skipping the fallback
+        # below. The import gets its own guard so it still cannot break a cosmetic label.
         try:
-            from boardman.llm.ollama_autodetect import effective_ollama_model
+            from boardman.llm.ollama_autodetect import (
+                NoOllamaModelAvailable,
+                effective_ollama_model,
+            )
+        except Exception:  # noqa: BLE001 - the model label is never worth a failed turn
+            log_degraded(logger, "_default_model_for_provider: importing ollama_autodetect")
+            return "auto-selected from Ollama"
 
+        try:
             return effective_ollama_model(None)
+        except NoOllamaModelAvailable:
+            # Runs on every turn with the shipped defaults, so it is a fact, not a trace.
+            logger.debug("no Ollama model pulled yet; showing a generic model label")
+            return "auto-selected from Ollama"
         except Exception:  # noqa: BLE001 — Ollama may not be reachable; the label is cosmetic
+            log_degraded(logger, "_default_model_for_provider: effective_ollama_model")
             return "auto-selected from Ollama"
     return (settings.llm_model or "").strip() or "unspecified"
 
@@ -177,7 +193,7 @@ def _classify_llm_error(exc: BaseException, *, provider: str) -> ErrorCategory:
         if isinstance(exc, httpx.ConnectError | OSError):
             return "connectivity"
     except Exception:  # noqa: BLE001 - failure is silenced for resilience
-        pass
+        log_degraded(logger, "_classify_llm_error: inspecting the provider error")
 
     mod = (getattr(type(exc), "__module__", "") or "").lower()
     if type(exc).__name__ == "ResponseError" and "ollama" in mod:
@@ -331,7 +347,7 @@ def _format_llm_failure(exc: BaseException, *, provider: str, model: str) -> str
             if snippet:
                 base += f": {snippet}"
     except Exception:  # noqa: BLE001 - LLM failure is handled by the caller
-        pass
+        log_degraded(logger, "_format_llm_failure")
     return (
         "I could not get a reply from the language model.\n\n"
         f"**Provider:** `{provider}`\n"
@@ -471,6 +487,7 @@ async def _plaky_system_suffix(
             out += bundle.get("markdown") or ""
         except Exception as e:  # noqa: BLE001 — the schema is optional context, not a gate
             logger.warning("Could not load Plaky board schema bundle for %s: %s", bid, e)
+            log_unexpected(logger, "_plaky_system_suffix: fetch_board_schema_bundle")
             out += (
                 f"\n\n## Current Plaky board schema (from API)\n"
                 f"**Board id:** `{bid}`\n"

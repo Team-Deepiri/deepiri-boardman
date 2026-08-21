@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import time
 
 import httpx
+
+from boardman.observability.degradation import register_expected_degradation
+
+_log = logging.getLogger(__name__)
 
 _CACHE_TTL_SEC = 45.0
 _cache_key: str | None = None
@@ -13,6 +18,22 @@ _cache_names: list[str] | None = None
 _cache_expiry: float = 0.0
 
 _gpu_available: bool | None = None
+
+
+class NoOllamaModelAvailable(RuntimeError):
+    """Ollama answered, but nothing has been pulled yet.
+
+    A normal state on a fresh box, not a bug -- and with the shipped defaults
+    (LLM_PROVIDER=ollama, LLM_MODEL empty) it is hit on every single chat turn. Its own
+    type so callers can report it as the one-line fact it is instead of a stack trace
+    per request (Sorge review, PR #88).
+    """
+
+
+# Registered rather than imported by degradation.py: that module deliberately depends on
+# no boardman code. Without this, a handler that only reaches log_degraded (scan_handler's
+# whole-scan guard, for one) prints a stack trace for a fresh, unpulled box.
+register_expected_degradation(NoOllamaModelAvailable)
 
 
 def is_gpu_available() -> bool:
@@ -32,8 +53,10 @@ def is_gpu_available() -> bool:
         if result.returncode == 0 and "GPU" in result.stdout:
             _gpu_available = True
             return True
-    except Exception:  # noqa: BLE001 - failure is silenced for resilience
-        pass
+    except (OSError, subprocess.SubprocessError, UnicodeDecodeError):
+        # nvidia-smi missing, not executable, or slower than the 2s timeout: the /dev
+        # check below is the other half of this probe, so fall through to it.
+        _log.debug("nvidia-smi probe failed; falling back to the /dev/nvidia0 check")
 
     # Fallback/Additional check: check if /dev/nvidia0 exists (common in Docker with --gpus)
     import os
@@ -134,7 +157,9 @@ def resolve_ollama_model(base_url: str, explicit: str | None) -> str:
             return want
         names = _cached_names(base_url)
         if not names:
-            raise RuntimeError("Ollama has no models. Pull one, e.g. `ollama pull qwen2.5:7b`.")
+            raise NoOllamaModelAvailable(
+                "Ollama has no models. Pull one, e.g. `ollama pull qwen2.5:7b`."
+            )
         return pick_preferred_ollama_model(names, prefer_small=False)
 
     # Priority 2: CPU mode -> check if we should fallback from explicit settings.llm_model
@@ -146,7 +171,7 @@ def resolve_ollama_model(base_url: str, explicit: str | None) -> str:
     if not gpu:
         names = _cached_names(base_url)
         if not names:
-            raise RuntimeError("Ollama has no models.")
+            raise NoOllamaModelAvailable("Ollama has no models.")
 
         # If user explicitly set a model in request, we still respect it?
         # For 'boardman', the typical case is settings.llm_model being the "default".

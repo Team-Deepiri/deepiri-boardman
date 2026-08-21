@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Any
 
@@ -15,6 +16,7 @@ from boardman.assignment.qa_picker import (
     ensure_github_owner_repo,
     pick_qa_for_repo,
 )
+from boardman.observability.degradation import log_degraded
 from boardman.plaky.board_aware import resolve_group_for_repo
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
@@ -41,6 +43,8 @@ from boardman.plaky.task_tag_vocab import (
     type_field_patch_candidates,
 )
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -242,7 +246,7 @@ async def _infer_plaky_person_column_keys(
                     eng = k
                     break
     except Exception:  # noqa: BLE001 - failure is silenced for resilience
-        pass
+        log_degraded(_log, "_infer_plaky_person_column_keys: fetch_board_schema_bundle")
     return eng, qa
 
 
@@ -363,7 +367,7 @@ async def _run_post_create_assignments(
                 if refreshed.get("ok") and isinstance(refreshed.get("item"), dict):
                     patched["board_item"] = refreshed["item"]
             except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
-                pass
+                log_degraded(_log, "_run_post_create_assignments: get_board_item_public")
     return (
         patched
         if isinstance(patched, dict)
@@ -603,7 +607,7 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
                     if gid0:
                         effective_group_id = gid0
         except Exception:  # noqa: BLE001 - failure is silenced for resilience
-            pass
+            log_degraded(_log, "create_task_internal: resolve_group_for_repo")
 
     schema_normalized: dict[str, Any] | None = None
     inferred_from_schema: dict[str, str] = {}
@@ -611,7 +615,7 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
         try:
             await sync_team_assignment_field_keys_from_board(effective_board_id)
         except Exception:  # noqa: BLE001 - sync failure must not crash the service
-            pass
+            log_degraded(_log, "create_task_internal: sync_team_assignment_field_keys_from_board")
         try:
             bundle = await fetch_board_schema_bundle(effective_board_id)
             sn = bundle.get("normalized") if isinstance(bundle, dict) else None
@@ -619,7 +623,7 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
                 schema_normalized = sn
                 inferred_from_schema = infer_plaky_field_keys_from_normalized(sn)
         except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
-            pass
+            log_degraded(_log, "create_task_internal: fetch_board_schema_bundle")
 
     allowed_board_keys = _allowed_item_field_keys_from_schema(schema_normalized)
     cfg = load_team_assignments()
@@ -856,6 +860,7 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
                             "to NEEDS ASSIGNED instead of claiming an owner"
                         )
         except Exception as exc:  # noqa: BLE001 - never fail a created task on a check
+            log_degraded(_log, "create_task_internal: get_board_item_public")
             result["assignee_unverified"] = f"assignee verification skipped: {exc}"[:200]
     return result
 
@@ -889,7 +894,9 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
         try:
             await sync_team_assignment_field_keys_from_board(board_id)
         except Exception:  # noqa: BLE001 - sync failure must not crash the service
-            pass
+            log_degraded(
+                _log, "create_subtask_internal: sync_team_assignment_field_keys_from_board"
+            )
         try:
             bundle = await fetch_board_schema_bundle(board_id)
             sn = bundle.get("normalized") if isinstance(bundle, dict) else None
@@ -897,7 +904,7 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
                 schema_normalized = sn
                 inferred_from_schema = infer_plaky_field_keys_from_normalized(sn)
         except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
-            pass
+            log_degraded(_log, "create_subtask_internal: fetch_board_schema_bundle")
 
     allowed_board_keys = _allowed_item_field_keys_from_schema(schema_normalized)
     cfg = load_team_assignments()
@@ -1092,14 +1099,14 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
         try:
             await sync_team_assignment_field_keys_from_board(board_id)
         except Exception:  # noqa: BLE001 - sync failure must not crash the service
-            pass
+            log_degraded(_log, "update_task_internal: sync_team_assignment_field_keys_from_board")
         try:
             bundle = await fetch_board_schema_bundle(board_id)
             sn = bundle.get("normalized") if isinstance(bundle, dict) else None
             if isinstance(sn, dict):
                 schema_normalized = sn
         except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
-            pass
+            log_degraded(_log, "update_task_internal: fetch_board_schema_bundle")
 
         allowed_board_keys = _allowed_item_field_keys_from_schema(schema_normalized)
         cfg = load_team_assignments()
@@ -1219,6 +1226,7 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
                         "skipped": [key for key in before if key not in field_values],
                     }
             except Exception as e:  # noqa: BLE001 - graceful degradation
+                log_degraded(_log, "update_task_internal: get_board_item_public")
                 ops["field_diff"] = {"ok": False, "fallback": True, "message": str(e)[:200]}
 
         if field_values:
@@ -1281,6 +1289,7 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
                         if value is not None
                     }
             except Exception as e:  # noqa: BLE001 - graceful degradation
+                log_degraded(_log, "update_task_internal: get_task")
                 text_updates = {
                     key: value
                     for key, value in (("title", update_title), ("description", update_description))
@@ -1318,6 +1327,7 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
             if bumped:
                 ops.update(bumped)
         except Exception as e:  # noqa: BLE001 - Plaky API failure degrades gracefully
+            log_degraded(_log, "update_task_internal: bump_status_for_assignee")
             ops["status_follows_assignee"] = {"ok": False, "message": str(e)[:200]}
 
     requested_any = wants_board_patch or wants_text_patch

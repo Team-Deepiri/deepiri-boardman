@@ -12,8 +12,9 @@ from boardman.cache.agent_redis import aclose_agent_redis
 from boardman.database.session import init_db
 from boardman.github.http import aclose_shared_http_clients
 from boardman.llm.completion import aclose_ollama_http_client
-from boardman.llm.ollama_autodetect import effective_ollama_model
+from boardman.llm.ollama_autodetect import NoOllamaModelAvailable, effective_ollama_model
 from boardman.logging_config import setup_logging
+from boardman.observability.degradation import log_unexpected
 from boardman.ratelimit.leaky_bucket import get_agent_leaky_limiter
 from boardman.routes import (
     agent,
@@ -39,6 +40,7 @@ async def lifespan(app: FastAPI):
             await get_agent_leaky_limiter()
         except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
             _log.warning("Agent rate limiter init skipped: %s", e)
+            log_unexpected(_log, "lifespan: get_agent_leaky_limiter")
     # Webhook signature posture: empty secret = verification disabled (dev only).
     ws = (settings.github_webhook_secret or "").strip()
     if not ws:
@@ -87,6 +89,7 @@ async def lifespan(app: FastAPI):
                 Exception
             ) as e:  # noqa: BLE001 - observability failure must not affect the request
                 _log.warning("team_assignments: startup field-key sync failed: %s", e)
+                log_unexpected(_log, "lifespan: sync_team_assignment_field_keys_from_board")
         else:
             _log.info(
                 "team_assignments: startup field-key sync skipped (repos.yml defaults.plaky_board_id empty)"
@@ -102,8 +105,12 @@ async def lifespan(app: FastAPI):
                 src,
                 settings.ollama_base_url,
             )
+        except NoOllamaModelAvailable as e:
+            # A fresh box with nothing pulled. Normal, and the reason this type exists.
+            _log.warning("Agent LLM: %s", e)
         except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
             _log.warning("Agent LLM: could not resolve Ollama model at startup: %s", e)
+            log_unexpected(_log, "lifespan: effective_ollama_model", e)
     else:
         _log.info(
             "Agent LLM: provider=%s model=%s ollama_base=%s",

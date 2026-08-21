@@ -342,7 +342,9 @@ async def run(api: str, keep: bool) -> int:
                 for m in list(cfg.members) + list(getattr(cfg, "fallback_members", []) or [])
             }
             qa_login = by_id.get(str(qa[0]), "") if qa else ""
-        except Exception:
+        except Exception as e:  # noqa: BLE001 - load_team_assignments() calls Plaky; a
+            # timeout here must not abort the acceptance run at step 13.
+            print(f"  ! could not resolve the QA login ({type(e).__name__}: {e})", flush=True)
             qa_login = ""
 
         # 14..15  changes requested.
