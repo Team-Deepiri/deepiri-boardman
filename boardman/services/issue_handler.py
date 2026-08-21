@@ -18,7 +18,11 @@ from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing_async
 from boardman.services.comment_dedupe import mirror_github_activity
-from boardman.services.sync_state import issue_status_intent, resolve_issue_state
+from boardman.services.sync_state import (
+    issue_status_intent,
+    resolve_issue_state,
+    status_intent_would_regress,
+)
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -217,14 +221,35 @@ async def handle_issue_changed(
     )
     status_value = ""
     status_field_key: str | None = None
+    status_held_back = ""
     if board_id and (state.state == "closed" or owns_assignment or repairing):
-        from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
-
-        resolved = await resolve_plaky_status_patch(
-            board_id, intent=issue_status_intent(state, engineer_plaky_id=engineer_id)
+        from boardman.plaky.dynamic_qa_status import (
+            current_status_intent,
+            resolve_plaky_status_patch,
         )
+
+        intent = issue_status_intent(state, engineer_plaky_id=engineer_id)
+        resolved = await resolve_plaky_status_patch(board_id, intent=intent)
         if resolved:
             status_field_key, status_value = resolved[0], resolved[1]
+            # An `assigned` event says a developer is on this issue. It does NOT say the
+            # work has gone back to the beginning. Assigning a second developer to an
+            # issue whose PR was already In QA used to write Assigned over it, and QA's
+            # work disappeared from the board. Closing and the repair replay are exempt:
+            # both are deliberate statements about where the work now is.
+            if owns_assignment and not repairing and state.state != "closed":
+                now_at = await current_status_intent(
+                    board_id, str(mapping.plaky_task_id), status_field_key or ""
+                )
+                if status_intent_would_regress(now_at, intent):
+                    status_held_back = now_at
+                    status_value, status_field_key = "", None
+                    _log.info(
+                        "issue #%s: keeping status %s; %s would move the task backwards",
+                        state.number,
+                        now_at,
+                        intent,
+                    )
     if not status_value and state.state == "closed":
         status_value = (settings.plaky_status_completed or "").strip()
 
@@ -299,6 +324,7 @@ async def handle_issue_changed(
         "priority": state.priority,
         "assignee_login": state.assignee_login,
         "status": status_value,
+        "status_held_back": status_held_back or None,
         "plaky_ok": result.get("ok"),
         "text_mirrored_as_comment": text_mirrored,
     }
@@ -331,6 +357,7 @@ async def handle_issue_changed(
         "task_type": state.task_type,
         "priority": state.priority,
         "status": status_value or None,
+        "status_held_back": status_held_back or None,
         "text_mirrored_as_comment": text_mirrored,
         "mutation": result,
     }

@@ -39,7 +39,7 @@ from boardman.services.pr_task_registry import (
     upsert_pr_task_link,
 )
 from boardman.services.pr_tracker import remove_pr_row, upsert_pr_row
-from boardman.services.sync_state import resolve_pr_state
+from boardman.services.sync_state import resolve_pr_state, status_intent_would_regress
 from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
 from boardman.settings import settings
@@ -1071,6 +1071,23 @@ async def handle_pr_edited(
         )
         plaky_results: list[dict[str, Any]] = []
         for task_id in task_ids:
+            # Per task, because "how far along is it" is a property of the task, not of
+            # the PR. A draft PR resolves to Assigned, and writing that over a task QA is
+            # already reviewing loses QA's position -- the same mistake the issue path
+            # made on `assigned`. Deliberate transitions do not come through here.
+            task_status, task_status_key = status_value, status_key
+            if task_status:
+                from boardman.plaky.dynamic_qa_status import current_status_intent
+
+                now_at = await current_status_intent(board_id, task_id, status_key or "")
+                if status_intent_would_regress(now_at, "workflow_assigned"):
+                    _log.info(
+                        "PR #%s: keeping task %s at %s; Assigned would move it backwards",
+                        pr_number,
+                        task_id,
+                        now_at,
+                    )
+                    task_status, task_status_key = "", None
             mutation = await update_task_internal(
                 task_id,
                 UpdateTaskInput(
@@ -1080,8 +1097,8 @@ async def handle_pr_edited(
                     priority=state.priority if state.priority_explicit else None,
                     engineer_plaky_id=engineer_id or None,
                     plaky_board_id=board_id or None,
-                    status=status_value or None,
-                    status_plaky_field_key=status_key,
+                    status=task_status or None,
+                    status_plaky_field_key=task_status_key,
                     diff_only=True,
                 ),
             )
@@ -1098,7 +1115,7 @@ async def handle_pr_edited(
                             "task_type": state.task_type,
                             "priority": state.priority,
                             "assignee_login": state.assignee_login,
-                            "status": status_value,
+                            "status": task_status,
                             "plaky_ok": mutation.get("ok"),
                         },
                         default=str,

@@ -452,3 +452,45 @@ async def resolve_qa_assignee_field_key(board_id: str, yaml_fallback: str) -> st
     if discovered:
         return discovered
     return (yaml_fallback or "").strip()
+
+
+async def current_status_intent(board_id: str, task_id: str, status_field_key: str) -> str:
+    """Which workflow intent the task's CURRENT status option corresponds to, "" if unknown.
+
+    The inverse of `resolve_plaky_status_patch`: that turns an intent into this board's
+    option id, and this turns an option id back into the intent it came from. Boards name
+    their columns differently, so the only honest way to ask "how far along is this task"
+    is to resolve every intent against the board and see which one the task is sitting on.
+
+    Every lookup rides the board-schema cache, so this costs one item read and no extra
+    Plaky calls. Returns "" for an option no intent claims -- a board using vocabulary
+    this code cannot place is not evidence of anything.
+    """
+    from boardman.plaky.board_schema import plaky_item_status_id
+    from boardman.plaky.client import PlakyClient
+    from boardman.services.sync_state import WORKFLOW_RANK, workflow_rank
+
+    bid = (board_id or "").strip()
+    fk = (status_field_key or "").strip()
+    if not bid or not fk or not str(task_id or "").strip():
+        return ""
+    info = await PlakyClient().get_board_item_public(bid, str(task_id))
+    if not info.get("ok") or not info.get("item"):
+        return ""
+    current = plaky_item_status_id(info["item"], fk)
+    if not current:
+        return ""
+
+    best = ""
+    best_rank: int | None = None
+    for intent in WORKFLOW_RANK:
+        resolved = await resolve_plaky_status_patch(bid, intent=intent)
+        if not resolved or str(resolved[1]) != str(current):
+            continue
+        rank = workflow_rank(intent)
+        # Several intents can share one option (a board with no "Needs QA Again" column
+        # maps both there). Take the LOWEST rank of the matches: the guard should refuse
+        # a write only when it is certain the task is further along, never on a guess.
+        if rank is not None and (best_rank is None or rank < best_rank):
+            best, best_rank = intent, rank
+    return best

@@ -190,3 +190,58 @@ def issue_status_intent(state: GitHubSyncState, *, engineer_plaky_id: str | None
 def pr_label_task_type(labels: Any) -> str:
     """Resolve a PR label change without letting its original branch win forever."""
     return infer_task_type_from_pr(None, pr_label_names(labels)) or "Feature"
+
+
+# --- Workflow ordering -----------------------------------------------------------------
+#
+# How far along a task is, as a number. Only the ORDER matters; the gaps are meaningless.
+#
+# This exists because "who owns this issue" and "where has the work got to" are different
+# questions, and only the second one is a workflow position. A GitHub `assigned` event
+# answers the first: it says a developer is on it, which is true whether QA is halfway
+# through reviewing the PR or nobody has started. Writing the assignee-derived status
+# unconditionally answered the second question with the first question's answer, so
+# assigning a second developer to an issue whose PR was already In QA moved the board
+# back to Assigned and QA's work vanished from view.
+#
+# Paused is deliberately ranked with In Progress rather than below it: pausing is a
+# statement about the work continuing later, not a demotion to unowned.
+WORKFLOW_RANK: dict[str, int] = {
+    "workflow_needs_assigned": 0,
+    "workflow_assigned": 1,
+    "workflow_in_progress": 2,
+    "workflow_paused": 2,
+    "workflow_needs_qa": 3,
+    "workflow_needs_qa_again": 3,
+    "github_pr_review_changes_requested": 3,
+    "workflow_in_qa": 4,
+    "github_pr_review_approved": 5,
+    "workflow_completed": 6,
+}
+
+# The intents derived purely from "does someone own this", which are the ones that must
+# never overwrite a further-along status. Every other intent is a deliberate workflow
+# transition -- QA rejecting, a merge completing -- and those are allowed to move a task
+# in either direction, because that is what they are for.
+ASSIGNEE_DERIVED_INTENTS = frozenset({"workflow_needs_assigned", "workflow_assigned"})
+
+
+def workflow_rank(intent: str) -> int | None:
+    """How far along `intent` sits, or None when it is not a workflow position."""
+    return WORKFLOW_RANK.get((intent or "").strip())
+
+
+def status_intent_would_regress(current_intent: str, next_intent: str) -> bool:
+    """True when writing `next_intent` would move a task BACKWARDS through the workflow.
+
+    Only consulted for assignee-derived intents. An unknown current status returns False:
+    a board using labels this code cannot place is not evidence of anything, and refusing
+    to write on that basis would silently stop syncing rather than risk a regression.
+    """
+    if next_intent not in ASSIGNEE_DERIVED_INTENTS:
+        return False
+    current = workflow_rank(current_intent)
+    following = workflow_rank(next_intent)
+    if current is None or following is None:
+        return False
+    return following < current
