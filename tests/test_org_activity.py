@@ -22,6 +22,10 @@ ROWS = [
 
 @pytest.fixture()
 def _wired(monkeypatch):
+    # Set explicitly rather than inheriting the real one from .env: the ranking needs an
+    # org and a token, and depending on the ambient credential made this a live call.
+    monkeypatch.setattr(settings, "github_org", "deepiri-org")
+    monkeypatch.setattr(settings, "github_pat", "test-token")
     monkeypatch.setattr(settings, "github_org_activity_split_top_n", 2)
     monkeypatch.setattr(
         "boardman.github.org_repos.cached_org_repo_rows", lambda *_a, **_k: list(ROWS)
@@ -92,6 +96,10 @@ async def test_the_counting_caveat_travels_with_the_data(monkeypatch, _wired) ->
 
 @pytest.mark.asyncio
 async def test_no_repos_is_reported_not_faked(monkeypatch) -> None:
+    # Credentials present but the org lists nothing: the distinct failure this pins.
+    monkeypatch.setattr(settings, "github_org", "deepiri-org")
+    monkeypatch.setattr(settings, "github_pat", "test-token")
+    monkeypatch.setattr("boardman.github.http.github_http_client", lambda: object())
     monkeypatch.setattr("boardman.github.org_repos.cached_org_repo_rows", lambda *_a, **_k: [])
 
     async def no_names(*_a, **_k):
@@ -174,3 +182,14 @@ async def test_no_split_is_paid_for_a_row_the_limit_discards(monkeypatch, _wired
 
     assert seen == ["o/busy"], "8 configured, but only 1 row is returned"
     assert len(out["ranked"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_missing_credentials_are_reported_distinctly(monkeypatch) -> None:
+    """ "no token" and "the org listed nothing" are different problems."""
+    monkeypatch.setattr(settings, "github_pat", "")
+
+    out = await org_activity_ranking()
+
+    assert out["ok"] is False
+    assert "GITHUB_ORG and GITHUB_PAT" in out["message"]
