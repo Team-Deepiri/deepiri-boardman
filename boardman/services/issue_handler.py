@@ -50,7 +50,12 @@ ISSUE_LINK_URL_RE = re.compile(
 # wrong is not a missed link -- it files a PR's notice, type, assignee, QA assignment and
 # Needs QA onto a stranger's task. A branch name is a weak signal to begin with, so the
 # ambiguous half of it buys far less than it can cost.
-_BRANCH_PREFIXED_RE = re.compile(r"(?:^|[/_-])(?:issue|gh)[-_/]?(\d{1,6})(?![0-9])", re.IGNORECASE)
+# The trailing guard rejects a LETTER as well as a digit: `gh-2fa-login` and
+# `chore/gh-3rd-party-sdk` are not issues 2 and 3, and reading them that way runs the
+# whole open pipeline against a stranger's task.
+_BRANCH_PREFIXED_RE = re.compile(
+    r"(?:^|[/_-])(?:issue|gh)[-_/]?(\d{1,6})(?![0-9A-Za-z])", re.IGNORECASE
+)
 
 
 def _ordered_unique(values: Iterable[int]) -> list[int]:

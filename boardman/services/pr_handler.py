@@ -748,19 +748,31 @@ async def _link_pr_to_issue_task(
     )
 
 
+async def _ensure_links_live(payload: PullRequestEventPayload, session: AsyncSession) -> None:
+    """Any event showing the PR OPEN un-withdraws its links.
+
+    `withdrawn_at` means "this PR was closed without merging". Seeing the PR open again is
+    proof that is stale, whatever the event was. Keying the recovery on `reopened` alone
+    was too narrow: that delivery can be lost, and the poller's closed-PR memory is
+    in-process, so a restart means it never sends one. Since the resolver started honouring
+    the flag, either of those left the PR resolving to zero tasks forever -- reviews,
+    comments, pushes and label changes all silently stopped.
+    """
+    if str(getattr(payload.pull_request, "state", "open") or "open").casefold() != "open":
+        return
+    from boardman.services.pr_task_registry import revive_pr_links
+
+    if await revive_pr_links(
+        session,
+        github_repo=payload.repository.name,
+        github_pr_number=payload.pull_request.number,
+    ):
+        await session.commit()
+
+
 async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSession) -> dict:
     repo_name = payload.repository.name
-    if str(getattr(payload, "action", "") or "") == "reopened":
-        # Here rather than in the webhook route: the poller dispatches `reopened` straight
-        # to this function, and closing without merging withdrew the links. Without this a
-        # PR the poller saw close resolves to zero tasks forever -- reviews, comments,
-        # pushes and label changes all stop syncing.
-        from boardman.services.pr_task_registry import revive_pr_links
-
-        if await revive_pr_links(
-            session, github_repo=repo_name, github_pr_number=payload.pull_request.number
-        ):
-            await session.commit()
+    await _ensure_links_live(payload, session)
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
     is_draft = bool(payload.pull_request.draft)
@@ -1179,6 +1191,7 @@ async def handle_pr_edited(
     if state and state != "open":
         return {"ok": True, "skipped": True, "message": "PR not open; edit ignored"}
 
+    await _ensure_links_live(payload, session)
     relink = await reconcile_pr_issue_links(payload, session)
 
     task_ids = await distinct_task_ids_for_pr(
@@ -1309,6 +1322,10 @@ async def handle_pr_converted_to_draft(
     """Ready-for-review reversed (converted_to_draft): Needs QA tasks go back to In Progress."""
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
+    # Any event on an open PR clears a stale withdrawal from an earlier close, not only
+    # `reopened` -- that delivery can be missed, and the poller's closed-PR memory does
+    # not survive a restart.
+    await _ensure_links_live(payload, session)
     task_ids = await distinct_task_ids_for_pr(
         session, github_repo=repo_name, github_pr_number=pr_number
     )
@@ -1474,6 +1491,8 @@ async def handle_pr_synchronized(
     """
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
+    # A push is proof the PR is alive: clear any stale withdrawal before resolving.
+    await _ensure_links_live(payload, session)
     task_ids = await distinct_task_ids_for_pr(
         session, github_repo=repo_name, github_pr_number=pr_number
     )

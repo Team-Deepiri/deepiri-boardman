@@ -855,3 +855,77 @@ async def test_every_body_only_caller_also_ignores_another_repos_url(db_session)
     # A PR that only cites another repo is unlinked, so triage must still run for it.
     assert await should_run_pipeline(other, repo_full_name=FULL) is True
     assert await should_run_pipeline("Fixes #94", repo_full_name=FULL) is False
+
+
+@pytest.mark.parametrize(
+    "ref", ["feat/gh-2fa-login", "chore/gh-3rd-party-sdk", "deploy/gh-1st", "gh-2fa"]
+)
+def test_a_digit_that_starts_a_word_is_not_an_issue_number(ref: str) -> None:
+    """`gh-2fa-login` is not issue 2. Since opening a PR consults the branch, reading it
+    that way runs the whole open pipeline against a stranger's task."""
+    from boardman.services.issue_handler import branch_issue_numbers
+
+    assert branch_issue_numbers(ref) == []
+
+
+@pytest.mark.parametrize("ref", ["gh-94", "issue-94", "gh-123-fix-thing", "issue-94-add-retries"])
+def test_a_real_prefixed_issue_number_still_links(ref: str) -> None:
+    from boardman.services.issue_handler import branch_issue_numbers
+
+    assert branch_issue_numbers(ref) in ([94], [123])
+
+
+@pytest.mark.asyncio
+async def test_any_event_on_an_open_pr_clears_a_stale_withdrawal(
+    db_session, workflow, monkeypatch
+) -> None:
+    """Keying recovery on `reopened` alone was too narrow: that delivery can be lost, and
+    the poller's closed-PR memory does not survive a restart. Either way the PR resolved
+    to zero tasks forever once the resolver started honouring the flag."""
+    from boardman.services.pr_task_registry import distinct_task_ids_for_pr, mark_pr_withdrawn
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+    await mark_pr_withdrawn(db_session, github_repo=REPO, github_pr_number=88)
+    await db_session.commit()
+    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == []
+
+    # An ordinary edit, not a reopen.
+    await ph.handle_pr_edited(_pr("no issue reference"), db_session)
+
+    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == [
+        "7183844"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_closed_pr_event_does_not_revive_anything(db_session, workflow) -> None:
+    """Only seeing the PR OPEN is proof the withdrawal is stale."""
+    from boardman.services.pr_task_registry import distinct_task_ids_for_pr, mark_pr_withdrawn
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+    await mark_pr_withdrawn(db_session, github_repo=REPO, github_pr_number=88)
+    await db_session.commit()
+
+    payload = _pr("no issue reference")
+    payload.pull_request.state = "closed"
+    await ph._ensure_links_live(payload, db_session)
+
+    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == []
