@@ -224,9 +224,10 @@ async def run_tool_agent(
         debug=verbose,
     )
     messages: list[BaseMessage] = list(chat_history) + [HumanMessage(content=user_input)]
+    cfg = _graph_config(allow_writes)
     result = await graph.ainvoke(
         {"messages": messages},
-        config=_graph_config(allow_writes),
+        config=cfg,
     )
     result_messages = result.get("messages", [])
     logger.info("agent turn tool time: %s", turn_timing())
@@ -254,7 +255,7 @@ async def run_tool_agent(
         try:
             result = await graph.ainvoke(
                 {"messages": list(result_messages) + [nudge]},
-                config=_graph_config(allow_writes),
+                config=cfg,
             )
             retry_messages = result.get("messages", [])
             retry_out = _final_ai_text(retry_messages)

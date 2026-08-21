@@ -9,8 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import httpx
-
+from boardman.github.http import shared_github_client
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -59,7 +58,7 @@ async def comment_on_pr(full_name: str, pr_number: int, body: str) -> dict[str, 
         return {"ok": False, "skipped": True, "message": "GITHUB_PAT not configured"}
     url = f"https://api.github.com/repos/{full_name}/issues/{pr_number}/comments"
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with shared_github_client() as client:
             r = await client.post(url, headers=_headers(), json={"body": with_marker(body)})
     except Exception as e:  # noqa: BLE001 — network failure must not break the webhook
         _log.warning("pr comment on %s#%s failed: %s", full_name, pr_number, e)
@@ -82,7 +81,7 @@ async def request_reviewers(full_name: str, pr_number: int, logins: list[str]) -
         return {"ok": False, "skipped": True, "message": "GITHUB_PAT not configured"}
     url = f"https://api.github.com/repos/{full_name}/pulls/{pr_number}/requested_reviewers"
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with shared_github_client() as client:
             r = await client.post(url, headers=_headers(), json={"reviewers": logins})
     except Exception as e:  # noqa: BLE001
         _log.warning("reviewer request on %s#%s failed: %s", full_name, pr_number, e)
