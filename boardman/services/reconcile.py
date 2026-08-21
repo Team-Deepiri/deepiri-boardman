@@ -22,7 +22,6 @@ from boardman.github.http import github_http_client
 from boardman.github.webhooks import IssueEventPayload, PullRequestEventPayload
 from boardman.services.issue_handler import (
     find_plaky_task_by_issue,
-    handle_issue_labels_changed,
     handle_issue_opened,
 )
 from boardman.services.pr_handler import (
@@ -112,7 +111,9 @@ async def reconcile_repo(
                         session,
                     )
                 else:
-                    res = await handle_issue_labels_changed(
+                    from boardman.services.issue_handler import handle_issue_edited
+
+                    res = await handle_issue_edited(
                         IssueEventPayload(action="edited", issue=issue, repository=repo_block),
                         session,
                     )

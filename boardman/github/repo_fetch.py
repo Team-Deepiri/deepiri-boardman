@@ -131,8 +131,8 @@ async def fetch_repo_overview(client: httpx.AsyncClient, owner: str, repo: str) 
         return out
 
     rl = await github_request(client, f"/repos/{owner}/{repo}/languages")
-    if rl.status_code == 200 and isinstance(rl.json(), dict):
-        langs = rl.json()
+    langs = rl.json() if rl.status_code == 200 else None
+    if isinstance(langs, dict):
         total = sum(v for v in langs.values() if isinstance(v, int | float)) or 1
         out["languages"] = {
             k: round(100.0 * v / total, 1)

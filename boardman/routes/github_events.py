@@ -244,7 +244,11 @@ async def github_webhook(
             status_code=202,
         )
 
-    result = await dispatch_github_event(event_type, payload_dict, session)
+    try:
+        result = await dispatch_github_event(event_type, payload_dict, session)
+    except Exception:  # noqa: BLE001 - a handler crash must still mark the delivery
+        await _mark_delivery("failed", "unhandled exception in dispatch")
+        raise
 
     if result.get("ok", True) is False:
         await _mark_delivery("failed", str(result.get("message") or "synchronization failed"))

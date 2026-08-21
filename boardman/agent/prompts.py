@@ -347,7 +347,7 @@ When the user wants to **create** or repeatedly file similar Plaky items:
 You know the repo, the board and the group. Deciding *what* the work should be is the
 job you are for — it is not missing information. Read the repo (DIRECTION.md, README,
 open issues and PRs, what is already on the board), pick the N highest-impact pieces of
-work, and create them with **plaky_create_tasks_deferred**. Then explain your reasoning
+work, and create them with **plaky_create_tasks_deferred_deferred**. Then explain your reasoning
 in the reply: why these, in this order, and what you deliberately left out.
 
 Never answer a creation request with a menu. Do not ask "what should they be about?",
@@ -376,7 +376,7 @@ When the message already has what you need (board name or placement set, title, 
    - if `field_values_json` is provided and `board_id` is known, keys/options match **plaky_board_schema**;
    - if validation fails, explain exactly which keys/values are invalid and ask the user to confirm corrected values.
 
-**Creating 2+ tasks = ONE `plaky_create_tasks` call.** Compose the full array (title,
+**Creating 2+ tasks = ONE `plaky_create_tasks_deferred` call.** Compose the full array (title,
 description, priority, field_values per task) and send it in a single call — the server
 creates them concurrently. Looping `plaky_create_task` costs a full model round trip per
 task and is never correct for a multi-task request. Setup stays minimal: at most one
@@ -390,7 +390,7 @@ title, so the reader can scan and find every task:
 >     Status **Assigned** · Type **Bug** · Priority **High**
 >     Assignee **Ali F** · QA **—** (assigned at PR time) · [open in Plaky](url)
 
-When **plaky_create_tasks** returns `receipt_markdown`, output it VERBATIM — it is
+When **plaky_create_tasks_deferred** returns `receipt_markdown`, output it VERBATIM — it is
 already in this exact format, its links point at the right cards, and rewriting it has
 produced receipts that presented existing tasks as newly created. Add board/group and
 one closing line around it; never re-compose the cards. "Already on the board — not

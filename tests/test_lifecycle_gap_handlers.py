@@ -958,7 +958,7 @@ async def test_reconcile_repairs_unmapped_issue_and_skips_healthy(db_session, mo
         return ["t-9"]
 
     monkeypatch.setattr(rc, "handle_issue_opened", fake_opened)
-    monkeypatch.setattr(rc, "handle_issue_labels_changed", fake_meta)
+    monkeypatch.setattr("boardman.services.issue_handler.handle_issue_edited", fake_meta)
     monkeypatch.setattr(rc, "distinct_task_ids_for_pr", linked)
 
     out = await rc.reconcile_repo("o/r", db_session)

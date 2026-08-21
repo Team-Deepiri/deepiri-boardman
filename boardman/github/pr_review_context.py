@@ -84,8 +84,10 @@ async def fetch_pull_request_context(
     base = f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
     n = int(pr_number)
 
-    # Injected client (tests) is honored; otherwise the shared keep-alive pool. The pool
-    # client must never be closed here, so owns_client stays False for it.
+    # Injected client (tests) is honored; otherwise the shared keep-alive pool.
+    # github_http_client() returns the SHARED instance bound to the current event loop.
+    # It is managed by the lifespan shutdown (aclose_shared_http_clients) and must never
+    # be closed here; owns_client stays False so the finally block skips it.
     owns_client = False
     if client is None:
         from boardman.github.http import github_http_client
