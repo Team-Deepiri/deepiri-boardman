@@ -329,3 +329,72 @@ async def test_editing_an_old_comment_does_not_re_drive_the_workflow(
     assert pause_calls == [], "the state machine does not re-run on an edit"
     assert res["event"] == "pr_comment_edit_mirrored"
     assert len(posted) == 2, "but the correction IS on the board"
+
+
+@pytest.mark.asyncio
+async def test_an_edited_inline_review_comment_does_not_re_drive_the_workflow(
+    db_session, monkeypatch
+) -> None:
+    """The inline-review path accepts edits too, and had the same hole: fixing a typo in
+    an old review comment dragged a QA-Verified task back to In QA."""
+    from boardman.github.webhooks import PullRequestReviewCommentEventPayload
+    from boardman.services import pr_handler as ph
+
+    await _link_pr_to_task(db_session)
+    posted_bodies: list[str] = []
+    status_writes: list[str] = []
+
+    class FakePlaky:
+        async def add_comment(self, task_id, body, *, board_id=None):
+            posted_bodies.append(body)
+            return {"ok": True}
+
+        async def get_board_item_public(self, *_a, **_k):
+            return {"ok": False, "item": None}
+
+    class Routing:
+        plaky_board_id = "269031"
+        plaky_group_id = "g1"
+
+    async def fake_routing(*_a, **_k):
+        return Routing()
+
+    async def fake_status(task_id, *_a, **_k):
+        status_writes.append(task_id)
+        return {"ok": True}
+
+    monkeypatch.setattr(ph, "PlakyClient", lambda *a, **k: FakePlaky())
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+
+    def _event(action: str, body: str):
+        return PullRequestReviewCommentEventPayload(
+            action=action,
+            comment={
+                "id": 4242,
+                "body": body,
+                "user": {"login": "qa-person"},
+                "html_url": f"https://github.com/{FULL}/pull/88#discussion_r4242",
+            },
+            pull_request={
+                "number": 88,
+                "title": "T",
+                "body": "Fixes #94",
+                "html_url": f"https://github.com/{FULL}/pull/88",
+                "state": "open",
+                "merged": False,
+                "user": {"login": "ali-ferris"},
+            },
+            repository={"full_name": FULL, "name": REPO},
+        )
+
+    await ph.handle_pr_review_comment(_event("created", "please add a retry"), db_session)
+    status_writes.clear()
+
+    res = await ph.handle_pr_review_comment(
+        _event("edited", "please add a retry and a timeout"), db_session
+    )
+
+    assert res["event"] == "pr_review_comment_edit_mirrored"
+    assert status_writes == [], "an edit updates the record, not the state"
+    assert any("edited" in b for b in posted_bodies), "the correction is still on the board"

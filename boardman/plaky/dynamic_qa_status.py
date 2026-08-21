@@ -485,7 +485,10 @@ async def current_status_intent(board_id: str, task_id: str, status_field_key: s
     best_rank: int | None = None
     for intent in WORKFLOW_RANK:
         resolved = await resolve_plaky_status_patch(bid, intent=intent)
-        if not resolved or str(resolved[1]) != str(current):
+        # Compare the FIELD as well as the option: Plaky types Type and Priority as STATUS
+        # columns and their option ids restart per field, so "3" on Priority would
+        # otherwise read as "3" on Status and hold back a legitimate write.
+        if not resolved or str(resolved[0] or "") != fk or str(resolved[1]) != str(current):
             continue
         rank = workflow_rank(intent)
         # Several intents can share one option (a board with no "Needs QA Again" column

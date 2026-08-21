@@ -384,10 +384,12 @@ async def test_a_standalone_task_survives_when_no_issue_task_exists(db_session, 
 
 
 @pytest.mark.asyncio
-async def test_a_branch_only_reference_never_retires_a_standalone_task(
+async def test_a_branch_only_reference_leaves_an_existing_link_completely_alone(
     db_session, workflow
 ) -> None:
-    """A branch name is a convention; it may add a link, never withdraw one."""
+    """A branch name may establish the FIRST relationship. It may not add a second card
+    beside one that already exists, and it may not retire that one either -- both
+    outcomes end with one PR driving two cards or the wrong one."""
     await _seed_issue_task(db_session, 94, TASK_94)
     db_session.add(
         PullRequestTaskLink(
@@ -404,5 +406,92 @@ async def test_a_branch_only_reference_never_retires_a_standalone_task(
         _pr("no keywords here", head_ref="fix/94-add-retries"), db_session
     )
 
-    assert res["linked"] == [{"issue": 94, "task_id": TASK_94}]
-    assert res["withdrawn"] == [], "nothing the author wrote, so nothing is torn down"
+    assert res["changed"] is False
+    assert "branch-only" in res["reason"]
+    links = {row.github_issue_number: row for row in await _links(db_session)}
+    assert set(links) == {0}, "no second link was created"
+    assert links[0].withdrawn_at is None, "and the existing one was not torn down"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["hotfix #123", "postfix #55", "unfixed #7", "affix #9", "preclose #3", "refs #12"],
+)
+def test_a_word_that_merely_ends_in_a_keyword_is_not_a_reference(text: str) -> None:
+    """ "hotfix #123" is a description, not a relationship. Without a word boundary it
+    linked the PR to issue 123 -- and a stray number can now retire the correct link."""
+    from boardman.services.issue_handler import explicit_issue_numbers
+
+    assert explicit_issue_numbers(text) == []
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("Fixes #94", [94]),
+        ("fix #94", [94]),
+        ("Fixed #94", [94]),
+        ("Closes #94", [94]),
+        ("Closed #94", [94]),
+        ("Resolves #94", [94]),
+        ("Resolved #94", [94]),
+        ("see the hotfix, but this Fixes #94", [94]),
+    ],
+)
+def test_every_tense_github_accepts_still_links(text: str, expected: list[int]) -> None:
+    from boardman.services.issue_handler import explicit_issue_numbers
+
+    assert explicit_issue_numbers(text) == expected
+
+
+@pytest.mark.asyncio
+async def test_a_retired_link_stops_receiving_writes(db_session, workflow) -> None:
+    """Retiring a link is only real if the resolver every write path uses honours it."""
+    from boardman.services.pr_task_registry import distinct_task_ids_for_pr
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+
+    before = await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88)
+    assert before == ["7183844"]
+
+    await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+
+    after = await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88)
+    assert after == [TASK_94], "one PR, one card: the retired one is gone from the resolver"
+
+
+@pytest.mark.asyncio
+async def test_a_keyword_in_the_title_links_at_open_not_only_on_a_later_edit(
+    db_session, workflow, monkeypatch
+) -> None:
+    """Reading only the body at open time created a duplicate standalone task for a PR
+    whose reference lived in its title."""
+    await _seed_issue_task(db_session, 94, TASK_94)
+    payload = _pr("no reference in the body", title="Add retries (Fixes #94)")
+    payload.action = "opened"
+
+    async def no_pipeline(*_a, **_k):
+        raise AssertionError("a titled reference must link, not fall through to triage")
+
+    monkeypatch.setattr(ph, "run_pr_task_pipeline", no_pipeline)
+    monkeypatch.setattr(ph, "upsert_pr_row", lambda *_a, **_k: _ok())
+
+    res = await ph.handle_pr_opened(payload, db_session)
+
+    assert any(r.get("issue") == 94 for r in res.get("results", []) or []) or res.get("ok")
+    links = {row.github_issue_number: row for row in await _links(db_session)}
+    assert 94 in links and links[94].plaky_task_id == TASK_94
+
+
+async def _ok(*_a, **_k):
+    return {"ok": True}

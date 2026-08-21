@@ -300,3 +300,31 @@ async def test_a_draft_pr_edit_does_not_reset_a_task_in_qa(db_session, monkeypat
     assert res["event"] == "pr_metadata_synced"
     assert written and written[0].status is None, "In QA survives a draft-PR edit"
     assert written[0].task_type, "the rest of the metadata still syncs"
+
+
+@pytest.mark.asyncio
+async def test_the_current_status_lookup_compares_the_field_not_just_the_option_id(
+    monkeypatch,
+) -> None:
+    """Plaky types Type and Priority as STATUS columns and their option ids restart per
+    field, so "3" on Priority must not read as "3" on Status and hold back a real write."""
+    from boardman.plaky import dynamic_qa_status as dq
+
+    class FakePlaky:
+        async def get_board_item_public(self, _board_id, _item_id):
+            return {"ok": True, "item": {"id": TASK}}
+
+    async def fake_resolve(board_id, *, intent):
+        # Every intent lives on the Status column and happens to use option id "3";
+        # the caller is asking about the Priority column.
+        return ("status_key_STATUS", "3")
+
+    monkeypatch.setattr("boardman.plaky.client.PlakyClient", lambda *a, **k: FakePlaky())
+    monkeypatch.setattr(dq, "resolve_plaky_status_patch", fake_resolve)
+    monkeypatch.setattr("boardman.plaky.board_schema.plaky_item_status_id", lambda _item, _fk: "3")
+
+    same_field = await dq.current_status_intent(BOARD, TASK, "status_key_STATUS")
+    other_field = await dq.current_status_intent(BOARD, TASK, "status_key_PRIORITY")
+
+    assert same_field != "", "the real Status column still resolves"
+    assert other_field == "", "an id collision on another column resolves to nothing"

@@ -708,7 +708,17 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
     is_draft = bool(payload.pull_request.draft)
     full_name = payload.repository.full_name
 
-    linked_issues = await get_linked_issue_numbers(payload.pull_request.body)
+    # Title and branch too, exactly as `edited` reads them. Reading only the body here
+    # meant a PR whose keyword lives in its title got a duplicate standalone task at open
+    # and was reconciled only when somebody happened to edit it.
+    opened_state = resolve_pr_state(
+        payload.pull_request, repo_full_name=full_name, repo_name=repo_name
+    )
+    linked_issues = linked_issue_numbers_for_pr(
+        body=payload.pull_request.body,
+        title=payload.pull_request.title,
+        head_ref=opened_state.head_ref,
+    )
 
     from boardman.repos_config import get_routing_async
 
@@ -928,6 +938,17 @@ async def reconcile_pr_issue_links(
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
     plaky = PlakyClient()
     is_draft = bool(payload.pull_request.draft)
+
+    if not written and (rows or standalone_rows):
+        # Branch-only, and this PR already has a live link. The branch may introduce a
+        # relationship where there is none; it may not add a second card beside one that
+        # exists, and it may not retire it either.
+        return {
+            "ok": True,
+            "changed": False,
+            "reason": "branch-only reference; the existing link stands",
+            "referenced": referenced,
+        }
 
     linked: list[dict[str, Any]] = []
     unresolved: list[int] = []
@@ -1611,6 +1632,17 @@ async def handle_pr_review_comment(
             )
         )
     await session.commit()
+
+    if is_revision:
+        # Mirror only. Fixing a typo in an old inline review comment must not drag a
+        # QA-Verified or Completed task back to In QA; the comment's instruction was
+        # acted on when it was made. Same rule as handle_issue_comment_on_pr.
+        return {
+            "ok": True,
+            "event": "pr_review_comment_edit_mirrored",
+            "mirrored": mirrored,
+            "workflow_skipped": "an edited comment updates the record, not the state",
+        }
 
     qa_field = await resolve_qa_assignee_field_key(board_id, cfg.plaky_field_qa)
     if not qa_field:

@@ -196,7 +196,9 @@ async def test_a_retry_that_succeeds_stops_retrying(worker, db_session, monkeypa
 async def test_a_successful_delivery_reaches_a_terminal_row_state(
     worker, db_session, monkeypatch
 ) -> None:
-    db_session.add(GitHubWebhookDelivery(delivery_id="d1", event_type="issues", status="processing"))
+    db_session.add(
+        GitHubWebhookDelivery(delivery_id="d1", event_type="issues", status="processing")
+    )
     await db_session.commit()
 
     async def ok(event_type, body, session):
@@ -219,7 +221,9 @@ async def test_an_exhausted_delivery_is_marked_failed_not_left_processing(
 ) -> None:
     """A row stuck at `processing` short-circuits every redelivery of that id forever."""
     monkeypatch.setattr(settings, "github_webhook_job_retries", 1)
-    db_session.add(GitHubWebhookDelivery(delivery_id="d1", event_type="issues", status="processing"))
+    db_session.add(
+        GitHubWebhookDelivery(delivery_id="d1", event_type="issues", status="processing")
+    )
     await db_session.commit()
 
     async def always_fails(event_type, body, session):

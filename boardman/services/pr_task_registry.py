@@ -157,9 +157,16 @@ async def distinct_task_ids_for_pr(
     github_repo: str,
     github_pr_number: int,
 ) -> list[str]:
+    # withdrawn_at is what "this link is no longer live" MEANS, so the resolver every
+    # write path goes through has to honour it. It did not, which made retiring a
+    # superseded standalone task cosmetic: the retired card kept receiving every comment
+    # and status change alongside the real one. merged_at is deliberately NOT filtered --
+    # a merged PR's task is still the task that PR drove, and the merge handlers read
+    # this after stamping it.
     q = select(PullRequestTaskLink.plaky_task_id).where(
         PullRequestTaskLink.github_repo == github_repo,
         PullRequestTaskLink.github_pr_number == github_pr_number,
+        PullRequestTaskLink.withdrawn_at.is_(None),
     )
     r = await session.execute(q)
     seen: set[str] = set()

@@ -31,7 +31,10 @@ _log = logging.getLogger(__name__)
 # fix/fixes/fixed, resolve/resolves/resolved. Only these link a PR to an issue -- "refs
 # #12" cites an issue without closing it, and treating that as a link would attach a PR
 # to work it merely mentions.
-_CLOSING_KEYWORD = r"(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
+# \b matters: without it "hotfix #123", "postfix #55" and "affix #9" all read as closing
+# keywords, linking a PR to an issue nobody referenced -- and now that a written reference
+# can retire an existing link, a stray hotfix number could retire the correct one.
+_CLOSING_KEYWORD = r"\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)"
 ISSUE_LINK_RE = re.compile(rf"{_CLOSING_KEYWORD}\s+#(\d+)", re.IGNORECASE)
 # The same keywords in front of a full issue URL, which is what GitHub's UI inserts when
 # you pick an issue from the "Development" panel or paste a link.
