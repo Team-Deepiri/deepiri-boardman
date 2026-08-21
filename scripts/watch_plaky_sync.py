@@ -30,6 +30,8 @@ ROOT = Path(__file__).resolve().parent.parent
 # drifts from repos.yml or the Plaky catalog.
 WATCHED_REPOS_ENV = "TESTING_LIVE_PLAKY_REPOS"
 
+# Hardcoded for speed: this script runs standalone and the option names change
+# only when the team reconfigures a board column. If a status is added, update here.
 OPTION_NAMES: dict[str, dict[str, str]] = {
     "Status": {
         "0": "NEEDS ASSIGNED",

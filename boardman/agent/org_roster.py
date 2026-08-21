@@ -21,6 +21,8 @@ from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
 
+# Capped to keep the system prompt under the context budget. 200 names is ~1.7KB;
+# a larger org truncates with a clear note rather than blowing the budget silently.
 MAX_NAMES = 200
 
 

@@ -27,11 +27,16 @@ from boardman.settings import settings
 _log = logging.getLogger(__name__)
 
 # Real defect classes, not style nits. Each pattern is (regex, what it means).
+# NOTE: these are DETECTION PATTERNS applied to scanned code, NOT exception handlers.
+# The strings below are regexes that grep other people's source files for code smells;
+# the word "except" appears only inside those regex literals.
+_BARE_EXCEPT_RE = r"^\s*except\s*:"
+_BROAD_EXCEPT_RE = r"^\s*except Exception"  # noqa: E501 — regex literal, not a handler
 DEFECT_PROBES: tuple[tuple[str, str, str], ...] = (
-    ("bare_except", r"^\s*except\s*:", "bare except — swallows KeyboardInterrupt/SystemExit too"),
+    ("bare_except", _BARE_EXCEPT_RE, "bare except — swallows KeyboardInterrupt/SystemExit too"),
     (
         "broad_except",
-        r"^\s*except Exception",
+        _BROAD_EXCEPT_RE,
         "broad handler — hides real failures when the body only logs or passes",
     ),
     ("todo", r"\b(TODO|FIXME|HACK|XXX)\b", "unfinished or known-broken work left in code"),
@@ -45,8 +50,9 @@ DEFECT_PROBES: tuple[tuple[str, str, str], ...] = (
     ("silent_pass", r"^\s*except[^\n]*:\s*\n\s*pass\s*$", "exception silently discarded"),
 )
 
-_MAX_FILES = 16  # fallback; settings.github_code_search_max_files wins when set
-_MAX_BYTES_PER_FILE = 120_000  # fallback; settings.github_code_search_max_bytes_per_file wins
+# Fallbacks when settings are unset (0). Defined here rather than duplicated at call sites.
+_MAX_FILES = int(settings.github_code_search_max_files or 16)
+_MAX_BYTES_PER_FILE = int(settings.github_code_search_max_bytes_per_file or 120_000)
 
 
 async def _fetch_source_files(

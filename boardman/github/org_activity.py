@@ -23,6 +23,7 @@ import httpx
 logger = logging.getLogger(__name__)
 
 # Splitting issues from PRs costs one call per repo, so only the head of the list pays it.
+# Configurable via the limit/split_top args on org_activity_ranking; this is the default.
 _SPLIT_TOP_N = 8
 
 
