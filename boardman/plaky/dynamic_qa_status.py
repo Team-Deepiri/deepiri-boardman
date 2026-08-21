@@ -11,12 +11,15 @@ via exact linked GitHub handle on the Plaky user row when present, then the same
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
 
 # (hint phrases / words — normalized with underscores as spaces), negative substrings penalize.
 _GITHUB_APPROVE_HINTS: tuple[str, ...] = (
@@ -399,7 +402,7 @@ async def resolve_github_user_to_plaky_user_id(
             if gl and mid and gl == want:
                 return mid
     except Exception:  # noqa: BLE001 — roster trouble must never break identity resolution
-        pass
+        _log.debug("roster unavailable during GitHub user resolution", exc_info=True)
 
     c = PlakyClient()
     r = await c.list_workspace_users()
