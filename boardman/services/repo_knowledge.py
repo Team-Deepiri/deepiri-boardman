@@ -49,8 +49,11 @@ async def current_revision(repo: str) -> tuple[str, str]:
     token = (settings.github_pat or "").strip()
     if not token or "/" not in repo:
         return "", "no token or malformed repo"
+    # Uses the shared client pool (connection reuse + counting hook). Headers are passed
+    # explicitly because github_request is internal to repo_fetch.
     owner, name = repo.split("/", 1)
     try:
+
         async with shared_github_client() as client:
             r = await client.get(
                 f"https://api.github.com/repos/{owner}/{name}",
