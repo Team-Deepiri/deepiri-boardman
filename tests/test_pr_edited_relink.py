@@ -708,3 +708,78 @@ async def test_the_needs_qa_guard_works_with_a_configured_status_value(monkeypat
     await ph._maybe_set_needs_qa(None, TASK_94, False, "269031", allow_regression=False)
 
     assert asked == ["status_key"], "the field key is resolved even with a configured value"
+
+
+@pytest.mark.asyncio
+async def test_a_newly_opened_pr_still_asks_for_qa_on_a_finished_task(
+    db_session, workflow, monkeypatch
+) -> None:
+    """New work on finished work still needs review, and nothing else on the board would
+    say so. Only a LATE link is held back."""
+    await _seed_issue_task(db_session, 94, TASK_94)
+    payload = _pr("Fixes #94")
+    payload.action = "opened"
+
+    async def no_pipeline(*_a, **_k):
+        raise AssertionError("an explicit reference must link, not fall through to triage")
+
+    async def ok(*_a, **_k):
+        return {"ok": True}
+
+    monkeypatch.setattr(ph, "run_pr_task_pipeline", no_pipeline)
+    monkeypatch.setattr(ph, "upsert_pr_row", ok)
+
+    await ph.handle_pr_opened(payload, db_session)
+
+    assert workflow["needs_qa"] == [
+        (TASK_94, False, True)
+    ], "opened asks for QA unguarded; the guard is for late links only"
+
+
+@pytest.mark.asyncio
+async def test_a_late_link_is_still_held_back(db_session, workflow) -> None:
+    await _seed_issue_task(db_session, 94, TASK_94)
+
+    await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+
+    assert workflow["needs_qa"] == [(TASK_94, False, False)]
+
+
+@pytest.mark.asyncio
+async def test_reopening_revives_links_from_any_entry_point(
+    db_session, workflow, monkeypatch
+) -> None:
+    """The poller dispatches `reopened` straight to handle_pr_opened, so the revive has to
+    live there and not in the HTTP route."""
+    from boardman.services.pr_task_registry import (
+        distinct_task_ids_for_pr,
+        mark_pr_withdrawn,
+    )
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="issue_keyword",
+        )
+    )
+    await db_session.commit()
+    await mark_pr_withdrawn(db_session, github_repo=REPO, github_pr_number=88)
+    await db_session.commit()
+    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == []
+
+    async def ok(*_a, **_k):
+        return {"ok": True}
+
+    monkeypatch.setattr(ph, "upsert_pr_row", ok)
+    payload = _pr("Fixes #94")
+    payload.action = "reopened"
+
+    await ph.handle_pr_opened(payload, db_session)
+
+    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == [
+        TASK_94
+    ]

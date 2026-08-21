@@ -660,6 +660,7 @@ async def _link_pr_to_issue_task(
     board_id: str,
     is_draft: bool,
     headline: str,
+    is_late_link: bool = False,
 ) -> None:
     """Attach one PR to the Plaky task an issue already owns, and run the PR workflow.
 
@@ -711,8 +712,12 @@ async def _link_pr_to_issue_task(
         task_url=mapping.plaky_task_url or "",
     )
     _log.info("PR #%s QA assignment: %s", pr_number, {k: qa_res[k] for k in list(qa_res)[:3]})
+    # A newly OPENED PR asks for QA even when the issue's task is already past that point:
+    # it is new work on finished work, and nothing else on the board would say review is
+    # outstanding. A LATE link is the opposite -- the task's position is already correct
+    # and re-running the open pipeline would drag it backwards.
     await _maybe_set_needs_qa(
-        plaky, mapping.plaky_task_id, is_draft, board_id, allow_regression=False
+        plaky, mapping.plaky_task_id, is_draft, board_id, allow_regression=not is_late_link
     )
     session.add(
         SyncLog(
@@ -727,6 +732,17 @@ async def _link_pr_to_issue_task(
 
 async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSession) -> dict:
     repo_name = payload.repository.name
+    if str(getattr(payload, "action", "") or "") == "reopened":
+        # Here rather than in the webhook route: the poller dispatches `reopened` straight
+        # to this function, and closing without merging withdrew the links. Without this a
+        # PR the poller saw close resolves to zero tasks forever -- reviews, comments,
+        # pushes and label changes all stop syncing.
+        from boardman.services.pr_task_registry import revive_pr_links
+
+        if await revive_pr_links(
+            session, github_repo=repo_name, github_pr_number=payload.pull_request.number
+        ):
+            await session.commit()
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
     is_draft = bool(payload.pull_request.draft)
@@ -1041,6 +1057,7 @@ async def reconcile_pr_issue_links(
             board_id=board_id,
             is_draft=is_draft,
             headline="**PR Linked:**",
+            is_late_link=True,
         )
         linked.append({"issue": int(issue_num), "task_id": mapping.plaky_task_id})
 

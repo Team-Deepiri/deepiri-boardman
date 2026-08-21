@@ -126,18 +126,8 @@ async def dispatch_github_event(
         elif payload.action == "synchronize":
             result = await handle_pr_synchronized(payload, session)
         elif payload.action == "reopened":
-            # Closing without merging withdrew this PR's links, and nothing on the opened
-            # path clears that flag once a triage record already exists. Without this the
-            # reopened PR's reviews, comments and pushes resolve to no task at all.
-            from boardman.services.pr_task_registry import revive_pr_links
-
-            revived = await revive_pr_links(
-                session,
-                github_repo=payload.repository.name,
-                github_pr_number=payload.pull_request.number,
-            )
-            if revived:
-                await session.commit()
+            # handle_pr_opened revives the withdrawn links itself, so the poller's
+            # dispatch gets the same behaviour as this one.
             result = await handle_pr_opened(payload, session)
         elif payload.action in ("labeled", "unlabeled"):
             from boardman.services.pr_handler import handle_pr_labels_changed

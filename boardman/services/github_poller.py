@@ -330,15 +330,14 @@ class GitHubEventPoller:
             # left this loop with nothing to do for the life of the process.
             if cycles and cycles % _WATCH_LIST_REFRESH_CYCLES == 0:
                 fresh, fresh_excluded = await resolve_poller_repos()
+                # Covers recovery too: after a failed first resolve `repos` is empty, so
+                # any non-empty result differs and is adopted.
                 if fresh and set(fresh) != set(repos):
                     _log.info(
                         "TESTING_LIVE_PLAKY: watch list changed — now %d repo(s) (%d excluded)",
                         len(fresh),
                         len(fresh_excluded),
                     )
-                    repos = fresh
-                    interval = self._safe_interval(configured_interval, len(repos))
-                elif fresh and not repos:
                     repos = fresh
                     interval = self._safe_interval(configured_interval, len(repos))
             cycles += 1

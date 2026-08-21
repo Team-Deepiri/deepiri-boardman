@@ -36,6 +36,9 @@ _log = logging.getLogger(__name__)
 # GitHub's list-files endpoint caps per_page at 100 and this reader does not paginate,
 # so asking for more silently returns 100 (or 422s and loses the whole section).
 _GITHUB_MAX_PER_PAGE = 100
+# The clamp is a configuration problem, not a per-request one: warn once, not on every
+# PR anyone reads.
+_warned_per_page_clamp = False
 
 
 def _max_files() -> int:
@@ -48,11 +51,14 @@ def _max_files() -> int:
         getattr(settings, "github_pr_max_files", 0), DEFAULT_GITHUB_PR_MAX_FILES
     )
     if want > _GITHUB_MAX_PER_PAGE:
-        _log.warning(
-            "GITHUB_PR_MAX_FILES=%d exceeds GitHub's per_page ceiling; using %d",
-            want,
-            _GITHUB_MAX_PER_PAGE,
-        )
+        global _warned_per_page_clamp
+        if not _warned_per_page_clamp:
+            _warned_per_page_clamp = True
+            _log.warning(
+                "GITHUB_PR_MAX_FILES=%d exceeds GitHub's per_page ceiling; using %d",
+                want,
+                _GITHUB_MAX_PER_PAGE,
+            )
         return _GITHUB_MAX_PER_PAGE
     return want
 
