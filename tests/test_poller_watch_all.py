@@ -1,10 +1,16 @@
 """Which repos the local poller actually watches.
 
-The pinned three-repo list included one archived repo and one with no Plaky board, so two
-thirds of every poll cycle was spent on repos that could never sync. `all` watches the org
-instead -- but only the repos that can genuinely be synchronized, and it says out loud why
-it skipped the rest. "diri-cyrex is archived" is the answer to "why isn't my repo
+The pinned list named three repos out of an org of 48. `all` watches the org instead --
+but only the repos that can genuinely be synchronized, and it says out loud why it skipped
+the rest. "no Plaky board resolves for this repo" is the answer to "why isn't my repo
 syncing", and that answer must not require reading the source.
+
+Checked against the live org and Plaky catalog on 2026-08-21: 31 repos resolve to a board
+(one via an explicit repos.yml entry, the rest via a Plaky group named after the repo) and
+17 resolve to nothing and are excluded. Worth recording because two of them were expected
+to be ineligible and are not: diri-cyrex is NOT archived on GitHub, and diva DOES have a
+Plaky group (board 269030). Neither placement is invented -- both come from a group that
+carries the repo's name.
 """
 
 from __future__ import annotations
@@ -37,8 +43,9 @@ def _with_boards(monkeypatch, boards: dict[str, str]) -> None:
             self.plaky_board_id = board_id
             self.plaky_group_id = ""
 
-    async def fake_routing(full, _short, _org):
-        return Routing(boards.get(full, ""))
+    async def fake_routing(full, _short, _org, with_source=False):
+        r = Routing(boards.get(full, ""))
+        return (r, "discovered:group_slug_match") if with_source else r
 
     monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
 
@@ -70,8 +77,8 @@ async def test_an_explicit_list_is_honoured_untouched(monkeypatch, _org) -> None
 @pytest.mark.asyncio
 async def test_watch_all_keeps_only_repos_that_can_actually_sync(monkeypatch, _org) -> None:
     monkeypatch.setattr(settings, "testing_live_plaky_repos", "all")
-    # fetch_org_repository_full_names already drops archived repos, so diri-cyrex is
-    # simply absent here -- that is what skip_archived=True buys.
+    # fetch_org_repository_full_names already drops archived repos before we see them,
+    # which is what skip_archived=True buys.
     _with_org_repos(
         monkeypatch, ["Team-Deepiri/deepiri-boardman", "Team-Deepiri/diva", "Team-Deepiri/aar"]
     )
@@ -108,10 +115,10 @@ async def test_one_broken_repo_does_not_stop_the_fleet(monkeypatch, _org) -> Non
         plaky_board_id = "269031"
         plaky_group_id = ""
 
-    async def fake_routing(full, _short, _org):
+    async def fake_routing(full, _short, _org, with_source=False):
         if full.endswith("/broken"):
             raise RuntimeError("routing table is malformed for this repo")
-        return Routing()
+        return (Routing(), "explicit") if with_source else Routing()
 
     monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
 

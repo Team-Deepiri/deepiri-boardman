@@ -210,7 +210,10 @@ async def resolve_poller_repos() -> tuple[list[str], list[tuple[str, str]]]:
     for full in sorted({str(n).strip() for n in names if str(n or "").strip()}):
         short = full.rsplit("/", 1)[-1]
         try:
-            routing = await get_routing_async(full, short, org)
+            # with_source: a board is only a destination if we can say WHERE it came
+            # from -- an explicit repos.yml entry, or a Plaky group actually named after
+            # the repo. Logging the source is what makes a wrong placement findable.
+            routing, source = await get_routing_async(full, short, org, with_source=True)
         except Exception as exc:  # noqa: BLE001 - one bad repo must not stop the fleet
             log_degraded(_log, f"resolve_poller_repos: routing for {full}", exc)
             excluded.append((full, f"routing lookup failed: {type(exc).__name__}"))
@@ -221,6 +224,9 @@ async def resolve_poller_repos() -> tuple[list[str], list[tuple[str, str]]]:
             # than a repo that visibly is not being watched.
             excluded.append((full, "no Plaky board resolves for this repo"))
             continue
+        _log.info(
+            "TESTING_LIVE_PLAKY: watching %s -> board %s (placement: %s)", full, board_id, source
+        )
         watched.append(full)
     return watched, excluded
 
