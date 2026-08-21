@@ -504,7 +504,7 @@ def doctor():
                         console.print(
                             f"[dim]Boardman will use[/dim] [cyan]{picked}[/cyan] [dim]({src})[/dim]"
                         )
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001 - Plaky API failure degrades gracefully
                         console.print(f"[yellow]Could not auto-pick model:[/yellow] {e}")
                     if settings.llm_model and not any(settings.llm_model in n for n in names):
                         console.print(
@@ -514,7 +514,7 @@ def doctor():
                     console.print(
                         f"[yellow]Ollama[/yellow] HTTP {r.status_code} at {settings.ollama_base_url}"
                     )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - LLM failure is handled by the caller
             console.print(f"[yellow]Ollama[/yellow] unreachable: {e}")
         if settings.plaky_api_key:
             plaky = PlakyClient()

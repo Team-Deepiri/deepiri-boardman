@@ -1061,7 +1061,7 @@ async def fetch_board_schema_bundle(board_id: str) -> dict[str, Any]:
                     normalized["fields"] = merge_normalized_field_list(
                         normalized.get("fields") or [], stubs
                     )
-            except Exception:
+            except Exception:  # noqa: BLE001 - failure is silenced for resilience
                 pass
         ok_groups = bool(groups_r.get("ok"))
         ok = ok_board or ok_groups

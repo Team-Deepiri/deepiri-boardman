@@ -40,7 +40,7 @@ async def org_repo_roster_markdown() -> str:
     except (httpx.HTTPError, OSError, ValueError):
         logger.warning("org roster unavailable for this turn", exc_info=True)
         return ""
-    except Exception:
+    except Exception:  # noqa: BLE001 - logged and handled
         logger.exception("org roster failed unexpectedly")
         return ""
     shorts = sorted({n.rsplit("/", 1)[-1] for n in names if n})

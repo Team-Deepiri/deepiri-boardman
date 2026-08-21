@@ -31,7 +31,9 @@ def make_counting_callback() -> Any:
     """A LangChain callback handler that records model calls, or None if unavailable."""
     try:
         from langchain_core.callbacks.base import AsyncCallbackHandler
-    except Exception:  # pragma: no cover - langchain always present in this service
+    except (
+        Exception
+    ):  # pragma: no cover - langchain always present in this service  # noqa: BLE001 - sync failure must not crash the service
         return None
 
     from boardman.observability.counters import bump, observe

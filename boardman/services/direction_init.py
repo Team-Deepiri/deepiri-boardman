@@ -58,7 +58,7 @@ async def init_direction_file(
         return {"ok": False, "message": f"Repo metadata via gh failed: {err or out}"}
     try:
         repo_meta = json.loads(out)
-    except Exception:
+    except Exception:  # noqa: BLE001 - GitHub API failure degrades gracefully
         return {"ok": False, "message": "Failed to parse repo metadata from GitHub CLI"}
     can_push = bool((repo_meta.get("permissions") or {}).get("push"))
     if not can_push:
@@ -77,7 +77,7 @@ async def init_direction_file(
     if rc == 0 and out:
         try:
             existing = json.loads(out)
-        except Exception:
+        except Exception:  # noqa: BLE001 - cache/warm-up failure is not a service failure
             existing = None
     elif rc != 0 and "404" not in (err or out):
         return {"ok": False, "message": f"GitHub GET failed: {err or out}"}
@@ -94,7 +94,7 @@ async def init_direction_file(
         remote_b64 = (existing.get("content") or "").replace("\n", "")
         try:
             remote_text = base64.b64decode(remote_b64).decode("utf-8")
-        except Exception:
+        except Exception:  # noqa: BLE001 - graceful degradation
             remote_text = ""
         if remote_text == content:
             return {

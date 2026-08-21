@@ -48,7 +48,7 @@ async def classify_all_repos() -> ClassifyReposResponse:
             classified=len(tier_map),
             results=tier_map,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - GitHub API failure degrades gracefully
         return ClassifyReposResponse(ok=False, error=str(e))
     finally:
         await client.aclose()
@@ -103,7 +103,7 @@ async def get_repo_tier(full_name: str) -> SingleRepoResponse:
                     else None
                 ),
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - GitHub API failure degrades gracefully
             return SingleRepoResponse(full_name=full_name, tier=2)
         finally:
             await client.aclose()
@@ -133,7 +133,7 @@ async def list_org_repositories() -> OrgReposResponse:
             skip_archived=settings.github_skip_archived,
         )
         return OrgReposResponse(ok=True, repos=names)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - GitHub API failure degrades gracefully
         return OrgReposResponse(ok=False, repos=[], message=str(e))
     finally:
         await client.aclose()

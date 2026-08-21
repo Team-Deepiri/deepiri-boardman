@@ -200,7 +200,7 @@ async def github_webhook(
 
     try:
         payload_dict = json.loads(raw_body.decode("utf-8"))
-    except Exception:
+    except Exception:  # noqa: BLE001 - cache/warm-up failure is not a service failure
         await _mark_delivery("processed", "invalid_json")
         return Response(
             content=json.dumps({"ok": False, "message": "Invalid JSON"}), status_code=400
@@ -230,7 +230,7 @@ async def github_webhook(
                     "payload": payload_dict,
                 },
             )
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 - sync failure must not crash the service
             row = await session.get(GitHubWebhookDelivery, delivery_id) if delivery_id else None
             if row:
                 row.status = "failed"

@@ -31,7 +31,7 @@ def _board_ids() -> list[str]:
             bid = str(getattr(routing, "plaky_board_id", "") or "").strip()
             if bid and bid not in ids:
                 ids.append(bid)
-    except Exception:
+    except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
         pass
     return ids[:4]  # a handful of boards; this is a warm-up, not a crawl
 

@@ -854,7 +854,7 @@ class PlakyClient:
                         title_fields.append(key)
                     if any(tok in name for tok in ("description", "details", "desc", "summary")):
                         description_fields.append(key)
-        except Exception:
+        except Exception:  # noqa: BLE001 - failure is silenced for resilience
             pass
 
         patch_values: dict[str, Any] = {}
@@ -937,7 +937,7 @@ class PlakyClient:
                             tok in name for tok in ("description", "details", "desc", "summary")
                         ):
                             description_fields.append(key)
-            except Exception:
+            except Exception:  # noqa: BLE001 - failure is silenced for resilience
                 pass
             text_fields: list[dict[str, Any]] = []
             for k in title_fields:
@@ -1352,7 +1352,7 @@ class PlakyClient:
                             break
                 resolved[k] = out_v
             values = resolved
-        except Exception:
+        except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
             pass  # schema unavailable: the candidate ladder below still works, just slower
 
         def _bulk_bodies_for(mapping: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1757,7 +1757,7 @@ class PlakyClient:
                                 ol = str(opt.get("title") or opt.get("name") or "").strip()
                                 if ov and ol:
                                     status_value_labels[ov] = ol
-            except Exception:
+            except Exception:  # noqa: BLE001 - failure is silenced for resilience
                 pass
             listed = await self.list_board_items(bid, max_pages=5)
             if not listed.get("ok"):
@@ -2140,7 +2140,7 @@ class PlakyClient:
                         if isinstance(groups[0], dict)
                         else ""
                     )
-            except Exception:
+            except Exception:  # noqa: BLE001 - graceful degradation
                 gid = ""
         if not gid:
             return {

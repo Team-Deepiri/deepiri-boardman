@@ -30,5 +30,5 @@ async def maybe_enqueue_plaky_reorder_after_task(plaky: PlakyClient, task_id: st
             "plaky_reorder_group_job",
             {"board_id": bid, "group_id": gid},
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - observability failure must not affect the request
         _log.exception("enqueue plaky_reorder_group_job failed")

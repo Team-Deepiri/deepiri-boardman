@@ -206,7 +206,9 @@ class GitHubEventPoller:
                     _log.warning(
                         "poller: direct poll of %s failed (transient network): %s", repo, e
                     )
-                except Exception:
+                except (
+                    Exception
+                ):  # noqa: BLE001 - observability failure must not affect the request
                     _log.exception("poller: unexpected error in direct poll of %s", repo)
                 try:
                     await self._poll_repo(repo)
@@ -214,7 +216,9 @@ class GitHubEventPoller:
                     _log.warning(
                         "poller: events poll of %s failed (transient network): %s", repo, e
                     )
-                except Exception:
+                except (
+                    Exception
+                ):  # noqa: BLE001 - observability failure must not affect the request
                     _log.exception("poller: unexpected error polling events of %s", repo)
             try:
                 await asyncio.wait_for(self._stop.wait(), timeout=interval)
@@ -270,7 +274,9 @@ class GitHubEventPoller:
                     _log.warning(
                         "poller: %s poll of %s failed (transient network): %s", label, full_name, e
                     )
-                except Exception:
+                except (
+                    Exception
+                ):  # noqa: BLE001 - observability failure must not affect the request
                     _log.exception("poller: %s poll of %s errored", label, full_name)
 
     async def _poll_issues(self, client, full_name, baseline, since, proc) -> None:
@@ -595,7 +601,7 @@ class GitHubEventPoller:
                 continue
             try:
                 await self._dispatch_event(full_name, event)
-            except Exception:
+            except Exception:  # noqa: BLE001 - observability failure must not affect the request
                 _log.exception(
                     "poller: failed handling %s event %s", event.get("type"), event.get("id")
                 )
@@ -707,7 +713,7 @@ class GitHubEventPoller:
                 # correct in tests.
                 note_repo_changed(repo_full_name_from_payload(parsed))
                 return result
-            except Exception:
+            except Exception:  # noqa: BLE001 - GitHub API failure degrades gracefully
                 await session.rollback()
                 raise
 

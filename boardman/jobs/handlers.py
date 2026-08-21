@@ -46,7 +46,7 @@ async def boardman_agent_chat_job(payload: dict[str, Any]) -> dict[str, Any]:
             )
             await session.commit()
             return {"ok": True, "reply": reply, "session_id": sid}
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - logged and handled
             logger.exception("boardman_agent_chat_job failed")
             await session.rollback()
             return {"ok": False, "error": str(e)}
@@ -85,7 +85,7 @@ async def boardman_repo_scan_job(payload: dict[str, Any]) -> dict[str, Any]:
             )
             await session.commit()
             return result
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - logged and handled
             logger.exception("boardman_repo_scan_job failed")
             await session.rollback()
             return {"ok": False, "error": str(e)}
@@ -121,7 +121,7 @@ async def boardman_github_webhook_job(payload: dict[str, Any]) -> dict[str, Any]
                         row.note = f"worker attempt {attempt}"
                 await session.commit()
                 return {**result, "delivery_id": delivery_id, "attempt": attempt}
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 - graceful degradation
                 last_error = str(exc)[:500]
                 await session.rollback()
                 if delivery_id:

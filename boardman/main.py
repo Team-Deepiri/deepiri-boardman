@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     if settings.agent_rate_limit_enabled:
         try:
             await get_agent_leaky_limiter()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
             _log.warning("Agent rate limiter init skipped: %s", e)
     # Webhook signature posture: empty secret = verification disabled (dev only).
     ws = (settings.github_webhook_secret or "").strip()
@@ -83,7 +83,9 @@ async def lifespan(app: FastAPI):
                         "team_assignments: field-key sync skipped (%s)",
                         synced.get("message", "no changes"),
                     )
-            except Exception as e:
+            except (
+                Exception
+            ) as e:  # noqa: BLE001 - observability failure must not affect the request
                 _log.warning("team_assignments: startup field-key sync failed: %s", e)
         else:
             _log.info(
@@ -100,7 +102,7 @@ async def lifespan(app: FastAPI):
                 src,
                 settings.ollama_base_url,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
             _log.warning("Agent LLM: could not resolve Ollama model at startup: %s", e)
     else:
         _log.info(

@@ -209,7 +209,9 @@ def _refresh_in_background(stamp: tuple[Any, ...]) -> None:
         try:
             cfg = _build_team_assignments()
             _team_cfg_cache = (time.monotonic(), stamp, cfg)
-        except Exception:  # a failed refresh keeps the previous answer, it never clears it
+        except (
+            Exception
+        ):  # a failed refresh keeps the previous answer, it never clears it  # noqa: BLE001 - observability failure must not affect the request
             _log.warning("background roster refresh failed; keeping the cached roster")
         finally:
             _team_cfg_refreshing = False

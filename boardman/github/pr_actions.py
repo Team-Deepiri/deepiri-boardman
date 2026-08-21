@@ -61,7 +61,7 @@ async def comment_on_pr(full_name: str, pr_number: int, body: str) -> dict[str, 
         async with shared_github_client() as client:
             r = await client.post(url, headers=_headers(), json={"body": with_marker(body)})
     except Exception as e:  # noqa: BLE001 — network failure must not break the webhook
-        _log.warning("pr comment on %s#%s failed: %s", full_name, pr_number, e)
+        _log.warning("pr comment on %s#%s failed: %s", full_name, pr_number, e, exc_info=True)
         return {"ok": False, "message": str(e)}
     if r.status_code in (401, 403, 404):
         hint = _failure_hint(r.status_code)
@@ -83,8 +83,8 @@ async def request_reviewers(full_name: str, pr_number: int, logins: list[str]) -
     try:
         async with shared_github_client() as client:
             r = await client.post(url, headers=_headers(), json={"reviewers": logins})
-    except Exception as e:  # noqa: BLE001
-        _log.warning("reviewer request on %s#%s failed: %s", full_name, pr_number, e)
+    except Exception as e:  # noqa: BLE001 — network failure must not break the webhook
+        _log.warning("reviewer request on %s#%s failed: %s", full_name, pr_number, e, exc_info=True)
         return {"ok": False, "message": str(e)}
     if r.status_code in (401, 403, 404):
         hint = _failure_hint(r.status_code)

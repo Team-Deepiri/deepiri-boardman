@@ -64,7 +64,7 @@ async def _workspace_repo_suggestions(
     try:
         repos = await list_workspace_repos(client)
         names = list(repos.keys())
-    except Exception:
+    except Exception:  # noqa: BLE001 - GitHub API failure degrades gracefully
         return []
     want = (requested or "").split("/")[-1].strip().lower()
     if not want or not names:
@@ -541,7 +541,7 @@ def _repo_routing_summary(full_name: str) -> dict[str, str]:
             "board_id": str(routing.plaky_board_id or ""),
             "group_id": str(routing.plaky_group_id or ""),
         }
-    except Exception:
+    except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
         return {}
 
 
@@ -725,7 +725,7 @@ async def _github_org_activity(limit: int = 8) -> str:
 
     try:
         out = await org_activity_ranking(limit=max(1, min(int(limit or 8), 25)))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - graceful degradation
         return _json.dumps({"ok": False, "message": f"{type(e).__name__}: {e}"})
     return _json.dumps(out, default=str)[:12000]
 

@@ -551,3 +551,18 @@ async def test_github_listings_admit_their_page_limit_and_point_at_the_board(mon
     assert out["truncated"] is True
     assert out["returned"] == 30
     assert "plaky_list_tasks" in out["next_step"]
+
+
+# --- tier classifier default for unknown repos ----------------------------------------
+
+
+def test_a_repo_with_no_metadata_defaults_to_tier_2_not_3() -> None:
+    """Tier 2 means every QA at tier 2 or higher is eligible. Tier 3 would restrict
+    unknown repos to tier-3-only QAs, which is the wrong default when no signal says the
+    repo is complex. Raised by sorge on PR #88."""
+    from boardman.assignment.tier_classifier import classify_repo_tier
+
+    tier, _score = classify_repo_tier(None)
+    assert tier == 2, f"unknown repos should be tier 2, got {tier}"
+    tier2, _ = classify_repo_tier({})
+    assert tier2 == 2

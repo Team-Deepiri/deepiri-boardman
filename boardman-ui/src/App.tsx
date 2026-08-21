@@ -88,7 +88,10 @@ async function sendChatStream(
   const reader = res.body?.getReader();
   if (!reader) throw new Error("No response body");
   // Abort mid-stream: cancel the reader so the response body stops draining in the
-  // background. { once: true } handles cleanup; no manual removeEventListener needed.
+  // background. { once: true } auto-removes the listener after it fires; no manual
+  // removeEventListener needed, and no risk of dangling listeners on unmount because
+  // this function is awaited inside onSend (not a useEffect), and the AbortController
+  // is scoped to that single send — it is replaced on the next message (line 436).
   const onAbort = () => void reader.cancel().catch(() => {});
   signal?.addEventListener("abort", onAbort, { once: true });
   const dec = new TextDecoder();

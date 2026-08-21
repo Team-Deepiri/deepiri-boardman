@@ -118,7 +118,7 @@ async def reconcile_repo(
                     )
                 if res.get("event") == "issue_labels_synced":
                     out["issues_resynced"] += 1
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - sync failure must not crash the service
             out["errors"].append(f"issue #{num}: {type(e).__name__}: {e}"[:200])
 
     r2 = await client.get(
@@ -182,7 +182,7 @@ async def reconcile_repo(
             if res.get("linked") or res.get("plaky_task_id"):
                 out["prs_relinked"] += 1
                 logger.info("reconcile: PR #%s was unlinked; repaired", num)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
             out["errors"].append(f"PR #{num}: {type(e).__name__}: {e}"[:200])
 
     out["ok"] = not out["errors"]

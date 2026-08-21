@@ -56,7 +56,7 @@ def _person_names() -> dict[str, str]:
         from boardman.assignment.config import load_team_assignments
 
         cfg = load_team_assignments()
-    except Exception:
+    except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
         return {}
     out: dict[str, str] = {}
     for m in list(cfg.members) + list(getattr(cfg, "fallback_members", []) or []):
@@ -530,7 +530,7 @@ def _resolved_people(
             assignee=typed_assignee, qa=typed_qa, normalized=normalized
         )
         keys = infer_plaky_field_keys_from_normalized(normalized) if normalized else {}
-    except Exception:
+    except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
         # Never fail a create receipt over a name lookup; say nothing about people.
         return "", "", []
     explicit = row.get("field_values") if isinstance(row.get("field_values"), dict) else {}
@@ -598,7 +598,7 @@ async def _board_group_index(board_id: str) -> dict[str, str]:
     """
     try:
         res = await PlakyClient().list_groups(board_id)
-    except Exception:
+    except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
         return {}
     if not res.get("ok", True):
         return {}
@@ -967,7 +967,7 @@ async def _plaky_create_tasks_deferred(
             listing = await PlakyClient().get_tasks(board_id=bid, status="all")
             existing = [t for t in (listing.get("tasks") or []) if isinstance(t, dict)]
             dedupe_ok = bool(listing.get("ok", True))
-        except Exception:
+        except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
             dedupe_ok = False
 
     already: list[dict[str, Any]] = []
@@ -1016,7 +1016,7 @@ async def _plaky_create_tasks_deferred(
             schema = await fetch_board_schema_bundle(bid)
             normalized = schema.get("normalized") if isinstance(schema, dict) else None
             normalized = normalized if isinstance(normalized, dict) else None
-        except Exception:
+        except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
             normalized = None
 
     cards: list[str] = []
@@ -1320,7 +1320,7 @@ async def _plaky_create_tasks(
         try:
             listing = await PlakyClient().get_tasks(board_id=dedupe_bid, status="all")
             existing = [t for t in (listing.get("tasks") or []) if isinstance(t, dict)]
-        except Exception:
+        except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
             existing = []  # dedupe is best-effort; creation must not die on a listing blip
 
     # Plaky's create endpoint is ~0.2s solo but shapes concurrent bursts hard (measured

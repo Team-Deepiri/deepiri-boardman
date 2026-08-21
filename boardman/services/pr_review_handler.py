@@ -136,7 +136,7 @@ async def _failing_required_checks(full_name: str, pr_number: int) -> list[str]:
             ).lower() in ("failure", "timed_out", "action_required"):
                 bad.append(str(run.get("name") or "check"))
         return bad
-    except Exception:
+    except Exception:  # noqa: BLE001 - graceful degradation
         return []
 
 

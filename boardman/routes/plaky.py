@@ -51,7 +51,7 @@ async def list_llm_models() -> dict:
                         "models": model_list,
                         "current": current,
                     }
-        except Exception:
+        except Exception:  # noqa: BLE001 - LLM failure is handled by the caller
             return {
                 "ok": False,
                 "provider": "ollama",

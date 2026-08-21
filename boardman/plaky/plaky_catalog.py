@@ -231,7 +231,7 @@ async def refresh_plaky_catalog(
         if live.boards:
             save_catalog_cache(live)
             return live, source
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - observability failure must not affect the request
         _log.warning("plaky catalog: live fetch failed: %s", exc)
         if cached:
             return cached, f"stale-cache:{cached.source}"

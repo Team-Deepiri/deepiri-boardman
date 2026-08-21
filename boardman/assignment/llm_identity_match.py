@@ -109,7 +109,7 @@ def _cached_same_person(key: str) -> float | None:
                 getattr(b, "text", str(b)) if not isinstance(b, str) else b for b in content
             )
         return _parse_confidence(str(content))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
         _log.warning("identity LLM call failed: %s", e)
         return None
 

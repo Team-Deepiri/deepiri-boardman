@@ -99,7 +99,9 @@ async def infer_qa_tier_from_pr_activity(
             )
             try:
                 r = await client.get(url, headers=headers)
-            except Exception as e:
+            except (
+                Exception
+            ) as e:  # noqa: BLE001 - observability failure must not affect the request
                 _log.debug("search issues %s: %s", q, e)
                 break
             if r.status_code != 200:

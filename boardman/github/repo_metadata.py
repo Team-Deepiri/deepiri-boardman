@@ -60,7 +60,7 @@ async def fetch_repo_identity(
                 return None
             data = response.json()
             return data if isinstance(data, dict) else None
-        except Exception:
+        except Exception:  # noqa: BLE001 - graceful degradation
             return None
 
     return await cached(
@@ -91,7 +91,7 @@ async def fetch_repo_tree(
                 return None
             data = response.json()
             return data if isinstance(data, dict) else None
-        except Exception:
+        except Exception:  # noqa: BLE001 - graceful degradation
             return None
 
     return await cached(
@@ -117,7 +117,7 @@ async def _fetch_file_tree_signals(
         if not data:
             return [], 0, [], {}
         tree = data.get("tree", [])
-    except Exception:
+    except Exception:  # noqa: BLE001 - graceful degradation
         return [], 0, [], {}
 
     signals: list[str] = []
@@ -243,7 +243,7 @@ async def fetch_repo_metadata(
             signal_counts=signal_counts,
             pushed_at=str(data.get("pushed_at") or ""),
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - graceful degradation
         return None
 
 

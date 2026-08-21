@@ -68,7 +68,9 @@ def note_repo_changed(full_name: str, *, event: str = "") -> int:
         from boardman.github.read_cache import invalidate_repo
 
         dropped = invalidate_repo(name)
-    except Exception:  # never let cache bookkeeping break a sync path
+    except (
+        Exception
+    ):  # never let cache bookkeeping break a sync path  # noqa: BLE001 - observability failure must not affect the request
         logger.debug("cache invalidation failed for %s", name, exc_info=True)
         return 0
     if dropped:

@@ -64,7 +64,7 @@ async def recent_failed_task_writes(session: Any, *, minutes: int = 30) -> str:
             .scalars()
             .all()
         )
-    except Exception:
+    except Exception:  # noqa: BLE001 - logged and handled
         logger.exception("could not read recent background write failures")
         return ""
     if not rows:

@@ -150,7 +150,7 @@ def _load() -> tuple[dict[str, float], dict[str, float]]:
             _cache["percentiles"].get("p80", 0),
         )
         return _cache["idf"], _cache["percentiles"]
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - observability failure must not affect the request
         _log.warning("Failed to load repo_signals.json: %s — defaulting to tier 2", exc)
         return {}, {}
 

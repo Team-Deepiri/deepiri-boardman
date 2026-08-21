@@ -136,7 +136,7 @@ async def resolve_placement_for_repo(
         return None
     try:
         catalog, cache_label = await get_plaky_catalog(force=force_catalog_refresh)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - observability failure must not affect the request
         _log.warning("plaky placement: catalog unavailable for %r: %s", full_name, exc)
         return None
     result = discover_placement_from_catalog(

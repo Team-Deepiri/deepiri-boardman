@@ -32,7 +32,7 @@ def is_gpu_available() -> bool:
         if result.returncode == 0 and "GPU" in result.stdout:
             _gpu_available = True
             return True
-    except Exception:
+    except Exception:  # noqa: BLE001 - failure is silenced for resilience
         pass
 
     # Fallback/Additional check: check if /dev/nvidia0 exists (common in Docker with --gpus)

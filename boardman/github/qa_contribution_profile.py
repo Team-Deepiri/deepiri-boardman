@@ -132,9 +132,22 @@ def _maybe_load_disk_cache() -> None:
         _log.warning("qa profiles: could not load disk cache: %s", e)
 
 
-def _save_disk_cache() -> None:
+# Debounce: writes at most once per 30 seconds. The warmer updates 11 profiles in a
+# burst; writing to disk after each one was 11 atomic JSON serializations of the same
+# growing dict, with only the last one surviving.
+_last_disk_save: float = 0.0
+_SAVE_DEBOUNCE_SECONDS = 30.0
+
+
+def _save_disk_cache(*, force: bool = False) -> None:
     import json
     import os
+
+    global _last_disk_save
+    now = time.monotonic()
+    if not force and (now - _last_disk_save) < _SAVE_DEBOUNCE_SECONDS:
+        return
+    _last_disk_save = now
 
     path = _cache_path()
     try:
@@ -189,7 +202,7 @@ async def fetch_repo_info(client: httpx.AsyncClient, full_name: str) -> RepoInfo
         return hit[1]
     try:
         r = await client.get(f"https://api.github.com/repos/{full_name}", headers=_gh_headers())
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
         _log.debug("repo info %s: %s", full_name, e)
         return hit[1] if hit else None
     if r.status_code != 200:
@@ -252,7 +265,9 @@ async def fetch_contribution_profile(
                     _log.debug("profile search %s throttled; retrying in %.0fs", q, wait)
                     await asyncio.sleep(wait)
                     r = await client.get(url, headers=_gh_headers())
-            except Exception as e:
+            except (
+                Exception
+            ) as e:  # noqa: BLE001 - observability failure must not affect the request
                 _log.debug("profile search %s: %s", q, e)
                 break
             if r.status_code != 200:
@@ -306,7 +321,7 @@ async def fetch_contribution_profile(
     profile.token_weights = dict(toks)
 
     _profile_cache[key] = (now + PROFILE_TTL_SECONDS, profile)
-    _save_disk_cache()
+    _save_disk_cache(force=True)
     return profile
 
 

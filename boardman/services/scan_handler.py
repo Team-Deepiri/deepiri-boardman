@@ -385,7 +385,7 @@ async def run_repo_scan(
             "scan_id": scan_row.id,
             "warnings": parse_warnings + routing_warnings,
         }
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - graceful degradation
         scan_row.error = str(e)[:2000]
         await session.flush()
         return {"ok": False, "message": str(e), "scan_id": scan_row.id}

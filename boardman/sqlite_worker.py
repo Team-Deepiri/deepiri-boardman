@@ -37,7 +37,7 @@ async def _repo_knowledge_loop() -> None:
                 sweep_targets(),
                 concurrency=max(1, int(settings.repo_knowledge_sweep_concurrency or 3)),
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - GitHub API failure degrades gracefully
             # A sweep is an optimisation. It must never take the worker down with it.
             _log.exception("repo knowledge sweep failed")
 
@@ -74,7 +74,7 @@ async def _reconciliation_loop() -> None:
                         result.get("prs_checked"),
                         len(result.get("errors") or []),
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001 - graceful degradation
                     await session.rollback()
                     _log.exception("reconciliation failed for %s", full_name)
 
@@ -98,7 +98,7 @@ async def _run_one(job_id: str, kind: str, payload: dict) -> None:
             status="complete" if ok else "incomplete",
             result=out,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
         _log.exception("job %s (%s) failed", job_id, kind)
         await mark_job_finished(
             job_id,

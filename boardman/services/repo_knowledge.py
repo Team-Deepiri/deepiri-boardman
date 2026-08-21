@@ -116,7 +116,9 @@ async def sweep_repo_knowledge(
                     result = await refresh_if_moved(session, repo)
                     await session.commit()
                     return result
-            except Exception as e:
+            except (
+                Exception
+            ) as e:  # noqa: BLE001 - observability failure must not affect the request
                 logger.warning("knowledge sweep failed for %s: %s", repo, e)
                 return {"repo": repo, "action": "error", "error": str(e)[:200]}
 

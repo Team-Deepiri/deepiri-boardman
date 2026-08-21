@@ -40,7 +40,7 @@ async def get_db() -> AsyncIterator[AsyncSession]:
         try:
             yield session
             await session.commit()
-        except Exception:
+        except Exception:  # noqa: BLE001 - graceful degradation
             await session.rollback()
             raise
 

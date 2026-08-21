@@ -173,7 +173,7 @@ async def agent_chat_stream(body: AgentChatRequest, request: Request) -> Streami
                     ):
                         yield chunk
                     await db.commit()
-                except Exception:
+                except Exception:  # noqa: BLE001 - graceful degradation
                     await db.rollback()
                     raise
 

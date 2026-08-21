@@ -176,7 +176,7 @@ def _classify_llm_error(exc: BaseException, *, provider: str) -> ErrorCategory:
             return "timeout"
         if isinstance(exc, httpx.ConnectError | OSError):
             return "connectivity"
-    except Exception:
+    except Exception:  # noqa: BLE001 - failure is silenced for resilience
         pass
 
     mod = (getattr(type(exc), "__module__", "") or "").lower()
@@ -330,7 +330,7 @@ def _format_llm_failure(exc: BaseException, *, provider: str, model: str) -> str
             base = f"HTTP {st} from the model API"
             if snippet:
                 base += f": {snippet}"
-    except Exception:
+    except Exception:  # noqa: BLE001 - LLM failure is handled by the caller
         pass
     return (
         "I could not get a reply from the language model.\n\n"
@@ -388,7 +388,7 @@ async def _safe_plain_chat(
             extra_system_suffix=extra_system_suffix,
         )
         return await chat_complete(llm_messages, provider=provider, model=model)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - logged and handled
         logger.exception("Plain chat (Ollama/direct LLM) failed")
         return _format_llm_failure(e, provider=resolved_provider, model=resolved_model)
 

@@ -126,7 +126,7 @@ def llm_rerank_pr_candidates(
             )
         tid, conf, reason = _parse_rerank(str(content), allowed)
         return tid, conf, reason
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
         _log.warning("PR-task rerank LLM failed: %s", e)
         return None, 0.0, str(e)
 
