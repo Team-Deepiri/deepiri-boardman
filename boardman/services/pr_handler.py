@@ -901,18 +901,23 @@ async def reconcile_pr_issue_links(
     if not referenced:
         return {"ok": True, "changed": False, "reason": "no explicit issue reference"}
 
-    rows = list(
+    all_rows = list(
         (
             await session.execute(
                 select(PullRequestTaskLink).where(
                     PullRequestTaskLink.github_repo == repo_name,
                     PullRequestTaskLink.github_pr_number == pr_number,
-                    PullRequestTaskLink.github_issue_number != 0,
                     PullRequestTaskLink.withdrawn_at.is_(None),
                 )
             )
         ).scalars()
     )
+    rows = [row for row in all_rows if int(row.github_issue_number) != 0]
+    # issue_number=0 is the fallback link to a task this PR got on its own, because at the
+    # time nobody knew which issue it belonged to. Once the author says which issue it
+    # closes, that guess is superseded -- leaving it live would send every comment and
+    # status change to two cards for one piece of work.
+    standalone_rows = [row for row in all_rows if int(row.github_issue_number) == 0]
     existing = {int(row.github_issue_number) for row in rows}
     if existing == set(referenced):
         return {"ok": True, "changed": False, "reason": "issue relationships unchanged"}
@@ -953,13 +958,12 @@ async def reconcile_pr_issue_links(
     if linked and written:
         # Only now: the author WROTE a different issue, and that issue has a task.
         now = datetime.utcnow()
-        for row in rows:
-            if int(row.github_issue_number) in referenced:
-                continue
+        superseded = [row for row in rows if int(row.github_issue_number) not in referenced]
+        superseded += standalone_rows
+        for row in superseded:
+            issue_number = int(row.github_issue_number)
             row.withdrawn_at = now
-            withdrawn.append(
-                {"issue": int(row.github_issue_number), "task_id": str(row.plaky_task_id)}
-            )
+            withdrawn.append({"issue": issue_number, "task_id": str(row.plaky_task_id)})
             session.add(
                 SyncLog(
                     action="pr_link_withdrawn",
@@ -968,8 +972,13 @@ async def reconcile_pr_issue_links(
                     plaky_task_id=str(row.plaky_task_id),
                     detail=json.dumps(
                         {
-                            "issue_number": int(row.github_issue_number),
-                            "reason": "PR now references a different issue",
+                            "issue_number": issue_number,
+                            "reason": (
+                                "PR gained an explicit issue link; its standalone task is "
+                                "superseded"
+                                if issue_number == 0
+                                else "PR now references a different issue"
+                            ),
                             "now_references": referenced,
                         },
                         default=str,

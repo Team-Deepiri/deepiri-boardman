@@ -331,3 +331,78 @@ async def test_the_relink_is_recorded_in_the_sync_log(db_session, workflow) -> N
     actions = {row.action for row in rows}
     assert "pr_linked" in actions
     assert "pr_link_withdrawn" in actions
+
+
+@pytest.mark.asyncio
+async def test_a_standalone_pr_task_is_superseded_when_the_issue_link_arrives(
+    db_session, workflow
+) -> None:
+    """The live shape of the bug: PR #88 had its own task (issue_number=0) because nobody
+    knew which issue it belonged to, while issue #94 already owned 7209283."""
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+
+    res = await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+
+    assert res["linked"] == [{"issue": 94, "task_id": TASK_94}]
+    assert res["withdrawn"] == [{"issue": 0, "task_id": "7183844"}]
+    links = {row.github_issue_number: row for row in await _links(db_session)}
+    assert links[94].withdrawn_at is None, "the issue's task is now canonical"
+    assert links[0].withdrawn_at is not None, "one PR must not drive two cards"
+    assert links[0].plaky_task_id == "7183844", "the old task is retired, never deleted"
+
+
+@pytest.mark.asyncio
+async def test_a_standalone_task_survives_when_no_issue_task_exists(db_session, workflow) -> None:
+    """Nothing authoritative to move to means nothing is torn down."""
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+
+    res = await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+
+    assert res["linked"] == []
+    assert res["withdrawn"] == []
+    links = {row.github_issue_number: row for row in await _links(db_session)}
+    assert links[0].withdrawn_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_branch_only_reference_never_retires_a_standalone_task(
+    db_session, workflow
+) -> None:
+    """A branch name is a convention; it may add a link, never withdraw one."""
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+
+    res = await ph.reconcile_pr_issue_links(
+        _pr("no keywords here", head_ref="fix/94-add-retries"), db_session
+    )
+
+    assert res["linked"] == [{"issue": 94, "task_id": TASK_94}]
+    assert res["withdrawn"] == [], "nothing the author wrote, so nothing is torn down"
