@@ -245,3 +245,21 @@ def status_intent_would_regress(current_intent: str, next_intent: str) -> bool:
     if current is None or following is None:
         return False
     return following < current
+
+
+def status_would_move_backwards(current_intent: str, next_intent: str) -> bool:
+    """True when `next_intent` sits earlier in the workflow than where the task already is.
+
+    The unrestricted form of `status_intent_would_regress`, for the callers that know they
+    are re-running an earlier step rather than making a deliberate transition -- a PR
+    linked to an issue three days late runs the same pipeline a new PR runs, and asking
+    for QA is right for a new PR and wrong for a task QA has already finished with.
+
+    An unknown position on either side returns False, for the same reason as above: a
+    board this code cannot place is not evidence that anything is out of order.
+    """
+    current = workflow_rank(current_intent)
+    following = workflow_rank(next_intent)
+    if current is None or following is None:
+        return False
+    return following < current

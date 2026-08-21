@@ -72,8 +72,8 @@ def workflow(monkeypatch):
         calls["qa"].append(task_id)
         return {"assigned": True}
 
-    async def fake_needs_qa(_plaky, task_id, is_draft, board_id):
-        calls["needs_qa"].append((task_id, is_draft))
+    async def fake_needs_qa(_plaky, task_id, is_draft, board_id, *, allow_regression=True):
+        calls["needs_qa"].append((task_id, is_draft, allow_regression))
         return {"ok": True}
 
     async def fake_update(task_id, inp):
@@ -145,7 +145,9 @@ async def test_pr_edited_to_add_fixes_links_to_the_existing_issue_task(
     # The full PR workflow ran, not just the link row.
     assert workflow["type_and_assignee"] == [TASK_94]
     assert workflow["qa"] == [TASK_94]
-    assert workflow["needs_qa"] == [(TASK_94, False)]
+    assert workflow["needs_qa"] == [
+        (TASK_94, False, False)
+    ], "a late link must not ask for QA on a task that is already past it"
     assert len(workflow["comments"]) == 1
 
 
@@ -274,18 +276,20 @@ async def test_a_branch_name_links_only_when_nothing_explicit_was_written(
     await _seed_issue_task(db_session, 95, TASK_95)
 
     res = await ph.reconcile_pr_issue_links(
-        _pr("no keywords here", head_ref="fix/94-add-retries"), db_session
+        _pr("no keywords here", head_ref="issue-94-add-retries"), db_session
     )
     assert res["linked"] == [{"issue": 94, "task_id": TASK_94}]
 
 
 @pytest.mark.asyncio
 async def test_a_written_keyword_beats_the_branch_name(db_session, workflow) -> None:
-    """A branch called `94-…` must not add issue 94 to a PR whose body says it fixes 95."""
+    """A branch naming issue 94 must not add it to a PR whose body says it fixes 95."""
     await _seed_issue_task(db_session, 94, TASK_94)
     await _seed_issue_task(db_session, 95, TASK_95)
 
-    res = await ph.reconcile_pr_issue_links(_pr("Fixes #95", head_ref="94-add-retries"), db_session)
+    res = await ph.reconcile_pr_issue_links(
+        _pr("Fixes #95", head_ref="issue-94-add-retries"), db_session
+    )
 
     assert res["linked"] == [{"issue": 95, "task_id": TASK_95}]
     assert [row.github_issue_number for row in await _links(db_session)] == [95]
@@ -403,7 +407,7 @@ async def test_a_branch_only_reference_leaves_an_existing_link_completely_alone(
     await db_session.commit()
 
     res = await ph.reconcile_pr_issue_links(
-        _pr("no keywords here", head_ref="fix/94-add-retries"), db_session
+        _pr("no keywords here", head_ref="issue-94-add-retries"), db_session
     )
 
     assert res["changed"] is False
@@ -495,3 +499,110 @@ async def test_a_keyword_in_the_title_links_at_open_not_only_on_a_later_edit(
 
 async def _ok(*_a, **_k):
     return {"ok": True}
+
+
+@pytest.mark.parametrize(
+    "ref",
+    ["feature/2-factor-auth", "release/2024-q1", "94-add-retries", "fix/94-add-retries"],
+)
+def test_an_ambiguous_branch_number_is_not_read_as_an_issue(ref: str) -> None:
+    """`feature/2-factor-auth` is indistinguishable from `94-add-retries`, and reading it
+    wrong files a PR's notice, type, assignee, QA assignment and Needs QA onto a
+    stranger's task. A branch is a weak signal; the ambiguous half is not worth its cost."""
+    from boardman.services.issue_handler import branch_issue_numbers
+
+    assert branch_issue_numbers(ref) == []
+
+
+@pytest.mark.parametrize("ref", ["issue-94", "issue/94", "gh-94", "gh_94", "feat/issue-94-x"])
+def test_an_unambiguous_branch_prefix_still_links(ref: str) -> None:
+    from boardman.services.issue_handler import branch_issue_numbers
+
+    assert branch_issue_numbers(ref) == [94]
+
+
+@pytest.mark.asyncio
+async def test_reopening_a_pr_brings_its_links_back(db_session) -> None:
+    """Closing without merging withdraws the links, and nothing on the opened path clears
+    that once a triage record exists -- so every later event resolved to no task."""
+    from boardman.services.pr_task_registry import (
+        distinct_task_ids_for_pr,
+        mark_pr_withdrawn,
+        revive_pr_links,
+    )
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="issue_keyword",
+        )
+    )
+    await db_session.commit()
+
+    await mark_pr_withdrawn(db_session, github_repo=REPO, github_pr_number=88)
+    await db_session.commit()
+    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == []
+
+    await revive_pr_links(db_session, github_repo=REPO, github_pr_number=88)
+    await db_session.commit()
+
+    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == [
+        TASK_94
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reopening_does_not_revive_a_superseded_card(db_session, workflow) -> None:
+    """Reopening a PR does not un-say which issue it closes."""
+    from boardman.services.pr_task_registry import (
+        distinct_task_ids_for_pr,
+        mark_pr_withdrawn,
+        revive_pr_links,
+    )
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+    await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+
+    await mark_pr_withdrawn(db_session, github_repo=REPO, github_pr_number=88)
+    await db_session.commit()
+    await revive_pr_links(db_session, github_repo=REPO, github_pr_number=88)
+    await db_session.commit()
+
+    live = await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88)
+    assert live == [TASK_94], "the issue's task comes back; the superseded card stays retired"
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_card_is_told_it_was_superseded(db_session, workflow) -> None:
+    """Retiring the row stops the writes; it does not tell anyone looking at the card."""
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+
+    await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+
+    notices = [body for task_id, body in workflow["comments"] if task_id == "7183844"]
+    assert notices, "the superseded card gets a comment"
+    assert "Superseded" in notices[0]
+    assert TASK_94 in notices[0], "and it names where the work moved to"

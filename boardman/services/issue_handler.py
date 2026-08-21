@@ -42,13 +42,15 @@ ISSUE_LINK_URL_RE = re.compile(
     rf"{_CLOSING_KEYWORD}\s+https?://github\.com/[\w.\-]+/[\w.\-]+/issues/(\d+)",
     re.IGNORECASE,
 )
-# Branch conventions, used ONLY when nothing explicit was written. Two shapes:
-#   issue-94-… / issue/94 / gh-94       (an unambiguous prefix)
-#   94-add-retries / fix/94-add-retries  (a number that LEADS a descriptor)
-# The trailing-descriptor requirement is what keeps `release-2024` from being read as
-# issue 2024: there, the number ends the branch name rather than introducing anything.
+# Branch conventions, used ONLY when nothing explicit was written, and only in the shape
+# that cannot mean anything else: `issue-94`, `issue/94`, `gh-94`.
+#
+# A bare leading number was supported and is not any more. `94-add-retries` is
+# indistinguishable from `feature/2-factor-auth` and `release/2024-q1`, and getting it
+# wrong is not a missed link -- it files a PR's notice, type, assignee, QA assignment and
+# Needs QA onto a stranger's task. A branch name is a weak signal to begin with, so the
+# ambiguous half of it buys far less than it can cost.
 _BRANCH_PREFIXED_RE = re.compile(r"(?:^|[/_-])(?:issue|gh)[-_/]?(\d{1,6})(?![0-9])", re.IGNORECASE)
-_BRANCH_LEADING_NUMBER_RE = re.compile(r"(?:^|/)(\d{1,6})[-_]+[a-z]", re.IGNORECASE)
 
 
 def _ordered_unique(values: Iterable[int]) -> list[int]:
@@ -79,9 +81,7 @@ def branch_issue_numbers(head_ref: str | None) -> list[int]:
     ref = (head_ref or "").strip()
     if not ref:
         return []
-    found = [int(m.group(1)) for m in _BRANCH_PREFIXED_RE.finditer(ref)]
-    found.extend(int(m.group(1)) for m in _BRANCH_LEADING_NUMBER_RE.finditer(ref))
-    return _ordered_unique(found)
+    return _ordered_unique(int(m.group(1)) for m in _BRANCH_PREFIXED_RE.finditer(ref))
 
 
 def linked_issue_numbers_for_pr(

@@ -11,6 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.models import PullRequestTaskLink
 
+# Stamped on a link retired because the PR gained an explicit issue relationship. It
+# distinguishes "this PR is closed for now" from "this card is not this PR's card any
+# more", which reopening must not undo.
+_SUPERSEDED_LINK_SOURCE = "superseded_by_issue_link"
+
 
 async def upsert_pr_task_link(
     session: AsyncSession,
@@ -76,6 +81,34 @@ async def mark_pr_withdrawn(
     now = datetime.utcnow()
     for row in rows:
         row.withdrawn_at = now
+    return rows
+
+
+async def revive_pr_links(
+    session: AsyncSession,
+    *,
+    github_repo: str,
+    github_pr_number: int,
+) -> list[PullRequestTaskLink]:
+    """Un-withdraw a reopened PR's links, EXCEPT ones superseded by a real issue link.
+
+    Closing a PR without merging withdraws its links, and `upsert_pr_task_link` is the
+    only other thing that clears the flag -- which the ambiguous-triage short-circuit in
+    `handle_pr_opened` never reaches. Without this, reopening a PR left every review,
+    comment and push event resolving to no task at all.
+
+    A link retired because the PR now points at an issue's task is deliberately left
+    retired: reopening the PR does not un-say which issue it closes.
+    """
+    q = select(PullRequestTaskLink).where(
+        PullRequestTaskLink.github_repo == github_repo,
+        PullRequestTaskLink.github_pr_number == github_pr_number,
+        PullRequestTaskLink.withdrawn_at.is_not(None),
+        PullRequestTaskLink.link_source != _SUPERSEDED_LINK_SOURCE,
+    )
+    rows = list((await session.execute(q)).scalars())
+    for row in rows:
+        row.withdrawn_at = None
     return rows
 
 

@@ -32,6 +32,7 @@ from boardman.services.pr_task_linking import (
     should_run_pipeline,
 )
 from boardman.services.pr_task_registry import (
+    _SUPERSEDED_LINK_SOURCE,
     distinct_task_ids_for_pr,
     has_any_open_pr_for_task,
     mark_pr_merged,
@@ -39,7 +40,11 @@ from boardman.services.pr_task_registry import (
     upsert_pr_task_link,
 )
 from boardman.services.pr_tracker import remove_pr_row, upsert_pr_row
-from boardman.services.sync_state import resolve_pr_state, status_intent_would_regress
+from boardman.services.sync_state import (
+    resolve_pr_state,
+    status_intent_would_regress,
+    status_would_move_backwards,
+)
 from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
 from boardman.settings import settings
@@ -378,6 +383,8 @@ async def _maybe_set_needs_qa(
     task_id: str,
     is_draft: bool,
     board_id: str = "",
+    *,
+    allow_regression: bool = True,
 ) -> None:
     st = _needs_qa_status_value()
     status_field_key: str | None = None
@@ -392,6 +399,15 @@ async def _maybe_set_needs_qa(
         return
     if is_draft and settings.plaky_skip_needs_qa_for_draft:
         return
+    if not allow_regression and bid:
+        # A PR linked LATE runs the same pipeline a new one does, and asking for QA is
+        # right for a new PR and wrong for a task already in or past QA.
+        from boardman.plaky.dynamic_qa_status import current_status_intent
+
+        now_at = await current_status_intent(bid, task_id, status_field_key or "")
+        if status_would_move_backwards(now_at, "workflow_needs_qa"):
+            _log.info("task %s is at %s; not asking for QA again from a late link", task_id, now_at)
+            return
     await _update_plaky_task_status(task_id, st, bid, status_field_key=status_field_key)
     await maybe_enqueue_plaky_reorder_after_task(plaky, task_id)
 
@@ -689,7 +705,9 @@ async def _link_pr_to_issue_task(
         task_url=mapping.plaky_task_url or "",
     )
     _log.info("PR #%s QA assignment: %s", pr_number, {k: qa_res[k] for k in list(qa_res)[:3]})
-    await _maybe_set_needs_qa(plaky, mapping.plaky_task_id, is_draft, board_id)
+    await _maybe_set_needs_qa(
+        plaky, mapping.plaky_task_id, is_draft, board_id, allow_regression=False
+    )
     session.add(
         SyncLog(
             action="pr_linked",
@@ -874,6 +892,55 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
     return {"ok": True, "linked": results}
 
 
+async def _retire_superseded_task(
+    session: AsyncSession,
+    plaky: PlakyClient,
+    *,
+    task_id: str,
+    board_id: str,
+    repo_name: str,
+    pr_number: int,
+    canonical_task_ids: str,
+) -> None:
+    """Tell a superseded card it is superseded, and stop it asking QA for review.
+
+    Deliberately does NOT close or delete it: the card may carry comments and a human's
+    edits, and this code cannot know whether the work it describes is done. Moving it out
+    of the QA queue and naming its replacement is the honest half -- a person decides the
+    rest.
+    """
+    note = (
+        f"↪️ **Superseded:** PR #{pr_number} now says which issue it closes, so its work is "
+        f"tracked on task {canonical_task_ids}. This card was created for the PR before "
+        "that was known and will not receive further updates."
+    )
+    await mirror_github_activity(
+        session,
+        plaky,
+        task_id=task_id,
+        action="pr_task_superseded",
+        marker=f"github:pr-task-superseded:{repo_name}:{pr_number}:{task_id}",
+        body=note,
+        board_id=board_id or "",
+        github_repo=repo_name,
+        github_ref=str(pr_number),
+    )
+    bid = (board_id or "").strip()
+    if not bid:
+        return
+    from boardman.plaky.dynamic_qa_status import current_status_intent, resolve_plaky_status_patch
+
+    needs_qa = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
+    in_progress = await resolve_plaky_status_patch(bid, intent="workflow_in_progress")
+    if not needs_qa or not in_progress:
+        return
+    # Only when it is actually sitting in the QA queue. A card someone already moved on
+    # is theirs, not ours to rewind.
+    if await current_status_intent(bid, task_id, needs_qa[0] or "") != "workflow_needs_qa":
+        return
+    await _update_plaky_task_status(task_id, in_progress[1], bid, status_field_key=in_progress[0])
+
+
 async def reconcile_pr_issue_links(
     payload: PullRequestEventPayload,
     session: AsyncSession,
@@ -981,10 +1048,25 @@ async def reconcile_pr_issue_links(
         now = datetime.utcnow()
         superseded = [row for row in rows if int(row.github_issue_number) not in referenced]
         superseded += standalone_rows
+        canonical = ", ".join(str(x["task_id"]) for x in linked)
         for row in superseded:
             issue_number = int(row.github_issue_number)
             row.withdrawn_at = now
+            if issue_number == 0:
+                row.link_source = _SUPERSEDED_LINK_SOURCE
             withdrawn.append({"issue": issue_number, "task_id": str(row.plaky_task_id)})
+            # Retiring the row stops the writes; it does not tell anyone looking at the
+            # card. Left alone it sits at Needs QA with a QA assigned and nothing will
+            # ever move it again, so say what happened and take it out of the QA queue.
+            await _retire_superseded_task(
+                session,
+                plaky,
+                task_id=str(row.plaky_task_id),
+                board_id=board_id,
+                repo_name=repo_name,
+                pr_number=pr_number,
+                canonical_task_ids=canonical,
+            )
             session.add(
                 SyncLog(
                     action="pr_link_withdrawn",
