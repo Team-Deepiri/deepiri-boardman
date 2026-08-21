@@ -836,3 +836,22 @@ async def test_merging_does_not_complete_a_superseded_card(db_session, workflow)
     assert [row.plaky_task_id for row in merged] == [
         TASK_94
     ], "only the card the PR actually drives is completed"
+
+
+@pytest.mark.asyncio
+async def test_every_body_only_caller_also_ignores_another_repos_url(db_session) -> None:
+    """The legacy body-only helper feeds merge, ready-for-review, review comments and the
+    triage pipeline. Without the repo it read a cross-repo URL as a local issue, and
+    handle_pr_merged then completed an unrelated task."""
+    from boardman.services.issue_handler import get_linked_issue_numbers
+    from boardman.services.pr_task_linking import should_run_pipeline
+
+    other = "Fixes https://github.com/Team-Deepiri/deepiri-ui/issues/94"
+
+    assert await get_linked_issue_numbers(other, repo_full_name=FULL) == []
+    assert await get_linked_issue_numbers(
+        f"Fixes https://github.com/{FULL}/issues/94", repo_full_name=FULL
+    ) == [94]
+    # A PR that only cites another repo is unlinked, so triage must still run for it.
+    assert await should_run_pipeline(other, repo_full_name=FULL) is True
+    assert await should_run_pipeline("Fixes #94", repo_full_name=FULL) is False

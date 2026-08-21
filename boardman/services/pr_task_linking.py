@@ -817,16 +817,22 @@ async def run_pr_task_pipeline(
     )
 
 
-def closing_issue_numbers(pr_body: str | None) -> list[int]:
+def closing_issue_numbers(pr_body: str | None, *, repo_full_name: str = "") -> list[int]:
     """Sync wrapper path uses async get_linked_issue_numbers; sync helper for tests."""
     import asyncio
 
-    return asyncio.get_event_loop().run_until_complete(get_linked_issue_numbers(pr_body))
+    return asyncio.get_event_loop().run_until_complete(
+        get_linked_issue_numbers(pr_body, repo_full_name=repo_full_name)
+    )
 
 
-async def should_run_pipeline(pr_body: str | None) -> bool:
-    """Run when there are no closing keywords linking an issue."""
-    linked = await get_linked_issue_numbers(pr_body)
+async def should_run_pipeline(pr_body: str | None, *, repo_full_name: str = "") -> bool:
+    """Run when there are no closing keywords linking an issue.
+
+    The repo matters: a URL naming another repository is not a local link, so a PR that
+    only cites one still needs the fuzzy pipeline rather than being treated as linked.
+    """
+    linked = await get_linked_issue_numbers(pr_body, repo_full_name=repo_full_name)
     return not linked
 
 

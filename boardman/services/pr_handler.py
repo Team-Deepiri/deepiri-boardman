@@ -813,7 +813,7 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
     if not results:
         pipe_top: Sequence[Any] | None = None
         run_pipe = settings.pr_linking_pipeline_enabled and await should_run_pipeline(
-            payload.pull_request.body
+            payload.pull_request.body, repo_full_name=full_name
         )
         if run_pipe:
             pr_user = payload.pull_request.user or {}
@@ -1371,7 +1371,9 @@ async def handle_pr_ready_for_review(
         session, github_repo=repo_name, github_pr_number=pr_number
     )
     if not task_ids:
-        linked_issues = await get_linked_issue_numbers(payload.pull_request.body)
+        linked_issues = await get_linked_issue_numbers(
+            payload.pull_request.body, repo_full_name=payload.repository.full_name
+        )
         for issue_num in linked_issues:
             mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
             if mapping:
@@ -1601,7 +1603,9 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
 
-    linked_issues = await get_linked_issue_numbers(payload.pull_request.body)
+    linked_issues = await get_linked_issue_numbers(
+        payload.pull_request.body, repo_full_name=payload.repository.full_name
+    )
 
     plaky = PlakyClient()
     for issue_num in linked_issues:
@@ -1705,7 +1709,8 @@ async def handle_pr_review_comment(
         return {"ok": False, "message": "No commenter login found"}
 
     linked_issues = await get_linked_issue_numbers(
-        payload.pull_request.body if payload.pull_request else None
+        payload.pull_request.body if payload.pull_request else None,
+        repo_full_name=full_name,
     )
 
     task_ids_with_issue: list[tuple[str, int | None]] = []

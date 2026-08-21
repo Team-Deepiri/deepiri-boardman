@@ -552,13 +552,15 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     }
 
 
-async def get_linked_issue_numbers(pr_body: str | None) -> list[int]:
+async def get_linked_issue_numbers(pr_body: str | None, *, repo_full_name: str = "") -> list[int]:
     """Body-only view of the closing keywords, kept for callers that only have a body.
 
-    Prefer `linked_issue_numbers_for_pr`, which also reads the title and (as a last
-    resort) the branch name.
+    Pass `repo_full_name` whenever the caller knows it: without it a closing keyword in
+    front of ANOTHER repository's issue URL resolves as this repository's issue of the
+    same number. Prefer `linked_issue_numbers_for_pr`, which also reads the title and (as
+    a last resort) the branch name.
     """
-    return explicit_issue_numbers(pr_body)
+    return explicit_issue_numbers(pr_body, repo_full_name=repo_full_name)
 
 
 async def find_plaky_task_by_issue(
