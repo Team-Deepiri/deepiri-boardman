@@ -259,6 +259,12 @@ async def handle_issue_changed(
                 if status_intent_would_regress(now_at, intent):
                     status_held_back = now_at
                     status_value, status_field_key = "", None
+                    # Holding back the status means holding back the column too. An
+                    # `unassigned` event whose NEEDS ASSIGNED write is refused would
+                    # otherwise empty the Assignee while the board still reads Assigned --
+                    # the one state issue_status_intent and _apply_pr_type_and_assignee
+                    # both exist to prevent. The work is in QA; who did it still matters.
+                    owns_assignment = False
                     _log.info(
                         "issue #%s: keeping status %s; %s would move the task backwards",
                         state.number,

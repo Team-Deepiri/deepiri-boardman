@@ -27,7 +27,10 @@ from boardman.database.models import IssueTaskMap, SyncLog
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.repos_config import get_routing_async
-from boardman.services.issue_handler import get_linked_issue_numbers
+from boardman.services.issue_handler import (
+    explicit_issue_numbers,
+    get_linked_issue_numbers,
+)
 from boardman.services.llm_pr_task_rerank import llm_rerank_pr_candidates
 from boardman.settings import settings
 
@@ -818,12 +821,13 @@ async def run_pr_task_pipeline(
 
 
 def closing_issue_numbers(pr_body: str | None, *, repo_full_name: str = "") -> list[int]:
-    """Sync wrapper path uses async get_linked_issue_numbers; sync helper for tests."""
-    import asyncio
+    """The closing keywords in a PR body. Sync, because the work is a regex.
 
-    return asyncio.get_event_loop().run_until_complete(
-        get_linked_issue_numbers(pr_body, repo_full_name=repo_full_name)
-    )
+    Was a `run_until_complete` around the async wrapper, which raises "no current event
+    loop" on Python 3.14 -- and would have deadlocked inside a running loop before that.
+    The extraction never needed a loop; only the wrapper around it was async.
+    """
+    return explicit_issue_numbers(pr_body, repo_full_name=repo_full_name)
 
 
 async def should_run_pipeline(pr_body: str | None, *, repo_full_name: str = "") -> bool:

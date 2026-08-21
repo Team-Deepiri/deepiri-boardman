@@ -88,6 +88,24 @@ def test_assigning_never_moves_a_task_backwards(current: str, blocked: bool) -> 
     assert status_intent_would_regress(current, "workflow_assigned") is blocked
 
 
+@pytest.mark.parametrize(
+    ("current", "nxt"),
+    [
+        ("workflow_assigned", "workflow_needs_assigned"),
+        ("workflow_needs_assigned", "workflow_assigned"),
+    ],
+)
+def test_ownership_moves_freely_between_the_two_ownership_states(current: str, nxt: str) -> None:
+    """NEEDS ASSIGNED and Assigned ARE the ownership question, so an ownership event is
+    authoritative between them. Unassigning an Assigned task is exactly how the board is
+    supposed to reach NEEDS ASSIGNED, and the guard must not stand in front of it."""
+    assert status_intent_would_regress(current, nxt) is False
+
+
+def test_unassigning_is_still_blocked_once_the_work_has_moved_on() -> None:
+    assert status_intent_would_regress("workflow_in_qa", "workflow_needs_assigned") is True
+
+
 def test_an_unreadable_current_status_never_blocks_the_write() -> None:
     """A board whose vocabulary this code cannot place is not evidence of anything."""
     assert status_intent_would_regress("", "workflow_assigned") is False
@@ -200,6 +218,34 @@ async def test_unassigning_does_not_reset_a_task_in_qa(db_session, board, monkey
 
     assert res["status"] is None
     assert res["status_held_back"] == "workflow_in_qa"
+
+
+@pytest.mark.asyncio
+async def test_a_held_back_unassign_does_not_empty_the_assignee_column(
+    db_session, board, monkeypatch
+) -> None:
+    """Holding the status back but clearing the column leaves the board reading Assigned
+    with nobody assigned -- the one state the workflow rules forbid."""
+    _at_status(monkeypatch, "workflow_in_qa")
+
+    await ih.handle_issue_changed(_issue_event("unassigned", assignee=""), db_session)
+
+    assert (
+        board and board[0].clear_engineer_assignee is False
+    ), "the work is in QA; who did it still matters"
+
+
+@pytest.mark.asyncio
+async def test_unassigning_an_assigned_task_does_clear_the_column(
+    db_session, board, monkeypatch
+) -> None:
+    """The case the guard is not about: nothing is held back, so GitHub wins outright."""
+    _at_status(monkeypatch, "workflow_assigned")
+
+    res = await ih.handle_issue_changed(_issue_event("unassigned", assignee=""), db_session)
+
+    assert res["status"] == "workflow_needs_assigned"
+    assert board[0].clear_engineer_assignee is True
 
 
 @pytest.mark.asyncio

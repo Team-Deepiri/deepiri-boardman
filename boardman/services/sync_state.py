@@ -234,11 +234,20 @@ def workflow_rank(intent: str) -> int | None:
 def status_intent_would_regress(current_intent: str, next_intent: str) -> bool:
     """True when writing `next_intent` would move a task BACKWARDS through the workflow.
 
-    Only consulted for assignee-derived intents. An unknown current status returns False:
-    a board using labels this code cannot place is not evidence of anything, and refusing
-    to write on that basis would silently stop syncing rather than risk a regression.
+    Only consulted for assignee-derived intents, and only when the task has moved PAST
+    the ownership question. NEEDS ASSIGNED and Assigned are that question, so an ownership
+    event is authoritative between them and moves freely in both directions -- unassigning
+    the developer on an Assigned task is exactly how it should reach NEEDS ASSIGNED. What
+    the guard refuses is answering "where has the work got to" with an ownership fact once
+    the work has got somewhere: In Progress, Needs QA, In QA, approved, done.
+
+    An unknown current status returns False: a board using labels this code cannot place
+    is not evidence of anything, and refusing to write on that basis would silently stop
+    syncing rather than risk a regression.
     """
     if next_intent not in ASSIGNEE_DERIVED_INTENTS:
+        return False
+    if current_intent in ASSIGNEE_DERIVED_INTENTS:
         return False
     current = workflow_rank(current_intent)
     following = workflow_rank(next_intent)
