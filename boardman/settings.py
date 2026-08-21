@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # These doubled as literals inside the modules that consume them ("or 16", "or 200"),
 # so a change here silently disagreed with the fallback there. They now live in exactly
 # one place: the Field default below *and* the module fallback both read these names.
-DEFAULT_LLM_CONTEXT_BUDGET_CHARS = 20_000
+DEFAULT_LLM_CONTEXT_BUDGET_CHARS = 24_000
 DEFAULT_GITHUB_PR_MAX_FILES = 40
 DEFAULT_GITHUB_PR_MAX_BODY_CHARS = 4_000
 DEFAULT_GITHUB_CODE_SEARCH_MAX_FILES = 16

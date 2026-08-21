@@ -41,7 +41,7 @@ PAIRS = [
 # literal into settings.py must not change what it is, and "the Field default equals the
 # constant" cannot catch that on its own -- both sides move together.
 PRE_EXTRACTION_VALUES = {
-    "llm_context_budget_chars": 20_000,
+    "llm_context_budget_chars": 24_000,
     "github_pr_max_files": 40,
     "github_pr_max_body_chars": 4_000,
     "github_code_search_max_files": 16,

@@ -331,10 +331,10 @@ async def _github_repo_structure_uncached(owner_repo: str) -> str:
 
 
 def _context_budget() -> int:
-    """Character budget for the repo planning payload. 0/unset -> the settings default.
+    """Character budget for the repo planning payload. <=0/unset -> the settings default.
 
-    The literal fallback here read 24000 while the setting itself defaulted to 20000 --
-    exactly the drift that keeping the number in one place prevents.
+    The number lives in settings.py: the Field default and this fallback disagreed
+    (20000 vs 24000) for exactly as long as it was written in two places.
     """
     # <= 0 is unset: this slices the payload, so a negative would trim from the wrong end.
     return positive_or_default(
