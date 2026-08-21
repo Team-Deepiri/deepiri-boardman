@@ -606,3 +606,105 @@ async def test_a_superseded_card_is_told_it_was_superseded(db_session, workflow)
     assert notices, "the superseded card gets a comment"
     assert "Superseded" in notices[0]
     assert TASK_94 in notices[0], "and it names where the work moved to"
+
+
+@pytest.mark.asyncio
+async def test_a_task_is_never_told_its_work_moved_to_itself(db_session, workflow) -> None:
+    """The ambiguous-triage path writes BOTH a standalone link and an IssueTaskMap for the
+    same task when a PR names an issue that had no task yet. Sweeping standalone rows
+    without checking would retire that task and rewind it out of the QA queue."""
+    same = "7183844"
+    await _seed_issue_task(db_session, 94, same)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id=same,
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+
+    res = await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+
+    assert res["linked"] == [{"issue": 94, "task_id": same}]
+    assert res["withdrawn"] == [], "a task cannot supersede itself"
+    notices = [body for task_id, body in workflow["comments"] if "Superseded" in body]
+    assert notices == [], "and it is not told its work moved to itself"
+
+    from boardman.services.pr_task_registry import distinct_task_ids_for_pr
+
+    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == [
+        same
+    ], "the PR still drives exactly that one card"
+
+
+@pytest.mark.asyncio
+async def test_repointing_a_pr_does_not_rewind_the_old_issues_card(db_session, workflow) -> None:
+    """#94's card was not created for this PR, other PRs may still be open on it, and QA
+    may be part way through. Unlink it; do not comment on it or move it."""
+    await _seed_issue_task(db_session, 94, TASK_94)
+    await _seed_issue_task(db_session, 95, TASK_95)
+    await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+    workflow["comments"].clear()
+
+    res = await ph.reconcile_pr_issue_links(_pr("Fixes #95"), db_session)
+
+    assert res["withdrawn"] == [{"issue": 94, "task_id": TASK_94}]
+    notices = [body for task_id, body in workflow["comments"] if task_id == TASK_94]
+    assert notices == [], "no 'created for the PR' note on a card that was not"
+
+
+@pytest.mark.asyncio
+async def test_reopening_does_not_resurrect_a_repointed_link(db_session, workflow) -> None:
+    """A link retired because the PR names a different issue must not come back either."""
+    from boardman.services.pr_task_registry import (
+        distinct_task_ids_for_pr,
+        mark_pr_withdrawn,
+        revive_pr_links,
+    )
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    await _seed_issue_task(db_session, 95, TASK_95)
+    await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+    await ph.reconcile_pr_issue_links(_pr("Fixes #95"), db_session)
+
+    await mark_pr_withdrawn(db_session, github_repo=REPO, github_pr_number=88)
+    await db_session.commit()
+    await revive_pr_links(db_session, github_repo=REPO, github_pr_number=88)
+    await db_session.commit()
+
+    assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == [
+        TASK_95
+    ], "one card, the one the PR actually names"
+
+
+@pytest.mark.asyncio
+async def test_the_needs_qa_guard_works_with_a_configured_status_value(monkeypatch) -> None:
+    """The guard read the field key only when the VALUE came from the board, so every
+    deployment that sets PLAKY_STATUS_NEEDS_QA silently lost it."""
+    from boardman.settings import settings
+
+    monkeypatch.setattr(settings, "plaky_status_needs_qa", "needs-qa-literal")
+    monkeypatch.setattr(settings, "plaky_pr_needs_qa_status", "")
+
+    asked: list[str] = []
+
+    async def fake_resolve(board_id, *, intent):
+        return ("status_key", "resolved-id")
+
+    async def fake_current(_board_id, _task_id, field_key):
+        asked.append(field_key)
+        return "github_pr_review_approved"
+
+    async def fake_status(task_id, *_a, **_k):
+        raise AssertionError("a task past QA must not be asked for QA again")
+
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_plaky_status_patch", fake_resolve)
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.current_status_intent", fake_current)
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+
+    await ph._maybe_set_needs_qa(None, TASK_94, False, "269031", allow_regression=False)
+
+    assert asked == ["status_key"], "the field key is resolved even with a configured value"

@@ -389,12 +389,18 @@ async def _maybe_set_needs_qa(
     st = _needs_qa_status_value()
     status_field_key: str | None = None
     bid = (board_id or "").strip()
-    if not st and bid:
+    if bid:
         from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
+        # Resolved even when `st` came from settings: the VALUE may be configured, but the
+        # regression guard below still needs to know which column to read. Looking it up
+        # only in the `not st` branch made the guard a silent no-op on every deployment
+        # that sets PLAKY_STATUS_NEEDS_QA.
         resolved = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
         if resolved:
-            status_field_key, st = resolved[0], resolved[1]
+            status_field_key = resolved[0]
+            if not st:
+                st = resolved[1]
     if not st:
         return
     if is_draft and settings.plaky_skip_needs_qa_for_draft:
@@ -1048,25 +1054,24 @@ async def reconcile_pr_issue_links(
         now = datetime.utcnow()
         superseded = [row for row in rows if int(row.github_issue_number) not in referenced]
         superseded += standalone_rows
-        canonical = ", ".join(str(x["task_id"]) for x in linked)
+        linked_task_ids = {str(x["task_id"]) for x in linked}
+        canonical = ", ".join(sorted(linked_task_ids))
         for row in superseded:
             issue_number = int(row.github_issue_number)
-            row.withdrawn_at = now
-            if issue_number == 0:
+            if str(row.plaky_task_id) in linked_task_ids:
+                # The standalone row and the issue's mapping can name the SAME task: the
+                # ambiguous-triage path writes both when a PR names an issue that had no
+                # task yet. Retiring it here would tell that task its work moved to
+                # itself and rewind it out of the QA queue.
+                row.withdrawn_at = now
                 row.link_source = _SUPERSEDED_LINK_SOURCE
+                continue
+            row.withdrawn_at = now
+            # Every row retired by a relink is marked, not just the standalone one:
+            # `revive_pr_links` skips this source, and a row retired because the PR now
+            # names a different issue must not come back on close-then-reopen either.
+            row.link_source = _SUPERSEDED_LINK_SOURCE
             withdrawn.append({"issue": issue_number, "task_id": str(row.plaky_task_id)})
-            # Retiring the row stops the writes; it does not tell anyone looking at the
-            # card. Left alone it sits at Needs QA with a QA assigned and nothing will
-            # ever move it again, so say what happened and take it out of the QA queue.
-            await _retire_superseded_task(
-                session,
-                plaky,
-                task_id=str(row.plaky_task_id),
-                board_id=board_id,
-                repo_name=repo_name,
-                pr_number=pr_number,
-                canonical_task_ids=canonical,
-            )
             session.add(
                 SyncLog(
                     action="pr_link_withdrawn",
@@ -1087,6 +1092,23 @@ async def reconcile_pr_issue_links(
                         default=str,
                     ),
                 )
+            )
+            if issue_number != 0:
+                # Re-pointing a PR from #94 to #95 says nothing about #94's card. It was
+                # not "created for this PR", other PRs may still be open on it, and QA may
+                # be part way through. Unlink and leave it alone.
+                continue
+            # Retiring the row stops the writes; it does not tell anyone looking at the
+            # card. Left alone it sits at Needs QA with a QA assigned and nothing will
+            # ever move it again, so say what happened and take it out of the QA queue.
+            await _retire_superseded_task(
+                session,
+                plaky,
+                task_id=str(row.plaky_task_id),
+                board_id=board_id,
+                repo_name=repo_name,
+                pr_number=pr_number,
+                canonical_task_ids=canonical,
             )
 
     if linked or withdrawn:
