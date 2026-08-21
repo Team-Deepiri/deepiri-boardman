@@ -39,7 +39,7 @@ ISSUE_LINK_RE = re.compile(rf"{_CLOSING_KEYWORD}\s+#(\d+)", re.IGNORECASE)
 # The same keywords in front of a full issue URL, which is what GitHub's UI inserts when
 # you pick an issue from the "Development" panel or paste a link.
 ISSUE_LINK_URL_RE = re.compile(
-    rf"{_CLOSING_KEYWORD}\s+https?://github\.com/[\w.\-]+/[\w.\-]+/issues/(\d+)",
+    rf"{_CLOSING_KEYWORD}\s+https?://github\.com/([\w.\-]+/[\w.\-]+)/issues/(\d+)",
     re.IGNORECASE,
 )
 # Branch conventions, used ONLY when nothing explicit was written, and only in the shape
@@ -63,15 +63,26 @@ def _ordered_unique(values: Iterable[int]) -> list[int]:
     return out
 
 
-def explicit_issue_numbers(*texts: str | None) -> list[int]:
-    """Issue numbers a human explicitly tied this PR to, across every text given."""
+def explicit_issue_numbers(*texts: str | None, repo_full_name: str = "") -> list[int]:
+    """Issue numbers a human explicitly tied this PR to, across every text given.
+
+    A URL naming a DIFFERENT repository is dropped when `repo_full_name` is known. The
+    number in `Fixes https://github.com/Team-Deepiri/deepiri-ui/issues/94` says nothing
+    about this repo's issue 94, and treating it as a local reference runs the whole open
+    pipeline -- notice, type, assignee, QA assignment, Needs QA -- on a stranger's task.
+    Cross-repo closing is not something GitHub does either.
+    """
+    here = (repo_full_name or "").strip().casefold()
     found: list[int] = []
     for text in texts:
         if not text:
             continue
         # URLs first: "Fixes https://github.com/o/r/issues/94" also contains no "#94",
         # so the two patterns never double-count the same reference.
-        found.extend(int(m.group(1)) for m in ISSUE_LINK_URL_RE.finditer(text))
+        for m in ISSUE_LINK_URL_RE.finditer(text):
+            if here and m.group(1).strip().casefold() != here:
+                continue
+            found.append(int(m.group(2)))
         found.extend(int(m.group(1)) for m in ISSUE_LINK_RE.finditer(text))
     return _ordered_unique(found)
 
@@ -89,6 +100,7 @@ def linked_issue_numbers_for_pr(
     body: str | None = None,
     title: str | None = None,
     head_ref: str | None = None,
+    repo_full_name: str = "",
 ) -> list[int]:
     """Every issue this PR claims to close, most authoritative source first.
 
@@ -97,7 +109,7 @@ def linked_issue_numbers_for_pr(
     author wrote nothing explicit; otherwise a branch called `94-…` would silently add
     issue 94 to a PR whose body says it fixes 95.
     """
-    explicit = explicit_issue_numbers(body, title)
+    explicit = explicit_issue_numbers(body, title, repo_full_name=repo_full_name)
     if explicit:
         return explicit
     return branch_issue_numbers(head_ref)

@@ -776,6 +776,7 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
         body=payload.pull_request.body,
         title=payload.pull_request.title,
         head_ref=opened_state.head_ref,
+        repo_full_name=full_name,
     )
 
     from boardman.repos_config import get_routing_async
@@ -1009,11 +1010,15 @@ async def reconcile_pr_issue_links(
         repo_full_name=payload.repository.full_name,
         repo_name=repo_name,
     )
-    written = explicit_issue_numbers(payload.pull_request.body, payload.pull_request.title)
+    repo_full = payload.repository.full_name
+    written = explicit_issue_numbers(
+        payload.pull_request.body, payload.pull_request.title, repo_full_name=repo_full
+    )
     referenced = linked_issue_numbers_for_pr(
         body=payload.pull_request.body,
         title=payload.pull_request.title,
         head_ref=state.head_ref,
+        repo_full_name=repo_full,
     )
     if not referenced:
         return {"ok": True, "changed": False, "reason": "no explicit issue reference"}

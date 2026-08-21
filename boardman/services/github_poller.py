@@ -608,6 +608,16 @@ class GitHubEventPoller:
                     (result or {}).get("message") or result,
                 )
 
+            if pr.get("state") == "open" and num in proc["prs_closed"]:
+                # Closed, then open again. Closing withdrew this PR's links, so without a
+                # reopened event every later review, comment and push resolves to no task
+                # at all -- permanently, since nothing else clears the flag.
+                proc["prs_closed"].discard(num)
+                result = await self._run_handler(self._pr_payload(pr, full_name, "reopened"))
+                _log.info(
+                    "poller: PR #%s reopened -> %s", num, (result or {}).get("message") or result
+                )
+
             if pr.get("state") == "closed" and num not in proc["prs_closed"]:
                 proc["prs_closed"].add(num)
                 merged = bool(pr.get("merged_at"))

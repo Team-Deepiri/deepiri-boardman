@@ -783,3 +783,56 @@ async def test_reopening_revives_links_from_any_entry_point(
     assert await distinct_task_ids_for_pr(db_session, github_repo=REPO, github_pr_number=88) == [
         TASK_94
     ]
+
+
+@pytest.mark.asyncio
+async def test_another_repos_issue_url_is_not_read_as_this_repos_issue(
+    db_session, workflow
+) -> None:
+    """The number in another repo's issue URL says nothing about this repo's issue 94, and
+    treating it as local runs the whole open pipeline on a stranger's task."""
+    await _seed_issue_task(db_session, 94, TASK_94)
+
+    res = await ph.reconcile_pr_issue_links(
+        _pr("Fixes https://github.com/Team-Deepiri/deepiri-ui/issues/94"), db_session
+    )
+
+    assert res["changed"] is False
+    assert res["reason"] == "no explicit issue reference"
+    assert await _links(db_session) == []
+
+
+@pytest.mark.asyncio
+async def test_this_repos_issue_url_still_links(db_session, workflow) -> None:
+    await _seed_issue_task(db_session, 94, TASK_94)
+
+    res = await ph.reconcile_pr_issue_links(
+        _pr(f"Fixes https://github.com/{FULL}/issues/94"), db_session
+    )
+
+    assert res["linked"] == [{"issue": 94, "task_id": TASK_94}]
+
+
+@pytest.mark.asyncio
+async def test_merging_does_not_complete_a_superseded_card(db_session, workflow) -> None:
+    """A card told "this will not receive further updates" must not then be completed."""
+    from boardman.services.pr_task_registry import mark_pr_merged
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+    await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+
+    merged = await mark_pr_merged(db_session, github_repo=REPO, github_pr_number=88)
+
+    assert [row.plaky_task_id for row in merged] == [
+        TASK_94
+    ], "only the card the PR actually drives is completed"
