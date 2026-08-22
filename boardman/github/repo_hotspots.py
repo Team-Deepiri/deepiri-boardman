@@ -319,12 +319,23 @@ async def _fetch_repo_hotspots_uncached(
         else:
             for marker, why, suffix_only in rules:
                 if marker == ".env":
-                    # ".env" and its per-environment siblings (".env.local",
-                    # ".env.production") hold the same secrets and are all findings.
-                    # ".envrc" is a direnv config meant to be committed, so the dot is
-                    # required; ".env.dist" and friends are templates, so they are not.
-                    hit = base == marker or (
-                        base.startswith(".env.") and not base.endswith(_ENV_NOT_A_FINDING_SUFFIXES)
+                    # Three shapes, all the same secrets: ".env" itself, its per-environment
+                    # siblings (".env.local", ".env.production"), and the inverted spelling
+                    # people use just as often ("production.env", "prod.env"). The last was
+                    # missing, so a repo committing live credentials under the commonest
+                    # naming of all reported nothing. ".envrc" is a direnv config meant to
+                    # be committed, so a bare "env" ending does not count; ".env.dist" and
+                    # friends are templates, so they do not either.
+                    hit = (
+                        base == marker
+                        or (
+                            base.startswith(".env.")
+                            and not base.endswith(_ENV_NOT_A_FINDING_SUFFIXES)
+                        )
+                        or (
+                            _extension_hit(base, marker)
+                            and not base.endswith(_ENV_NOT_A_FINDING_SUFFIXES)
+                        )
                     )
                 elif suffix_only or marker.startswith("."):
                     # An extension is an ENDING, allowing a version digit or a backup

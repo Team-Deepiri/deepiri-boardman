@@ -759,7 +759,7 @@ async def _link_pr_to_issue_task(
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
 
-    await upsert_pr_task_link(
+    link_row = await upsert_pr_task_link(
         session,
         github_repo=repo_name,
         github_pr_number=pr_number,
@@ -767,6 +767,17 @@ async def _link_pr_to_issue_task(
         github_issue_number=int(issue_number),
         link_source=link_source,
     )
+    if str(getattr(link_row, "link_source", "") or "") == _SUPERSEDED_LINK_SOURCE:
+        # The upsert declined: this link was retired when the PR re-pointed at another
+        # issue, and only the author naming this one again in the description undoes that.
+        # Running the pipeline anyway assigned a QA reviewer, wrote the Type and posted a
+        # notice on a card `distinct_task_ids_for_pr` will never route anything else to.
+        _log.info(
+            "PR #%s: the link to issue #%s is superseded; not re-running its pipeline",
+            pr_number,
+            issue_number,
+        )
+        return
     if announce:
         # Skipped when the card already belongs to this PR: triage created it for this
         # very PR, so a second "PR Linked" notice would just be noise on the same card.
@@ -1641,7 +1652,7 @@ async def handle_pr_ready_for_review(
         for issue_num in linked_issues:
             mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
             if mapping:
-                await upsert_pr_task_link(
+                row = await upsert_pr_task_link(
                     session,
                     github_repo=repo_name,
                     github_pr_number=pr_number,
@@ -1652,6 +1663,10 @@ async def handle_pr_ready_for_review(
                     # draft going ready promote a title-only link to a written one.
                     link_source=_issue_link_source(int(issue_num), body_closes, linked_issues),
                 )
+                if str(getattr(row, "link_source", "") or "") == _SUPERSEDED_LINK_SOURCE:
+                    # Declined: retired when the PR re-pointed at another issue. Asking
+                    # this card for QA would be asking a card nothing else can reach.
+                    continue
                 task_ids.append(mapping.plaky_task_id)
         task_ids = list(dict.fromkeys(task_ids))
 

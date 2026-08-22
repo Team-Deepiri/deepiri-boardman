@@ -579,3 +579,21 @@ def test_a_file_that_merely_contains_the_letters_is_not_a_finding(path: str, mar
     from boardman.github.repo_hotspots import _extension_hit
 
     assert _extension_hit(path.rsplit("/", 1)[-1], marker) is False
+
+
+@pytest.mark.parametrize("name", ["production.env", "prod.env", "staging.env", ".env"])
+def test_an_environment_file_is_a_finding_however_it_is_spelled(name: str) -> None:
+    """`production.env` is the commonest naming of all, and the rule matched only `.env`
+    and `.env.*` -- so a repo committing live credentials that way reported nothing."""
+    from boardman.github.repo_hotspots import _extension_hit
+
+    assert _extension_hit(name, ".env") is True
+
+
+@pytest.mark.parametrize("name", [".envrc", ".env.example", "config.env.example", ".env.dist"])
+def test_a_direnv_config_or_a_template_is_not(name: str) -> None:
+    """`.envrc` is meant to be committed, and a template holds placeholders -- the
+    opposite of the finding the rule is after."""
+    from boardman.github.repo_hotspots import _ENV_NOT_A_FINDING_SUFFIXES, _extension_hit
+
+    assert _extension_hit(name, ".env") is False or name.endswith(_ENV_NOT_A_FINDING_SUFFIXES)

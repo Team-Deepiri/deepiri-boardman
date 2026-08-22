@@ -2035,3 +2035,50 @@ async def test_a_triage_card_of_its_own_still_completes_on_merge(
     await ph.handle_pr_merged(merged, db_session)
 
     assert completed == ["7183844"]
+
+
+@pytest.mark.asyncio
+async def test_a_declined_link_does_not_run_the_pipeline_anyway(
+    db_session, workflow, monkeypatch
+) -> None:
+    """The upsert declines on a superseded row -- that link was retired when the PR
+    re-pointed at another issue, and only the author naming this one again in the
+    description undoes it. The caller was treating the returned row as success and running
+    the whole pipeline: a notice, the Type, the assignee and a QA reviewer, all on a card
+    `distinct_task_ids_for_pr` will never route anything else to.
+    """
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="superseded_by_issue_link",
+            withdrawn_at=datetime(2026, 8, 21, 3, 0, 0),
+        )
+    )
+    await db_session.commit()
+
+    class Mapping:
+        plaky_task_id = TASK_94
+        plaky_task_url = ""
+
+    await ph._link_pr_to_issue_task(
+        db_session,
+        ph.PlakyClient(),
+        payload=_pr("issue-94 in the branch only"),
+        issue_number=94,
+        mapping=Mapping(),
+        board_id="269031",
+        is_draft=False,
+        headline="**PR Linked:**",
+        link_source="branch_ref",
+    )
+
+    assert workflow["qa"] == [], "a QA reviewer was assigned to a retired card"
+    assert workflow["comments"] == [], "and it was announced on one too"
+    assert workflow["type_and_assignee"] == []
+    row = (await db_session.execute(select(PullRequestTaskLink))).scalars().one()
+    assert row.link_source == "superseded_by_issue_link"
+    assert row.withdrawn_at is not None

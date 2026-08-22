@@ -138,7 +138,10 @@ async def org_activity_ranking(*, limit: int = 8, split_top: int | None = None) 
         "ok": True,
         "org": org,
         "repos_seen": len(rows),
-        "ranked": (detailed + tail)[: max(1, limit)],
+        # max(0, ...): asking for zero rows returns zero rows. It used to return one, and
+        # since the split cap now honours the zero, that one row came back with its
+        # issue/PR breakdown silently missing.
+        "ranked": (detailed + tail)[: max(0, limit)],
         "counting_note": (
             "open_issues_and_prs is GitHub's open_issues_count, which INCLUDES pull "
             "requests. open_issues/open_prs are split only for the busiest repos; a null "

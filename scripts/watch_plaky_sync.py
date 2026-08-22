@@ -26,10 +26,6 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# Board -> group the poller's repos route to, resolved live at startup so this never
-# drifts from repos.yml or the Plaky catalog.
-WATCHED_REPOS_ENV = "TESTING_LIVE_PLAKY_REPOS"
-
 # Last-resort fallback ONLY. The real option names are read from each watched board at
 # startup (see option_names_for_board), so a status the team adds or renames shows up here
 # without editing this file. This copy is what the script falls back to when the schema
