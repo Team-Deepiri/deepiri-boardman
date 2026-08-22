@@ -269,6 +269,21 @@ async def mark_pr_merged(
     return rows
 
 
+async def withdrawn_pr_numbers(session: AsyncSession, *, github_repo: str) -> set[int]:
+    """Every PR in this repo still holding links a close retired.
+
+    Asked once per repo per poll cycle. The per-PR form opened a database session for each
+    open PR, which under `TESTING_LIVE_PLAKY_REPOS=all` is hundreds of sessions a cycle to
+    answer a question one query covers.
+    """
+    q = select(PullRequestTaskLink.github_pr_number).where(
+        PullRequestTaskLink.github_repo == github_repo,
+        PullRequestTaskLink.withdrawn_at.is_not(None),
+        PullRequestTaskLink.link_source != _SUPERSEDED_LINK_SOURCE,
+    )
+    return {int(n) for n in (await session.execute(q)).scalars()}
+
+
 async def has_withdrawn_links(
     session: AsyncSession,
     *,

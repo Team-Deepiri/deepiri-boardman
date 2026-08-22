@@ -1059,7 +1059,7 @@ async def handle_pr_opened(
             session.add(plog)
 
             if pipe.decision in ("auto_link", "llm_link") and pipe.task_id:
-                await upsert_pr_task_link(
+                fuzzy_row = await upsert_pr_task_link(
                     session,
                     github_repo=repo_name,
                     github_pr_number=pr_number,
@@ -1067,6 +1067,22 @@ async def handle_pr_opened(
                     github_issue_number=0,
                     link_source=pipe.decision,
                 )
+                if str(getattr(fuzzy_row, "link_source", "") or "") == _SUPERSEDED_LINK_SOURCE:
+                    # Declined: this card was retired when the PR named an issue, and a
+                    # fuzzy match is not the author saying otherwise. Running the pipeline
+                    # would comment, assign a QA and set Needs QA on a card
+                    # `distinct_task_ids_for_pr` will never route anything else to.
+                    _log.info(
+                        "PR #%s: fuzzy match %s is superseded; not re-running its pipeline",
+                        pr_number,
+                        pipe.task_id,
+                    )
+                    await session.commit()
+                    return {
+                        "ok": True,
+                        "skipped": True,
+                        "message": "the matched card was superseded by an issue link",
+                    }
                 comment = format_pr_notice_with_url(
                     headline=(
                         f"**PR {'Reopened' if is_reopen else 'Opened'}** "

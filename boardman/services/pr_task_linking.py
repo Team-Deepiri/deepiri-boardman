@@ -61,10 +61,16 @@ def branch_issue_numbers(ref: str) -> set[int]:
     is +100, enough to auto-link on its own.
     """
     from boardman.services.issue_handler import branch_issue_numbers as prefixed
+    from boardman.services.issue_handler import is_date_shaped_reference
 
     ref = (ref or "").replace("refs/heads/", "")
     out = {int(n) for n in prefixed(ref)}
     for m in BRANCH_ISSUE_KEYWORD_RE.finditer(ref):
+        # The same date test the prefixed matcher applies. Unioning an unguarded matcher
+        # with a guarded one just puts `release/gh-2024-q1` back: this one accepts more
+        # keywords (bug_42, task/42), so it needs the guard rather than skipping it.
+        if is_date_shaped_reference(ref, m.end()):
+            continue
         out.add(int(m.group(1)))
     return {n for n in out if 1 <= n < 1_000_000}
 

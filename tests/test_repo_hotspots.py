@@ -543,57 +543,54 @@ async def test_false_positives_cannot_exhaust_a_rules_quota(monkeypatch) -> None
 @pytest.mark.parametrize(
     "path,marker",
     [
+        # A wrapper does not change what the file holds.
         ("data/data.db.gz", ".db"),
         ("dumps/backup.sqlite.zip", ".sqlite"),
         ("app.db.tar.gz", ".db"),
         ("certs/keystore.p12.enc", ".p12"),
         ("certs/cert.pem.crt", ".pem"),
+        # Nor does renaming it. A private key called .txt is a private key, and a .sql
+        # dump of a committed database is that database.
+        ("certs/key.pem.txt", ".pem"),
+        ("certs/deploy_key.pem.bak.txt", ".pem"),
+        ("dumps/prod.db.sql", ".db"),
+        ("data/prod.db.backup", ".db"),
+        ("data/db.sqlite3", ".sqlite"),
+        # Every spelling of an environment file, including the commonest one.
+        ("deploy/production.env", ".env"),
+        ("prod.env", ".env"),
+        (".env", ".env"),
+        (".env.local", ".env"),
     ],
 )
-def test_a_wrapped_artifact_is_still_the_artifact(path: str, marker: str) -> None:
-    """A compressed or encrypted database is a committed database, and an encrypted
-    private key is still key material.
+def test_these_are_findings(path: str, marker: str) -> None:
+    """A security-detection list is only as good as what it still catches. Each of these
+    was reported before the extension test existed, and a miss here costs far more than a
+    line in a report."""
+    from boardman.github.repo_hotspots import artifact_hit
 
-    All five were findings before the extension test existed. Excluding README.db.md is
-    worth doing; dropping these with it turns a tightening into a hole in a
-    security-sensitive detection list.
-    """
-    from boardman.github.repo_hotspots import _extension_hit
-
-    assert _extension_hit(path.rsplit("/", 1)[-1], marker) is True
+    assert artifact_hit(path, marker) is True
 
 
 @pytest.mark.parametrize(
     "path,marker",
     [
+        # Prose about the thing, or code that uses it -- a different kind of file.
         ("docs/README.db.md", ".db"),
+        ("src/schema.db.py", ".db"),
+        ("config/config.db.json", ".db"),
+        # ".db" is just letters here: no separator after it.
         ("data/data.dbf", ".db"),
-        ("notes.db.txt", ".db"),
+        # A public key is never a finding, however it is spelled.
         ("keys/id_ed25519.pub", "id_ed25519"),
         ("certs/server.pem.pub", ".pem"),
+        # Templates hold placeholders; .envrc is a direnv config committed on purpose.
+        ("config/.env.example", ".env"),
+        ("config/config.env.example", ".env"),
+        (".envrc", ".env"),
     ],
 )
-def test_a_file_that_merely_contains_the_letters_is_not_a_finding(path: str, marker: str) -> None:
-    """The false positives the extension test exists for -- and a public key, which is
-    never a finding however it is spelled."""
-    from boardman.github.repo_hotspots import _extension_hit
+def test_these_are_not(path: str, marker: str) -> None:
+    from boardman.github.repo_hotspots import artifact_hit
 
-    assert _extension_hit(path.rsplit("/", 1)[-1], marker) is False
-
-
-@pytest.mark.parametrize("name", ["production.env", "prod.env", "staging.env", ".env"])
-def test_an_environment_file_is_a_finding_however_it_is_spelled(name: str) -> None:
-    """`production.env` is the commonest naming of all, and the rule matched only `.env`
-    and `.env.*` -- so a repo committing live credentials that way reported nothing."""
-    from boardman.github.repo_hotspots import _extension_hit
-
-    assert _extension_hit(name, ".env") is True
-
-
-@pytest.mark.parametrize("name", [".envrc", ".env.example", "config.env.example", ".env.dist"])
-def test_a_direnv_config_or_a_template_is_not(name: str) -> None:
-    """`.envrc` is meant to be committed, and a template holds placeholders -- the
-    opposite of the finding the rule is after."""
-    from boardman.github.repo_hotspots import _ENV_NOT_A_FINDING_SUFFIXES, _extension_hit
-
-    assert _extension_hit(name, ".env") is False or name.endswith(_ENV_NOT_A_FINDING_SUFFIXES)
+    assert artifact_hit(path, marker) is False

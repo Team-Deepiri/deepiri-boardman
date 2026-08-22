@@ -86,37 +86,75 @@ _MAX_REPORTED_ARTIFACTS = 20
 # per-rule quota gives every rule a seat without interpreting anybody's sentence.
 _MAX_PATHS_PER_RULE = 5
 
-# What may follow an extension marker and still be the same file:
-#   - a version digit: db.sqlite3
-#   - a rotation or backup segment: prod.db.backup, server.pem.bak, key.p12~
-#   - a WRAPPER: data.db.gz, backup.sqlite.zip, app.db.tar.gz, keystore.p12.enc. A
-#     compressed or encrypted database is a committed database, and an encrypted private
-#     key is still key material -- the scanner reported all of these before the tail test
-#     existed, and dropping them would be a hole, not a tightening.
-#   - another certificate extension: cert.pem.crt is a certificate either way.
-# Anything else -- ".md", "f", "file" -- is a different file that merely contains the
-# marker's letters, which is how README.db.md got reported as a committed database.
-_ARTIFACT_TAIL_SEGMENT = (
-    r"bak|backup|old|orig|save|copy|tmp"
-    r"|gz|tgz|bz2|xz|zst|zip|7z|tar|rar"
-    r"|enc|gpg|pgp|age|asc"
-    # Deliberately no `pub`: a public key is never a finding, and _NEVER_AN_ARTIFACT
-    # already says so -- spelling it here too would only be a second place to get it
-    # wrong.
-    r"|crt|cer|key"
-    r"|\d+"
-)
-_ARTIFACT_TAIL_RE = re.compile(
-    rf"^\d*(?:[.\-](?:{_ARTIFACT_TAIL_SEGMENT}))*~?$",
-    re.IGNORECASE,
+# A version digit or a trailing `~`, which is the whole of some tails: db.sqlite3, key.p12~
+_ARTIFACT_VERSION_TAIL_RE = re.compile(r"^\d*~?$")
+# Extensions that make it a DIFFERENT KIND OF FILE -- prose about the thing, or code that
+# uses it. `README.db.md` is documentation, not a committed database, and that false
+# positive is the reason this test exists at all.
+#
+# Everything else after the marker is treated as the same file, deliberately. A whitelist
+# of "allowed" tails was tried and it silently narrowed the scanner: `key.pem.txt`,
+# `deploy_key.pem.bak.txt` and `prod.db.sql` stopped being reported. Renaming a private
+# key does not stop it being a private key, and a missed one costs far more than a line in
+# a report that turns out to be a dump nobody minds.
+_A_DIFFERENT_KIND_OF_FILE = (
+    ".md",
+    ".rst",
+    ".adoc",
+    ".html",
+    ".htm",
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".kt",
+    ".rb",
+    ".php",
+    ".c",
+    ".h",
+    ".cpp",
+    ".hpp",
+    ".cs",
+    ".swift",
+    ".scala",
+    ".sh",
+    ".yml",
+    ".yaml",
+    ".json",
+    ".toml",
+    ".ini",
+    ".cfg",
+    ".lock",
+    ".css",
+    ".scss",
+    ".txt.md",
 )
 
 
 def _extension_hit(base: str, marker: str) -> bool:
-    """True when `marker` is `base`'s extension, allowing version/backup tails."""
+    """True when `marker` is `base`'s extension rather than letters inside its name.
+
+    The marker has to END the name, allow only a version digit after it, or be followed by
+    a further extension that does not turn it into something else. `data.dbf` is not a
+    database (no separator, so ".db" is just letters), `README.db.md` is documentation, and
+    `key.pem.txt` is still a private key.
+    """
     idx = base.rfind(marker)
     while idx != -1:
-        if _ARTIFACT_TAIL_RE.match(base[idx + len(marker) :]):
+        tail = base[idx + len(marker) :]
+        if _ARTIFACT_VERSION_TAIL_RE.match(tail):
+            return True
+        if tail[:1] in (".", "-", "_") and not tail.endswith(_A_DIFFERENT_KIND_OF_FILE):
             return True
         idx = base.rfind(marker, 0, idx)
     return False
@@ -151,6 +189,25 @@ _ENV_NOT_A_FINDING_SUFFIXES = (
     ".age",
     ".sops",
 )
+
+
+def artifact_hit(path: str, marker: str) -> bool:
+    """Would `path` be reported for the rule `marker`? The whole decision, in one place.
+
+    `_extension_hit` answers only half of it -- the exclusions for templates, samples and
+    public keys are applied by the scan loop before any rule runs -- so this is what a
+    caller (or a test) should ask when the question is "is this file a finding".
+    """
+    base = path.lower().rsplit("/", 1)[-1]
+    if base.endswith(_NEVER_AN_ARTIFACT):
+        return False
+    if marker == ".env":
+        if base.endswith(_ENV_NOT_A_FINDING_SUFFIXES):
+            return False
+        return base == marker or base.startswith(".env.") or _extension_hit(base, marker)
+    if marker.startswith("."):
+        return _extension_hit(base, marker)
+    return marker in base
 
 
 def _parse_extra_artifact_rules(raw: str) -> tuple[tuple[str, str], ...]:
@@ -318,34 +375,12 @@ async def _fetch_repo_hotspots_uncached(
             pass
         else:
             for marker, why, suffix_only in rules:
-                if marker == ".env":
-                    # Three shapes, all the same secrets: ".env" itself, its per-environment
-                    # siblings (".env.local", ".env.production"), and the inverted spelling
-                    # people use just as often ("production.env", "prod.env"). The last was
-                    # missing, so a repo committing live credentials under the commonest
-                    # naming of all reported nothing. ".envrc" is a direnv config meant to
-                    # be committed, so a bare "env" ending does not count; ".env.dist" and
-                    # friends are templates, so they do not either.
-                    hit = (
-                        base == marker
-                        or (
-                            base.startswith(".env.")
-                            and not base.endswith(_ENV_NOT_A_FINDING_SUFFIXES)
-                        )
-                        or (
-                            _extension_hit(base, marker)
-                            and not base.endswith(_ENV_NOT_A_FINDING_SUFFIXES)
-                        )
-                    )
-                elif suffix_only or marker.startswith("."):
-                    # An extension is an ENDING, allowing a version digit or a backup
-                    # tail: ".db" catches prod.db and prod.db.backup but not README.db.md
-                    # or data.dbf, and ".sqlite" still catches db.sqlite3.
-                    hit = _extension_hit(base, marker)
-                else:
-                    # A name fragment like "id_rsa" is deliberately substring-matched, so
-                    # id_rsa_backup and id_rsa.old are caught too.
-                    hit = marker in base
+                # One place decides this, so the scan and anything that asks the same
+                # question cannot drift apart. `suffix_only` forces the extension reading
+                # for a configured marker that does not start with a dot.
+                hit = artifact_hit(base, marker) or (
+                    suffix_only and not marker.startswith(".") and _extension_hit(base, marker)
+                )
                 if hit:
                     rank = (
                         _EXTRA_RULE_PRIORITY

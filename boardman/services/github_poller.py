@@ -603,6 +603,10 @@ class GitHubEventPoller:
         if r.status_code != 200:
             _log.warning("poller: GET pulls %s -> HTTP %s", full_name, r.status_code)
             return
+        # Which PRs here still hold links a close retired. Asked once for the repo, because
+        # the answer only changes when this loop changes it, and asking per PR meant a
+        # database session for every open PR in every repo on every cycle.
+        withdrawn_here = await self._withdrawn_pr_numbers(full_name.partition("/")[2])
         for pr in r.json() if isinstance(r.json(), list) else []:
             if not isinstance(pr, dict):
                 continue
@@ -681,10 +685,7 @@ class GitHubEventPoller:
                     (result or {}).get("message") or result,
                 )
 
-            if pr.get("state") == "open" and (
-                num in proc["prs_closed"]
-                or await self._has_withdrawn_links(full_name.partition("/")[2], num)
-            ):
+            if pr.get("state") == "open" and (num in proc["prs_closed"] or num in withdrawn_here):
                 # Closed, then open again. Closing withdrew this PR's links, so without a
                 # reopened event every later review, comment and push resolves to no task
                 # at all -- permanently, since nothing else clears the flag.
@@ -890,18 +891,16 @@ class GitHubEventPoller:
                 result.get("message") or result.get("action") or result,
             )
 
-    async def _has_withdrawn_links(self, repo_short: str, pr_number: int) -> bool:
-        """Does the registry still hold retired links for this PR? (See has_withdrawn_links.)"""
-        from boardman.services.pr_task_registry import has_withdrawn_links
+    async def _withdrawn_pr_numbers(self, repo_short: str) -> set[int]:
+        """PRs in this repo still holding retired links. One query per cycle, not per PR."""
+        from boardman.services.pr_task_registry import withdrawn_pr_numbers
 
         try:
             async with async_session() as session:
-                return await has_withdrawn_links(
-                    session, github_repo=repo_short, github_pr_number=pr_number
-                )
+                return await withdrawn_pr_numbers(session, github_repo=repo_short)
         except Exception as exc:  # noqa: BLE001 - a poll must not die on a DB blip
-            log_degraded(_log, f"poller: checking withdrawn links for PR #{pr_number}", exc)
-            return False
+            log_degraded(_log, f"poller: reading withdrawn links for {repo_short}", exc)
+            return set()
 
     async def _run_handler(self, parsed: Any) -> dict[str, Any] | None:
         """Mirror of the dispatch in routes/github_events.py, with a poller-owned DB session."""

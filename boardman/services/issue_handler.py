@@ -107,6 +107,17 @@ def explicit_issue_numbers(*texts: str | None, repo_full_name: str = "") -> list
 _BRANCH_DATE_TAIL_RE = re.compile(r"^[-_/](?:\d+|[qh][1-4])(?![0-9A-Za-z])", re.IGNORECASE)
 
 
+def is_date_shaped_reference(ref: str, end: int) -> bool:
+    """Is the number ending at `end` the first part of a DATE rather than an issue number?
+
+    `gh-2024-q1` and `release/gh-2023-h2` continue a date; `issue-2024-01` does too. What
+    gives it away is the tail: a bare number or a quarter/half marker, neither of which is
+    how anybody describes work. A tail that merely CONTAINS a digit is still a description
+    (`issue-94-2fa-login`, `gh-12-v2-rollout`), and rejecting those costs a real link.
+    """
+    return bool(_BRANCH_DATE_TAIL_RE.match(ref[end:]))
+
+
 def branch_issue_numbers(head_ref: str | None) -> list[int]:
     """Issue numbers implied by a branch name. A weaker signal than a closing keyword."""
     ref = (head_ref or "").strip()
@@ -114,7 +125,7 @@ def branch_issue_numbers(head_ref: str | None) -> list[int]:
         return []
     found: list[int] = []
     for m in _BRANCH_PREFIXED_RE.finditer(ref):
-        if _BRANCH_DATE_TAIL_RE.match(ref[m.end() :]):
+        if is_date_shaped_reference(ref, m.end()):
             # `gh-2024-q1` is the first quarter of 2024, not issue 2024, and linking it
             # runs the whole open pipeline -- notice, Type, assignee, QA -- on whatever
             # task issue 2024 happens to own.
