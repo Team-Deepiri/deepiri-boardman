@@ -14,6 +14,10 @@ from typing import Any
 from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
 from boardman.services.priority_rules import infer_priority_from_text, priority_from_github_label
 
+# Mirrors boardman.plaky.dynamic_qa_status.UNREADABLE_STATUS, spelled out here rather than
+# imported: this module deliberately makes no network calls and imports nothing that does.
+UNREADABLE_STATUS = "__unreadable__"
+
 
 def _value(obj: Any, name: str, default: Any = None) -> Any:
     if isinstance(obj, dict):
@@ -247,6 +251,12 @@ def status_intent_would_regress(current_intent: str, next_intent: str) -> bool:
     """
     if next_intent not in ASSIGNEE_DERIVED_INTENTS:
         return False
+    if current_intent == UNREADABLE_STATUS:
+        # The board did not answer, so the guard did not run. Writing anyway is how
+        # Assigned lands on top of In QA during a Plaky blip -- the exact failure this
+        # exists to stop -- and the cost of refusing is one event of lag that the next
+        # assignment or a reconciliation sweep repairs.
+        return True
     if current_intent in ASSIGNEE_DERIVED_INTENTS:
         return False
     current = workflow_rank(current_intent)
@@ -267,6 +277,9 @@ def status_would_move_backwards(current_intent: str, next_intent: str) -> bool:
     An unknown position on either side returns False, for the same reason as above: a
     board this code cannot place is not evidence that anything is out of order.
     """
+    if current_intent == UNREADABLE_STATUS:
+        # Same reasoning as above: an unread board is not permission.
+        return True
     current = workflow_rank(current_intent)
     following = workflow_rank(next_intent)
     if current is None or following is None:

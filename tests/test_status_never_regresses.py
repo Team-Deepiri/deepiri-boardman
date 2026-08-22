@@ -221,18 +221,19 @@ async def test_unassigning_does_not_reset_a_task_in_qa(db_session, board, monkey
 
 
 @pytest.mark.asyncio
-async def test_a_held_back_unassign_does_not_empty_the_assignee_column(
+async def test_a_held_back_unassign_still_clears_the_assignee_column(
     db_session, board, monkeypatch
 ) -> None:
-    """Holding the status back but clearing the column leaves the board reading Assigned
-    with nobody assigned -- the one state the workflow rules forbid."""
+    """The forbidden state is "Assigned with nobody assigned", and the guard only fires
+    once the task is PAST Assigned, where an empty developer column says nothing false.
+    Suppressing the clear here instead meant a developer removed on GitHub could never
+    leave the card: every later `unassigned` hit the same guard."""
     _at_status(monkeypatch, "workflow_in_qa")
 
-    await ih.handle_issue_changed(_issue_event("unassigned", assignee=""), db_session)
+    res = await ih.handle_issue_changed(_issue_event("unassigned", assignee=""), db_session)
 
-    assert (
-        board and board[0].clear_engineer_assignee is False
-    ), "the work is in QA; who did it still matters"
+    assert res["status"] is None, "In QA survives"
+    assert board and board[0].clear_engineer_assignee is True, "GitHub still wins the column"
 
 
 @pytest.mark.asyncio

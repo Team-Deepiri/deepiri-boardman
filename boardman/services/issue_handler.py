@@ -264,12 +264,13 @@ async def handle_issue_changed(
                 if status_intent_would_regress(now_at, intent):
                     status_held_back = now_at
                     status_value, status_field_key = "", None
-                    # Holding back the status means holding back the column too. An
-                    # `unassigned` event whose NEEDS ASSIGNED write is refused would
-                    # otherwise empty the Assignee while the board still reads Assigned --
-                    # the one state issue_status_intent and _apply_pr_type_and_assignee
-                    # both exist to prevent. The work is in QA; who did it still matters.
-                    owns_assignment = False
+                    # The column is NOT held back with it. The forbidden state is the
+                    # board reading "Assigned" with nobody in the Assignee column, and the
+                    # guard only fires once the task is PAST Assigned -- In Progress, In
+                    # QA, done -- where an empty developer column says nothing false.
+                    # Suppressing the clear here instead meant a developer removed on
+                    # GitHub could never leave the card, because every later `unassigned`
+                    # hit the same guard.
                     _log.info(
                         "issue #%s: keeping status %s; %s would move the task backwards",
                         state.number,

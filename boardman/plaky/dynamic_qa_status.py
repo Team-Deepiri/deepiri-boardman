@@ -454,6 +454,13 @@ async def resolve_qa_assignee_field_key(board_id: str, yaml_fallback: str) -> st
     return (yaml_fallback or "").strip()
 
 
+# Returned when the board could not be read at all. Distinct from "" (read fine, but the
+# option matches no intent this code knows), because the two demand opposite behaviour:
+# an unknown LABEL is not evidence of anything, while an unknown BOARD means the guard
+# simply did not run and a status write would be taken on faith.
+UNREADABLE_STATUS = "__unreadable__"
+
+
 async def current_status_intent(board_id: str, task_id: str, status_field_key: str) -> str:
     """Which workflow intent the task's CURRENT status option corresponds to, "" if unknown.
 
@@ -466,6 +473,7 @@ async def current_status_intent(board_id: str, task_id: str, status_field_key: s
     Plaky calls. Returns "" for an option no intent claims -- a board using vocabulary
     this code cannot place is not evidence of anything.
     """
+    from boardman.observability.degradation import log_degraded
     from boardman.plaky.board_schema import plaky_item_status_id
     from boardman.plaky.client import PlakyClient
     from boardman.services.sync_state import WORKFLOW_RANK, workflow_rank
@@ -474,9 +482,22 @@ async def current_status_intent(board_id: str, task_id: str, status_field_key: s
     fk = (status_field_key or "").strip()
     if not bid or not fk or not str(task_id or "").strip():
         return ""
-    info = await PlakyClient().get_board_item_public(bid, str(task_id))
+    try:
+        info = await PlakyClient().get_board_item_public(bid, str(task_id))
+    except Exception as exc:  # noqa: BLE001 - a guard must not break the sync it guards
+        # The read is new: these callers made no item read before the guard existed, so a
+        # Plaky transport blip must not start aborting whole issue and PR syncs.
+        log_degraded(_log, f"current_status_intent: reading task {task_id}", exc)
+        return UNREADABLE_STATUS
     if not info.get("ok") or not info.get("item"):
-        return ""
+        # Distinct from "": the board did not answer, so the caller knows the guard could
+        # not run rather than being told the task is nowhere in particular.
+        _log.warning(
+            "could not read task %s status on board %s; workflow position unknown",
+            task_id,
+            bid,
+        )
+        return UNREADABLE_STATUS
     current = plaky_item_status_id(info["item"], fk)
     if not current:
         return ""
