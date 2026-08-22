@@ -362,3 +362,34 @@ async def test_a_pr_reopened_while_the_poller_was_down_is_still_noticed() -> Non
         assert 89 not in withdrawn, "a PR that was never closed"
         assert 90 not in withdrawn, "retired on purpose; reopening does not un-say it"
     await engine.dispose()
+
+
+def test_the_throttle_explains_itself_once_per_answer() -> None:
+    """`_safe_interval` runs every cycle, so an unconditional warning repeated the same
+    four lines every 22 seconds for the life of the process, which is how a real warning
+    stops being read."""
+    import logging
+
+    from boardman.services import github_poller as gp
+    from boardman.services.github_poller import GitHubEventPoller as P
+
+    gp._INTERVAL_WARNED.clear()
+    records: list[logging.LogRecord] = []
+
+    class Capture(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            records.append(record)
+
+    handler = Capture()
+    gp._log.addHandler(handler)
+    try:
+        for _ in range(5):
+            assert P._safe_interval(15.0, 31) > 15.0
+        assert len([r for r in records if r.levelno >= logging.WARNING]) == 1
+
+        # A different answer is worth saying once too.
+        P._safe_interval(15.0, 12)
+        assert len([r for r in records if r.levelno >= logging.WARNING]) == 2
+    finally:
+        gp._log.removeHandler(handler)
+        gp._INTERVAL_WARNED.clear()

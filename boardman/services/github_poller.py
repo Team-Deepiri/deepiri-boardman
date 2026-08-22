@@ -168,6 +168,8 @@ _ASSUMED_OPEN_PRS_PER_REPO = 2
 # withdrawn between a close and the next sighting of the PR, and handling one clears it.
 # The cap is there so a repo that somehow accumulates them cannot spend the whole budget.
 _MAX_REOPEN_PROBES_PER_CYCLE = 5
+# (repo count, chosen interval) pairs already explained in the log. See `_safe_interval`.
+_INTERVAL_WARNED: set[tuple[int, int]] = set()
 
 
 def cycle_call_estimate(repo_count: int, branch_count: int | None = None) -> float:
@@ -336,6 +338,15 @@ class GitHubEventPoller:
         needed = 3600.0 / cycles_per_hour if cycles_per_hour > 0 else configured
         if needed <= configured:
             return configured
+        # Once per distinct answer. This runs every cycle, so an unconditional warning
+        # repeated the same four lines every 22 seconds for the life of the process, which
+        # is how a real warning stops being read.
+        told = (repo_count, round(needed))
+        if told in _INTERVAL_WARNED:
+            return needed
+        if len(_INTERVAL_WARNED) > 64:
+            _INTERVAL_WARNED.clear()
+        _INTERVAL_WARNED.add(told)
         observed = (
             f"assuming {repo_count * _ASSUMED_OPEN_PRS_PER_REPO}"
             if branch_count is None

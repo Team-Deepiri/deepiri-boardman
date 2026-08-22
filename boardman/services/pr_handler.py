@@ -2084,24 +2084,30 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
             results.append({"task_id": task_id, "status": merge_status, "already_applied": True})
             continue
 
-        await _update_plaky_task_status(
+        completion = await _update_plaky_task_status(
             task_id, merge_status, board_id_merge, status_field_key=merge_status_field_key
         )
+        # A refused write must not claim the identity that dedupes it. That row is now what
+        # tells a later sweep the merge was applied, so writing it after a Plaky failure
+        # left the card uncompleted AND made every retry skip it -- the same mistake the
+        # comment mirror and the poller's commit comments were fixed for.
+        applied = bool((completion or {}).get("ok"))
         merge_detail = {
-            "marker": merged_marker,
+            "marker": merged_marker if applied else "",
             "pr_url": pr_url,
             "status": merge_status,
+            "plaky_ok": applied,
             "all_prs_done": True,
         }
         log = SyncLog(
-            action="pr_merged",
+            action="pr_merged" if applied else "pr_merged_failed",
             github_repo=repo_name,
             github_ref=str(pr_number),
             plaky_task_id=task_id,
             detail=json.dumps(merge_detail),
         )
         session.add(log)
-        results.append({"task_id": task_id, "status": merge_status})
+        results.append({"task_id": task_id, "status": merge_status, "ok": applied})
         await maybe_enqueue_plaky_reorder_after_task(plaky, task_id)
 
     await remove_pr_row(payload.pull_request, payload.repository, session)

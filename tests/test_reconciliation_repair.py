@@ -527,3 +527,87 @@ async def test_a_merge_is_applied_once_however_often_it_is_replayed(
     assert written == [TASK_94], "the merge was written again on replay"
     rows = (await db_session.execute(select(SyncLog))).scalars().all()
     assert len([r for r in rows if r.action == "pr_merged"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_refused_completion_is_retried_not_written_off(db_session, monkeypatch) -> None:
+    """The pr_merged row is what tells a later sweep the merge was applied.
+
+    Written after a Plaky failure, it left the card uncompleted AND made every retry skip
+    it as already applied -- the same mistake the comment mirror and the poller's commit
+    comments were fixed for.
+    """
+    from boardman.database.models import PullRequestTaskLink, SyncLog
+    from boardman.github.webhooks import PullRequestEventPayload
+    from boardman.services import pr_handler as ph
+    from boardman.services.pr_task_registry import upsert_pr_task_link
+
+    attempts: list[str] = []
+    plaky_up = False
+
+    async def flaky_status(task_id, value, board_id, *, status_field_key=None):
+        attempts.append(str(task_id))
+        return {"ok": plaky_up} if plaky_up else {"ok": False, "error": "502 from Plaky"}
+
+    class FakePlaky:
+        async def add_comment(self, *a, **k):
+            return {"ok": True}
+
+    class Routing:
+        plaky_board_id = "269031"
+        plaky_group_id = "g1"
+
+    async def fake_routing(*_a, **_k):
+        return Routing()
+
+    monkeypatch.setattr(ph, "_update_plaky_task_status", flaky_status)
+    monkeypatch.setattr(ph, "PlakyClient", lambda *a, **k: FakePlaky())
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="issue_keyword",
+        )
+    )
+    await db_session.commit()
+
+    merged = PullRequestEventPayload(
+        action="closed",
+        pull_request={
+            "number": 88,
+            "title": "Retry the flaky upload",
+            "body": "Fixes #94",
+            "state": "closed",
+            "merged": True,
+            "draft": False,
+            "user": {"login": "ali-ferris"},
+            "head": {"ref": "feat/x"},
+            "html_url": f"https://github.com/{FULL}/pull/88",
+        },
+        repository={"full_name": FULL, "name": REPO},
+    )
+
+    res = await ph.handle_pr_merged(merged, db_session)
+    assert res["updated"] and res["updated"][0]["ok"] is False
+    rows = (await db_session.execute(select(SyncLog))).scalars().all()
+    assert [r.action for r in rows if r.action.startswith("pr_merged")] == ["pr_merged_failed"]
+
+    # Plaky comes back, the sweep replays, and the completion actually lands.
+    plaky_up = True
+    await upsert_pr_task_link(
+        db_session,
+        github_repo=REPO,
+        github_pr_number=88,
+        plaky_task_id=TASK_94,
+        github_issue_number=94,
+        link_source="issue_keyword",
+    )
+    await db_session.commit()
+    res = await ph.handle_pr_merged(merged, db_session)
+
+    assert res["updated"][0]["ok"] is True
+    assert len(attempts) == 2, "the retry was refused by the failed attempt"
