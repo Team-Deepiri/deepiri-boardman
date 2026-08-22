@@ -58,6 +58,23 @@ def _stays_superseded(existing: str, incoming: str) -> bool:
     return existing == _SUPERSEDED_LINK_SOURCE and incoming not in _UN_SUPERSEDING_LINK_SOURCES
 
 
+def _declines_repoint(existing: str, incoming: str, *, same_task: bool) -> bool:
+    """True when this upsert would move a PR-owned row onto a different card.
+
+    The row for a card THIS PR opened is the only reference to that card. Letting the
+    fuzzy pipeline repoint it -- which happens when a reopened PR matches some other,
+    pre-existing card -- leaves the created card referenced by nothing at all: no
+    supersession notice, no rewind out of the QA queue, just a card with a QA assigned and
+    nothing left that can move it. A guess does not get to do that; an explicit issue link
+    supersedes properly, through `reconcile_pr_issue_links`.
+    """
+    return (
+        not same_task
+        and existing in _PR_OWNED_LINK_SOURCES
+        and incoming not in _PR_OWNED_LINK_SOURCES
+    )
+
+
 def _kept_link_source(existing: str, incoming: str, *, same_task: bool) -> str:
     """Which of the two records what actually links this PR to that card.
 
@@ -96,12 +113,13 @@ async def upsert_pr_task_link(
     r = await session.execute(q)
     row = r.scalar_one_or_none()
     if row:
-        if _stays_superseded(str(row.link_source or ""), link_source):
+        same_task = str(row.plaky_task_id or "") == str(plaky_task_id)
+        if _stays_superseded(str(row.link_source or ""), link_source) or _declines_repoint(
+            str(row.link_source or ""), link_source, same_task=same_task
+        ):
             return row
         row.link_source = _kept_link_source(
-            str(row.link_source or ""),
-            link_source,
-            same_task=str(row.plaky_task_id or "") == str(plaky_task_id),
+            str(row.link_source or ""), link_source, same_task=same_task
         )
         row.plaky_task_id = plaky_task_id
         row.merged_at = None
@@ -125,13 +143,14 @@ async def upsert_pr_task_link(
         if row is None:
             raise
         # Same rules as the read-then-update path above: a race that lands here must not
-        # resurrect a superseded card or forget which PR opened one.
-        if _stays_superseded(str(row.link_source or ""), link_source):
+        # resurrect a superseded card, forget which PR opened one, or repoint it.
+        same_task = str(row.plaky_task_id or "") == str(plaky_task_id)
+        if _stays_superseded(str(row.link_source or ""), link_source) or _declines_repoint(
+            str(row.link_source or ""), link_source, same_task=same_task
+        ):
             return row
         row.link_source = _kept_link_source(
-            str(row.link_source or ""),
-            link_source,
-            same_task=str(row.plaky_task_id or "") == str(plaky_task_id),
+            str(row.link_source or ""), link_source, same_task=same_task
         )
         row.plaky_task_id = plaky_task_id
         row.merged_at = None
@@ -272,9 +291,14 @@ async def mark_pr_merged(
 async def withdrawn_pr_numbers(session: AsyncSession, *, github_repo: str) -> set[int]:
     """Every PR in this repo still holding links a close retired.
 
-    Asked once per repo per poll cycle. The per-PR form opened a database session for each
-    open PR, which under `TESTING_LIVE_PLAKY_REPOS=all` is hundreds of sessions a cycle to
-    answer a question one query covers.
+    The durable answer to "did this PR reopen while we were not watching". The poller's own
+    memory of which PRs it saw close is in-process, so a restart loses it and a PR reopened
+    in the meantime emits nothing at all -- its links stay withdrawn, and
+    `has_any_open_pr_for_task` then lets merge-gated completion finish the task while that
+    PR is still open. Superseded rows are excluded: those were retired on purpose.
+
+    Asked once per repo per poll cycle, because a per-PR form opened a database session for
+    every open PR, which under `TESTING_LIVE_PLAKY_REPOS=all` is hundreds a cycle.
     """
     q = select(PullRequestTaskLink.github_pr_number).where(
         PullRequestTaskLink.github_repo == github_repo,
@@ -282,33 +306,6 @@ async def withdrawn_pr_numbers(session: AsyncSession, *, github_repo: str) -> se
         PullRequestTaskLink.link_source != _SUPERSEDED_LINK_SOURCE,
     )
     return {int(n) for n in (await session.execute(q)).scalars()}
-
-
-async def has_withdrawn_links(
-    session: AsyncSession,
-    *,
-    github_repo: str,
-    github_pr_number: int,
-) -> bool:
-    """True when this PR has links that a close retired and nothing has revived.
-
-    Durable answer to "did this PR reopen while we were not watching". The poller's own
-    memory of which PRs it saw close is in-process, so a restart loses it and a PR reopened
-    in the meantime emits nothing at all -- its links stay withdrawn, and
-    `has_any_open_pr_for_task` then lets merge-gated completion finish the task while that
-    PR is still open. Superseded rows are excluded: those were retired on purpose.
-    """
-    q = (
-        select(PullRequestTaskLink.id)
-        .where(
-            PullRequestTaskLink.github_repo == github_repo,
-            PullRequestTaskLink.github_pr_number == github_pr_number,
-            PullRequestTaskLink.withdrawn_at.is_not(None),
-            PullRequestTaskLink.link_source != _SUPERSEDED_LINK_SOURCE,
-        )
-        .limit(1)
-    )
-    return (await session.execute(q)).first() is not None
 
 
 async def task_ids_for_open_pr(

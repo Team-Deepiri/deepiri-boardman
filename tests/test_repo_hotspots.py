@@ -594,3 +594,22 @@ def test_these_are_not(path: str, marker: str) -> None:
     from boardman.github.repo_hotspots import artifact_hit
 
     assert artifact_hit(path, marker) is False
+
+
+def test_a_configured_marker_matches_the_file_not_every_mention_of_it() -> None:
+    """An operator writing `id_ed25519:private SSH key` means the file.
+
+    Substring-matching a configured rule reports `docs/id_ed25519_rotation.md` and
+    `scripts/rotate_id_ed25519.py` as committed private keys, which buries the real
+    finding under noise -- the thing the minimum-length rule and the per-rule quota are
+    both there to prevent.
+    """
+    from boardman.github.repo_hotspots import artifact_hit
+
+    assert artifact_hit("keys/id_ed25519", "id_ed25519", suffix_only=True) is True
+    assert artifact_hit("keys/id_ed25519.bak", "id_ed25519", suffix_only=True) is True
+    assert artifact_hit("docs/id_ed25519_rotation.md", "id_ed25519", suffix_only=True) is False
+    assert artifact_hit("scripts/rotate_id_ed25519.py", "id_ed25519", suffix_only=True) is False
+
+    # The built-in `id_rsa` rule is a substring rule on purpose, so id_rsa_backup counts.
+    assert artifact_hit("keys/id_rsa_backup", "id_rsa") is True

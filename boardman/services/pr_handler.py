@@ -1007,7 +1007,15 @@ async def handle_pr_opened(
     # Gate on whether anything was actually LINKED, not on whether the body named an
     # issue: a PR saying 'Fixes #12' where #12 has no Plaky task used to fall through
     # both branches and end up with no task and no link row at all.
-    if not results:
+    #
+    # `live_links` covers the other direction. A link can be DECLINED -- superseded, or a
+    # repoint of a card this PR opened -- and this PR still have perfectly good rows. The
+    # fallback below ends in orphan triage, whose reservation only collides on issue 0, so
+    # falling through there would open a second card beside the live one.
+    live_links = await distinct_task_ids_for_pr(
+        session, github_repo=repo_name, github_pr_number=pr_number
+    )
+    if not results and not live_links:
         pipe_top: Sequence[Any] | None = None
         run_pipe = settings.pr_linking_pipeline_enabled and await should_run_pipeline(
             payload.pull_request.body,

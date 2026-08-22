@@ -191,12 +191,18 @@ _ENV_NOT_A_FINDING_SUFFIXES = (
 )
 
 
-def artifact_hit(path: str, marker: str) -> bool:
+def artifact_hit(path: str, marker: str, *, suffix_only: bool = False) -> bool:
     """Would `path` be reported for the rule `marker`? The whole decision, in one place.
 
     `_extension_hit` answers only half of it -- the exclusions for templates, samples and
-    public keys are applied by the scan loop before any rule runs -- so this is what a
-    caller (or a test) should ask when the question is "is this file a finding".
+    public keys are applied before any rule runs -- so this is what a caller (or a test)
+    should ask when the question is "is this file a finding".
+
+    `suffix_only` is what a CONFIGURED rule carries: an operator writing
+    `id_ed25519:private SSH key` means the file, not every file whose name mentions it, and
+    without the flag `docs/id_ed25519_rotation.md` is reported as a committed private key.
+    Only the built-in `id_rsa`-style rules are substring rules, deliberately, so that
+    `id_rsa_backup` and `id_rsa.old` are caught too.
     """
     base = path.lower().rsplit("/", 1)[-1]
     if base.endswith(_NEVER_AN_ARTIFACT):
@@ -205,7 +211,7 @@ def artifact_hit(path: str, marker: str) -> bool:
         if base.endswith(_ENV_NOT_A_FINDING_SUFFIXES):
             return False
         return base == marker or base.startswith(".env.") or _extension_hit(base, marker)
-    if marker.startswith("."):
+    if suffix_only or marker.startswith("."):
         return _extension_hit(base, marker)
     return marker in base
 
@@ -376,12 +382,8 @@ async def _fetch_repo_hotspots_uncached(
         else:
             for marker, why, suffix_only in rules:
                 # One place decides this, so the scan and anything that asks the same
-                # question cannot drift apart. `suffix_only` forces the extension reading
-                # for a configured marker that does not start with a dot.
-                hit = artifact_hit(base, marker) or (
-                    suffix_only and not marker.startswith(".") and _extension_hit(base, marker)
-                )
-                if hit:
+                # question cannot drift apart.
+                if artifact_hit(base, marker, suffix_only=suffix_only):
                     rank = (
                         _EXTRA_RULE_PRIORITY
                         if suffix_only

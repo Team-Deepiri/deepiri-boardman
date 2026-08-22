@@ -317,7 +317,7 @@ async def test_a_pr_reopened_while_the_poller_was_down_is_still_noticed() -> Non
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
     from boardman.database.models import Base, PullRequestTaskLink
-    from boardman.services.pr_task_registry import has_withdrawn_links
+    from boardman.services.pr_task_registry import withdrawn_pr_numbers
 
     engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     async with engine.begin() as conn:
@@ -356,13 +356,9 @@ async def test_a_pr_reopened_while_the_poller_was_down_is_still_noticed() -> Non
         )
         await session.commit()
 
-        assert await has_withdrawn_links(
-            session, github_repo="deepiri-boardman", github_pr_number=88
-        )
-        assert not await has_withdrawn_links(
-            session, github_repo="deepiri-boardman", github_pr_number=89
-        )
-        assert not await has_withdrawn_links(
-            session, github_repo="deepiri-boardman", github_pr_number=90
-        )
+        withdrawn = await withdrawn_pr_numbers(session, github_repo="deepiri-boardman")
+
+        assert 88 in withdrawn, "the PR whose links a close retired"
+        assert 89 not in withdrawn, "a PR that was never closed"
+        assert 90 not in withdrawn, "retired on purpose; reopening does not un-say it"
     await engine.dispose()

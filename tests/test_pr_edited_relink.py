@@ -1946,7 +1946,10 @@ async def test_repointing_a_row_does_not_carry_the_origin_to_another_card(db_ses
     row = (await db_session.execute(select(PullRequestTaskLink))).scalars().one()
     assert row.link_source == "pr_task_created"
 
-    # A DIFFERENT card: it was not created by this PR, and must not inherit that claim.
+    # A DIFFERENT card, from a guess: refused outright. This row is the only reference to
+    # the card this PR opened, so repointing it leaves that card with a QA assigned, no
+    # supersession notice and nothing left that can move it out of the queue. An explicit
+    # issue link supersedes properly, through reconcile_pr_issue_links.
     await upsert_pr_task_link(
         db_session,
         github_repo=REPO,
@@ -1957,7 +1960,7 @@ async def test_repointing_a_row_does_not_carry_the_origin_to_another_card(db_ses
     )
     await db_session.commit()
     row = (await db_session.execute(select(PullRequestTaskLink))).scalars().one()
-    assert (row.plaky_task_id, row.link_source) == ("7199999", "auto_link")
+    assert (row.plaky_task_id, row.link_source) == ("7183844", "pr_task_created")
 
 
 @pytest.mark.asyncio
@@ -2192,3 +2195,54 @@ async def test_a_standalone_card_is_retired_even_when_the_issue_rows_already_agr
     # And it converges: the superseded row drops out, so the next delivery is a no-op.
     again = await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
     assert again["changed"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_declined_link_does_not_open_a_second_card(
+    db_session, workflow, monkeypatch
+) -> None:
+    """A link can be declined while the PR still has perfectly good rows.
+
+    The fallback after "nothing was linked" ends in orphan triage, whose reservation only
+    collides on issue number 0, so treating a decline as "no links at all" opened a second
+    card beside the live one.
+    """
+    triaged: list[int] = []
+
+    async def fake_triage(payload, session, top_scored=None, orphan_issue_number=0):
+        triaged.append(payload.pull_request.number)
+        return {"ok": True, "created_from_pr": True, "plaky_task_id": "task-second"}
+
+    monkeypatch.setattr(ph, "_maybe_triage_ambiguous_pr", fake_triage)
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add_all(
+        [
+            # Retired when the PR re-pointed at another issue: the upsert declines it.
+            PullRequestTaskLink(
+                github_repo=REPO,
+                github_pr_number=88,
+                github_issue_number=94,
+                plaky_task_id=TASK_94,
+                link_source="superseded_by_issue_link",
+                withdrawn_at=datetime(2026, 8, 21, 3, 0, 0),
+            ),
+            # And the card the PR actually drives, very much alive.
+            PullRequestTaskLink(
+                github_repo=REPO,
+                github_pr_number=88,
+                github_issue_number=0,
+                plaky_task_id="7183844",
+                link_source="pr_task_created",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    branch_only = _pr("no reference in the body")
+    branch_only.pull_request.head = {"ref": "issue-94-add-retries"}
+    await ph.handle_pr_opened(branch_only, db_session)
+
+    assert triaged == [], "a second card was opened beside the live one"
+    rows = (await db_session.execute(select(PullRequestTaskLink))).scalars().all()
+    assert sorted(r.plaky_task_id for r in rows) == sorted([TASK_94, "7183844"])
