@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -52,15 +53,23 @@ async def _open_pr_count(client: Any, full_name: str, headers: dict[str, str]) -
     owner, _, name = full_name.partition("/")
     if not name:
         return None
+    # per_page=1 and read the LAST page number out of the Link header: one call, and an
+    # exact answer. Asking for a page of 100 and counting the rows reported exactly 100 for
+    # any repo with more than that, and `open_issues` is derived by subtracting this from
+    # the total, so the error lands there too -- as a repo that looks like it has no issues.
     try:
         r = await client.get(
-            f"https://api.github.com/repos/{owner}/{name}/pulls?state=open&per_page=100",
+            f"https://api.github.com/repos/{owner}/{name}/pulls?state=open&per_page=1",
             headers=headers,
         )
     except (httpx.HTTPError, OSError, ValueError):
         return None
     if r.status_code != 200:
         return None
+    last = re.search(r'[?&]page=(\d+)>;\s*rel="last"', r.headers.get("link", "") or "")
+    if last:
+        return int(last.group(1))
+    # No Link header means the one page is all there is: zero or one open PR.
     try:
         rows = r.json()
     except ValueError:

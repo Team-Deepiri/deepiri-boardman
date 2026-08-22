@@ -1770,16 +1770,39 @@ async def handle_pr_review_requested(
         }
 
     plaky = PlakyClient()
+    written: list[str] = []
     for tid in task_ids:
+        if request_removed and bid:
+            # Un-asking for a review says the request is off, not that QA has to start
+            # again. Written unconditionally it landed on top of a QA Verified verdict --
+            # somebody dropping one reviewer from a list threw away the approval. Asking
+            # FOR review is a step forward and needs no guard; this one is a re-run.
+            from boardman.plaky.dynamic_qa_status import (
+                current_status_intent,
+                workflow_status_field_key,
+            )
+
+            guard_key = target_field_key or await workflow_status_field_key(bid)
+            if guard_key:
+                now_at = await current_status_intent(bid, tid, guard_key)
+                if status_would_move_backwards(now_at, "workflow_needs_qa"):
+                    _log.info(
+                        "PR #%s: task %s is at %s; not re-queuing it for QA",
+                        pr_number,
+                        tid,
+                        now_at,
+                    )
+                    continue
         await _update_plaky_task_status(
             tid, target_status, board_id or "", status_field_key=target_field_key
         )
+        written.append(tid)
     await session.commit()
-    if task_ids:
-        await maybe_enqueue_plaky_reorder_after_task(plaky, task_ids[0])
+    if written:
+        await maybe_enqueue_plaky_reorder_after_task(plaky, written[0])
     return {
         "ok": True,
-        "tasks": task_ids,
+        "tasks": written,
         "status": target_status,
         "event": "review_request_removed" if request_removed else "review_requested",
     }
@@ -2171,6 +2194,16 @@ async def handle_pr_review_comment(
 
     plaky = PlakyClient()
     comment_body = str(comment.get("body") or "").strip()
+    # The same two filters the conversation-comment path applies. A review bot leaves one
+    # inline comment per finding, so without this a single automated review floods the
+    # card; and Boardman posts as the PAT owner, so its own notices came back round as
+    # somebody reviewing the PR.
+    if str(commenter_login or "").endswith("[bot]"):
+        return {"ok": True, "skipped": True, "message": "bot review comment ignored"}
+    from boardman.github.pr_actions import is_boardman_comment
+
+    if is_boardman_comment(comment_body):
+        return {"ok": True, "skipped": True, "message": "ignored Boardman's own comment"}
     comment_marker = github_activity_marker(
         comment,
         kind="pr-review-comment",
@@ -2341,7 +2374,17 @@ async def handle_pr_labels_changed(
     )
     if not label_type and not (payload.action == "unlabeled" and removed_type):
         return {"ok": True, "skipped": True, "message": "labels carry no type signal"}
-    canon_type = label_type or "Feature"
+    if not label_type:
+        # A type label was REMOVED and the remaining ones say nothing. That is not a
+        # statement that the work is a Feature: falling through to the default overwrote a
+        # correct Bug on the card because somebody tidied a label. Leave the Type alone --
+        # whoever removed the label can set it, and adding one says so properly.
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "a type label was removed and none remains; leaving the Type as it is",
+        }
+    canon_type = label_type
     pr_state = resolve_pr_state(
         payload.pull_request,
         repo_full_name=payload.repository.full_name,

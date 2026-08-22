@@ -149,6 +149,13 @@ async def reconcile_repo(
             )
             if linked:
                 pr_state = str(pr.get("state") or "open").casefold()
+                # GitHub's LIST pulls endpoint omits the `merged` boolean -- only the
+                # single-PR GET carries it -- so reading it directly sent every merged PR
+                # to the closed-without-merge handler. That withdraws links and rewinds a
+                # task out of QA, every fifteen minutes, for PRs that shipped. `merged_at`
+                # is on the list payload and says the same thing. Same derivation the
+                # poller documents in `_pr_payload`.
+                pr["merged"] = bool(pr.get("merged")) or bool(pr.get("merged_at"))
                 if bool(pr.get("merged")):
                     res = await handle_pr_merged(
                         PullRequestEventPayload(

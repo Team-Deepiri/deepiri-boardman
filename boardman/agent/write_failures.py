@@ -23,24 +23,32 @@ WATCHED_KINDS = ("plaky_create_tasks_job",)
 
 
 def _titles(payload_json: str | None, result_json: str | None) -> list[str]:
-    out: list[str] = []
+    """Which tasks actually failed -- the result if it says, the whole batch if it does not.
+
+    The result was read only when the payload had nothing, so a job that created four of
+    five tasks and failed on one told the user all five had failed. The result knows which
+    one; the payload is the fallback for a job that died before producing one.
+    """
+    failed: list[str] = []
+    try:
+        result = json.loads(result_json or "{}")
+        rows = result.get("results")
+        if isinstance(rows, list) and rows:
+            for row in rows:
+                if isinstance(row, dict) and not row.get("ok") and row.get("title"):
+                    failed.append(str(row["title"]).strip())
+            return failed
+    except (TypeError, ValueError):
+        pass
+
     try:
         payload = json.loads(payload_json or "{}")
         for row in payload.get("tasks") or []:
             if isinstance(row, dict) and row.get("title"):
-                out.append(str(row["title"]).strip())
+                failed.append(str(row["title"]).strip())
     except (TypeError, ValueError):
         pass
-    if out:
-        return out
-    try:
-        result = json.loads(result_json or "{}")
-        for row in result.get("results") or []:
-            if isinstance(row, dict) and not row.get("ok") and row.get("title"):
-                out.append(str(row["title"]).strip())
-    except (TypeError, ValueError):
-        pass
-    return out
+    return failed
 
 
 async def recent_failed_task_writes(session: Any, *, minutes: int = 30) -> str:

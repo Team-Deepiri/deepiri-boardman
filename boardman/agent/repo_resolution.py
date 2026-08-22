@@ -51,9 +51,18 @@ def resolve_repo(
     # A repo explicitly named in the new message outranks the previous session repo.
     # This prevents a user switching from Boardman to another configured repo from
     # silently receiving an answer grounded in the old session.
-    direct = re.search(r"\b([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)\b", message or "")
-    if direct:
-        return RepoResolution(canonical_repo(direct.group(1)), "message")
+    # Any `word/word` token matched, so "boardman/agent/service.py" resolved to the repo
+    # `boardman/agent` -- and the answer is persisted to the session, so every later
+    # question in the conversation was grounded in a repo that does not exist. A path has
+    # more slashes or a file extension on the last segment; a repo mention has neither.
+    for token in re.findall(
+        r"(?<![\w./-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?![\w/-])", message or ""
+    ):
+        if "." in token.rsplit("/", 1)[-1]:
+            continue  # a filename, not a repo
+        named = canonical_repo(token)
+        if named:
+            return RepoResolution(named, "message")
 
     registered = list_registered_repos()
     candidates: list[str] = []

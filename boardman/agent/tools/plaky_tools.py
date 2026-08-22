@@ -691,7 +691,11 @@ def resolve_people_to_field_values(
                 notes.append(f"assignee {name!r} not set: {verdict.reason}")
                 continue
         out[key] = member_id
-        notes.append(f"{role} -> {hit.member.display} ({hit.reason}, {hit.score:.2f})")
+        # The trailing [key] is what lets a caller drop this note when an explicit
+        # field_values entry beat the resolved person. Matching on the id did not work:
+        # the note says the display NAME, so the receipt went on naming somebody who was
+        # never written to the board.
+        notes.append(f"{role} -> {hit.member.display} ({hit.reason}, {hit.score:.2f}) [{key}]")
     return out, notes
 
 
@@ -819,7 +823,7 @@ async def _plaky_create_task(
             else:
                 # An explicit field_values entry wins, so the resolved person was NOT
                 # written. The receipt must not name them.
-                person_notes = [n for n in person_notes if f"-> {value}" not in n]
+                person_notes = [n for n in person_notes if not n.endswith(f"[{key}]")]
                 person_notes.append(
                     f"{key} was set explicitly in field_values, so the typed name was ignored"
                 )

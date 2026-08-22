@@ -347,7 +347,7 @@ When the user wants to **create** or repeatedly file similar Plaky items:
 You know the repo, the board and the group. Deciding *what* the work should be is the
 job you are for — it is not missing information. Read the repo (DIRECTION.md, README,
 open issues and PRs, what is already on the board), pick the N highest-impact pieces of
-work, and create them with **plaky_create_tasks_deferred_deferred**. Then explain your reasoning
+work, and create them with **plaky_create_tasks_deferred**. Then explain your reasoning
 in the reply: why these, in this order, and what you deliberately left out.
 
 Never answer a creation request with a menu. Do not ask "what should they be about?",

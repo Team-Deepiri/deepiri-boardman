@@ -475,7 +475,9 @@ def render_project_state(state: ProjectState, *, max_chars: int = 6500) -> str:
             more = "" if len(live.tracked_issues) <= 14 else f" (+{len(live.tracked_issues) - 14})"
             lines.append(f"- issue numbers: {head}{more}")
         lines.append(
-            f"- PRs open against a task: {len(live.active_prs)}, merged so far: "
+            # `open_pr_count` is the number of PRs; `active_prs` is the number of LINK
+            # ROWS, and one PR that closes three issues has three of those.
+            f"- PRs open against a task: {live.open_pr_count}, merged so far: "
             f"{live.merged_prs}"
         )
         for pr in live.active_prs[:8]:

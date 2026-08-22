@@ -2,6 +2,7 @@
 
 import json
 import logging
+from datetime import datetime, timedelta
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
@@ -46,6 +47,13 @@ from boardman.services.pr_review_handler import (
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
+
+# How long a delivery may sit in "processing" before it is treated as abandoned. Long
+# enough that a slow handler is never stolen from itself, short enough that GitHub's own
+# redelivery (which is the only recovery there is) still finds the door open.
+_PROCESSING_STALE_SECONDS = 900
+# Event types with no payload model, which still have cache work to do. See the dispatch.
+_EVENTS_WITHOUT_A_PAYLOAD_MODEL = ("repository", "create", "delete", "push")
 
 router = APIRouter()
 
@@ -180,7 +188,19 @@ async def github_webhook(
                 )
             )
         ).scalar_one_or_none()
-        if already and already.status in ("processed", "processing"):
+        # "processing" means another worker has it RIGHT NOW. Nothing resets that status
+        # if the process dies mid-delivery, so treating it as final made an interrupted
+        # event unrecoverable -- GitHub's redelivery, the one mechanism that exists for
+        # this, was answered "already queued" forever. After the stale window it is
+        # treated as abandoned and processed again; the handlers are idempotent, which is
+        # what makes that the safe direction.
+        stale_before = datetime.utcnow() - timedelta(seconds=_PROCESSING_STALE_SECONDS)
+        in_flight = (
+            already is not None
+            and already.status == "processing"
+            and ((already.created_at or stale_before) > stale_before)
+        )
+        if already and (already.status == "processed" or in_flight):
             body = json.dumps(
                 {
                     "ok": True,
@@ -221,6 +241,16 @@ async def github_webhook(
     if event_type == "ping":
         await _mark_delivery("processed", "pong")
         return Response(content=json.dumps({"ok": True, "message": "pong"}))
+
+    # Events with no payload model of their own still have work to do: a repo appearing,
+    # disappearing or being renamed invalidates the org listing, and a push invalidates
+    # what is cached about that repo. Sending them to the 400 gate made that branch dead
+    # code on the real webhook path -- only the tests, which call the dispatcher directly,
+    # ever reached it.
+    if event_type in _EVENTS_WITHOUT_A_PAYLOAD_MODEL:
+        result = await dispatch_github_event(event_type, payload_dict, session)
+        await _mark_delivery("processed", str(result.get("message") or "")[:200])
+        return Response(content=json.dumps(result))
 
     if not parse_webhook_payload(event_type, payload_dict):
         await _mark_delivery("processed", "unsupported_event")

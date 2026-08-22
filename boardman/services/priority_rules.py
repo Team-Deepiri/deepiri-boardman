@@ -39,8 +39,11 @@ _LABEL_PRIORITY = {
     "low": "Low",
     "p3": "Low",
     "priority: low": "Low",
-    "good first issue": "Low",
 }
+# A hint, not a statement of priority. `good first issue` says the work is approachable,
+# and reading it as an EXPLICIT Low licensed overwriting a priority a lead had set on the
+# board by hand. It still nudges the inferred value, which nothing overwrites.
+_LABEL_PRIORITY_HINTS = {"good first issue": "Low"}
 
 
 def priority_from_github_label(value: Any) -> str:
@@ -51,11 +54,19 @@ def priority_from_github_label(value: Any) -> str:
     if not raw:
         return ""
     token = re.sub(r"[\s_/:#-]+", " ", raw).strip()
+    said_priority = bool(re.search(r"(?:^(?:priority|prio)\s)|(?:\s(?:priority|prio)$)", token))
     token = re.sub(r"^(?:priority|prio)\s+", "", token).strip()
     token = re.sub(r"\s+(?:priority|prio)$", "", token).strip()
     direct = _LABEL_PRIORITY.get(token)
     if direct:
         return direct
+    # A bare severity word is a priority only when the label IS that word -- which `direct`
+    # already covers -- or when the label said "priority" somewhere. Searching for it
+    # anywhere read `high-availability` as High, `low-code` as Low and
+    # `needs-medium-review` as Medium, none of which are priorities, and each of which then
+    # claimed the right to overwrite one somebody had set by hand.
+    if not said_priority:
+        return ""
     if re.search(r"\burgent\b", token):
         return "Very Important"
     if re.search(r"\bhigh\b", token):
@@ -77,6 +88,13 @@ def infer_priority_from_text(
         explicit = priority_from_github_label(raw)
         if explicit:
             return explicit
+
+    for raw in labels or []:
+        hint = _LABEL_PRIORITY_HINTS.get(
+            re.sub(r"[\s_/:#-]+", " ", str(raw or "").strip().casefold())
+        )
+        if hint:
+            return hint
 
     text = f"{title or ''}\n{(body or '')[:2000]}"
     if _HIGH_RE.search(text):

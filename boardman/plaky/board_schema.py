@@ -1069,7 +1069,11 @@ async def fetch_board_schema_bundle(board_id: str) -> dict[str, Any]:
             except Exception:  # noqa: BLE001 - failure is silenced for resilience
                 log_degraded(_log, "fetch_board_schema_bundle: list_board_items")
         ok_groups = bool(groups_r.get("ok"))
-        ok = ok_board or ok_groups
+        # The BOARD call is what carries the fields, so a groups-only success is not a
+        # schema. Accepting one cached a fields-less bundle for the whole TTL, and every
+        # status, assignee and priority key then resolved to nothing -- which the guards
+        # read as "this board has no such column" and let writes through unchecked.
+        ok = ok_board
         msg_parts = []
         if not ok_board and board_r.get("message"):
             msg_parts.append(f"board: {board_r.get('message')}")
