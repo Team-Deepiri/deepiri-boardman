@@ -790,6 +790,44 @@ async def _link_pr_to_issue_task(
         repo_full=payload.repository.full_name,
         allow_status_regression=not is_late_link,
     )
+    # A late link onto a task that is already DONE must not stage review work for it. The
+    # QA assignment is outward-facing -- it writes the QA column, comments "you have been
+    # assigned as QA reviewer" and requests that person on GitHub -- while the card stays
+    # Completed, because the status guard below refuses to move it, and nothing will ever
+    # bring it into the QA queue. Only a task we can SEE is finished is skipped: a board
+    # that did not answer is not a reason to leave an open PR with nobody asked to review
+    # it, and the assignment moves no status of its own.
+    if is_late_link and board_id:
+        from boardman.plaky.dynamic_qa_status import (
+            current_status_intent,
+            workflow_status_field_key,
+        )
+
+        field_key = await workflow_status_field_key(board_id)
+        position = (
+            await current_status_intent(board_id, mapping.plaky_task_id, field_key)
+            if field_key
+            else ""
+        )
+        if position == "workflow_completed":
+            _log.info(
+                "PR #%s: task %s is already completed; linking without staging QA review work",
+                pr_number,
+                mapping.plaky_task_id,
+            )
+            session.add(
+                SyncLog(
+                    action="pr_linked",
+                    github_repo=repo_name,
+                    github_ref=str(pr_number),
+                    plaky_task_id=mapping.plaky_task_id,
+                    detail=json.dumps(
+                        {"issue_number": issue_number, "pr_url": pr_url, "qa_skipped": position}
+                    ),
+                )
+            )
+            return
+
     pr_user0 = payload.pull_request.user or {}
     qa_res = await _assign_qa_for_pr(
         plaky,
@@ -843,20 +881,24 @@ async def _ensure_links_live(payload: PullRequestEventPayload, session: AsyncSes
         # link -- which blocks merge-gated completion of that task for good, since nothing
         # re-withdraws it.
         return
-    # And the residual case: a snapshot that still SAYS open because it was built before
-    # the close. Reviving on one is just as permanent, and no later delivery undoes it --
-    # the close already happened. closed_at is stamped once and stays stamped, so it does
-    # not depend on which delivery arrives first.
     if str(getattr(payload.pull_request, "closed_at", "") or "").strip():
         return
     if str(getattr(payload.pull_request, "merged_at", "") or "").strip():
         return
+    # And the residual case those two do NOT catch: a delivery built BEFORE the close.
+    # GitHub sets state and closed_at together, so a snapshot from before it says "open"
+    # with closed_at null and passes every field test there is. What separates it from a
+    # genuine reopen is WHEN it was built: `updated_at` on a stale delivery predates the
+    # withdrawal, and on a real reopen follows it. Reviving on a stale one is permanent --
+    # nothing withdraws those links a second time, and has_any_open_pr_for_task then
+    # blocks merge-gated completion of that task for good.
     from boardman.services.pr_task_registry import revive_pr_links
 
     if await revive_pr_links(
         session,
         github_repo=payload.repository.name,
         github_pr_number=payload.pull_request.number,
+        not_before=str(getattr(payload.pull_request, "updated_at", "") or "").strip(),
     ):
         await session.commit()
 

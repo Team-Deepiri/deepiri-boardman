@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
@@ -145,11 +145,37 @@ async def mark_pr_withdrawn(
     return rows
 
 
+def _payload_is_older_than(withdrawn_at: datetime | None, updated_at: str) -> bool:
+    """True when the delivery was built before this link was withdrawn.
+
+    GitHub stamps `state` and `closed_at` together, so a delivery built BEFORE a close --
+    a webhook retry, a job the queue held, an event the poller read late -- says "open"
+    with `closed_at` null and passes every field test there is. Only the timestamps order
+    the two, and reviving on a stale one is permanent: nothing withdraws those links a
+    second time.
+
+    An unparsable or missing `updated_at` is not treated as stale. Some payload shapes
+    (the events feed's slim pull_request) omit it, and refusing to revive on those would
+    strand genuinely reopened PRs, which is the failure this whole path exists to fix.
+    """
+    if withdrawn_at is None or not updated_at:
+        return False
+    raw = updated_at.strip().replace("Z", "+00:00")
+    try:
+        built = datetime.fromisoformat(raw)
+    except ValueError:
+        return False
+    if built.tzinfo is not None:
+        built = built.astimezone(UTC).replace(tzinfo=None)
+    return built < withdrawn_at
+
+
 async def revive_pr_links(
     session: AsyncSession,
     *,
     github_repo: str,
     github_pr_number: int,
+    not_before: str = "",
 ) -> list[PullRequestTaskLink]:
     """Un-withdraw a reopened PR's links, EXCEPT ones superseded by a real issue link.
 
@@ -160,6 +186,9 @@ async def revive_pr_links(
 
     A link retired because the PR now points at an issue's task is deliberately left
     retired: reopening the PR does not un-say which issue it closes.
+
+    `not_before` is the delivery's `updated_at`. A row withdrawn AFTER the delivery was
+    built is left alone -- see `_payload_is_older_than`.
     """
     q = select(PullRequestTaskLink).where(
         PullRequestTaskLink.github_repo == github_repo,
@@ -167,7 +196,11 @@ async def revive_pr_links(
         PullRequestTaskLink.withdrawn_at.is_not(None),
         PullRequestTaskLink.link_source != _SUPERSEDED_LINK_SOURCE,
     )
-    rows = list((await session.execute(q)).scalars())
+    rows = [
+        row
+        for row in (await session.execute(q)).scalars()
+        if not _payload_is_older_than(row.withdrawn_at, not_before)
+    ]
     for row in rows:
         row.withdrawn_at = None
     return rows

@@ -56,6 +56,10 @@ class GitHubPullRequest(BaseModel):
     # says "open". Anything that would revive a closed PR's links checks these instead.
     closed_at: str | None = None
     merged_at: str | None = None
+    # When this snapshot was built. The one field that orders two deliveries against each
+    # other, which is what tells a genuine reopen from a retry of an event that predates
+    # the close -- both of those say state "open" with closed_at null.
+    updated_at: str | None = None
     draft: bool = False
     user: Any | None = None
     base: Any | None = None

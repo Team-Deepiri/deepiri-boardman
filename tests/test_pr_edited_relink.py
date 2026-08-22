@@ -1717,3 +1717,88 @@ async def test_the_author_naming_the_issue_again_does_undo_it(db_session) -> Non
     row = (await db_session.execute(select(PullRequestTaskLink))).scalars().one()
     assert row.link_source == "issue_keyword"
     assert row.withdrawn_at is None
+
+
+@pytest.mark.asyncio
+async def test_a_late_link_onto_a_finished_task_does_not_stage_review_work(
+    db_session, workflow, monkeypatch
+) -> None:
+    """Linking a PR to a task that is already Completed must not ask anyone to review it.
+
+    The QA assignment is outward-facing: it writes the QA column, comments "you have been
+    assigned as QA reviewer" and requests that person on GitHub. Meanwhile the status
+    guard refuses to move the card out of Completed, so the review it just asked for has
+    nowhere to happen and nothing will ever clear it.
+    """
+    from boardman.plaky import dynamic_qa_status as dq
+
+    async def completed_field_key(_bid):
+        return "status_key"
+
+    async def completed_position(_bid, _task_id, _field_key):
+        return "workflow_completed"
+
+    monkeypatch.setattr(dq, "workflow_status_field_key", completed_field_key)
+    monkeypatch.setattr(dq, "current_status_intent", completed_position)
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    res = await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+
+    assert res["changed"] is True, "the link itself is still made"
+    assert workflow["qa"] == [], "a completed task was assigned a QA reviewer"
+    assert workflow["needs_qa"] == [], "and it was not asked for QA either"
+    # The link is announced, so anybody looking at the card can see the PR.
+    assert [t for t, _ in workflow["comments"]] == [TASK_94]
+
+
+@pytest.mark.asyncio
+async def test_a_delivery_from_before_the_close_does_not_revive(db_session) -> None:
+    """GitHub stamps state and closed_at together, so a delivery built BEFORE a close says
+    "open" with closed_at null and passes every field test there is.
+
+    Only the timestamps order the two: a stale delivery's updated_at predates the
+    withdrawal, a genuine reopen's follows it. Reviving on a stale one is permanent --
+    nothing withdraws those links again, and merge-gated completion stays blocked forever.
+    """
+    from boardman.services.pr_task_registry import revive_pr_links, task_ids_for_open_pr
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="issue_keyword",
+            withdrawn_at=datetime(2026, 8, 20, 12, 0, 0),
+        )
+    )
+    await db_session.commit()
+
+    revived = await revive_pr_links(
+        db_session,
+        github_repo=REPO,
+        github_pr_number=88,
+        not_before="2026-08-20T11:30:00Z",
+    )
+    await db_session.commit()
+    assert revived == []
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == []
+
+    # A genuine reopen was built after the close, and does revive.
+    revived = await revive_pr_links(
+        db_session,
+        github_repo=REPO,
+        github_pr_number=88,
+        not_before="2026-08-20T12:30:00Z",
+    )
+    await db_session.commit()
+    assert [r.plaky_task_id for r in revived] == [TASK_94]
+
+    # And a payload shape that carries no updated_at is not treated as stale: refusing on
+    # those would strand the reopened PRs this path exists to rescue.
+    await db_session.execute(
+        PullRequestTaskLink.__table__.update().values(withdrawn_at=datetime(2026, 8, 20, 12, 0, 0))
+    )
+    await db_session.commit()
+    revived = await revive_pr_links(db_session, github_repo=REPO, github_pr_number=88)
+    assert [r.plaky_task_id for r in revived] == [TASK_94]
