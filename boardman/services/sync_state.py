@@ -14,8 +14,11 @@ from typing import Any
 from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
 from boardman.services.priority_rules import infer_priority_from_text, priority_from_github_label
 
-# Mirrors boardman.plaky.dynamic_qa_status.UNREADABLE_STATUS, spelled out here rather than
-# imported: this module deliberately makes no network calls and imports nothing that does.
+# What a status guard says when the board could not be read -- distinct from "" (the
+# board answered, and this code cannot place what it said), because the two lead to
+# opposite decisions. Defined HERE, in the module with no network calls, and imported by
+# the Plaky side: two copies that drifted would turn both fail-closed guards into no-ops
+# with nothing failing to say so.
 UNREADABLE_STATUS = "__unreadable__"
 
 

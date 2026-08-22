@@ -17,6 +17,7 @@ from typing import Any
 from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
+from boardman.services.sync_state import UNREADABLE_STATUS as _SYNC_STATE_UNREADABLE
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -472,7 +473,9 @@ async def resolve_qa_assignee_field_key(board_id: str, yaml_fallback: str) -> st
 # option matches no intent this code knows), because the two demand opposite behaviour:
 # an unknown LABEL is not evidence of anything, while an unknown BOARD means the guard
 # simply did not run and a status write would be taken on faith.
-UNREADABLE_STATUS = "__unreadable__"
+# Imported rather than repeated: two copies that drifted would leave both fail-closed
+# guards permitting exactly the writes they exist to refuse, with nothing failing.
+UNREADABLE_STATUS = _SYNC_STATE_UNREADABLE
 
 
 async def workflow_status_field_key(board_id: str) -> str | None:

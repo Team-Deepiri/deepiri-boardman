@@ -1002,14 +1002,19 @@ class GitHubEventPoller:
                     else:
                         body = f"Commit by @{actor}: {first_line} ({url})"
                     res = await plaky.add_comment(mapping.plaky_task_id, body)
+                    # A refused post left nothing on the card, so the row must not claim
+                    # the identity that dedupes it: written under the real action, one
+                    # transient Plaky error suppressed this commit comment for good. The
+                    # attempt is still recorded, under an action nothing matches against.
+                    posted = bool(res.get("ok"))
                     session.add(
                         SyncLog(
-                            action="commit_comment_synced",
+                            action=("commit_comment_synced" if posted else "commit_comment_failed"),
                             github_repo=short,
                             github_ref=str(num),
                             plaky_task_id=mapping.plaky_task_id,
                             detail=json.dumps(
-                                {"marker": marker, "commit_url": url, "plaky_ok": res.get("ok")},
+                                {"marker": marker, "commit_url": url, "plaky_ok": posted},
                                 default=str,
                             ),
                         )

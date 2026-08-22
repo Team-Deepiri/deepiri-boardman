@@ -50,6 +50,12 @@ class GitHubPullRequest(BaseModel):
     html_url: str = ""
     state: str = ""
     merged: bool = False
+    # GitHub stamps these once and leaves them stamped, which makes them the one part of
+    # the payload that does not depend on delivery order: `state` is a snapshot taken when
+    # the delivery was built, so a redelivery or a queued retry from before the close still
+    # says "open". Anything that would revive a closed PR's links checks these instead.
+    closed_at: str | None = None
+    merged_at: str | None = None
     draft: bool = False
     user: Any | None = None
     base: Any | None = None

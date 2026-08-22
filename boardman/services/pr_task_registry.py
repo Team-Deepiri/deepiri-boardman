@@ -31,6 +31,28 @@ _TITLE_REF_LINK_SOURCE = "issue_keyword_title"
 _WEAK_COMPLETION_LINK_SOURCES = (_BRANCH_REF_LINK_SOURCE, _TITLE_REF_LINK_SOURCE)
 
 
+# Link sources that mean "this PR opened the card". They decide whether the PR may rewrite
+# the card's text and whether supersession may tell it that it was created for the PR, so
+# losing one strands a card in the QA queue with nothing driving it.
+_PR_TASK_PENDING_LINK_SOURCE = "pr_task_pending"
+_PR_TASK_CREATED_LINK_SOURCE = "pr_task_created"
+_PR_OWNED_LINK_SOURCES = (_PR_TASK_PENDING_LINK_SOURCE, _PR_TASK_CREATED_LINK_SOURCE)
+
+
+def _kept_link_source(existing: str, incoming: str) -> str:
+    """Which of the two records what actually links this PR to that card.
+
+    Reopening a PR re-runs the fuzzy pipeline, and its upsert carried the pipeline's own
+    decision -- so a card the PR had CREATED came back as `auto_link`, after which its text
+    stopped syncing and a later relink retired it as somebody else's, stranded in the QA
+    queue. How a card came to exist does not change when a PR is reopened, so the origin
+    wins.
+    """
+    if existing in _PR_OWNED_LINK_SOURCES and incoming not in _PR_OWNED_LINK_SOURCES:
+        return existing
+    return incoming
+
+
 async def upsert_pr_task_link(
     session: AsyncSession,
     *,
@@ -50,7 +72,7 @@ async def upsert_pr_task_link(
     row = r.scalar_one_or_none()
     if row:
         row.plaky_task_id = plaky_task_id
-        row.link_source = link_source
+        row.link_source = _kept_link_source(str(row.link_source or ""), link_source)
         row.merged_at = None
         row.withdrawn_at = None
         return row

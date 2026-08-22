@@ -1538,3 +1538,109 @@ async def test_reopening_a_fuzzy_linked_pr_also_leaves_qa_alone(db_session, monk
     assert res.get("pipeline") == "auto_link", res
     assert guards, "the fuzzy branch still runs on reopen"
     assert all(allow is False for _, allow in guards), guards
+
+
+@pytest.mark.asyncio
+async def test_a_stale_open_snapshot_does_not_revive_a_closed_pr(db_session, workflow) -> None:
+    """`state` is a snapshot taken when the delivery was built.
+
+    A redelivered webhook or a queued retry from before the close still says "open", and
+    reviving on one is permanent: nothing withdraws those links a second time, so
+    has_any_open_pr_for_task keeps blocking merge-gated completion of that task forever.
+    closed_at is stamped once and does not depend on which delivery arrives first.
+    """
+    from boardman.services.pr_task_registry import mark_pr_withdrawn, task_ids_for_open_pr
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="issue_keyword",
+        )
+    )
+    await db_session.commit()
+    await mark_pr_withdrawn(db_session, github_repo=REPO, github_pr_number=88)
+    await db_session.commit()
+
+    stale = _pr("Fixes #94")
+    stale.pull_request.state = "open"
+    stale.pull_request.closed_at = "2026-08-20T11:04:00Z"
+    await ph._ensure_links_live(stale, db_session)
+
+    live = await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88)
+    assert live == [], "a delivery from before the close brought the link back"
+
+    # A PR genuinely open again carries no closed_at, and does revive.
+    fresh = _pr("Fixes #94")
+    fresh.pull_request.state = "open"
+    fresh.pull_request.closed_at = None
+    await ph._ensure_links_live(fresh, db_session)
+    live = await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88)
+    assert live == [TASK_94]
+
+
+@pytest.mark.asyncio
+async def test_reopening_does_not_forget_that_the_pr_created_the_card(db_session) -> None:
+    """link_source is load-bearing now: it decides whether the PR may rewrite the card's
+    text and whether supersession may say the card was created for it.
+
+    Reopening re-runs the fuzzy pipeline, whose upsert carried the pipeline's own decision,
+    so a pr_task_created card came back as auto_link -- its text stopped syncing, and a
+    later relink retired it as somebody else's, stranded in the QA queue.
+    """
+    from boardman.services.pr_task_registry import upsert_pr_task_link
+
+    await upsert_pr_task_link(
+        db_session,
+        github_repo=REPO,
+        github_pr_number=88,
+        plaky_task_id="7183844",
+        github_issue_number=0,
+        link_source="pr_task_created",
+    )
+    await db_session.commit()
+
+    await upsert_pr_task_link(
+        db_session,
+        github_repo=REPO,
+        github_pr_number=88,
+        plaky_task_id="7183844",
+        github_issue_number=0,
+        link_source="auto_link",
+    )
+    await db_session.commit()
+
+    rows = (await db_session.execute(select(PullRequestTaskLink))).scalars().all()
+    assert [r.link_source for r in rows] == ["pr_task_created"]
+
+    # A row that was never PR-owned still records whatever last linked it.
+    await upsert_pr_task_link(
+        db_session,
+        github_repo=REPO,
+        github_pr_number=89,
+        plaky_task_id="7183999",
+        github_issue_number=0,
+        link_source="auto_link",
+    )
+    await upsert_pr_task_link(
+        db_session,
+        github_repo=REPO,
+        github_pr_number=89,
+        plaky_task_id="7183999",
+        github_issue_number=0,
+        link_source="llm_link",
+    )
+    await db_session.commit()
+    rows = (await db_session.execute(select(PullRequestTaskLink))).scalars().all()
+    assert {r.github_pr_number: r.link_source for r in rows}[89] == "llm_link"
+
+
+def test_the_unreadable_sentinel_has_exactly_one_definition() -> None:
+    """Two copies that drifted would leave both fail-closed status guards permitting the
+    writes they exist to refuse, and nothing would fail to say so."""
+    from boardman.plaky.dynamic_qa_status import UNREADABLE_STATUS as plaky_side
+    from boardman.services.sync_state import UNREADABLE_STATUS as state_side
+
+    assert plaky_side is state_side

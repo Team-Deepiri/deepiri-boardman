@@ -33,6 +33,9 @@ from boardman.services.pr_task_linking import (
 )
 from boardman.services.pr_task_registry import (
     _BRANCH_REF_LINK_SOURCE,
+    _PR_OWNED_LINK_SOURCES,
+    _PR_TASK_CREATED_LINK_SOURCE,
+    _PR_TASK_PENDING_LINK_SOURCE,
     _SUPERSEDED_LINK_SOURCE,
     _TITLE_REF_LINK_SOURCE,
     _WEAK_COMPLETION_LINK_SOURCES,
@@ -53,13 +56,6 @@ from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_a
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
-
-# A row this PR opened a card for, before and after the card exists. Only these carry a
-# title and description that belong to the PR; every other link_source points at a card
-# that was already there, whose text somebody else wrote.
-_PR_TASK_PENDING_LINK_SOURCE = "pr_task_pending"
-_PR_TASK_CREATED_LINK_SOURCE = "pr_task_created"
-_PR_OWNED_LINK_SOURCES = (_PR_TASK_PENDING_LINK_SOURCE, _PR_TASK_CREATED_LINK_SOURCE)
 
 
 async def _update_plaky_task_status(
@@ -845,8 +841,15 @@ async def _ensure_links_live(payload: PullRequestEventPayload, session: AsyncSes
         # slim events-feed payload shape look open, and a delivery that predates the close
         # (retried job, out-of-order webhook) would then leave a closed PR holding a live
         # link -- which blocks merge-gated completion of that task for good, since nothing
-        # re-withdraws it. A stale snapshot that still says "open" is the residual case;
-        # the next close delivery re-withdraws it.
+        # re-withdraws it.
+        return
+    # And the residual case: a snapshot that still SAYS open because it was built before
+    # the close. Reviving on one is just as permanent, and no later delivery undoes it --
+    # the close already happened. closed_at is stamped once and stays stamped, so it does
+    # not depend on which delivery arrives first.
+    if str(getattr(payload.pull_request, "closed_at", "") or "").strip():
+        return
+    if str(getattr(payload.pull_request, "merged_at", "") or "").strip():
         return
     from boardman.services.pr_task_registry import revive_pr_links
 
