@@ -172,7 +172,10 @@ def _pr_payload(
 async def test_pr_edited_reruns_pipeline_only_when_unlinked(db_session, monkeypatch) -> None:
     opened_calls: list[int] = []
 
-    async def fake_opened(payload: Any, session: Any) -> dict:
+    async def fake_opened(payload: Any, session: Any, *, is_replay: bool = False) -> dict:
+        # An edit is a replay: this PR was already open, and the pipeline runs its
+        # anti-regression guards for one.
+        assert is_replay is True, "an edited PR was replayed as brand new work"
         opened_calls.append(payload.pull_request.number)
         return {"ok": True, "reran": True}
 

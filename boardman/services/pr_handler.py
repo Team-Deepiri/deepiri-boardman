@@ -1541,7 +1541,11 @@ async def handle_pr_edited(
             "updated": plaky_results,
             "relink": relink,
         }
-    opened = await handle_pr_opened(payload, session)
+    # A replay by definition: this PR was already open, and an edit is not it arriving.
+    # Without saying so, an `edited` on a long-open unlinked PR re-ran the open pipeline
+    # with regression allowed, so a fuzzy match onto a card already at In QA had Assigned
+    # and Needs QA written over it -- and got a "PR Opened" notice for an edit.
+    opened = await handle_pr_opened(payload, session, is_replay=True)
     if isinstance(opened, dict):
         opened.setdefault("relink", relink)
     return opened

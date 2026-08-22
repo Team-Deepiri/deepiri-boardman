@@ -1909,3 +1909,52 @@ async def _noop_type_and_assignee(_plaky, *, task_id, **_k):
 
 async def _noop_needs_qa(_plaky, task_id, is_draft, board_id, *, allow_regression=True):
     return {"ok": True}
+
+
+@pytest.mark.asyncio
+async def test_repointing_a_row_does_not_carry_the_origin_to_another_card(db_session) -> None:
+    """`pr_task_created` says THIS PR opened THAT card, and it decides whether the PR may
+    rewrite the card's text and whether a relink may retire it as the PR's own.
+
+    Preserving it across a repoint -- the fuzzy pipeline matching a different,
+    pre-existing card when a PR is reopened -- hands another team's card those rights: its
+    title and description get overwritten from the PR, and a later relink posts "this card
+    was created for the PR" and pulls it out of the QA queue.
+    """
+    from boardman.services.pr_task_registry import upsert_pr_task_link
+
+    await upsert_pr_task_link(
+        db_session,
+        github_repo=REPO,
+        github_pr_number=88,
+        plaky_task_id="7183844",
+        github_issue_number=0,
+        link_source="pr_task_created",
+    )
+    await db_session.commit()
+
+    # Same card, weaker source: the origin stands.
+    await upsert_pr_task_link(
+        db_session,
+        github_repo=REPO,
+        github_pr_number=88,
+        plaky_task_id="7183844",
+        github_issue_number=0,
+        link_source="auto_link",
+    )
+    await db_session.commit()
+    row = (await db_session.execute(select(PullRequestTaskLink))).scalars().one()
+    assert row.link_source == "pr_task_created"
+
+    # A DIFFERENT card: it was not created by this PR, and must not inherit that claim.
+    await upsert_pr_task_link(
+        db_session,
+        github_repo=REPO,
+        github_pr_number=88,
+        plaky_task_id="7199999",
+        github_issue_number=0,
+        link_source="auto_link",
+    )
+    await db_session.commit()
+    row = (await db_session.execute(select(PullRequestTaskLink))).scalars().one()
+    assert (row.plaky_task_id, row.link_source) == ("7199999", "auto_link")

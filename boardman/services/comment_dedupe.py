@@ -88,11 +88,14 @@ async def comment_already_synced(session: AsyncSession, action: str, *markers: s
     wanted = [m for m in markers if m]
     if not wanted:
         return False
+    # `escape` matters: a marker falls back to the comment BODY when GitHub sends no id,
+    # and a body containing % or _ is a LIKE wildcard. Unescaped, "50%_done" matches rows
+    # it has nothing to do with, and the mirror is silently dropped as already synced.
     row = await session.execute(
         select(SyncLog.id)
         .where(
             SyncLog.action == action,
-            or_(*[SyncLog.detail.contains(f'"{m}"') for m in wanted]),
+            or_(*[SyncLog.detail.contains(f'"{m}"', autoescape=True) for m in wanted]),
         )
         .limit(1)
     )

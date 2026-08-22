@@ -58,7 +58,7 @@ def _stays_superseded(existing: str, incoming: str) -> bool:
     return existing == _SUPERSEDED_LINK_SOURCE and incoming not in _UN_SUPERSEDING_LINK_SOURCES
 
 
-def _kept_link_source(existing: str, incoming: str) -> str:
+def _kept_link_source(existing: str, incoming: str, *, same_task: bool) -> str:
     """Which of the two records what actually links this PR to that card.
 
     Reopening a PR re-runs the fuzzy pipeline, and its upsert carried the pipeline's own
@@ -66,8 +66,14 @@ def _kept_link_source(existing: str, incoming: str) -> str:
     stopped syncing and a later relink retired it as somebody else's, stranded in the QA
     queue. How a card came to exist does not change when a PR is reopened, so the origin
     wins.
+
+    Only for the SAME card, though. When the row is repointed -- the fuzzy pipeline
+    matching a different, pre-existing card on reopen -- carrying `pr_task_created` across
+    would tell every later event that this PR opened somebody else's card: its title and
+    description would be overwritten from the PR, and a relink would post "this card was
+    created for the PR" and pull it out of the QA queue.
     """
-    if existing in _PR_OWNED_LINK_SOURCES and incoming not in _PR_OWNED_LINK_SOURCES:
+    if same_task and existing in _PR_OWNED_LINK_SOURCES and incoming not in _PR_OWNED_LINK_SOURCES:
         return existing
     return incoming
 
@@ -92,8 +98,12 @@ async def upsert_pr_task_link(
     if row:
         if _stays_superseded(str(row.link_source or ""), link_source):
             return row
+        row.link_source = _kept_link_source(
+            str(row.link_source or ""),
+            link_source,
+            same_task=str(row.plaky_task_id or "") == str(plaky_task_id),
+        )
         row.plaky_task_id = plaky_task_id
-        row.link_source = _kept_link_source(str(row.link_source or ""), link_source)
         row.merged_at = None
         row.withdrawn_at = None
         return row
@@ -118,8 +128,12 @@ async def upsert_pr_task_link(
         # resurrect a superseded card or forget which PR opened one.
         if _stays_superseded(str(row.link_source or ""), link_source):
             return row
+        row.link_source = _kept_link_source(
+            str(row.link_source or ""),
+            link_source,
+            same_task=str(row.plaky_task_id or "") == str(plaky_task_id),
+        )
         row.plaky_task_id = plaky_task_id
-        row.link_source = _kept_link_source(str(row.link_source or ""), link_source)
         row.merged_at = None
         row.withdrawn_at = None
         return row
