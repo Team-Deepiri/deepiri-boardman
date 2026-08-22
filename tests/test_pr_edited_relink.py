@@ -12,6 +12,7 @@ URL, and implied by a branch name.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -1644,3 +1645,75 @@ def test_the_unreadable_sentinel_has_exactly_one_definition() -> None:
     from boardman.services.sync_state import UNREADABLE_STATUS as state_side
 
     assert plaky_side is state_side
+
+
+@pytest.mark.asyncio
+async def test_a_superseded_card_is_not_resurrected_by_a_guess(db_session) -> None:
+    """Supersession is permanent to revive_pr_links, mark_pr_merged and
+    distinct_task_ids_for_pr, and it was not to the upsert.
+
+    Reopening a PR re-runs the fuzzy pipeline, whose upsert cleared withdrawn_at and
+    relabelled the row -- bringing back a card that had already been told in a comment
+    that its work moved elsewhere, and erasing the origin the text sync reads. Only the
+    author naming that issue again undoes it.
+    """
+    from boardman.services.pr_task_registry import upsert_pr_task_link
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="superseded_by_issue_link",
+            withdrawn_at=datetime(2026, 8, 20, 9, 0, 0),
+        )
+    )
+    await db_session.commit()
+
+    await upsert_pr_task_link(
+        db_session,
+        github_repo=REPO,
+        github_pr_number=88,
+        plaky_task_id="7183844",
+        github_issue_number=0,
+        link_source="auto_link",
+    )
+    await db_session.commit()
+
+    row = (await db_session.execute(select(PullRequestTaskLink))).scalars().one()
+    assert row.link_source == "superseded_by_issue_link"
+    assert row.withdrawn_at is not None, "a fuzzy re-link brought a retired card back"
+
+
+@pytest.mark.asyncio
+async def test_the_author_naming_the_issue_again_does_undo_it(db_session) -> None:
+    """The other half. A person writing the keyword again is a statement, and it is the
+    one thing that should bring the card back."""
+    from boardman.services.pr_task_registry import upsert_pr_task_link
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="superseded_by_issue_link",
+            withdrawn_at=datetime(2026, 8, 20, 9, 0, 0),
+        )
+    )
+    await db_session.commit()
+
+    await upsert_pr_task_link(
+        db_session,
+        github_repo=REPO,
+        github_pr_number=88,
+        plaky_task_id=TASK_94,
+        github_issue_number=94,
+        link_source="issue_keyword",
+    )
+    await db_session.commit()
+
+    row = (await db_session.execute(select(PullRequestTaskLink))).scalars().one()
+    assert row.link_source == "issue_keyword"
+    assert row.withdrawn_at is None

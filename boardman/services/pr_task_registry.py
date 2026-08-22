@@ -39,6 +39,25 @@ _PR_TASK_CREATED_LINK_SOURCE = "pr_task_created"
 _PR_OWNED_LINK_SOURCES = (_PR_TASK_PENDING_LINK_SOURCE, _PR_TASK_CREATED_LINK_SOURCE)
 
 
+# What may bring a superseded card back: a closing keyword a person WROTE, naming that
+# card's issue again. Everything else -- a fuzzy match, a branch convention, a pending
+# reservation -- is the automation guessing, and the card has already been told in a
+# comment that it will receive no further updates.
+_UN_SUPERSEDING_LINK_SOURCES = ("issue_keyword", _TITLE_REF_LINK_SOURCE)
+
+
+def _stays_superseded(existing: str, incoming: str) -> bool:
+    """True when a retired card must stay retired despite this link.
+
+    Supersession is permanent to `revive_pr_links`, `mark_pr_merged` and
+    `distinct_task_ids_for_pr`, and it was not to this one: reopening a PR re-runs the
+    fuzzy pipeline, whose upsert cleared withdrawn_at and relabelled the row, resurrecting
+    a card that had been told its work moved elsewhere -- and erasing the origin the text
+    sync depends on. Only the author naming that issue again undoes it.
+    """
+    return existing == _SUPERSEDED_LINK_SOURCE and incoming not in _UN_SUPERSEDING_LINK_SOURCES
+
+
 def _kept_link_source(existing: str, incoming: str) -> str:
     """Which of the two records what actually links this PR to that card.
 
@@ -71,6 +90,8 @@ async def upsert_pr_task_link(
     r = await session.execute(q)
     row = r.scalar_one_or_none()
     if row:
+        if _stays_superseded(str(row.link_source or ""), link_source):
+            return row
         row.plaky_task_id = plaky_task_id
         row.link_source = _kept_link_source(str(row.link_source or ""), link_source)
         row.merged_at = None
@@ -93,8 +114,12 @@ async def upsert_pr_task_link(
         row = existing.scalar_one_or_none()
         if row is None:
             raise
+        # Same rules as the read-then-update path above: a race that lands here must not
+        # resurrect a superseded card or forget which PR opened one.
+        if _stays_superseded(str(row.link_source or ""), link_source):
+            return row
         row.plaky_task_id = plaky_task_id
-        row.link_source = link_source
+        row.link_source = _kept_link_source(str(row.link_source or ""), link_source)
         row.merged_at = None
         row.withdrawn_at = None
         return row
