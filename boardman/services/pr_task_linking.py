@@ -832,13 +832,16 @@ async def should_run_pipeline(
 
     The repo matters too: a URL naming another repository is not a local link, so a PR
     that only cites one still needs the pipeline.
-    """
-    from boardman.services.issue_handler import linked_issue_numbers_for_pr
 
-    linked = linked_issue_numbers_for_pr(
-        body=pr_body, title=pr_title, head_ref=head_ref, repo_full_name=repo_full_name
-    )
-    return not linked
+    `head_ref` is accepted and deliberately ignored. A branch called `issue-94` is a hint,
+    not a link, and treating it as one here skips the pipeline for a PR nobody linked: if
+    #94 has no Plaky task, the PR goes straight to orphan triage and gets a NEW card, when
+    the fuzzy match would have found the task that already exists for that work. The
+    written keyword is the only thing worth skipping the search over.
+    """
+    from boardman.services.issue_handler import explicit_issue_numbers
+
+    return not explicit_issue_numbers(pr_body, pr_title, repo_full_name=repo_full_name)
 
 
 def format_triage_comment(top: Sequence[ScoredCandidate], limit: int = 3) -> str:

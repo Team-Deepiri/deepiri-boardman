@@ -437,3 +437,73 @@ async def test_a_redelivered_edit_still_posts_once(db_session, posted) -> None:
     await rh.handle_issue_comment_on_pr(edited, db_session)
 
     assert len(posted) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_comment_plaky_refused_is_retried_not_written_off(db_session) -> None:
+    """A dedupe row is a record that the board HAS this comment. Writing one for a post
+    Plaky refused makes the failure permanent: nothing is on the card, and every
+    redelivery -- GitHub's retries, a poller catch-up, a reconciliation sweep -- matches
+    the row and skips. The "PR Opened" notice went through here, so a single transient
+    Plaky error silenced the notice for that PR for good.
+    """
+    from boardman.services.comment_dedupe import mirror_github_activity
+
+    attempts: list[str] = []
+
+    class FlakyPlaky:
+        def __init__(self) -> None:
+            self.fail = True
+
+        async def add_comment(self, _tid, body, **_kw):
+            attempts.append(body)
+            if self.fail:
+                return {"ok": False, "error": "502 from Plaky"}
+            return {"ok": True}
+
+    plaky = FlakyPlaky()
+    marker = f"github:pr-link-notice:{REPO}:88:94"
+
+    first = await mirror_github_activity(
+        db_session,
+        plaky,
+        task_id=TASK,
+        action="pr_link_notice",
+        marker=marker,
+        body="**PR Opened** #88",
+        github_repo=REPO,
+        github_ref="88",
+    )
+    assert first["ok"] is False and first["mirrored"] is False
+
+    # The attempt is still on the record, under an action nothing dedupes against.
+    rows = (await db_session.execute(select(SyncLog))).scalars().all()
+    assert [r.action for r in rows] == ["pr_link_notice_failed"]
+
+    plaky.fail = False
+    second = await mirror_github_activity(
+        db_session,
+        plaky,
+        task_id=TASK,
+        action="pr_link_notice",
+        marker=marker,
+        body="**PR Opened** #88",
+        github_repo=REPO,
+        github_ref="88",
+    )
+    assert second["mirrored"] is True, "the redelivery was refused by the failed attempt"
+    assert len(attempts) == 2
+
+    # And now that it IS on the card, a third delivery is recognised and skipped.
+    third = await mirror_github_activity(
+        db_session,
+        plaky,
+        task_id=TASK,
+        action="pr_link_notice",
+        marker=marker,
+        body="**PR Opened** #88",
+        github_repo=REPO,
+        github_ref="88",
+    )
+    assert third.get("skipped") is True
+    assert len(attempts) == 2

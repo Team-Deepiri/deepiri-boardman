@@ -965,11 +965,15 @@ async def test_the_pipeline_gate_reads_what_the_linker_reads() -> None:
         is False
     )
     assert await should_run_pipeline("", repo_full_name=FULL, pr_title="add retries") is True
+
+    # A branch is not a link. Skipping the search on one sends a PR whose branch names an
+    # issue with no Plaky task straight to orphan triage, where it gets a second card for
+    # work the fuzzy match would have found the existing task for.
     assert (
         await should_run_pipeline(
             "", repo_full_name=FULL, pr_title="add retries", head_ref="issue-12-add-retries"
         )
-        is False
+        is True
     )
 
 

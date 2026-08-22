@@ -126,9 +126,14 @@ async def mirror_github_activity(
     if marker and seen:
         return {"ok": True, "skipped": True, "message": "activity already mirrored"}
     result = await plaky.add_comment(task_id, body, board_id=board_id or None)
+    # A refused post left nothing on the card, so the row must not claim the identity that
+    # dedupes it. Written under `action`, one transient Plaky failure suppressed that
+    # comment permanently: every redelivery matched the row and skipped. The attempt is
+    # still recorded, under an action nothing dedupes against, so it stays auditable.
+    posted = bool(result.get("ok"))
     session.add(
         SyncLog(
-            action=action,
+            action=action if posted else f"{action}_failed",
             github_repo=github_repo or None,
             github_ref=github_ref or None,
             plaky_task_id=task_id,
@@ -137,10 +142,10 @@ async def mirror_github_activity(
                     "marker": revision_marker or marker,
                     "comment_marker": marker,
                     "revision": bool(is_revision),
-                    "plaky_ok": result.get("ok"),
+                    "plaky_ok": posted,
                 },
                 default=str,
             ),
         )
     )
-    return {"ok": bool(result.get("ok")), "mirrored": bool(result.get("ok")), "plaky": result}
+    return {"ok": posted, "mirrored": posted, "plaky": result}

@@ -798,6 +798,15 @@ async def test_a_branch_name_does_not_claim_an_issue_nobody_referenced(
         async def add_comment(self, tid, body, **kw):
             return {"ok": True}
 
+        # A branch-only PR now reaches the fuzzy pipeline, which searches the board for a
+        # task that already covers this work. Empty here: nothing matches, so the PR falls
+        # through to orphan triage, which is the case under test.
+        async def list_board_items(self, _board_id, **kw):
+            return {"ok": True, "items": []}
+
+        async def list_workspace_users(self, **kw):
+            return {"ok": True, "users": []}
+
     monkeypatch.setattr(ph, "load_team_assignments", lambda: Cfg())
     monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
     monkeypatch.setattr("boardman.services.task_mutations.create_task_internal", fake_create)
