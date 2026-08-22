@@ -130,8 +130,15 @@ async def mark_pr_withdrawn(
     *,
     github_repo: str,
     github_pr_number: int,
+    github_updated_at: str = "",
 ) -> list[PullRequestTaskLink]:
-    """PR closed without merge — exclude from merge-gated completion."""
+    """PR closed without merge — exclude from merge-gated completion.
+
+    `github_updated_at` is the PR's `updated_at` on the closing delivery. It is stored
+    beside the local timestamp because only it can be compared with another delivery's
+    `updated_at`: both come from GitHub's clock, while `withdrawn_at` records when this
+    process happened to handle the close.
+    """
     q = select(PullRequestTaskLink).where(
         PullRequestTaskLink.github_repo == github_repo,
         PullRequestTaskLink.github_pr_number == github_pr_number,
@@ -140,13 +147,27 @@ async def mark_pr_withdrawn(
     r = await session.execute(q)
     rows = list(r.scalars())
     now = datetime.utcnow()
+    stamp = (github_updated_at or "").strip()
     for row in rows:
         row.withdrawn_at = now
+        row.withdrawn_github_at = stamp or None
     return rows
 
 
-def _payload_is_older_than(withdrawn_at: datetime | None, updated_at: str) -> bool:
-    """True when the delivery was built before this link was withdrawn.
+def _github_instant(value: str) -> datetime | None:
+    """One of GitHub's ISO-8601 timestamps as a naive UTC datetime, or None."""
+    raw = (value or "").strip().replace("Z", "+00:00")
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed.astimezone(UTC).replace(tzinfo=None) if parsed.tzinfo else parsed
+
+
+def _payload_is_older_than(withdrawn_github_at: str | None, updated_at: str) -> bool:
+    """True when the delivery was built before the close that withdrew this link.
 
     GitHub stamps `state` and `closed_at` together, so a delivery built BEFORE a close --
     a webhook retry, a job the queue held, an event the poller read late -- says "open"
@@ -154,20 +175,21 @@ def _payload_is_older_than(withdrawn_at: datetime | None, updated_at: str) -> bo
     the two, and reviving on a stale one is permanent: nothing withdraws those links a
     second time.
 
-    An unparsable or missing `updated_at` is not treated as stale. Some payload shapes
-    (the events feed's slim pull_request) omit it, and refusing to revive on those would
-    strand genuinely reopened PRs, which is the failure this whole path exists to fix.
+    BOTH sides come from GitHub. Comparing against `withdrawn_at` instead would compare
+    GitHub's clock with this host's, and would ask when this process handled the close
+    rather than when the close happened -- a queued job or a poller catch-up puts those
+    an hour apart, and a genuine reopen in between would be refused for good.
+
+    A missing or unparsable timestamp on either side is not treated as stale. Some payload
+    shapes (the events feed's slim pull_request) omit `updated_at`, and rows withdrawn
+    before this column existed have nothing on the other side; refusing to revive those
+    would strand the reopened PRs this path exists to rescue.
     """
-    if withdrawn_at is None or not updated_at:
+    closed = _github_instant(withdrawn_github_at or "")
+    built = _github_instant(updated_at)
+    if closed is None or built is None:
         return False
-    raw = updated_at.strip().replace("Z", "+00:00")
-    try:
-        built = datetime.fromisoformat(raw)
-    except ValueError:
-        return False
-    if built.tzinfo is not None:
-        built = built.astimezone(UTC).replace(tzinfo=None)
-    return built < withdrawn_at
+    return built < closed
 
 
 async def revive_pr_links(
@@ -199,7 +221,7 @@ async def revive_pr_links(
     rows = [
         row
         for row in (await session.execute(q)).scalars()
-        if not _payload_is_older_than(row.withdrawn_at, not_before)
+        if not _payload_is_older_than(row.withdrawn_github_at, not_before)
     ]
     for row in rows:
         row.withdrawn_at = None

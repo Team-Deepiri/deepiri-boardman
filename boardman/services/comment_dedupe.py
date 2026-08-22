@@ -59,6 +59,24 @@ def github_activity_revision_marker(marker: str, body: str, edited_at: str = "")
     return f"{marker}:rev:{digest}"
 
 
+def edit_changed_the_text(payload: Any) -> bool:
+    """Did this `edited` delivery change the comment's TEXT?
+
+    GitHub puts `changes.body.from` on the event only when the body changed, so an edit
+    that touched nothing else -- saving without a change, an edit to some other field --
+    arrives with `changes` present and no `body` in it. Plaky cannot edit a posted
+    comment, so a mirror is an additional entry on the card: treating those as new wording
+    posts the same sentence twice, because `updated_at` moved even though nothing did.
+
+    A payload carrying no `changes` at all (the poller synthesises those) is taken at its
+    word and mirrored. The revision key still stops a redelivery of it landing twice.
+    """
+    changes = getattr(payload, "changes", None)
+    if not isinstance(changes, dict):
+        return True
+    return "body" in changes
+
+
 async def comment_already_synced(session: AsyncSession, action: str, *markers: str) -> bool:
     """True when a SyncLog row for ``action`` already records any of ``markers``.
 

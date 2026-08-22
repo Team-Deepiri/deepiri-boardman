@@ -9,7 +9,6 @@ import sqlalchemy as sa
 
 from alembic import op
 
-
 revision = "005_project_context_snapshot"
 down_revision = "004_github_webhook_deliveries"
 branch_labels = None
@@ -22,9 +21,7 @@ def upgrade() -> None:
         "project_contexts",
         sa.Column("context_source_revision", sa.String(length=255), nullable=True),
     )
-    op.add_column(
-        "project_contexts", sa.Column("context_fetched_at", sa.DateTime(), nullable=True)
-    )
+    op.add_column("project_contexts", sa.Column("context_fetched_at", sa.DateTime(), nullable=True))
 
 
 def downgrade() -> None:

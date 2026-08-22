@@ -52,6 +52,12 @@ class PullRequestTaskLink(Base):
     link_source: Mapped[str] = mapped_column(String(32), nullable=False, default="issue_keyword")
     merged_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     withdrawn_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    # The PR's `updated_at` on the delivery that withdrew this link -- GitHub's clock, not
+    # this host's. Reviving a link asks "was this delivery built before the close?", and
+    # `withdrawn_at` cannot answer it: it records when this process handled the close,
+    # which a queued job or a poller catch-up can put an hour late, and it comes from a
+    # different clock than the timestamps it would be compared against.
+    withdrawn_github_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

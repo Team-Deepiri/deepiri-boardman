@@ -25,6 +25,7 @@ from boardman.plaky.dynamic_qa_status import (
 )
 from boardman.repos_config import get_routing_async
 from boardman.services.comment_dedupe import (
+    edit_changed_the_text,
     github_activity_marker,
     mirror_github_activity,
 )
@@ -508,6 +509,8 @@ async def handle_issue_comment_on_pr(
     if payload.action not in ("created", "edited"):
         return {"ok": True, "message": f"ignored {payload.action} comment"}
     is_revision = payload.action == "edited"
+    if is_revision and not edit_changed_the_text(payload):
+        return {"ok": True, "skipped": True, "message": "edit did not change the comment text"}
 
     # Boardman's own comments must never drive the state machine. It posts as the PAT
     # owner — usually a support-team member — so without this its QA-assignment comment

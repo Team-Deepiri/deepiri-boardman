@@ -123,6 +123,11 @@ class IssueCommentEventPayload(BaseModel):
     issue: IssueCommentIssuePayload
     comment: dict
     repository: GitHubRepository
+    # What the `edited` event actually changed. GitHub includes `body` here only when the
+    # TEXT changed, so its absence is how a no-op edit -- saving without a change, or an
+    # edit to something other than the text -- is told from a real correction. Without it
+    # every `edited` delivery looks like new wording, because updated_at moved.
+    changes: dict | None = None
 
 
 class PullRequestReviewCommentEventPayload(BaseModel):
@@ -132,6 +137,8 @@ class PullRequestReviewCommentEventPayload(BaseModel):
     comment: dict | None = None
     pull_request: GitHubPullRequest | None = None
     repository: GitHubRepository
+    # See IssueCommentEventPayload.changes.
+    changes: dict | None = None
 
 
 class PingEventPayload(BaseModel):

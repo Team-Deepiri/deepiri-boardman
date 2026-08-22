@@ -18,7 +18,11 @@ from boardman.database.models import IssueTaskMap, PullRequestTaskLink, SyncLog
 from boardman.github.webhooks import PullRequestEventPayload, PullRequestReviewCommentEventPayload
 from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status_id
 from boardman.plaky.client import PlakyClient
-from boardman.services.comment_dedupe import github_activity_marker, mirror_github_activity
+from boardman.services.comment_dedupe import (
+    edit_changed_the_text,
+    github_activity_marker,
+    mirror_github_activity,
+)
 from boardman.services.issue_handler import (
     explicit_issue_numbers,
     find_plaky_task_by_issue,
@@ -1218,13 +1222,18 @@ async def reconcile_pr_issue_links(
     if not referenced:
         return {"ok": True, "changed": False, "reason": "no explicit issue reference"}
 
+    # Same predicate `distinct_task_ids_for_pr` uses to decide where this PR's activity
+    # goes: the link SOURCE, not withdrawn_at. They disagreed, and a row left withdrawn --
+    # a lost reopen, a close handled late -- was invisible here while still receiving every
+    # comment and review, so a later `Fixes #94` linked a second card without retiring the
+    # first and one PR drove two.
     all_rows = list(
         (
             await session.execute(
                 select(PullRequestTaskLink).where(
                     PullRequestTaskLink.github_repo == repo_name,
                     PullRequestTaskLink.github_pr_number == pr_number,
-                    PullRequestTaskLink.withdrawn_at.is_(None),
+                    PullRequestTaskLink.link_source != _SUPERSEDED_LINK_SOURCE,
                 )
             )
         ).scalars()
@@ -1795,7 +1804,12 @@ async def handle_pr_closed_without_merge(
     task_ids = await distinct_task_ids_for_pr(
         session, github_repo=repo_name, github_pr_number=pr_number
     )
-    rows = await mark_pr_withdrawn(session, github_repo=repo_name, github_pr_number=pr_number)
+    rows = await mark_pr_withdrawn(
+        session,
+        github_repo=repo_name,
+        github_pr_number=pr_number,
+        github_updated_at=str(getattr(payload.pull_request, "updated_at", "") or ""),
+    )
 
     reverted: list[dict[str, Any]] = []
     if task_ids:
@@ -2037,6 +2051,8 @@ async def handle_pr_review_comment(
     # is its own labelled entry, deduped on (comment id, GitHub text). Without this an
     # edited inline review comment matched the plain marker and vanished silently.
     is_revision = str(getattr(payload, "action", "") or "") == "edited"
+    if is_revision and not edit_changed_the_text(payload):
+        return {"ok": True, "skipped": True, "message": "edit did not change the comment text"}
     review_label = (
         "GitHub inline review comment edited" if is_revision else "GitHub inline review comment"
     )

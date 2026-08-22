@@ -1762,6 +1762,9 @@ async def test_a_delivery_from_before_the_close_does_not_revive(db_session) -> N
     """
     from boardman.services.pr_task_registry import revive_pr_links, task_ids_for_open_pr
 
+    # Both sides come from GitHub's clock: withdrawn_github_at is the PR's updated_at on
+    # the delivery that closed it. withdrawn_at records when this process handled that,
+    # which a queued job or a poller catch-up can put an hour later.
     db_session.add(
         PullRequestTaskLink(
             github_repo=REPO,
@@ -1769,7 +1772,8 @@ async def test_a_delivery_from_before_the_close_does_not_revive(db_session) -> N
             github_issue_number=94,
             plaky_task_id=TASK_94,
             link_source="issue_keyword",
-            withdrawn_at=datetime(2026, 8, 20, 12, 0, 0),
+            withdrawn_at=datetime(2026, 8, 21, 3, 0, 0),
+            withdrawn_github_at="2026-08-20T12:00:00Z",
         )
     )
     await db_session.commit()
@@ -1797,8 +1801,45 @@ async def test_a_delivery_from_before_the_close_does_not_revive(db_session) -> N
     # And a payload shape that carries no updated_at is not treated as stale: refusing on
     # those would strand the reopened PRs this path exists to rescue.
     await db_session.execute(
-        PullRequestTaskLink.__table__.update().values(withdrawn_at=datetime(2026, 8, 20, 12, 0, 0))
+        PullRequestTaskLink.__table__.update().values(
+            withdrawn_at=datetime(2026, 8, 21, 3, 0, 0),
+            withdrawn_github_at="2026-08-20T12:00:00Z",
+        )
     )
     await db_session.commit()
     revived = await revive_pr_links(db_session, github_repo=REPO, github_pr_number=88)
     assert [r.plaky_task_id for r in revived] == [TASK_94]
+
+
+@pytest.mark.asyncio
+async def test_a_link_left_withdrawn_is_still_retired_by_a_later_relink(
+    db_session, workflow
+) -> None:
+    """The two readers of the link table have to agree on what a live link is.
+
+    `distinct_task_ids_for_pr` decides where this PR's activity goes and filters on the
+    link SOURCE; the relink logic filtered on `withdrawn_at`. So a row left withdrawn --
+    a lost reopen, a close handled late -- was invisible to supersession while still
+    receiving every comment and review, and a later `Fixes #94` linked a second card
+    without retiring the first. One PR, two cards, both live.
+    """
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+            withdrawn_at=datetime(2026, 8, 21, 3, 0, 0),
+        )
+    )
+    await db_session.commit()
+
+    res = await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+
+    assert [w["task_id"] for w in res["withdrawn"]] == ["7183844"]
+    rows = (await db_session.execute(select(PullRequestTaskLink))).scalars().all()
+    by_task = {r.plaky_task_id: r.link_source for r in rows}
+    assert by_task["7183844"] == "superseded_by_issue_link"
+    assert by_task[TASK_94] == "issue_keyword"

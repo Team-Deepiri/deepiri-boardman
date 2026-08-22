@@ -507,3 +507,39 @@ async def test_a_comment_plaky_refused_is_retried_not_written_off(db_session) ->
     )
     assert third.get("skipped") is True
     assert len(attempts) == 2
+
+
+@pytest.mark.asyncio
+async def test_an_edit_with_a_new_timestamp_but_the_same_text_is_not_posted_again(
+    db_session, posted
+) -> None:
+    """The revision key includes `updated_at`, which is what makes a REVERT mirror -- and
+    what makes an edit that changed nothing look like new wording.
+
+    GitHub sends `changes.body.from` only when the TEXT changed, so an edit that touched
+    something else arrives with `changes` present and no `body` in it, carrying a fresh
+    `updated_at`. Without reading that, the same sentence was posted to the card twice,
+    and Plaky cannot delete a comment.
+    """
+    await _link_pr_to_task(db_session)
+    await rh.handle_issue_comment_on_pr(_comment_event("created", "unchanged text"), db_session)
+    assert len(posted) == 1
+
+    later = _comment_event("edited", "unchanged text", updated_at="2026-08-21T11:30:00Z")
+    later.changes = {"title": {"from": "something that is not the body"}}
+    res = await rh.handle_issue_comment_on_pr(later, db_session)
+
+    assert res.get("skipped") is True
+    assert len(posted) == 1, "an edit that changed no text posted a second copy"
+
+    # A real correction still lands.
+    corrected = _comment_event("edited", "corrected text", updated_at="2026-08-21T11:40:00Z")
+    corrected.changes = {"body": {"from": "unchanged text"}}
+    await rh.handle_issue_comment_on_pr(corrected, db_session)
+    assert len(posted) == 2
+
+    # And a payload carrying no `changes` at all -- the poller synthesises those -- is
+    # taken at its word rather than dropped.
+    from_poller = _comment_event("edited", "corrected again", updated_at="2026-08-21T11:50:00Z")
+    await rh.handle_issue_comment_on_pr(from_poller, db_session)
+    assert len(posted) == 3
