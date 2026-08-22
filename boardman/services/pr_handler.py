@@ -62,6 +62,10 @@ from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
+# Where QA has RULED. Un-asking for a review must not overwrite one of these; anything
+# earlier is a position the request itself was about, and moving it is the point.
+_QA_VERDICT_INTENTS = ("github_pr_review_approved", "workflow_completed")
+
 
 async def _update_plaky_task_status(
     task_id: str,
@@ -1619,7 +1623,21 @@ async def handle_pr_edited(
                 )
             )
         await session.commit()
-        all_failed = bool(plaky_results) and not any(x["mutation"].get("ok") for x in plaky_results)
+
+        # `item_text_immutable` is Plaky saying it has no verb for renaming an item, not a
+        # sync failure. Counting it as one made every edit of a triage-created PR card
+        # return ok=False, which the webhook route answers with HTTP 500 -- and GitHub
+        # retries a 500, so one edit became a delivery loop. The issue path meets the same
+        # limitation by mirroring the new text as a comment.
+        def _really_failed(mutation: dict[str, Any]) -> bool:
+            if mutation.get("ok"):
+                return False
+            reason = str(mutation.get("error") or mutation.get("message") or "").casefold()
+            return "item text" not in reason and "immutable" not in reason
+
+        all_failed = bool(plaky_results) and all(
+            _really_failed(x["mutation"]) for x in plaky_results
+        )
         return {
             "ok": not all_failed,
             "skipped": all_failed,
@@ -1813,7 +1831,11 @@ async def handle_pr_review_requested(
             guard_key = target_field_key or await workflow_status_field_key(bid)
             if guard_key:
                 now_at = await current_status_intent(bid, tid, guard_key)
-                if status_would_move_backwards(now_at, "workflow_needs_qa"):
+                # Only a VERDICT is protected. Un-asking for a review means the request is
+                # off, and In QA -> Needs QA is exactly the move this event should make --
+                # a rank comparison rejected that one and allowed the write from Assigned,
+                # which pushes an unreviewed card into the QA queue instead.
+                if now_at in _QA_VERDICT_INTENTS:
                     _log.info(
                         "PR #%s: task %s is at %s; not re-queuing it for QA",
                         pr_number,

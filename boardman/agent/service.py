@@ -581,13 +581,21 @@ async def run_agent_chat(
         group_id=plaky_group_id or "",
     )
 
-    fast = await maybe_fast_path(
-        message,
-        repo=active_repo,
-        board_id=plaky_board_id,
-        group_id=plaky_group_id,
-        state=project_state,
-    )
+    # The fast path reads Plaky live, and its client re-raises transport errors. Raised
+    # from here -- outside the block that turns a failure into an SSE `error` frame -- an
+    # outage truncated the stream with no error event at all, and 500'd the non-streaming
+    # path. A fast path that cannot answer is not an error; it just is not a fast path.
+    try:
+        fast = await maybe_fast_path(
+            message,
+            repo=active_repo,
+            board_id=plaky_board_id,
+            group_id=plaky_group_id,
+            state=project_state,
+        )
+    except Exception as exc:  # noqa: BLE001 - fall through to the full agent instead
+        log_degraded(logger, "agent: fast path", exc)
+        fast = None
     if fast is not None:
         session.add(AgentMessage(session_pk=ag.id, role="assistant", content=fast.reply))
         await session.flush()
@@ -817,13 +825,21 @@ async def iter_agent_chat_sse(
         group_id=plaky_group_id or "",
     )
 
-    fast = await maybe_fast_path(
-        message,
-        repo=active_repo,
-        board_id=plaky_board_id,
-        group_id=plaky_group_id,
-        state=project_state,
-    )
+    # The fast path reads Plaky live, and its client re-raises transport errors. Raised
+    # from here -- outside the block that turns a failure into an SSE `error` frame -- an
+    # outage truncated the stream with no error event at all, and 500'd the non-streaming
+    # path. A fast path that cannot answer is not an error; it just is not a fast path.
+    try:
+        fast = await maybe_fast_path(
+            message,
+            repo=active_repo,
+            board_id=plaky_board_id,
+            group_id=plaky_group_id,
+            state=project_state,
+        )
+    except Exception as exc:  # noqa: BLE001 - fall through to the full agent instead
+        log_degraded(logger, "agent: fast path", exc)
+        fast = None
     if fast is not None:
         session.add(AgentMessage(session_pk=ag.id, role="assistant", content=fast.reply))
         await session.flush()

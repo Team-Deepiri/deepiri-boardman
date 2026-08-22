@@ -20,6 +20,13 @@ from boardman.settings import settings
 
 
 def _repo_key(repo: str) -> str:
+    """One key per repo, whatever case the caller used.
+
+    The lookups compared `ProjectContext.repo` to the raw value while this key was
+    computed and thrown away, so "Team-Deepiri/X" and "team-deepiri/x" missed each other:
+    two rows, two divergent snapshots, and whichever the reader asked for won. Everything
+    that touches the table goes through this.
+    """
     return (repo or "").strip().casefold()
 
 
@@ -48,7 +55,7 @@ async def load_planning_snapshot(
 
     try:
         row = (
-            await session.execute(select(ProjectContext).where(ProjectContext.repo == repo))
+            await session.execute(select(ProjectContext).where(ProjectContext.repo == key))
         ).scalar_one_or_none()
     except SQLAlchemyError:
         # A rolling deployment may run one API process before migration 005 has been
@@ -112,7 +119,7 @@ async def save_planning_snapshot(
 
     try:
         row = (
-            await session.execute(select(ProjectContext).where(ProjectContext.repo == repo))
+            await session.execute(select(ProjectContext).where(ProjectContext.repo == key))
         ).scalar_one_or_none()
     except SQLAlchemyError:
         await session.rollback()
@@ -124,7 +131,7 @@ async def save_planning_snapshot(
         # tool's save through the REQUEST's session. A bare add() lets the loser's
         # IntegrityError surface at the chat turn's commit and fail an answer that had
         # already been produced. Contain it in a savepoint and take whoever won.
-        candidate = ProjectContext(repo=repo)
+        candidate = ProjectContext(repo=key)
         try:
             async with session.begin_nested():
                 session.add(candidate)
@@ -132,7 +139,7 @@ async def save_planning_snapshot(
             row = candidate
         except IntegrityError:
             row = (
-                await session.execute(select(ProjectContext).where(ProjectContext.repo == repo))
+                await session.execute(select(ProjectContext).where(ProjectContext.repo == key))
             ).scalar_one_or_none()
             if row is None:
                 return

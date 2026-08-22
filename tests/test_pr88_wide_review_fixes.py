@@ -248,3 +248,68 @@ def test_a_failed_deferred_job_reports_the_same_status_from_either_runner() -> N
 
     source = inspect.getsource(deferred)
     assert 'status="complete" if succeeded else "incomplete"' in source
+
+
+def test_a_plaky_limitation_is_not_reported_as_a_sync_failure() -> None:
+    """Plaky has no verb for renaming an item, so a triage-created card's title can never
+    be rewritten. Counting that refusal as a synchronization failure made every edit of
+    such a PR return ok=False, which the webhook route answers with HTTP 500 -- and GitHub
+    retries a 500, so one edit became a delivery loop."""
+    import inspect
+
+    from boardman.services import pr_handler as ph
+
+    source = inspect.getsource(ph.handle_pr_edited)
+    assert "_really_failed" in source
+    assert "item text" in source
+
+
+def test_un_asking_for_a_review_moves_in_qa_back_to_needs_qa() -> None:
+    """The event exists to take a card out of active review. A rank comparison rejected
+    exactly that move (In QA outranks Needs QA) while allowing the write from Assigned,
+    which pushes an unreviewed card INTO the queue -- the opposite of both intentions."""
+    from boardman.services.pr_handler import _QA_VERDICT_INTENTS
+
+    assert "workflow_in_qa" not in _QA_VERDICT_INTENTS, "In QA must still move to Needs QA"
+    assert "workflow_assigned" not in _QA_VERDICT_INTENTS
+    assert "github_pr_review_approved" in _QA_VERDICT_INTENTS, "a verdict is protected"
+    assert "workflow_completed" in _QA_VERDICT_INTENTS
+
+
+def test_the_project_context_snapshot_has_one_row_per_repo() -> None:
+    """The lookups compared the raw value while the casefolded key was computed and thrown
+    away, so "Team-Deepiri/X" and "team-deepiri/x" missed each other: two rows, two
+    divergent snapshots, and whichever spelling the reader used won."""
+    import inspect
+
+    from boardman.agent import repo_context
+
+    source = inspect.getsource(repo_context)
+    assert "ProjectContext.repo == repo" not in source
+    assert "ProjectContext.repo == key" in source
+    assert "ProjectContext(repo=key)" in source
+
+
+def test_the_fast_path_cannot_truncate_the_stream() -> None:
+    """It reads Plaky live and the client re-raises transport errors. Raised from outside
+    the block that emits the SSE error frame, an outage ended the stream with no error
+    event at all."""
+    import inspect
+
+    from boardman.agent import service
+
+    source = inspect.getsource(service)
+    assert source.count('log_degraded(logger, "agent: fast path", exc)') == 2
+
+
+def test_an_older_database_still_gets_the_issue_mapping_constraint() -> None:
+    """`create_all` skips a table that exists, so the unique index that stops two
+    concurrent deliveries filing two cards for one issue never reached a database made
+    before it -- and the reservation guard depends on the IntegrityError it raises."""
+    import inspect
+
+    from boardman.database import session as db_session
+
+    source = inspect.getsource(db_session)
+    assert "uq_issue_task_map_repo_issue" in source
+    assert "DELETE FROM issue_task_map WHERE id NOT IN" in source, "duplicates cleared first"

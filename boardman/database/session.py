@@ -88,4 +88,31 @@ async def init_db() -> None:
                         text("ALTER TABLE pr_task_links ADD COLUMN withdrawn_github_at VARCHAR(40)")
                     )
 
+                # `create_all` skips an existing table, so the unique constraint that stops
+                # two concurrent deliveries filing two cards for one issue never reached a
+                # database made before it. The reservation guard in `handle_issue_opened`
+                # relies on the IntegrityError this raises; without the index it raises
+                # nothing and both deliveries create a card. Duplicates are cleared first,
+                # newest kept, exactly as migration 006 does.
+                have = sync_conn.execute(
+                    text(
+                        "SELECT name FROM sqlite_master WHERE type='index' "
+                        "AND name='uq_issue_task_map_repo_issue'"
+                    )
+                ).fetchone()
+                if not have:
+                    sync_conn.execute(
+                        text(
+                            "DELETE FROM issue_task_map WHERE id NOT IN ("
+                            "  SELECT MAX(id) FROM issue_task_map "
+                            "  GROUP BY github_repo, github_issue_number)"
+                        )
+                    )
+                    sync_conn.execute(
+                        text(
+                            "CREATE UNIQUE INDEX IF NOT EXISTS uq_issue_task_map_repo_issue "
+                            "ON issue_task_map (github_repo, github_issue_number)"
+                        )
+                    )
+
             await conn.run_sync(_add_optional_columns)
