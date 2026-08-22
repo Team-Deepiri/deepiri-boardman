@@ -768,7 +768,14 @@ async def _ensure_links_live(payload: PullRequestEventPayload, session: AsyncSes
     the flag, either of those left the PR resolving to zero tasks forever -- reviews,
     comments, pushes and label changes all silently stopped.
     """
-    if str(getattr(payload.pull_request, "state", "open") or "open").casefold() != "open":
+    state = str(getattr(payload.pull_request, "state", "") or "").casefold()
+    if state != "open" or bool(getattr(payload.pull_request, "merged", False)):
+        # Explicitly open, and not merged. Defaulting a MISSING state to "open" made the
+        # slim events-feed payload shape look open, and a delivery that predates the close
+        # (retried job, out-of-order webhook) would then leave a closed PR holding a live
+        # link -- which blocks merge-gated completion of that task for good, since nothing
+        # re-withdraws it. A stale snapshot that still says "open" is the residual case;
+        # the next close delivery re-withdraws it.
         return
     from boardman.services.pr_task_registry import revive_pr_links
 
@@ -1818,6 +1825,7 @@ async def handle_pr_review_comment(
                 github_ref=str(pr_number),
                 is_revision=is_revision,
                 revision_body=comment_body,
+                edited_at=str(comment.get("updated_at") or "").strip(),
             )
         )
     await session.commit()

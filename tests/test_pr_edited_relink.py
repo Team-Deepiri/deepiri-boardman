@@ -971,3 +971,54 @@ async def test_the_pipeline_gate_reads_what_the_linker_reads() -> None:
         )
         is False
     )
+
+
+@pytest.mark.asyncio
+async def test_a_payload_without_a_state_does_not_revive(db_session, workflow) -> None:
+    """The slim events-feed shape carries no state. Defaulting that to "open" let a
+    delivery predating the close leave a closed PR holding a live link, which blocks
+    merge-gated completion of that task for good."""
+    from boardman.services.pr_task_registry import mark_pr_withdrawn, task_ids_for_open_pr
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+    await mark_pr_withdrawn(db_session, github_repo=REPO, github_pr_number=88)
+    await db_session.commit()
+
+    payload = _pr("no reference")
+    payload.pull_request.state = ""
+    await ph._ensure_links_live(payload, db_session)
+
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == []
+
+
+@pytest.mark.asyncio
+async def test_a_merged_pr_does_not_revive(db_session, workflow) -> None:
+    from boardman.services.pr_task_registry import mark_pr_withdrawn, task_ids_for_open_pr
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+    await mark_pr_withdrawn(db_session, github_repo=REPO, github_pr_number=88)
+    await db_session.commit()
+
+    payload = _pr("no reference")
+    payload.pull_request.merged = True
+    await ph._ensure_links_live(payload, db_session)
+
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == []
