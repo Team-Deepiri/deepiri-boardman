@@ -164,6 +164,10 @@ _FIXED_CALLS_PER_REPO_PER_CYCLE = 4
 # GitHub's whole allowance. So the estimate counts the branches actually being tracked, and
 # the interval is recomputed each cycle as that number moves.
 _ASSUMED_OPEN_PRS_PER_REPO = 2
+# How many withdrawn PRs a cycle may ask about directly. Normally zero: a link is only
+# withdrawn between a close and the next sighting of the PR, and handling one clears it.
+# The cap is there so a repo that somehow accumulates them cannot spend the whole budget.
+_MAX_REOPEN_PROBES_PER_CYCLE = 5
 
 
 def cycle_call_estimate(repo_count: int, branch_count: int | None = None) -> float:
@@ -607,6 +611,7 @@ class GitHubEventPoller:
         # the answer only changes when this loop changes it, and asking per PR meant a
         # database session for every open PR in every repo on every cycle.
         withdrawn_here = await self._withdrawn_pr_numbers(full_name.partition("/")[2])
+        seen_here: set[int] = set()
         for pr in r.json() if isinstance(r.json(), list) else []:
             if not isinstance(pr, dict):
                 continue
@@ -616,6 +621,7 @@ class GitHubEventPoller:
             num = pr.get("number")
             if num is None:
                 continue
+            seen_here.add(int(num))
             created = _parse_iso(str(pr.get("created_at") or ""))
             if created is not None and created >= baseline and num not in proc["prs_opened"]:
                 proc["prs_opened"].add(num)
@@ -712,6 +718,29 @@ class GitHubEventPoller:
                     "merged" if merged else "closed",
                     (result or {}).get("message") or result,
                 )
+
+        # The listing is newest-updated first and stops at the baseline, so a PR reopened
+        # while this was down longer than the catch-up window is never reached by the loop
+        # above -- which is exactly the case the withdrawn-link recovery exists for. Ask
+        # about those by number instead. There are normally none, they stop being withdrawn
+        # once handled, and the per-cycle cap keeps a strange backlog from spending the
+        # whole API budget on one repo.
+        for num in sorted(withdrawn_here - seen_here)[:_MAX_REOPEN_PROBES_PER_CYCLE]:
+            probe = await client.get(
+                f"https://api.github.com/repos/{full_name}/pulls/{num}", headers=self._gh_headers()
+            )
+            if probe.status_code != 200:
+                continue
+            pr = probe.json()
+            if not isinstance(pr, dict) or pr.get("state") != "open":
+                continue
+            proc["prs_closed"].discard(num)
+            result = await self._run_handler(self._pr_payload(pr, full_name, "reopened"))
+            _log.info(
+                "poller: PR #%s was reopened while we were not watching -> %s",
+                num,
+                (result or {}).get("message") or result,
+            )
 
     def _pr_payload(
         self, pr: dict, full_name: str, action: str, *, merged: bool = False

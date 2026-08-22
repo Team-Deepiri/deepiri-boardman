@@ -556,6 +556,12 @@ async def test_false_positives_cannot_exhaust_a_rules_quota(monkeypatch) -> None
         ("dumps/prod.db.sql", ".db"),
         ("data/prod.db.backup", ".db"),
         ("data/db.sqlite3", ".sqlite"),
+        # A key or a database stored in a config format is still the thing. This costs a
+        # line in a report when it turns out to be a config file that mentions one; the
+        # other reading costs a leaked key nobody saw.
+        ("backup/id_rsa.json", "id_rsa"),
+        ("secrets.env.json", ".env"),
+        ("config/config.db.json", ".db"),
         # Every spelling of an environment file, including the commonest one.
         ("deploy/production.env", ".env"),
         ("prod.env", ".env"),
@@ -578,7 +584,6 @@ def test_these_are_findings(path: str, marker: str) -> None:
         # Prose about the thing, or code that uses it -- a different kind of file.
         ("docs/README.db.md", ".db"),
         ("src/schema.db.py", ".db"),
-        ("config/config.db.json", ".db"),
         # ".db" is just letters here: no separator after it.
         ("data/data.dbf", ".db"),
         # A public key is never a finding, however it is spelled.

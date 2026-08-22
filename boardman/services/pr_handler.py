@@ -2074,10 +2074,25 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
             )
             continue
 
+        # Once per (PR, task). A merge is a one-time statement, and the reconciliation
+        # sweep replays every merged PR it still sees -- every fifteen minutes by default.
+        # Unguarded, that re-wrote Completed over whatever had happened since, so a card a
+        # person moved back to In Progress after the merge was quietly re-completed on the
+        # next sweep. The sibling branch above already had this guard.
+        merged_marker = f"pr-merged:{repo_name}:{pr_number}:{task_id}"
+        if await comment_already_synced(session, "pr_merged", merged_marker):
+            results.append({"task_id": task_id, "status": merge_status, "already_applied": True})
+            continue
+
         await _update_plaky_task_status(
             task_id, merge_status, board_id_merge, status_field_key=merge_status_field_key
         )
-        merge_detail = {"pr_url": pr_url, "status": merge_status, "all_prs_done": True}
+        merge_detail = {
+            "marker": merged_marker,
+            "pr_url": pr_url,
+            "status": merge_status,
+            "all_prs_done": True,
+        }
         log = SyncLog(
             action="pr_merged",
             github_repo=repo_name,

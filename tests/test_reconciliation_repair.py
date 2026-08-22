@@ -439,3 +439,91 @@ async def test_a_merged_pr_that_cannot_be_completed_says_so_once(db_session, mon
     rows = (await db_session.execute(select(SyncLog))).scalars().all()
     explanations = [r for r in rows if r.action == "pr_merged_not_completed"]
     assert len(explanations) == 1, f"{len(explanations)} rows for one PR and one task"
+
+
+@pytest.mark.asyncio
+async def test_a_merge_is_applied_once_however_often_it_is_replayed(
+    db_session, monkeypatch
+) -> None:
+    """A merge is a one-time statement, and the sweep replays every merged PR it still
+    sees -- every fifteen minutes by default.
+
+    Unguarded, that re-wrote Completed over whatever had happened since, so a card a
+    person moved back to In Progress after the merge was quietly re-completed on the next
+    sweep.
+    """
+    from boardman.database.models import PullRequestTaskLink, SyncLog
+    from boardman.github.webhooks import PullRequestEventPayload
+    from boardman.services import pr_handler as ph
+    from boardman.services.pr_task_registry import upsert_pr_task_link
+
+    written: list[str] = []
+
+    async def fake_status(task_id, value, board_id, *, status_field_key=None):
+        written.append(str(task_id))
+        return {"ok": True}
+
+    class FakePlaky:
+        async def add_comment(self, *a, **k):
+            return {"ok": True}
+
+    class Routing:
+        plaky_board_id = "269031"
+        plaky_group_id = "g1"
+
+    async def fake_routing(*_a, **_k):
+        return Routing()
+
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+    monkeypatch.setattr(ph, "PlakyClient", lambda *a, **k: FakePlaky())
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="issue_keyword",
+        )
+    )
+    await db_session.commit()
+
+    merged = PullRequestEventPayload(
+        action="closed",
+        pull_request={
+            "number": 88,
+            "title": "Retry the flaky upload",
+            "body": "Fixes #94",
+            "state": "closed",
+            "merged": True,
+            "draft": False,
+            "user": {"login": "ali-ferris"},
+            "head": {"ref": "feat/x"},
+            "html_url": f"https://github.com/{FULL}/pull/88",
+        },
+        repository={"full_name": FULL, "name": REPO},
+    )
+
+    first = await ph.handle_pr_merged(merged, db_session)
+    assert written == [TASK_94]
+    assert first["updated"] and not first["updated"][0].get("already_applied")
+
+    # What the sweep actually does: it re-upserts the link first, which clears merged_at,
+    # so mark_pr_merged finds the row again and the completion branch runs again.
+    for _ in range(3):
+        await upsert_pr_task_link(
+            db_session,
+            github_repo=REPO,
+            github_pr_number=88,
+            plaky_task_id=TASK_94,
+            github_issue_number=94,
+            link_source="issue_keyword",
+        )
+        await db_session.commit()
+        again = await ph.handle_pr_merged(merged, db_session)
+        assert all(r.get("already_applied") for r in again["updated"]), again
+
+    assert written == [TASK_94], "the merge was written again on replay"
+    rows = (await db_session.execute(select(SyncLog))).scalars().all()
+    assert len([r for r in rows if r.action == "pr_merged"]) == 1

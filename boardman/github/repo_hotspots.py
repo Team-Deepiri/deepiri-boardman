@@ -129,16 +129,13 @@ _A_DIFFERENT_KIND_OF_FILE = (
     ".swift",
     ".scala",
     ".sh",
-    ".yml",
-    ".yaml",
-    ".json",
-    ".toml",
-    ".ini",
-    ".cfg",
-    ".lock",
     ".css",
     ".scss",
-    ".txt.md",
+    # Deliberately NOT .json/.yml/.toml/.ini/.cfg/.lock. A key or a database stored in one
+    # of those is still the thing: `backup/id_rsa.json`, `secrets.env.json` and
+    # `gcp/service-account.json` are exactly what an operator adds a rule for, and the
+    # module's own maintenance note tells them to. The cost of the other reading is a line
+    # in a report about a config file; the cost of this one is a leaked key nobody saw.
 )
 
 
