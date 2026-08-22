@@ -377,3 +377,65 @@ async def test_a_run_that_repaired_nothing_says_it_repaired_nothing(
     assert out["prs_checked"] == 1
     assert out["prs_relinked"] == 0, "nothing was repaired"
     assert out["prs_resynced"] >= 1, "and the metadata replay is reported as itself"
+
+
+@pytest.mark.asyncio
+async def test_a_merged_pr_that_cannot_be_completed_says_so_once(db_session, monkeypatch) -> None:
+    """The sweep replays every merged PR it still sees, so an unguarded explanation row
+    accrued one per sweep -- around a hundred a day for a single PR -- into the same table
+    comment dedupe scans with LIKE."""
+    from boardman.database.models import PullRequestTaskLink, SyncLog
+    from boardman.github.webhooks import PullRequestEventPayload
+    from boardman.services import pr_handler as ph
+
+    async def fake_status(task_id, value, board_id, *, status_field_key=None):
+        return {"ok": True}
+
+    class FakePlaky:
+        async def add_comment(self, *a, **k):
+            return {"ok": True}
+
+    class Routing:
+        plaky_board_id = "269031"
+        plaky_group_id = "g1"
+
+    async def fake_routing(*_a, **_k):
+        return Routing()
+
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+    monkeypatch.setattr(ph, "PlakyClient", lambda *a, **k: FakePlaky())
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="branch_ref",
+        )
+    )
+    await db_session.commit()
+
+    merged = PullRequestEventPayload(
+        action="closed",
+        pull_request={
+            "number": 88,
+            "title": "Retry the flaky upload",
+            "body": "",
+            "state": "closed",
+            "merged": True,
+            "draft": False,
+            "user": {"login": "ali-ferris"},
+            "head": {"ref": "issue-94-add-retries"},
+            "html_url": f"https://github.com/{FULL}/pull/88",
+        },
+        repository={"full_name": FULL, "name": REPO},
+    )
+
+    for _ in range(3):
+        await ph.handle_pr_merged(merged, db_session)
+
+    rows = (await db_session.execute(select(SyncLog))).scalars().all()
+    explanations = [r for r in rows if r.action == "pr_merged_not_completed"]
+    assert len(explanations) == 1, f"{len(explanations)} rows for one PR and one task"

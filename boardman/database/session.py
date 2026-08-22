@@ -76,4 +76,16 @@ async def init_db() -> None:
                             text(f"ALTER TABLE project_contexts ADD COLUMN {name} {sql_type}")
                         )
 
+                # `create_all` skips a table that already exists, so a column added to one
+                # never appears on a database that predates it -- and every PR webhook then
+                # fails with "no such column" the moment a link is read. Migration 007 adds
+                # this properly; the shim is what keeps an instance running from an older
+                # file working before anybody runs `alembic upgrade head`.
+                r = sync_conn.execute(text("PRAGMA table_info(pr_task_links)"))
+                link_cols = [row[1] for row in r.fetchall()]
+                if link_cols and "withdrawn_github_at" not in link_cols:
+                    sync_conn.execute(
+                        text("ALTER TABLE pr_task_links ADD COLUMN withdrawn_github_at VARCHAR(40)")
+                    )
+
             await conn.run_sync(_add_optional_columns)

@@ -19,6 +19,7 @@ from boardman.github.webhooks import PullRequestEventPayload, PullRequestReviewC
 from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status_id
 from boardman.plaky.client import PlakyClient
 from boardman.services.comment_dedupe import (
+    comment_already_synced,
     edit_changed_the_text,
     github_activity_marker,
     mirror_github_activity,
@@ -746,8 +747,13 @@ async def _link_pr_to_issue_task(
     announce: bool = True,
     link_source: str = "issue_keyword",
     skip_qa_if_finished: bool = False,
-) -> None:
+) -> bool:
     """Attach one PR to the Plaky task an issue already owns, and run the PR workflow.
+
+    Returns whether the PR is now linked to that task. False means the upsert declined --
+    the link was retired when the PR re-pointed at another issue -- and the caller must not
+    count it: reporting a link that does not exist is what stopped `handle_pr_opened`
+    falling through to orphan triage, leaving the PR with no live link at all.
 
     One body for two callers: `opened`, and `edited` when a PR gains a closing keyword it
     did not have before. A PR that is linked late must land in the same state as one
@@ -777,7 +783,7 @@ async def _link_pr_to_issue_task(
             pr_number,
             issue_number,
         )
-        return
+        return False
     if announce:
         # Skipped when the card already belongs to this PR: triage created it for this
         # very PR, so a second "PR Linked" notice would just be noise on the same card.
@@ -845,7 +851,7 @@ async def _link_pr_to_issue_task(
                     ),
                 )
             )
-            return
+            return True
 
     pr_user0 = payload.pull_request.user or {}
     qa_res = await _assign_qa_for_pr(
@@ -874,6 +880,7 @@ async def _link_pr_to_issue_task(
             detail=json.dumps({"issue_number": issue_number, "pr_url": pr_url}),
         )
     )
+    return True
 
 
 async def _ensure_links_live(payload: PullRequestEventPayload, session: AsyncSession) -> None:
@@ -982,7 +989,7 @@ async def handle_pr_opened(
     for issue_num in linked_issues:
         mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
         if mapping:
-            await _link_pr_to_issue_task(
+            attached = await _link_pr_to_issue_task(
                 session,
                 plaky,
                 payload=payload,
@@ -994,7 +1001,8 @@ async def handle_pr_opened(
                 is_late_link=is_rerun,
                 link_source=_issue_link_source(int(issue_num), body_written_issues, written_issues),
             )
-            results.append({"issue": issue_num, "task_id": mapping.plaky_task_id})
+            if attached:
+                results.append({"issue": issue_num, "task_id": mapping.plaky_task_id})
 
     # Gate on whether anything was actually LINKED, not on whether the body named an
     # issue: a PR saying 'Fixes #12' where #12 has no Plaky task used to fall through
@@ -1304,7 +1312,7 @@ async def reconcile_pr_issue_links(
             continue
         if int(issue_num) in existing:
             continue  # already the canonical link; nothing to re-run
-        await _link_pr_to_issue_task(
+        attached = await _link_pr_to_issue_task(
             session,
             plaky,
             payload=payload,
@@ -1321,6 +1329,10 @@ async def reconcile_pr_issue_links(
             announce=str(mapping.plaky_task_id) not in already_ours,
             link_source=_issue_link_source(int(issue_num), body_written, written),
         )
+        if not attached:
+            # The link was declined, so there is nothing here to supersede anything else
+            # with and nothing to report as repaired.
+            continue
         linked.append({"issue": int(issue_num), "task_id": mapping.plaky_task_id})
 
     withdrawn: list[dict[str, Any]] = []
@@ -1990,17 +2002,28 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
                 pr_number,
                 task_id,
             )
-            session.add(
-                SyncLog(
-                    action="pr_merged_not_completed",
-                    github_repo=repo_name,
-                    github_ref=str(pr_number),
-                    plaky_task_id=task_id,
-                    detail=json.dumps(
-                        {"pr_url": pr_url, "reason": "not a closing keyword GitHub acts on"}
-                    ),
+            # Recorded once per (PR, task). The reconciliation sweep replays every merged
+            # PR it still sees, so an unguarded row here accrued one per sweep -- around a
+            # hundred a day for a single PR -- into the table comment dedupe scans.
+            not_completed_marker = f"pr-merged-not-completed:{repo_name}:{pr_number}:{task_id}"
+            if not await comment_already_synced(
+                session, "pr_merged_not_completed", not_completed_marker
+            ):
+                session.add(
+                    SyncLog(
+                        action="pr_merged_not_completed",
+                        github_repo=repo_name,
+                        github_ref=str(pr_number),
+                        plaky_task_id=task_id,
+                        detail=json.dumps(
+                            {
+                                "marker": not_completed_marker,
+                                "pr_url": pr_url,
+                                "reason": "not a closing keyword GitHub acts on",
+                            }
+                        ),
+                    )
                 )
-            )
             results.append({"task_id": task_id, "completed": False, "reason": "weak_link"})
             continue
         if settings.plaky_complete_when_all_prs_merged and await has_any_open_pr_for_task(

@@ -2082,3 +2082,56 @@ async def test_a_declined_link_does_not_run_the_pipeline_anyway(
     row = (await db_session.execute(select(PullRequestTaskLink))).scalars().one()
     assert row.link_source == "superseded_by_issue_link"
     assert row.withdrawn_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_declined_link_lets_the_pr_fall_through_to_triage(
+    db_session, workflow, monkeypatch
+) -> None:
+    """Reporting a link that was declined is worse than declining it.
+
+    `handle_pr_opened` gates its orphan-triage fallback on whether anything was actually
+    linked, so counting a refused upsert as a link left the PR with no live link at all
+    and no card -- while the handler reported one.
+    """
+    triaged: list[int] = []
+
+    async def fake_triage(payload, session, top_scored=None, orphan_issue_number=0):
+        triaged.append(payload.pull_request.number)
+        return {"ok": True, "created_from_pr": True, "plaky_task_id": "task-new"}
+
+    class NoMatch:
+        # The fuzzy search finds nothing, which is what sends the PR to orphan triage --
+        # the fallback this test is about reaching.
+        task_id = ""
+        decision = "no_match"
+        score = 0.0
+        reason = "no_candidates"
+        top_scored: list[Any] = []
+        log_detail: dict[str, Any] = {}
+
+    async def no_pipeline(**_k):
+        return NoMatch()
+
+    monkeypatch.setattr(ph, "_maybe_triage_ambiguous_pr", fake_triage)
+    monkeypatch.setattr(ph, "run_pr_task_pipeline", no_pipeline)
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="superseded_by_issue_link",
+            withdrawn_at=datetime(2026, 8, 21, 3, 0, 0),
+        )
+    )
+    await db_session.commit()
+
+    branch_only = _pr("no reference in the body")
+    branch_only.pull_request.head = {"ref": "issue-94-add-retries"}
+    res = await ph.handle_pr_opened(branch_only, db_session)
+
+    assert triaged == [88], "the PR was left with no link and no card"
+    assert res.get("created_from_pr") is True
