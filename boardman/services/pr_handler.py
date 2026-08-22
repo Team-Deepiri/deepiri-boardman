@@ -753,7 +753,13 @@ async def _link_pr_to_issue_task(
 
 
 async def _ensure_links_live(payload: PullRequestEventPayload, session: AsyncSession) -> None:
-    """Any event showing the PR OPEN un-withdraws its links.
+    """Any PR event showing it OPEN un-withdraws its links.
+
+    Called from every handler that receives a PullRequestEventPayload. The comment and
+    review handlers cannot: their payloads carry no PR state to trust. They read through
+    `distinct_task_ids_for_pr`, which filters on the link SOURCE rather than on
+    withdrawn_at, so a stale withdrawal does not blind them either way.
+
 
     `withdrawn_at` means "this PR was closed without merging". Seeing the PR open again is
     proof that is stale, whatever the event was. Keying the recovery on `reopened` alone
@@ -1391,6 +1397,7 @@ async def handle_pr_ready_for_review(
     session: AsyncSession,
 ) -> dict[str, Any]:
     """Draft → ready: move linked Plaky tasks to Needs QA when configured."""
+    await _ensure_links_live(payload, session)
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     plaky = PlakyClient()
@@ -1434,6 +1441,7 @@ async def handle_pr_review_requested(
     payload: PullRequestEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
+    await _ensure_links_live(payload, session)
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     task_ids = await distinct_task_ids_for_pr(
@@ -1912,6 +1920,7 @@ async def handle_pr_labels_changed(
     not freeze the Type forever. Type only — assignee/QA/status are owned by their own
     transitions.
     """
+    await _ensure_links_live(payload, session)
     from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
     from boardman.repos_config import get_routing_async
 

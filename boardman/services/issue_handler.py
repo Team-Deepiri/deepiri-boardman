@@ -19,6 +19,7 @@ from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing_async
 from boardman.services.comment_dedupe import mirror_github_activity
 from boardman.services.sync_state import (
+    UNREADABLE_STATUS,
     issue_status_intent,
     resolve_issue_state,
     status_intent_would_regress,
@@ -264,6 +265,14 @@ async def handle_issue_changed(
                 if status_intent_would_regress(now_at, intent):
                     status_held_back = now_at
                     status_value, status_field_key = "", None
+                    if now_at == UNREADABLE_STATUS:
+                        # The board did not answer, so we do not know what this event
+                        # would change. Writing the person without the status is how a
+                        # card ends up showing a developer while parked at NEEDS
+                        # ASSIGNED. Apply the whole event or none of it; the next
+                        # assignment, or a reconciliation sweep, applies it.
+                        engineer_id = ""
+                        owns_assignment = False
                     # The column is NOT held back with it. The forbidden state is the
                     # board reading "Assigned" with nobody in the Assignee column, and the
                     # guard only fires once the task is PAST Assigned -- In Progress, In
