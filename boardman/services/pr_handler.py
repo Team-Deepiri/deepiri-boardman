@@ -1277,7 +1277,13 @@ async def reconcile_pr_issue_links(
     # status change to two cards for one piece of work.
     standalone_rows = [row for row in all_rows if int(row.github_issue_number) == 0]
     existing = {int(row.github_issue_number) for row in rows}
-    if existing == set(referenced):
+    # `and not standalone_rows`: the issue relationships can be settled while a standalone
+    # card is still live beside them. A PR that got a triage card, was closed, had
+    # `Fixes #94` added while closed (edits to a closed PR are ignored) and was then
+    # reopened arrives here with both rows and nothing left to change -- so the early
+    # return fired and the standalone card was never superseded. From then on both cards
+    # took every comment and review, and the triage one sat in the QA queue for good.
+    if existing == set(referenced) and not standalone_rows:
         return {"ok": True, "changed": False, "reason": "issue relationships unchanged"}
 
     from boardman.repos_config import get_routing_async

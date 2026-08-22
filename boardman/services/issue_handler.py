@@ -83,13 +83,18 @@ def explicit_issue_numbers(*texts: str | None, repo_full_name: str = "") -> list
     for text in texts:
         if not text:
             continue
-        # URLs first: "Fixes https://github.com/o/r/issues/94" also contains no "#94",
-        # so the two patterns never double-count the same reference.
+        # In the order they were WRITTEN, not one pattern's matches then the other's.
+        # The first number is the one a PR's triage card claims in IssueTaskMap, so with
+        # "Fixes #10" followed by "Also closes <url to 20>", scanning URLs first bound the
+        # card durably to issue 20. The two patterns cannot double-count the same
+        # reference: a URL form contains no "#N".
+        at: list[tuple[int, int]] = []
         for m in ISSUE_LINK_URL_RE.finditer(text):
             if here and m.group(1).strip().casefold() != here:
                 continue
-            found.append(int(m.group(2)))
-        found.extend(int(m.group(1)) for m in ISSUE_LINK_RE.finditer(text))
+            at.append((m.start(), int(m.group(2))))
+        at.extend((m.start(), int(m.group(1))) for m in ISSUE_LINK_RE.finditer(text))
+        found.extend(number for _, number in sorted(at))
     return _ordered_unique(found)
 
 

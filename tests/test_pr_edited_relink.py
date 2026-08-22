@@ -2135,3 +2135,60 @@ async def test_a_declined_link_lets_the_pr_fall_through_to_triage(
 
     assert triaged == [88], "the PR was left with no link and no card"
     assert res.get("created_from_pr") is True
+
+
+def test_references_come_back_in_the_order_they_were_written() -> None:
+    """The FIRST number is the one a triage card claims in IssueTaskMap, durably.
+
+    Scanning every URL before every `#N` meant a body saying "Fixes #10" and then "Also
+    closes <url to 20>" handed 20 to the orphan claim, and the card was bound to the issue
+    the author mentioned second.
+    """
+    from boardman.services.issue_handler import explicit_issue_numbers
+
+    url = f"https://github.com/{FULL}/issues/20"
+    assert explicit_issue_numbers(f"Fixes #10\nAlso closes {url}", repo_full_name=FULL) == [10, 20]
+    assert explicit_issue_numbers(f"Closes {url} and fixes #10", repo_full_name=FULL) == [20, 10]
+
+
+@pytest.mark.asyncio
+async def test_a_standalone_card_is_retired_even_when_the_issue_rows_already_agree(
+    db_session, workflow
+) -> None:
+    """The issue relationships can be settled while a standalone card is still live.
+
+    A PR that got a triage card, was closed, had `Fixes #94` added while closed (edits to
+    a closed PR are ignored) and was then reopened arrives with both rows and nothing left
+    to change. The early return fired, the triage card was never superseded, and from then
+    on both cards took every comment and review while the triage one sat in the QA queue
+    for good.
+    """
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add_all(
+        [
+            PullRequestTaskLink(
+                github_repo=REPO,
+                github_pr_number=88,
+                github_issue_number=0,
+                plaky_task_id="7183844",
+                link_source="pr_task_created",
+            ),
+            PullRequestTaskLink(
+                github_repo=REPO,
+                github_pr_number=88,
+                github_issue_number=94,
+                plaky_task_id=TASK_94,
+                link_source="issue_keyword",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    res = await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+
+    assert res["changed"] is True
+    assert [w["task_id"] for w in res["withdrawn"]] == ["7183844"]
+
+    # And it converges: the superseded row drops out, so the next delivery is a no-op.
+    again = await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+    assert again["changed"] is False
