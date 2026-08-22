@@ -93,11 +93,13 @@ def explicit_issue_numbers(*texts: str | None, repo_full_name: str = "") -> list
     return _ordered_unique(found)
 
 
-# What follows the number, when anything does. `issue-94-add-retries` describes the work
-# in words; `gh-2024-q1` and `release/gh-2023-h2` continue a DATE, and 2024 is a year, not
-# an issue. Requiring the next token to be wordy is what separates them: a description is
-# letters, and the pieces of a date are not.
-_BRANCH_NUMERIC_TAIL_RE = re.compile(r"^[-_/][0-9A-Za-z]*\d")
+# What follows the number, when anything does. `gh-2024-q1` and `release/gh-2023-h2`
+# continue a DATE -- 2024 is a year there, not an issue -- and so does `issue-2024-01`.
+# The tail that gives it away is a bare number or a quarter/half marker, and neither is
+# how anybody describes work. A description that merely CONTAINS a digit is still a
+# description: `issue-94-2fa-login`, `gh-12-v2-rollout` and `issue-7-3rd-party-sdk` all
+# name their issue, and rejecting them costs a duplicate card from orphan triage.
+_BRANCH_DATE_TAIL_RE = re.compile(r"^[-_/](?:\d+|[qh][1-4])(?![0-9A-Za-z])", re.IGNORECASE)
 
 
 def branch_issue_numbers(head_ref: str | None) -> list[int]:
@@ -107,7 +109,7 @@ def branch_issue_numbers(head_ref: str | None) -> list[int]:
         return []
     found: list[int] = []
     for m in _BRANCH_PREFIXED_RE.finditer(ref):
-        if _BRANCH_NUMERIC_TAIL_RE.match(ref[m.end() :]):
+        if _BRANCH_DATE_TAIL_RE.match(ref[m.end() :]):
             # `gh-2024-q1` is the first quarter of 2024, not issue 2024, and linking it
             # runs the whole open pipeline -- notice, Type, assignee, QA -- on whatever
             # task issue 2024 happens to own.

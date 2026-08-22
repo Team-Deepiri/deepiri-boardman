@@ -432,6 +432,13 @@ async def _maybe_set_needs_qa(
         return
     if is_draft and settings.plaky_skip_needs_qa_for_draft:
         return
+    if not allow_regression and not bid:
+        # Nothing to read the task's position from. With PLAKY_STATUS_NEEDS_QA configured
+        # `st` is set whether or not a board resolves, so this went ahead unguarded and
+        # wrote Needs QA over a Completed task on any repo whose Plaky placement is
+        # missing. Same early return `_apply_pr_type_and_assignee` makes.
+        _log.info("task %s: no board to check; not asking for QA from a re-run", task_id)
+        return
     if not allow_regression and bid:
         # A PR linked LATE runs the same pipeline a new one does, and asking for QA is
         # right for a new PR and wrong for a task already in or past QA.

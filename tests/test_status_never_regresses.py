@@ -582,3 +582,46 @@ async def test_a_board_this_vocabulary_cannot_place_still_gets_its_qa_request(
     monkeypatch.setattr(dq, "_load_normalized", schema_unreadable)
     await ph._maybe_set_needs_qa(None, TASK, False, BOARD, allow_regression=False)
     assert writes == []
+
+
+def test_a_re_run_does_not_trade_one_waiting_for_qa_status_for_another() -> None:
+    """Needs QA Again and QA Rejected sit at the same rank as plain Needs QA, because all
+    three are "waiting for QA". They do not mean the same thing: one says the developer
+    reworked and came back, one says QA sent it away. A re-run of the open pipeline
+    writing plain Needs QA over either throws away the only record of which happened, and
+    the rank comparison alone called that a forward move."""
+    from boardman.services.sync_state import status_would_move_backwards
+
+    assert status_would_move_backwards("workflow_needs_qa_again", "workflow_needs_qa") is True
+    assert (
+        status_would_move_backwards("github_pr_review_changes_requested", "workflow_needs_qa")
+        is True
+    )
+    # Writing the status a task is already at is a no-op, and never worth refusing over.
+    assert status_would_move_backwards("workflow_needs_qa", "workflow_needs_qa") is False
+    # And a genuine forward move still goes through.
+    assert status_would_move_backwards("workflow_in_progress", "workflow_needs_qa") is False
+
+
+@pytest.mark.asyncio
+async def test_a_repo_with_no_board_does_not_get_an_unguarded_qa_write(monkeypatch) -> None:
+    """The guard was gated on having a board id, and PLAKY_STATUS_NEEDS_QA sets the value
+    to write whether or not a board resolves. So a repo whose Plaky placement is missing
+    took the write with no guard at all -- over a Completed task, from a re-run."""
+    from boardman.services import pr_handler as ph
+
+    writes: list[str] = []
+
+    async def fake_status(task_id, value, board_id, *, status_field_key=None):
+        writes.append(str(task_id))
+        return {"ok": True}
+
+    monkeypatch.setattr(ph.settings, "plaky_status_needs_qa", "Needs QA ✅", raising=False)
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+
+    await ph._maybe_set_needs_qa(None, TASK, False, "", allow_regression=False)
+    assert writes == []
+
+    # A PR arriving for the first time is a different statement, and still writes.
+    await ph._maybe_set_needs_qa(None, TASK, False, "", allow_regression=True)
+    assert writes == [TASK]

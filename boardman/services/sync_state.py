@@ -296,4 +296,11 @@ def status_would_move_backwards(current_intent: str, next_intent: str) -> bool:
     following = workflow_rank(next_intent)
     if current is None or following is None:
         return False
+    if current == following and current_intent != next_intent:
+        # Equal rank, different meaning. Needs QA Again says the developer reworked and
+        # came back, and QA Rejected says QA sent it away; both sit at rank 3 beside plain
+        # Needs QA because they are all "waiting for QA", but a re-run of the open
+        # pipeline overwriting either of them throws away the only record of which
+        # happened. Nothing is gained by writing a status the task is already at.
+        return True
     return following < current

@@ -1417,12 +1417,24 @@ def test_a_date_in_a_branch_name_is_not_an_issue_number(ref: str) -> None:
     assert branch_issue_numbers(ref) == []
 
 
-@pytest.mark.parametrize("ref", ["issue-94-add-retries", "gh-123-fix-thing", "issue-94-fix-2fa"])
-def test_a_description_after_the_number_still_links(ref: str) -> None:
+@pytest.mark.parametrize(
+    "ref,expected",
+    [
+        ("issue-94-add-retries", [94]),
+        ("gh-123-fix-thing", [123]),
+        ("issue-94-fix-2fa", [94]),
+        # A description that CONTAINS a digit is still a description. Rejecting these
+        # loses the link and orphan triage opens a second card for the same work.
+        ("issue-94-2fa-login", [94]),
+        ("gh-12-v2-rollout", [12]),
+        ("issue-7-3rd-party-sdk", [7]),
+    ],
+)
+def test_a_description_after_the_number_still_links(ref: str, expected: list[int]) -> None:
     """The convention this team actually uses: the number, then what the work is."""
     from boardman.services.issue_handler import branch_issue_numbers
 
-    assert branch_issue_numbers(ref) in ([94], [123])
+    assert branch_issue_numbers(ref) == expected
 
 
 @pytest.mark.asyncio
