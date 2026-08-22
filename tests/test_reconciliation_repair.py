@@ -342,3 +342,35 @@ async def test_reconciliation_needs_a_token_and_says_so(db_session, monkeypatch)
 
     assert out["ok"] is False
     assert "GITHUB_PAT" in out["message"]
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_repaired_nothing_says_it_repaired_nothing(
+    db_session, github, handlers
+) -> None:
+    """`prs_relinked` is REPAIR: the PR had no task and now has one.
+
+    Counting an already-linked PR's metadata replay as a relink made every run report ten
+    repairs on a repo where nothing was wrong -- seen live on diri-cyrex, where the first
+    run genuinely repaired ten unlinked PRs and the second reported ten again while
+    creating nothing. A reconciliation summary that cannot tell drift from a clean pass is
+    one nobody can verify.
+    """
+    db_session.add(IssueTaskMap(github_repo=REPO, github_issue_number=94, plaky_task_id=TASK_94))
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="issue_keyword",
+        )
+    )
+    await db_session.commit()
+    github["pulls"] = [_pull(88, body="Fixes #94")]
+
+    out = await rc.reconcile_repo(FULL, db_session)
+
+    assert out["prs_checked"] == 1
+    assert out["prs_relinked"] == 0, "nothing was repaired"
+    assert out["prs_resynced"] >= 1, "and the metadata replay is reported as itself"

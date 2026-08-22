@@ -66,7 +66,14 @@ async def reconcile_repo(
         "tasks_created": 0,
         "issues_resynced": 0,
         "prs_checked": 0,
+        # Two different things, deliberately not one number. `prs_relinked` is REPAIR: the
+        # PR had no task and now has one. `prs_resynced` is a PR that was already linked
+        # and had its metadata and state replayed, which changes nothing when there is no
+        # drift. Counting both as "relinked" made every run report ten repairs on a repo
+        # where nothing was wrong, and a reconciliation you cannot read is one you cannot
+        # verify.
         "prs_relinked": 0,
+        "prs_resynced": 0,
         "errors": [],
     }
 
@@ -149,7 +156,7 @@ async def reconcile_repo(
                         ),
                         session,
                     )
-                    out["prs_relinked"] += int(bool(res.get("updated")))
+                    out["prs_resynced"] += int(bool(res.get("updated")))
                 elif pr_state == "closed":
                     res = await handle_pr_closed_without_merge(
                         PullRequestEventPayload(
@@ -157,7 +164,7 @@ async def reconcile_repo(
                         ),
                         session,
                     )
-                    out["prs_relinked"] += int(bool(res.get("withdrawn_links")))
+                    out["prs_resynced"] += int(bool(res.get("withdrawn_links")))
                 elif "updated_at" in pr:
                     # Real GitHub list payloads carry updated_at; the guard also keeps
                     # small legacy fixtures from turning reconciliation into a write.
@@ -167,7 +174,7 @@ async def reconcile_repo(
                         ),
                         session,
                     )
-                    out["prs_relinked"] += int(bool(res.get("updated")))
+                    out["prs_resynced"] += int(bool(res.get("updated")))
                 continue  # a stable link exists; metadata/state was reconciled above
             if str(pr.get("state") or "open").casefold() != "open" or pr.get("merged"):
                 # An unlinked CLOSED pull request is history, not drift. Replaying it
