@@ -254,14 +254,39 @@ def test_a_plaky_limitation_is_not_reported_as_a_sync_failure() -> None:
     """Plaky has no verb for renaming an item, so a triage-created card's title can never
     be rewritten. Counting that refusal as a synchronization failure made every edit of
     such a PR return ok=False, which the webhook route answers with HTTP 500 -- and GitHub
-    retries a 500, so one edit became a delivery loop."""
-    import inspect
+    retries a 500, so one edit became a delivery loop.
 
-    from boardman.services import pr_handler as ph
+    Exercised through the real shape `update_task_internal` returns: the refusal is
+    reported per OPERATION, so a first version of this guard that read a top-level
+    `error`/`message` never fired at all.
+    """
+    from boardman.services.pr_handler import _mutation_really_failed
 
-    source = inspect.getsource(ph.handle_pr_edited)
-    assert "_really_failed" in source
-    assert "item text" in source
+    text_refused_only = {
+        "ok": False,
+        "operations": {
+            "field_patch": {"ok": True},
+            "item_text_fields": {
+                "ok": False,
+                "message": "Item title/description not set via item PATCH (unsupported)",
+            },
+        },
+    }
+    assert _mutation_really_failed(text_refused_only) is False
+
+    # A field patch that genuinely failed is still a failure.
+    real_failure = {
+        "ok": False,
+        "operations": {
+            "field_patch": {"ok": False, "message": "500 from Plaky"},
+            "item_text_fields": {"ok": False, "message": "unsupported"},
+        },
+    }
+    assert _mutation_really_failed(real_failure) is True
+
+    # And a refusal with nothing else attempted is not evidence of success.
+    assert _mutation_really_failed({"ok": False, "operations": {}}) is True
+    assert _mutation_really_failed({"ok": True, "operations": {}}) is False
 
 
 def test_un_asking_for_a_review_moves_in_qa_back_to_needs_qa() -> None:
@@ -313,3 +338,67 @@ def test_an_older_database_still_gets_the_issue_mapping_constraint() -> None:
     source = inspect.getsource(db_session)
     assert "uq_issue_task_map_repo_issue" in source
     assert "DELETE FROM issue_task_map WHERE id NOT IN" in source, "duplicates cleared first"
+
+
+def test_a_diagnostic_read_failing_does_not_report_a_failed_write() -> None:
+    """`field_diff` and `text_diff` record whether the PRE-write read succeeded. Folding
+    them into the verdict made a successful write report failure, and the issue-reopen
+    path reads that as "the restore did not take" and overwrites the just-restored status
+    with the assignee ladder's Assigned -- the regression it exists to prevent."""
+    import inspect
+
+    from boardman.services import task_mutations
+
+    source = inspect.getsource(task_mutations)
+    assert '_DIAGNOSTIC_OPS = ("field_diff", "text_diff")' in source
+    assert "k not in _DIAGNOSTIC_OPS" in source
+
+
+def test_an_ordinary_follow_up_keeps_the_conversation_repo() -> None:
+    """The unknown-slug guard's pattern matches ordinary English -- "what is in progress
+    right now?" captures `progress` -- and it returned before the session fallback, so the
+    turn ran with no repo context at all."""
+    from boardman.agent.repo_resolution import resolve_repo
+
+    session_repo = "Team-Deepiri/deepiri-boardman"
+    for message in ("what is in progress right now?", "anything for QA?", "tasks from main"):
+        out = resolve_repo(message=message, explicit_repo=None, session_repo=session_repo)
+        assert out.repo == session_repo, f"{message!r} dropped the session repo"
+
+    # With nothing to fall back on, refusing to guess is still right.
+    out = resolve_repo(message="create a task for aarflingo", explicit_repo=None, session_repo=None)
+    assert out.repo is None and out.source == "unknown-mentioned"
+
+
+def test_a_named_but_unrouted_repo_does_not_borrow_another_board() -> None:
+    """A repo the user named that has no repos.yml entry arrives as repo=None, which looks
+    exactly like "no repo was mentioned" -- so the single-configured-board guess fired and
+    filed that other repo's tasks into this one's group."""
+    from boardman.agent.service import _resolve_placement
+
+    board, group, note = _resolve_placement(None, None, None, repo_named_but_unresolved=True)
+    assert board is None and group is None and note == ""
+
+
+def test_a_write_post_does_not_follow_a_redirect() -> None:
+    """The shared pool follows redirects and httpx turns a redirected POST into a bodyless
+    GET, so after a repo rename the QA comment fetched the comment list, got 200, and
+    reported a comment it never posted."""
+    import inspect
+
+    from boardman.github import pr_actions
+
+    for fn in (pr_actions.comment_on_pr, pr_actions.request_reviewers):
+        assert "follow_redirects=False" in inspect.getsource(fn), f"{fn.__name__} follows them"
+
+
+def test_the_save_debounce_sentinel_is_not_a_boot_relative_zero() -> None:
+    """`time.monotonic()` counts from boot, so 0.0 reads as "saved a moment ago" on a
+    machine that has been up for less than the window -- and the first save, the one the
+    sentinel exists to allow, was suppressed."""
+    from boardman.github import qa_contribution_profile as qcp
+
+    assert qcp._last_disk_save == float("-inf")
+    qcp._last_disk_save = 1234.0
+    qcp.clear_contribution_caches()
+    assert qcp._last_disk_save == float("-inf")

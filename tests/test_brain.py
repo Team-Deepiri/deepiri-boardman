@@ -35,6 +35,10 @@ from boardman.database.models import (
 )
 
 REPO = "Team-Deepiri/deepiri-boardman"
+# How the row is actually stored. `repo_context` casefolds on write so one repo has one
+# snapshot whatever case the caller used, and seeding the raw slug here hid a lookup that
+# could never find it: the briefing was a permanent miss in production and a hit in tests.
+REPO_KEY = REPO.casefold()
 SHORT = "deepiri-boardman"
 
 
@@ -71,7 +75,7 @@ def _snapshot(**over) -> str:
 async def _seed(session: AsyncSession, *, snapshot_age_s: float = 10.0) -> None:
     session.add(
         ProjectContext(
-            repo=REPO,
+            repo=REPO_KEY,
             context_json=_snapshot(),
             context_source_revision="abc123def456",
             context_fetched_at=datetime.utcnow() - timedelta(seconds=snapshot_age_s),
@@ -185,7 +189,7 @@ async def test_a_stub_default_branch_is_not_reported_as_a_branch(db) -> None:
     """The scan used to write default_branch="unknown"; that is not an answer."""
     db.add(
         ProjectContext(
-            repo=REPO,
+            repo=REPO_KEY,
             context_json=_snapshot(structure={"default_branch": "unknown"}),
             context_fetched_at=datetime.utcnow(),
         )
@@ -269,7 +273,7 @@ async def test_render_is_smaller_than_the_prose_block_it_replaces(db) -> None:
     big_readme = "# Boardman\n" + ("readme prose. " * 400)
     db.add(
         ProjectContext(
-            repo=REPO,
+            repo=REPO_KEY,
             context_json=_snapshot(readme_md=big_readme, DIRECTION_md=big_readme),
             context_fetched_at=datetime.utcnow(),
         )

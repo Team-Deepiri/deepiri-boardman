@@ -1333,7 +1333,13 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
     requested_any = wants_board_patch or wants_text_patch
     if not requested_any:
         return {"ok": False, "status": 400, "message": "No update fields provided"}
-    op_results = [v for v in ops.values() if isinstance(v, dict)]
+    # `field_diff` and `text_diff` are DIAGNOSTICS: they record whether the pre-write read
+    # succeeded, and when it does not the write goes ahead with everything requested. Folding
+    # them into the verdict made a successful write report failure, and the issue-reopen
+    # path reads that as "the restore did not take" and overwrites the just-restored status
+    # with the intent ladder's Assigned -- the exact regression it exists to prevent.
+    _DIAGNOSTIC_OPS = ("field_diff", "text_diff")
+    op_results = [v for k, v in ops.items() if isinstance(v, dict) and k not in _DIAGNOSTIC_OPS]
     ok = bool(op_results) and all(bool(v.get("ok")) for v in op_results if "ok" in v)
     out: dict[str, Any] = {"ok": ok, "task_id": task_id, "operations": ops}
     if developer_refusals:

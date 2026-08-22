@@ -383,9 +383,14 @@ async def handle_issue_changed(
         )
         text_mirrored = bool(mirror.get("ok"))
 
-    # A board that cannot hold item text is a Plaky limitation, not a sync failure:
-    # report ok when every writable field landed and the edit was mirrored.
-    ok = bool(result.get("ok")) or (text_blocked and text_mirrored)
+    # A board that cannot hold item text is a Plaky limitation, not a sync failure -- but
+    # only the TEXT part of it. Plaky can never rename an item, so `text_blocked` is true
+    # for every edit, and an `or` there reported success even when the priority, type or
+    # status patch had failed: the delivery was marked processed and the lost write was
+    # never retried. What must land is every writable FIELD.
+    from boardman.services.pr_handler import _mutation_really_failed
+
+    ok = not _mutation_really_failed(result) or (text_blocked and text_mirrored)
     detail = {
         "event": payload.action,
         "title": state.title,
@@ -655,7 +660,26 @@ async def _pre_close_status(session: AsyncSession, task_id: str) -> tuple[str | 
         SyncLog.action == "issue_closed", SyncLog.plaky_task_id == str(task_id)
     )
     if last_reopen is not None:
-        q = q.where(SyncLog.id > last_reopen)
+        # `>=` on the close row that the reopen RESTORED from, not strictly after the
+        # reopen. A second delivery of the same reopen (a redelivery, or the poller
+        # emitting one the webhook already handled) otherwise excluded the capture row the
+        # first delivery had just used, fell through to the assignee ladder, and wrote
+        # Assigned over the In QA it had only just restored. The comment mirror dedupes;
+        # the status write does not.
+        restored_from = (
+            await session.execute(
+                select(SyncLog.id)
+                .where(
+                    SyncLog.action == "issue_closed",
+                    SyncLog.plaky_task_id == str(task_id),
+                    SyncLog.detail.contains('"captured_previous": true'),
+                    SyncLog.id < last_reopen,
+                )
+                .order_by(SyncLog.id.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        q = q.where(SyncLog.id > (restored_from - 1 if restored_from is not None else last_reopen))
     # Ask for the rows that captured something. The sweep replays `closed` for every
     # closed issue on its page, and by then the task already sits at Completed, so each
     # replay appends a row with a blank capture -- twenty of those (about five hours at
@@ -773,7 +797,14 @@ async def _issue_status_transition(
         plaky,
         task_id=mapping.plaky_task_id,
         action=f"{action_name}_comment",
-        marker=f"github:issue-state:{repo_name}:{issue_number}:{action_name}",
+        # The GitHub timestamp is what makes this per-OCCURRENCE. Without it a
+        # close -> reopen -> close cycle matched the first row and the second close was
+        # never announced on the card -- the same defect the PR notice was fixed for by
+        # folding its headline into the marker.
+        marker=(
+            f"github:issue-state:{repo_name}:{issue_number}:{action_name}"
+            f":{str(getattr(payload.issue, 'updated_at', '') or '').strip()}"
+        ),
         body=task_comment,
         board_id=bid,
         github_repo=repo_name,

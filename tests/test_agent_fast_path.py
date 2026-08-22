@@ -134,7 +134,7 @@ async def test_service_keeps_repo_scope_for_a_follow_up_fast_path(monkeypatch) -
     monkeypatch.setattr(
         agent_service,
         "_resolve_placement",
-        lambda board, group, _repo: (board, group, ""),
+        lambda board, group, _repo, **_k: (board, group, ""),
     )
 
     async def no_plaky_suffix(_board, _group, note=""):

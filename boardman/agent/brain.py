@@ -197,9 +197,16 @@ async def _load_briefing(session: AsyncSession | None, repo: str) -> Briefing:
     """L1 straight from the ProjectContext row, with its age."""
     if session is None or not repo:
         return Briefing()
+    # Casefolded, because that is how every write stores it. Comparing the raw value
+    # against a BINARY-collated column meant `Team-Deepiri/x` never found the row saved as
+    # `team-deepiri/x`: the briefing was permanently a miss, so the default-branch fast
+    # path never fired and `schedule_revalidation` re-enqueued a refresh job every five
+    # minutes forever -- one that writes the casefolded row and so can never satisfy its
+    # own lookup.
+    key = (repo or "").strip().casefold()
     try:
         row = (
-            await session.execute(select(ProjectContext).where(ProjectContext.repo == repo))
+            await session.execute(select(ProjectContext).where(ProjectContext.repo == key))
         ).scalar_one_or_none()
     except SQLAlchemyError:
         # Migration 005 may not have run yet on a rolling deploy. Context is an

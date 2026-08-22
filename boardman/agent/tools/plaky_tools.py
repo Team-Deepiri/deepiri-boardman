@@ -634,6 +634,16 @@ def _group_for_repo_name(groups: dict[str, str], repo: str) -> str:
     return ""
 
 
+def _agent_session_pk_now() -> int | None:
+    """The chat this tool call belongs to, when the context carries one."""
+    from boardman.agent.tool_context import get_agent_session_pk
+
+    try:
+        return get_agent_session_pk()
+    except Exception:  # noqa: BLE001 - a missing context must not stop the write
+        return None
+
+
 def resolve_people_to_field_values(
     *,
     assignee: str,
@@ -1016,6 +1026,10 @@ async def _plaky_create_tasks_deferred(
                 "board_id": bid,
                 "group_id": gid,
                 "auto_assign_team": bool(auto_assign_team),
+                # Which chat asked. The correction this drives is addressed to the person
+                # who was told the tasks were created, and without it every conversation
+                # in the process opened with somebody else's failure for half an hour.
+                "agent_session_pk": _agent_session_pk_now(),
             },
         )
 

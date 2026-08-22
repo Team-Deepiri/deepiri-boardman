@@ -272,6 +272,12 @@ async def github_webhook(
         body = json.dumps({"ok": False, "message": "Unsupported event type"})
         return Response(content=body, status_code=400)
 
+    # Invalidate HERE as well as inside the dispatcher. Under the async setting the
+    # handler runs in the worker process, and the read cache is a plain in-process dict --
+    # so the API process, the one that answers the assistant, kept serving its pre-event
+    # snapshot for the whole TTL while the worker purged a cache nobody reads.
+    note_repo_changed(repo_full_name_from_payload(payload_dict), event=event_type)
+
     if settings.github_webhook_async_enabled:
         from boardman.broker.job_queue import get_job_queue
 
@@ -316,8 +322,15 @@ async def github_webhook(
         raise
 
     if result.get("ok", True) is False:
-        await _mark_delivery("failed", str(result.get("message") or "synchronization failed"))
-        return Response(content=json.dumps(result), status_code=500)
+        message = str(result.get("message") or "synchronization failed")
+        await _mark_delivery("failed", message)
+        # 500 asks GitHub to retry, which is right for a Plaky blip and wrong for a
+        # payload that will never parse -- a comment from a deleted account redelivers on
+        # the retry schedule and fails identically every time, burning the worker's
+        # attempts too. A handler that says the payload is unusable gets a 200: recorded
+        # as failed, not asked for again.
+        retryable = not bool(result.get("unretryable"))
+        return Response(content=json.dumps(result), status_code=500 if retryable else 200)
 
     if result is not None:
         await _mark_delivery("processed", "handled")

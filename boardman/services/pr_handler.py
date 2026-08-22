@@ -67,6 +67,30 @@ _log = logging.getLogger(__name__)
 _QA_VERDICT_INTENTS = ("github_pr_review_approved", "workflow_completed")
 
 
+def _mutation_really_failed(mutation: dict[str, Any]) -> bool:
+    """Did this task update actually fail, or did Plaky just refuse to rename the item?
+
+    Plaky has no verb for changing an item's title or description, so a card created from
+    a PR can never track the PR's text and the attempt always comes back refused. Counting
+    that as a synchronization failure made every edit of such a card return ok=false, which
+    the webhook route answers with HTTP 500 -- and GitHub retries a 500, so one edit became
+    a delivery loop. The refusal is reported per OPERATION, so this reads there: every
+    other operation succeeding while only the item-text one was refused is the limitation,
+    not a failure.
+    """
+    if mutation.get("ok"):
+        return False
+    ops = mutation.get("operations")
+    ops = ops if isinstance(ops, dict) else {}
+    others = [
+        v
+        for k, v in ops.items()
+        if isinstance(v, dict) and k not in ("item_text_fields", "field_diff", "text_diff")
+    ]
+    text_refused = not bool((ops.get("item_text_fields") or {}).get("ok", True))
+    return not (text_refused and others and all(bool(v.get("ok")) for v in others))
+
+
 async def _update_plaky_task_status(
     task_id: str,
     status_value: str,
@@ -1629,14 +1653,8 @@ async def handle_pr_edited(
         # return ok=False, which the webhook route answers with HTTP 500 -- and GitHub
         # retries a 500, so one edit became a delivery loop. The issue path meets the same
         # limitation by mirroring the new text as a comment.
-        def _really_failed(mutation: dict[str, Any]) -> bool:
-            if mutation.get("ok"):
-                return False
-            reason = str(mutation.get("error") or mutation.get("message") or "").casefold()
-            return "item text" not in reason and "immutable" not in reason
-
         all_failed = bool(plaky_results) and all(
-            _really_failed(x["mutation"]) for x in plaky_results
+            _mutation_really_failed(x["mutation"]) for x in plaky_results
         )
         return {
             "ok": not all_failed,
@@ -2205,7 +2223,10 @@ async def handle_pr_review_comment(
     commenter_login = commenter.get("login") if isinstance(commenter, dict) else None
 
     if not commenter_login:
-        return {"ok": False, "message": "No commenter login found"}
+        # Nothing about this payload will change on a redelivery -- a comment from a
+        # deleted account has no user block, and asking GitHub to send it again just
+        # fails identically forever.
+        return {"ok": False, "unretryable": True, "message": "No commenter login found"}
 
     linked_issues = await get_linked_issue_numbers(
         payload.pull_request.body if payload.pull_request else None,

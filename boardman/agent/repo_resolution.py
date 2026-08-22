@@ -122,7 +122,13 @@ def resolve_repo(
         configured_short = {
             (canonical_repo(key) or "").rsplit("/", 1)[-1].casefold() for key in registered
         }
-        if mentioned and mentioned not in configured_short:
+        # Only when there is no session repo to fall back on. The pattern behind
+        # `mentioned` matches ordinary English -- "what is in progress right now?" gives
+        # `progress`, "anything for QA?" gives `QA` -- so returning None here dropped the
+        # conversation's repo on any follow-up phrased that way, and the turn ran with no
+        # repo context at all. Refusing to GUESS is right; forgetting what we were talking
+        # about is not.
+        if mentioned and mentioned not in configured_short and not canonical_repo(session_repo):
             return RepoResolution(None, "unknown-mentioned")
 
     session = canonical_repo(session_repo)

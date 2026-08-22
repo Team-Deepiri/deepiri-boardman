@@ -463,10 +463,24 @@ def _placement_fallback_from_routing(repo: str | None) -> tuple[str | None, str 
 
 
 def _resolve_placement(
-    plaky_board_id: str | None, plaky_group_id: str | None, repo: str | None
+    plaky_board_id: str | None,
+    plaky_group_id: str | None,
+    repo: str | None,
+    *,
+    repo_named_but_unresolved: bool = False,
 ) -> tuple[str | None, str | None, str]:
-    """Explicit UI selection passes through untouched; silence falls back to routing."""
+    """Explicit UI selection passes through untouched; silence falls back to routing.
+
+    `repo_named_but_unresolved` is the case the fallback must NOT cover. A repo the user
+    named that has no repos.yml entry arrives here as `repo=None`, which looks identical
+    to "no repo was mentioned" -- so the single-configured-board guess fired and filed
+    that other repo's tasks into this one's group, while telling the model the wrong repo
+    was the subject. Silence is a question the assistant can ask; a wrong board is not
+    something the user can see.
+    """
     if (plaky_board_id or "").strip():
+        return plaky_board_id, plaky_group_id, ""
+    if repo_named_but_unresolved:
         return plaky_board_id, plaky_group_id, ""
     fb_bid, fb_gid, note = _placement_fallback_from_routing(repo)
     if not fb_bid:
@@ -557,7 +571,10 @@ async def run_agent_chat(
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
     plaky_board_id, plaky_group_id, placement_note = _resolve_placement(
-        plaky_board_id, plaky_group_id, active_repo
+        plaky_board_id,
+        plaky_group_id,
+        active_repo,
+        repo_named_but_unresolved=resolution.source == "unknown-mentioned",
     )
 
     # The user's message goes into history BEFORE the LLM phase: a provider failure
@@ -631,7 +648,7 @@ async def run_agent_chat(
     # Creation is reported as done because it lands in seconds. If one of those writes
     # actually failed, this turn opens by correcting it instead of leaving the user
     # believing a task exists that does not.
-    plaky_suffix += await recent_failed_task_writes(session)
+    plaky_suffix += await recent_failed_task_writes(session, agent_session_pk=ag.id)
     # Boardman is the team's context engine; not knowing which repos exist is how it
     # told Ali that aarflingo was not a Deepiri project.
     plaky_suffix += await org_repo_roster_markdown()
@@ -797,7 +814,10 @@ async def iter_agent_chat_sse(
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
     plaky_board_id, plaky_group_id, placement_note = _resolve_placement(
-        plaky_board_id, plaky_group_id, active_repo
+        plaky_board_id,
+        plaky_group_id,
+        active_repo,
+        repo_named_but_unresolved=resolution.source == "unknown-mentioned",
     )
 
     # Latency plan step 1: request id + per-stage wall clocks, logged as one line.
@@ -878,7 +898,7 @@ async def iter_agent_chat_sse(
     # Creation is reported as done because it lands in seconds. If one of those writes
     # actually failed, this turn opens by correcting it instead of leaving the user
     # believing a task exists that does not.
-    plaky_suffix += await recent_failed_task_writes(session)
+    plaky_suffix += await recent_failed_task_writes(session, agent_session_pk=ag.id)
     # Boardman is the team's context engine; not knowing which repos exist is how it
     # told Ali that aarflingo was not a Deepiri project.
     plaky_suffix += await org_repo_roster_markdown()

@@ -137,8 +137,10 @@ def _maybe_load_disk_cache() -> None:
 # Debounce: writes at most once per 30 seconds. The warmer updates 11 profiles in a
 # burst; writing to disk after each one was 11 atomic JSON serializations of the same
 # growing dict, with only the last one surviving.
-_last_disk_save: float = 0.0
+# -inf, not 0.0: `time.monotonic()` counts from BOOT, so on a machine up for less than
+# the debounce window 0.0 reads as "saved a moment ago" and suppresses the first write.
 # Reset by `clear_contribution_caches`, so the debounce cannot carry state between tests.
+_last_disk_save: float = float("-inf")
 _SAVE_DEBOUNCE_SECONDS = 30.0
 
 
@@ -192,7 +194,7 @@ def clear_contribution_caches() -> None:
     _profile_cache.clear()
     # The debounce is process state too. Left alone, a test that saved a moment ago makes
     # the next one's save silently do nothing.
-    _last_disk_save = 0.0
+    _last_disk_save = float("-inf")
 
 
 def _gh_headers() -> dict[str, str]:

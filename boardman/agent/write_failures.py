@@ -22,6 +22,15 @@ logger = logging.getLogger(__name__)
 WATCHED_KINDS = ("plaky_create_tasks_job",)
 
 
+def _job_session_pk(row: Any) -> int | None:
+    """The chat a job was enqueued from, or None for a job stamped before this existed."""
+    try:
+        pk = json.loads(getattr(row, "payload_json", "") or "{}").get("agent_session_pk")
+    except (TypeError, ValueError):
+        return None
+    return int(pk) if isinstance(pk, int) else None
+
+
 def _titles(payload_json: str | None, result_json: str | None) -> list[str]:
     """Which tasks actually failed -- the result if it says, the whole batch if it does not.
 
@@ -51,8 +60,16 @@ def _titles(payload_json: str | None, result_json: str | None) -> list[str]:
     return failed
 
 
-async def recent_failed_task_writes(session: Any, *, minutes: int = 30) -> str:
-    """Markdown telling the model to correct itself, or '' when nothing failed."""
+async def recent_failed_task_writes(
+    session: Any, *, minutes: int = 30, agent_session_pk: int | None = None
+) -> str:
+    """Markdown telling the model to correct itself, or '' when nothing failed.
+
+    Scoped to the chat that asked for the write. The correction is addressed to the person
+    who was told the tasks were created, and unscoped it opened every conversation in the
+    process -- including ones that never asked for a task -- with somebody else's failure,
+    on every turn until the window expired.
+    """
     cutoff = datetime.utcnow() - timedelta(minutes=minutes)
     try:
         rows = (
@@ -72,6 +89,8 @@ async def recent_failed_task_writes(session: Any, *, minutes: int = 30) -> str:
             .scalars()
             .all()
         )
+        if agent_session_pk is not None:
+            rows = [r for r in rows if _job_session_pk(r) in (agent_session_pk, None)]
     except Exception:  # noqa: BLE001 - logged and handled
         logger.exception("could not read recent background write failures")
         return ""

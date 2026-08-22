@@ -59,7 +59,15 @@ async def comment_on_pr(full_name: str, pr_number: int, body: str) -> dict[str, 
     url = f"https://api.github.com/repos/{full_name}/issues/{pr_number}/comments"
     try:
         async with shared_github_client() as client:
-            r = await client.post(url, headers=_headers(), json={"body": with_marker(body)})
+            # follow_redirects=False for a WRITE. The shared pool follows them, and httpx
+            # turns a redirected POST into a bodyless GET -- so after a repo rename this
+            # fetched the comment list, got 200, and reported a comment it never posted.
+            r = await client.post(
+                url,
+                headers=_headers(),
+                json={"body": with_marker(body)},
+                follow_redirects=False,
+            )
     except Exception as e:  # noqa: BLE001 — network failure must not break the webhook
         _log.warning("pr comment on %s#%s failed: %s", full_name, pr_number, e, exc_info=True)
         return {"ok": False, "message": str(e)}
@@ -82,7 +90,10 @@ async def request_reviewers(full_name: str, pr_number: int, logins: list[str]) -
     url = f"https://api.github.com/repos/{full_name}/pulls/{pr_number}/requested_reviewers"
     try:
         async with shared_github_client() as client:
-            r = await client.post(url, headers=_headers(), json={"reviewers": logins})
+            # See `comment_on_pr`: a redirected POST silently becomes a GET.
+            r = await client.post(
+                url, headers=_headers(), json={"reviewers": logins}, follow_redirects=False
+            )
     except Exception as e:  # noqa: BLE001 — network failure must not break the webhook
         _log.warning("reviewer request on %s#%s failed: %s", full_name, pr_number, e, exc_info=True)
         return {"ok": False, "message": str(e)}
