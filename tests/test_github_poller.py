@@ -343,7 +343,7 @@ async def test_direct_poll_issue_opened_and_dedupes(monkeypatch: pytest.MonkeyPa
 
     handled: list = []
 
-    async def fake_run(parsed):
+    async def fake_run(parsed, **_kw):
         handled.append(parsed)
         return {"ok": True, "message": "created"}
 
@@ -393,7 +393,7 @@ async def test_direct_poll_pr_merged_and_opened(monkeypatch: pytest.MonkeyPatch)
 
     handled: list = []
 
-    async def fake_run(parsed):
+    async def fake_run(parsed, **_kw):
         handled.append(parsed)
         return {"ok": True}
 
@@ -498,7 +498,7 @@ async def test_direct_poll_detects_close_and_reopen(monkeypatch: pytest.MonkeyPa
     poller = gp.GitHubEventPoller()
     seen: list[str] = []
 
-    async def fake_run_handler(payload):
+    async def fake_run_handler(payload, **_kw):
         seen.append(payload.action)
         return {"ok": True}
 
@@ -572,7 +572,7 @@ async def test_poll_detects_ready_for_review_and_review_requested(
     poller = gp.GitHubEventPoller()
     seen: list[str] = []
 
-    async def fake_run_handler(payload):
+    async def fake_run_handler(payload, **_kw):
         seen.append(payload.action)
         return {"ok": True}
 
@@ -717,7 +717,7 @@ async def test_direct_poll_detects_label_change(monkeypatch: pytest.MonkeyPatch)
     poller = gp.GitHubEventPoller()
     seen: list[tuple[str, list[str]]] = []
 
-    async def fake_run_handler(payload):
+    async def fake_run_handler(payload, **_kw):
         names = [
             (lb or {}).get("name") for lb in (payload.issue.labels or []) if isinstance(lb, dict)
         ]

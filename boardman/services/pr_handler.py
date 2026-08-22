@@ -82,12 +82,12 @@ def _mutation_really_failed(mutation: dict[str, Any]) -> bool:
         return False
     ops = mutation.get("operations")
     ops = ops if isinstance(ops, dict) else {}
-    others = [
-        v
-        for k, v in ops.items()
-        if isinstance(v, dict) and k not in ("item_text_fields", "field_diff", "text_diff")
-    ]
-    text_refused = not bool((ops.get("item_text_fields") or {}).get("ok", True))
+    _TEXT_OPS = ("item_text_fields", "legacy_text_fields", "field_diff", "text_diff")
+    others = [v for k, v in ops.items() if isinstance(v, dict) and k not in _TEXT_OPS]
+    text_refused = any(
+        not bool((ops.get(k) or {}).get("ok", True))
+        for k in ("item_text_fields", "legacy_text_fields")
+    )
     return not (text_refused and others and all(bool(v.get("ok")) for v in others))
 
 

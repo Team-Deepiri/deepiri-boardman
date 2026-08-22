@@ -637,7 +637,13 @@ class GitHubEventPoller:
             created = _parse_iso(str(pr.get("created_at") or ""))
             if created is not None and created >= baseline and num not in proc["prs_opened"]:
                 proc["prs_opened"].add(num)
-                result = await self._run_handler(self._pr_payload(pr, full_name, "opened"))
+                # Every PR the direct poll discovers is a REPLAY: `prs_opened` resets on
+                # restart, so anything in the catch-up window is re-detected as fresh. A
+                # task a QA moved to In QA within that window was dragged back to Needs QA
+                # -- exactly the regression `is_replay` was added to prevent.
+                result = await self._run_handler(
+                    self._pr_payload(pr, full_name, "opened"), is_replay=True
+                )
                 _log.info(
                     "poller: PR #%s opened -> %s", num, (result or {}).get("message") or result
                 )
@@ -951,7 +957,7 @@ class GitHubEventPoller:
             log_degraded(_log, f"poller: reading withdrawn links for {repo_short}", exc)
             return set()
 
-    async def _run_handler(self, parsed: Any) -> dict[str, Any] | None:
+    async def _run_handler(self, parsed: Any, *, is_replay: bool = False) -> dict[str, Any] | None:
         """Mirror of the dispatch in routes/github_events.py, with a poller-owned DB session."""
         async with async_session() as session:
             try:
@@ -993,7 +999,12 @@ class GitHubEventPoller:
                     result = await handle_issue_comment_on_pr(parsed, session)
                 elif isinstance(parsed, PullRequestEventPayload):
                     if parsed.action in ("opened", "reopened"):
-                        result = await handle_pr_opened(parsed, session)
+                        # An `opened` from the events feed after a restart is a replay,
+                        # not a PR arriving for the first time. A `reopened` is a real
+                        # event and should be handled as one.
+                        result = await handle_pr_opened(
+                            parsed, session, is_replay=parsed.action == "opened"
+                        )
                     elif parsed.action == "ready_for_review":
                         from boardman.services.pr_handler import handle_pr_ready_for_review
 
