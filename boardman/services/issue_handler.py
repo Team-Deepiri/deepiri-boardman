@@ -573,15 +573,19 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     }
 
 
-async def get_linked_issue_numbers(pr_body: str | None, *, repo_full_name: str = "") -> list[int]:
-    """Body-only view of the closing keywords, kept for callers that only have a body.
+async def get_linked_issue_numbers(
+    pr_body: str | None, *, repo_full_name: str = "", pr_title: str | None = None
+) -> list[int]:
+    """The WRITTEN closing keywords, across the body and (when given) the title.
 
     Pass `repo_full_name` whenever the caller knows it: without it a closing keyword in
     front of ANOTHER repository's issue URL resolves as this repository's issue of the
-    same number. Prefer `linked_issue_numbers_for_pr`, which also reads the title and (as
-    a last resort) the branch name.
+    same number. Pass `pr_title` too -- people put "Fixes #12" in a title and leave the
+    body empty, and a caller that reads only the body finds no link at all where `opened`
+    found one. The branch name is deliberately NOT read here: these callers write link
+    rows, and a branch is a weaker claim than a written keyword.
     """
-    return explicit_issue_numbers(pr_body, repo_full_name=repo_full_name)
+    return explicit_issue_numbers(pr_body, pr_title, repo_full_name=repo_full_name)
 
 
 async def find_plaky_task_by_issue(

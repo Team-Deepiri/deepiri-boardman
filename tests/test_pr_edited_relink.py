@@ -1199,3 +1199,123 @@ async def test_a_late_link_that_cannot_read_the_board_does_not_ask_for_qa(monkey
     # A PR being opened is a different statement -- it is new work, and Needs QA is right.
     await ph._maybe_set_needs_qa(None, TASK_94, False, "269031", allow_regression=True)
     assert [t for t, _ in writes] == [TASK_94]
+
+
+@pytest.mark.asyncio
+async def test_a_branch_named_link_does_not_complete_the_task_on_merge(
+    db_session, workflow, monkeypatch
+) -> None:
+    """Linking on a branch name is right. Completing on one is a claim the author did not
+    make.
+
+    GitHub closes an issue for `Fixes #94` and never for a branch called
+    `issue-94-add-retries`, so merging a PR whose only connection to the issue is its
+    branch marked the issue's task Completed on a guess. The link still carries every
+    comment, review and status the PR produces; the issue's own close event is what
+    finishes it.
+    """
+    from boardman.database.models import SyncLog
+    from boardman.services.pr_task_registry import _BRANCH_REF_LINK_SOURCE
+
+    completed: list[str] = []
+
+    async def fake_status(task_id, value, board_id, *, status_field_key=None):
+        completed.append(str(task_id))
+        return {"ok": True}
+
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source=_BRANCH_REF_LINK_SOURCE,
+        )
+    )
+    await db_session.commit()
+
+    merged = _pr("")
+    merged.pull_request.merged = True
+    merged.pull_request.state = "closed"
+    res = await ph.handle_pr_merged(merged, db_session)
+
+    assert completed == [], "a branch name completed the issue's task"
+    assert [r.get("reason") for r in res["updated"]] == ["branch_only_link"]
+    rows = (await db_session.execute(select(SyncLog))).scalars().all()
+    assert any(r.action == "pr_merged_not_completed" for r in rows), "and it says why"
+
+
+@pytest.mark.asyncio
+async def test_a_written_link_still_completes_the_task_on_merge(
+    db_session, workflow, monkeypatch
+) -> None:
+    """The other half: what the author wrote is exactly what merging finishes."""
+    completed: list[str] = []
+
+    async def fake_status(task_id, value, board_id, *, status_field_key=None):
+        completed.append(str(task_id))
+        return {"ok": True}
+
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="issue_keyword",
+        )
+    )
+    await db_session.commit()
+
+    merged = _pr("Fixes #94")
+    merged.pull_request.merged = True
+    merged.pull_request.state = "closed"
+    await ph.handle_pr_merged(merged, db_session)
+
+    assert completed == [TASK_94]
+
+
+@pytest.mark.asyncio
+async def test_opening_a_pr_records_which_kind_of_link_it_found(db_session, workflow) -> None:
+    """The registry has to remember whether a person wrote the reference or a branch
+    implied it, because merge treats them differently."""
+    from boardman.services.pr_task_registry import _BRANCH_REF_LINK_SOURCE
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    branch_pr = _pr("no reference in the body")
+    branch_pr.pull_request.head = {"ref": "issue-94-add-retries"}
+    branch_pr.pull_request.number = 88
+    await ph.handle_pr_opened(branch_pr, db_session)
+
+    written_pr = _pr("Fixes #94")
+    written_pr.pull_request.number = 89
+    await ph.handle_pr_opened(written_pr, db_session)
+
+    rows = (await db_session.execute(select(PullRequestTaskLink))).scalars().all()
+    by_pr = {row.github_pr_number: row.link_source for row in rows}
+    assert by_pr[88] == _BRANCH_REF_LINK_SOURCE
+    assert by_pr[89] == "issue_keyword"
+
+
+def test_a_re_run_does_not_resume_work_somebody_paused() -> None:
+    """Paused ranks alongside In Progress, because the work is still owned and still
+    coming back. That made it LOWER than Needs QA, so a PR linked three days late asked
+    for QA on a task a person had deliberately put on hold. Resuming is a decision, and
+    the events that carry one do not come through this guard."""
+    from boardman.services.sync_state import (
+        status_intent_would_regress,
+        status_would_move_backwards,
+    )
+
+    assert status_would_move_backwards("workflow_paused", "workflow_needs_qa") is True
+    assert status_would_move_backwards("workflow_paused", "workflow_in_qa") is True
+    # In Progress is not a hold, and a late link may still ask for QA from it.
+    assert status_would_move_backwards("workflow_in_progress", "workflow_needs_qa") is False
+    # And ownership still moves on a paused task -- who owns it is a different question.
+    assert status_intent_would_regress("workflow_paused", "workflow_assigned") is True

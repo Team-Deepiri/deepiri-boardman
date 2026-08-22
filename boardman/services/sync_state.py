@@ -229,6 +229,14 @@ WORKFLOW_RANK: dict[str, int] = {
 # in either direction, because that is what they are for.
 ASSIGNEE_DERIVED_INTENTS = frozenset({"workflow_needs_assigned", "workflow_assigned"})
 
+# Positions a person put the task in ON PURPOSE, which a re-run of an earlier step has no
+# business leaving. Paused ranks alongside In Progress because the work is still owned and
+# still coming back, but that rank made it LOWER than Needs QA, so a PR linked late asked
+# for QA on a task somebody had deliberately put on hold. Resuming paused work is a
+# decision, and the events that carry it -- a comment saying resume, a review, a merge --
+# do not come through the re-run guard.
+DELIBERATE_HOLD_INTENTS = frozenset({"workflow_paused"})
+
 
 def workflow_rank(intent: str) -> int | None:
     """How far along `intent` sits, or None when it is not a workflow position."""
@@ -279,6 +287,10 @@ def status_would_move_backwards(current_intent: str, next_intent: str) -> bool:
     """
     if current_intent == UNREADABLE_STATUS:
         # Same reasoning as above: an unread board is not permission.
+        return True
+    if current_intent in DELIBERATE_HOLD_INTENTS and next_intent not in DELIBERATE_HOLD_INTENTS:
+        # Not a rank comparison: Paused sits at the same rank as In Progress, so Needs QA
+        # counts as "forward" from it. Somebody paused this on purpose.
         return True
     current = workflow_rank(current_intent)
     following = workflow_rank(next_intent)

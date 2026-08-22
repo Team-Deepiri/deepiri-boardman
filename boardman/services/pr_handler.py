@@ -32,6 +32,7 @@ from boardman.services.pr_task_linking import (
     should_run_pipeline,
 )
 from boardman.services.pr_task_registry import (
+    _BRANCH_REF_LINK_SOURCE,
     _SUPERSEDED_LINK_SOURCE,
     distinct_task_ids_for_pr,
     has_any_open_pr_for_task,
@@ -697,6 +698,7 @@ async def _link_pr_to_issue_task(
     headline: str,
     is_late_link: bool = False,
     announce: bool = True,
+    link_source: str = "issue_keyword",
 ) -> None:
     """Attach one PR to the Plaky task an issue already owns, and run the PR workflow.
 
@@ -716,7 +718,7 @@ async def _link_pr_to_issue_task(
         github_pr_number=pr_number,
         plaky_task_id=mapping.plaky_task_id,
         github_issue_number=int(issue_number),
-        link_source="issue_keyword",
+        link_source=link_source,
     )
     if announce:
         # Skipped when the card already belongs to this PR: triage created it for this
@@ -854,6 +856,14 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                 board_id=board_id,
                 is_draft=is_draft,
                 headline="**PR Opened:**",
+                # A branch called `issue-94-add-retries` links the PR to that task, and
+                # everything the PR does belongs there. It is not the author writing
+                # "Fixes #94", though, and the row has to remember which it was: merging
+                # completes what the author said the PR closes, and GitHub itself never
+                # closes an issue for a branch name.
+                link_source=(
+                    "issue_keyword" if int(issue_num) in written_issues else _BRANCH_REF_LINK_SOURCE
+                ),
             )
             results.append({"issue": issue_num, "task_id": mapping.plaky_task_id})
 
@@ -1471,7 +1481,9 @@ async def handle_pr_ready_for_review(
     )
     if not task_ids:
         linked_issues = await get_linked_issue_numbers(
-            payload.pull_request.body, repo_full_name=payload.repository.full_name
+            payload.pull_request.body,
+            repo_full_name=payload.repository.full_name,
+            pr_title=payload.pull_request.title,
         )
         for issue_num in linked_issues:
             mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
@@ -1706,7 +1718,9 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
     pr_url = payload.pull_request.html_url
 
     linked_issues = await get_linked_issue_numbers(
-        payload.pull_request.body, repo_full_name=payload.repository.full_name
+        payload.pull_request.body,
+        repo_full_name=payload.repository.full_name,
+        pr_title=payload.pull_request.title,
     )
 
     plaky = PlakyClient()
@@ -1725,10 +1739,20 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
     merged_rows = await mark_pr_merged(session, github_repo=repo_name, github_pr_number=pr_number)
 
     affected_tasks: set[str] = {row.plaky_task_id for row in merged_rows}
+    # Tasks the PR is linked to by something the author WROTE. A link inferred from the
+    # branch name still receives everything else the PR does, but merging does not finish
+    # it: GitHub closes an issue for "Fixes #94" and never for a branch called issue-94,
+    # and the issue's own close event completes the task when the work really is done.
+    stated_tasks: set[str] = {
+        str(row.plaky_task_id)
+        for row in merged_rows
+        if str(row.link_source or "") != _BRANCH_REF_LINK_SOURCE
+    }
     for issue_num in linked_issues:
         mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
         if mapping:
             affected_tasks.add(mapping.plaky_task_id)
+            stated_tasks.add(str(mapping.plaky_task_id))
 
     if not affected_tasks:
         await remove_pr_row(payload.pull_request, payload.repository, session)
@@ -1759,6 +1783,26 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
     results: list[dict[str, Any]] = []
 
     for task_id in sorted(affected_tasks):
+        if task_id not in stated_tasks:
+            _log.info(
+                "PR #%s: task %s is linked by branch name only; leaving completion to "
+                "the issue's own close event",
+                pr_number,
+                task_id,
+            )
+            session.add(
+                SyncLog(
+                    action="pr_merged_not_completed",
+                    github_repo=repo_name,
+                    github_ref=str(pr_number),
+                    plaky_task_id=task_id,
+                    detail=json.dumps(
+                        {"pr_url": pr_url, "reason": "branch_name_link_is_not_a_closing_keyword"}
+                    ),
+                )
+            )
+            results.append({"task_id": task_id, "completed": False, "reason": "branch_only_link"})
+            continue
         if settings.plaky_complete_when_all_prs_merged and await has_any_open_pr_for_task(
             session, plaky_task_id=task_id
         ):
@@ -1813,6 +1857,7 @@ async def handle_pr_review_comment(
     linked_issues = await get_linked_issue_numbers(
         payload.pull_request.body if payload.pull_request else None,
         repo_full_name=full_name,
+        pr_title=payload.pull_request.title if payload.pull_request else None,
     )
 
     task_ids_with_issue: list[tuple[str, int | None]] = []

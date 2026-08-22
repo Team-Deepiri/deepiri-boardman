@@ -15,6 +15,12 @@ from boardman.database.models import PullRequestTaskLink
 # distinguishes "this PR is closed for now" from "this card is not this PR's card any
 # more", which reopening must not undo.
 _SUPERSEDED_LINK_SOURCE = "superseded_by_issue_link"
+# Stamped on a link inferred from the BRANCH NAME rather than a written closing keyword.
+# The link itself is wanted -- `issue-94-add-retries` is a convention this team uses, and
+# the PR's comments and reviews belong on that task. What it is not is a statement that
+# merging the PR finishes the issue: GitHub closes an issue for `Fixes #94` and never for
+# a branch name, and Boardman should not claim more than the author wrote.
+_BRANCH_REF_LINK_SOURCE = "branch_ref"
 
 
 async def upsert_pr_task_link(
