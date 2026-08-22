@@ -21,6 +21,14 @@ _SUPERSEDED_LINK_SOURCE = "superseded_by_issue_link"
 # merging the PR finishes the issue: GitHub closes an issue for `Fixes #94` and never for
 # a branch name, and Boardman should not claim more than the author wrote.
 _BRANCH_REF_LINK_SOURCE = "branch_ref"
+# Stamped on a link from a closing keyword in the PR TITLE. A person wrote it, so it is a
+# real link and everything the PR does belongs on that task. GitHub still does not act on
+# it -- only the description and commit messages close an issue -- so the issue stays open
+# after the merge, and completing the task from the title alone would put the board in a
+# state the issue's own events then contradict.
+_TITLE_REF_LINK_SOURCE = "issue_keyword_title"
+# Links a merge must not treat as "the author said this PR finishes that issue".
+_WEAK_COMPLETION_LINK_SOURCES = (_BRANCH_REF_LINK_SOURCE, _TITLE_REF_LINK_SOURCE)
 
 
 async def upsert_pr_task_link(

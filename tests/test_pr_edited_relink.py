@@ -1243,7 +1243,7 @@ async def test_a_branch_named_link_does_not_complete_the_task_on_merge(
     res = await ph.handle_pr_merged(merged, db_session)
 
     assert completed == [], "a branch name completed the issue's task"
-    assert [r.get("reason") for r in res["updated"]] == ["branch_only_link"]
+    assert [r.get("reason") for r in res["updated"]] == ["weak_link"]
     rows = (await db_session.execute(select(SyncLog))).scalars().all()
     assert any(r.action == "pr_merged_not_completed" for r in rows), "and it says why"
 
@@ -1319,3 +1319,89 @@ def test_a_re_run_does_not_resume_work_somebody_paused() -> None:
     assert status_would_move_backwards("workflow_in_progress", "workflow_needs_qa") is False
     # And ownership still moves on a paused task -- who owns it is a different question.
     assert status_intent_would_regress("workflow_paused", "workflow_assigned") is True
+
+
+@pytest.mark.asyncio
+async def test_a_title_only_keyword_links_but_does_not_complete(
+    db_session, workflow, monkeypatch
+) -> None:
+    """GitHub acts on closing keywords in the DESCRIPTION and commit messages. Not titles.
+
+    A person did write "Fixes #94" in the title, so the link is real and the PR's reviews
+    and comments belong on that task. But the merge leaves the issue OPEN on GitHub, so
+    completing the task from the title puts the board in a state the issue's own events
+    then contradict -- Completed here, open there, until something flaps.
+    """
+    from boardman.services.pr_task_registry import _TITLE_REF_LINK_SOURCE
+
+    completed: list[str] = []
+
+    async def fake_status(task_id, value, board_id, *, status_field_key=None):
+        completed.append(str(task_id))
+        return {"ok": True}
+
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    titled = _pr("")
+    titled.pull_request.title = "Fixes #94: retry the flaky upload"
+    await ph.handle_pr_opened(titled, db_session)
+
+    rows = (await db_session.execute(select(PullRequestTaskLink))).scalars().all()
+    assert [(r.github_issue_number, r.link_source) for r in rows] == [
+        (94, _TITLE_REF_LINK_SOURCE)
+    ], "the link is real, and it remembers it came from the title"
+
+    titled.pull_request.merged = True
+    titled.pull_request.state = "closed"
+    res = await ph.handle_pr_merged(titled, db_session)
+    assert completed == [], "the board said Completed while the issue was still open"
+    assert [r.get("reason") for r in res["updated"]] == ["weak_link"]
+
+
+@pytest.mark.asyncio
+async def test_dropping_one_of_two_issues_withdraws_that_link(
+    db_session, workflow, monkeypatch
+) -> None:
+    """Editing "Fixes #94 and Fixes #95" down to "Fixes #95" has to retire #94.
+
+    The withdrawal was gated on links resolved by THIS delivery, and this edit resolves
+    nothing new -- #95 was already linked. So #94's card kept receiving the PR's comments
+    and reviews, and merging still completed it, for an issue the author had taken the PR
+    off. The docstring promised the opposite.
+    """
+    await _seed_issue_task(db_session, 94, TASK_94)
+    await _seed_issue_task(db_session, 95, TASK_95)
+    db_session.add_all(
+        [
+            PullRequestTaskLink(
+                github_repo=REPO,
+                github_pr_number=88,
+                github_issue_number=94,
+                plaky_task_id=TASK_94,
+                link_source="issue_keyword",
+            ),
+            PullRequestTaskLink(
+                github_repo=REPO,
+                github_pr_number=88,
+                github_issue_number=95,
+                plaky_task_id=TASK_95,
+                link_source="issue_keyword",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    res = await ph.reconcile_pr_issue_links(_pr("Fixes #95"), db_session)
+
+    assert res["changed"] is True
+    assert [w["issue"] for w in res["withdrawn"]] == [94]
+
+    rows = (await db_session.execute(select(PullRequestTaskLink))).scalars().all()
+    live = {r.github_issue_number: r.withdrawn_at for r in rows}
+    assert live[95] is None, "the issue the author kept is untouched"
+    assert live[94] is not None, "the one they dropped is retired"
+
+    # Idempotent: replaying the same edit changes nothing further.
+    again = await ph.reconcile_pr_issue_links(_pr("Fixes #95"), db_session)
+    assert again["changed"] is False

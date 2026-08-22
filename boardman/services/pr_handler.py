@@ -34,6 +34,8 @@ from boardman.services.pr_task_linking import (
 from boardman.services.pr_task_registry import (
     _BRANCH_REF_LINK_SOURCE,
     _SUPERSEDED_LINK_SOURCE,
+    _TITLE_REF_LINK_SOURCE,
+    _WEAK_COMPLETION_LINK_SOURCES,
     distinct_task_ids_for_pr,
     has_any_open_pr_for_task,
     mark_pr_merged,
@@ -686,6 +688,26 @@ async def _maybe_triage_ambiguous_pr(
     }
 
 
+def _issue_link_source(
+    issue_number: int, body_written: Sequence[int], written: Sequence[int]
+) -> str:
+    """Which kind of statement links this PR to that issue.
+
+    Three kinds, and merge treats them differently. The description is the one GitHub acts
+    on, so it is the only one that means "merging this finishes that issue". A title
+    keyword and a branch convention are both real links -- a person wrote the title, and
+    this team names branches after issues on purpose -- but GitHub leaves the issue open
+    after such a merge, and a board saying Completed while the issue is still open is a
+    state the issue's own events go on to contradict.
+    """
+    n = int(issue_number)
+    if n in body_written:
+        return "issue_keyword"
+    if n in written:
+        return _TITLE_REF_LINK_SOURCE
+    return _BRANCH_REF_LINK_SOURCE
+
+
 async def _link_pr_to_issue_task(
     session: AsyncSession,
     plaky: PlakyClient,
@@ -830,6 +852,9 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
     written_issues = explicit_issue_numbers(
         payload.pull_request.body, payload.pull_request.title, repo_full_name=full_name
     )
+    body_written_issues = explicit_issue_numbers(
+        payload.pull_request.body, repo_full_name=full_name
+    )
 
     from boardman.repos_config import get_routing_async
 
@@ -856,14 +881,7 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                 board_id=board_id,
                 is_draft=is_draft,
                 headline="**PR Opened:**",
-                # A branch called `issue-94-add-retries` links the PR to that task, and
-                # everything the PR does belongs there. It is not the author writing
-                # "Fixes #94", though, and the row has to remember which it was: merging
-                # completes what the author said the PR closes, and GitHub itself never
-                # closes an issue for a branch name.
-                link_source=(
-                    "issue_keyword" if int(issue_num) in written_issues else _BRANCH_REF_LINK_SOURCE
-                ),
+                link_source=_issue_link_source(int(issue_num), body_written_issues, written_issues),
             )
             results.append({"issue": issue_num, "task_id": mapping.plaky_task_id})
 
@@ -1098,6 +1116,7 @@ async def reconcile_pr_issue_links(
     written = explicit_issue_numbers(
         payload.pull_request.body, payload.pull_request.title, repo_full_name=repo_full
     )
+    body_written = explicit_issue_numbers(payload.pull_request.body, repo_full_name=repo_full)
     referenced = linked_issue_numbers_for_pr(
         body=payload.pull_request.body,
         title=payload.pull_request.title,
@@ -1171,6 +1190,7 @@ async def reconcile_pr_issue_links(
             headline="**PR Linked:**",
             is_late_link=True,
             announce=str(mapping.plaky_task_id) not in already_ours,
+            link_source=_issue_link_source(int(issue_num), body_written, written),
         )
         linked.append({"issue": int(issue_num), "task_id": mapping.plaky_task_id})
 
@@ -1179,12 +1199,20 @@ async def reconcile_pr_issue_links(
     # was none, but it must never be the reason a curated one is torn down: a PR on
     # `94-add-retries` whose body loses `Fixes #95` would otherwise silently move to
     # issue 94's task and withdraw the working 95 link.
-    if linked and written:
-        # Only now: the author WROTE a different issue, and that issue has a task.
+    # Links that survive this edit: resolved just now, or already live and still named.
+    # Gating on the new ones alone left a dropped reference standing forever -- editing
+    # "Fixes #94 and Fixes #95" down to "Fixes #95" resolves nothing new, so #94 kept
+    # receiving this PR's activity and merging still completed it.
+    still_linked_task_ids = {
+        str(row.plaky_task_id) for row in rows if int(row.github_issue_number) in referenced
+    }
+    if (linked or still_linked_task_ids) and written:
+        # Only now: the author WROTE which issues this PR belongs to, and at least one of
+        # them has a task for the work to live on.
         now = datetime.utcnow()
         superseded = [row for row in rows if int(row.github_issue_number) not in referenced]
         superseded += standalone_rows
-        linked_task_ids = {str(x["task_id"]) for x in linked}
+        linked_task_ids = {str(x["task_id"]) for x in linked} | still_linked_task_ids
         canonical = ", ".join(sorted(linked_task_ids))
         for row in superseded:
             issue_number = int(row.github_issue_number)
@@ -1485,6 +1513,9 @@ async def handle_pr_ready_for_review(
             repo_full_name=payload.repository.full_name,
             pr_title=payload.pull_request.title,
         )
+        body_closes = await get_linked_issue_numbers(
+            payload.pull_request.body, repo_full_name=payload.repository.full_name
+        )
         for issue_num in linked_issues:
             mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
             if mapping:
@@ -1494,7 +1525,10 @@ async def handle_pr_ready_for_review(
                     github_pr_number=pr_number,
                     plaky_task_id=mapping.plaky_task_id,
                     github_issue_number=int(issue_num),
-                    link_source="issue_keyword",
+                    # Where the keyword was written decides what merging may claim, and
+                    # this row is the only record of it. Flattening it here would let a
+                    # draft going ready promote a title-only link to a written one.
+                    link_source=_issue_link_source(int(issue_num), body_closes, linked_issues),
                 )
                 task_ids.append(mapping.plaky_task_id)
         task_ids = list(dict.fromkeys(task_ids))
@@ -1723,6 +1757,11 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
         pr_title=payload.pull_request.title,
     )
 
+    # What the author wrote WHERE. Only the description is a keyword GitHub acts on.
+    body_closes = await get_linked_issue_numbers(
+        payload.pull_request.body, repo_full_name=payload.repository.full_name
+    )
+
     plaky = PlakyClient()
     for issue_num in linked_issues:
         mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
@@ -1733,26 +1772,31 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
                 github_pr_number=pr_number,
                 plaky_task_id=mapping.plaky_task_id,
                 github_issue_number=int(issue_num),
-                link_source="issue_keyword",
+                # Not a flat "issue_keyword". This upsert runs BEFORE the rows are read
+                # below, so writing that here promoted a title-only or branch-inferred
+                # link to a written one on the way past, and the task was completed on
+                # the strength of a row this very function had just relabelled.
+                link_source=_issue_link_source(int(issue_num), body_closes, linked_issues),
             )
 
     merged_rows = await mark_pr_merged(session, github_repo=repo_name, github_pr_number=pr_number)
 
     affected_tasks: set[str] = {row.plaky_task_id for row in merged_rows}
-    # Tasks the PR is linked to by something the author WROTE. A link inferred from the
-    # branch name still receives everything else the PR does, but merging does not finish
-    # it: GitHub closes an issue for "Fixes #94" and never for a branch called issue-94,
-    # and the issue's own close event completes the task when the work really is done.
+    # Tasks this PR is linked to by a closing keyword in the DESCRIPTION. A title keyword
+    # or a branch convention still carries everything else the PR does, but merging does
+    # not finish the issue: GitHub leaves it open, and a board saying Completed against an
+    # open issue is a disagreement the issue's own close event is there to settle.
     stated_tasks: set[str] = {
         str(row.plaky_task_id)
         for row in merged_rows
-        if str(row.link_source or "") != _BRANCH_REF_LINK_SOURCE
+        if str(row.link_source or "") not in _WEAK_COMPLETION_LINK_SOURCES
     }
     for issue_num in linked_issues:
         mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
         if mapping:
             affected_tasks.add(mapping.plaky_task_id)
-            stated_tasks.add(str(mapping.plaky_task_id))
+            if int(issue_num) in body_closes:
+                stated_tasks.add(str(mapping.plaky_task_id))
 
     if not affected_tasks:
         await remove_pr_row(payload.pull_request, payload.repository, session)
@@ -1785,8 +1829,8 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
     for task_id in sorted(affected_tasks):
         if task_id not in stated_tasks:
             _log.info(
-                "PR #%s: task %s is linked by branch name only; leaving completion to "
-                "the issue's own close event",
+                "PR #%s: task %s is linked by a reference GitHub does not act on; "
+                "leaving completion to the issue's own close event",
                 pr_number,
                 task_id,
             )
@@ -1797,11 +1841,11 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
                     github_ref=str(pr_number),
                     plaky_task_id=task_id,
                     detail=json.dumps(
-                        {"pr_url": pr_url, "reason": "branch_name_link_is_not_a_closing_keyword"}
+                        {"pr_url": pr_url, "reason": "not a closing keyword GitHub acts on"}
                     ),
                 )
             )
-            results.append({"task_id": task_id, "completed": False, "reason": "branch_only_link"})
+            results.append({"task_id": task_id, "completed": False, "reason": "weak_link"})
             continue
         if settings.plaky_complete_when_all_prs_merged and await has_any_open_pr_for_task(
             session, plaky_task_id=task_id
