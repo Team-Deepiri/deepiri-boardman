@@ -441,3 +441,54 @@ async def test_a_late_link_fills_the_assignee_without_claiming_assigned(monkeypa
     person_writes = [w for w in writes if getattr(w, "engineer_plaky_id", None)]
     assert person_writes, "the assignee is still filled"
     assert all(w.status is None for w in person_writes), "but Assigned is not claimed"
+
+
+@pytest.mark.asyncio
+async def test_an_unreadable_board_refuses_the_whole_assignment_event(
+    db_session, board, monkeypatch
+) -> None:
+    """The guard failing OPEN is how Assigned lands on top of In QA during a Plaky blip --
+    the exact failure it exists to stop. And refusing only the STATUS while still writing
+    the person leaves a card showing a developer while parked at NEEDS ASSIGNED. When the
+    board does not answer, none of the event is applied; the next assignment or a
+    reconciliation sweep applies it."""
+    from boardman.plaky.dynamic_qa_status import UNREADABLE_STATUS
+
+    _at_status(monkeypatch, UNREADABLE_STATUS)
+
+    res = await ih.handle_issue_changed(_issue_event("assigned"), db_session)
+
+    assert res["status"] is None
+    assert res["status_held_back"] == UNREADABLE_STATUS
+    assert board and board[0].engineer_plaky_id is None
+    assert board[0].clear_engineer_assignee is False
+
+
+@pytest.mark.asyncio
+async def test_a_plaky_blip_does_not_abort_the_whole_sync(monkeypatch) -> None:
+    """These callers made no item read at all before the guard existed, so a transport
+    failure must not start aborting issue and PR syncs."""
+    import httpx
+
+    from boardman.plaky import dynamic_qa_status as dq
+
+    class Exploding:
+        async def get_board_item_public(self, *_a, **_k):
+            raise httpx.ConnectError("plaky unreachable")
+
+    monkeypatch.setattr("boardman.plaky.client.PlakyClient", lambda *a, **k: Exploding())
+
+    assert await dq.current_status_intent(BOARD, TASK, "status_key") == dq.UNREADABLE_STATUS
+
+
+@pytest.mark.asyncio
+async def test_a_board_that_answers_but_cannot_be_read_is_also_unreadable(monkeypatch) -> None:
+    from boardman.plaky import dynamic_qa_status as dq
+
+    class NoItem:
+        async def get_board_item_public(self, *_a, **_k):
+            return {"ok": False, "item": None}
+
+    monkeypatch.setattr("boardman.plaky.client.PlakyClient", lambda *a, **k: NoItem())
+
+    assert await dq.current_status_intent(BOARD, TASK, "status_key") == dq.UNREADABLE_STATUS
