@@ -441,12 +441,14 @@ async def _sync_plain_issue_comment(
     commenter = ""
     comment_body = ""
     comment_url = ""
+    comment_edited_at = ""
     if isinstance(payload.comment, dict):
         u = payload.comment.get("user")
         if isinstance(u, dict):
             commenter = str(u.get("login") or "").strip()
         comment_body = str(payload.comment.get("body") or "").strip()
         comment_url = str(payload.comment.get("html_url") or "").strip()
+        comment_edited_at = str(payload.comment.get("updated_at") or "").strip()
     if commenter.endswith("[bot]"):
         return {"ok": True, "skipped": True, "message": "bot comment ignored"}
     if not comment_body:
@@ -484,6 +486,7 @@ async def _sync_plain_issue_comment(
         github_ref=str(issue_number),
         is_revision=is_revision,
         revision_body=comment_body,
+        edited_at=comment_edited_at,
     )
     await session.commit()
     return {
@@ -530,12 +533,14 @@ async def handle_issue_comment_on_pr(
     comment_user: dict[str, Any] = {}
     commenter = ""
     comment_body = ""
+    comment_edited_at = ""
     if isinstance(payload.comment, dict):
         u = payload.comment.get("user")
         if isinstance(u, dict):
             comment_user = u
             commenter = str(u.get("login") or "").strip()
         comment_body = str(payload.comment.get("body") or "")
+        comment_edited_at = str(payload.comment.get("updated_at") or "").strip()
 
     bid = (board_id or "").strip()
     comment_url = (
@@ -574,6 +579,7 @@ async def handle_issue_comment_on_pr(
                 github_ref=str(pr_number),
                 is_revision=is_revision,
                 revision_body=comment_body,
+                edited_at=comment_edited_at,
             )
         )
     await session.commit()

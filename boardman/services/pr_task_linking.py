@@ -29,7 +29,6 @@ from boardman.plaky.client import PlakyClient
 from boardman.repos_config import get_routing_async
 from boardman.services.issue_handler import (
     explicit_issue_numbers,
-    get_linked_issue_numbers,
 )
 from boardman.services.llm_pr_task_rerank import llm_rerank_pr_candidates
 from boardman.settings import settings
@@ -830,13 +829,28 @@ def closing_issue_numbers(pr_body: str | None, *, repo_full_name: str = "") -> l
     return explicit_issue_numbers(pr_body, repo_full_name=repo_full_name)
 
 
-async def should_run_pipeline(pr_body: str | None, *, repo_full_name: str = "") -> bool:
+async def should_run_pipeline(
+    pr_body: str | None,
+    *,
+    repo_full_name: str = "",
+    pr_title: str | None = None,
+    head_ref: str | None = None,
+) -> bool:
     """Run when there are no closing keywords linking an issue.
 
-    The repo matters: a URL naming another repository is not a local link, so a PR that
-    only cites one still needs the fuzzy pipeline rather than being treated as linked.
+    Reads exactly what the linker reads. While this saw only the body, a PR titled
+    "Fixes #12: add retries" with an empty body counted as unlinked and went to the fuzzy
+    pipeline, which can attach it to an unrelated task -- while the same keyword in the
+    body correctly went to orphan triage.
+
+    The repo matters too: a URL naming another repository is not a local link, so a PR
+    that only cites one still needs the pipeline.
     """
-    linked = await get_linked_issue_numbers(pr_body, repo_full_name=repo_full_name)
+    from boardman.services.issue_handler import linked_issue_numbers_for_pr
+
+    linked = linked_issue_numbers_for_pr(
+        body=pr_body, title=pr_title, head_ref=head_ref, repo_full_name=repo_full_name
+    )
     return not linked
 
 

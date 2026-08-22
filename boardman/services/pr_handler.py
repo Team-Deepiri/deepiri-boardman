@@ -835,7 +835,10 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
     if not results:
         pipe_top: Sequence[Any] | None = None
         run_pipe = settings.pr_linking_pipeline_enabled and await should_run_pipeline(
-            payload.pull_request.body, repo_full_name=full_name
+            payload.pull_request.body,
+            repo_full_name=full_name,
+            pr_title=payload.pull_request.title,
+            head_ref=opened_state.head_ref,
         )
         if run_pipe:
             pr_user = payload.pull_request.user or {}

@@ -76,6 +76,7 @@ def _comment_event(
     login: str = "ali-ferris",
     is_pr: bool = True,
     number: int = 88,
+    updated_at: str = "2026-08-21T10:00:00Z",
 ) -> IssueCommentEventPayload:
     issue: dict = {"number": number, "title": "T"}
     if is_pr:
@@ -87,6 +88,7 @@ def _comment_event(
             "id": comment_id,
             "body": body,
             "user": {"login": login},
+            "updated_at": updated_at,
             "html_url": f"https://github.com/{FULL}/pull/{number}#issuecomment-{comment_id}",
         },
         repository={"full_name": FULL, "name": REPO},
@@ -398,3 +400,40 @@ async def test_an_edited_inline_review_comment_does_not_re_drive_the_workflow(
     assert res["event"] == "pr_review_comment_edit_mirrored"
     assert status_writes == [], "an edit updates the record, not the state"
     assert any("edited" in b for b in posted_bodies), "the correction is still on the board"
+
+
+@pytest.mark.asyncio
+async def test_reverting_a_comment_reaches_the_board(db_session, posted) -> None:
+    """Editing back to an earlier wording is news: the board's newest entry would
+    otherwise keep showing text the author had taken back."""
+    await _link_pr_to_task(db_session)
+
+    await rh.handle_issue_comment_on_pr(
+        _comment_event("created", "unblocked, ship it", updated_at="2026-08-21T10:00:00Z"),
+        db_session,
+    )
+    await rh.handle_issue_comment_on_pr(
+        _comment_event("edited", "actually hold on", updated_at="2026-08-21T11:00:00Z"),
+        db_session,
+    )
+    await rh.handle_issue_comment_on_pr(
+        _comment_event("edited", "unblocked, ship it", updated_at="2026-08-21T12:00:00Z"),
+        db_session,
+    )
+
+    assert len(posted) == 3
+    assert "unblocked, ship it" in posted[2][1], "the revert is the newest thing on the board"
+
+
+@pytest.mark.asyncio
+async def test_a_redelivered_edit_still_posts_once(db_session, posted) -> None:
+    """The same edit carries the same updated_at however many times GitHub sends it."""
+    await _link_pr_to_task(db_session)
+    await rh.handle_issue_comment_on_pr(_comment_event("created", "v1"), db_session)
+    edited = _comment_event("edited", "v2", updated_at="2026-08-21T11:00:00Z")
+
+    await rh.handle_issue_comment_on_pr(edited, db_session)
+    await rh.handle_issue_comment_on_pr(edited, db_session)
+    await rh.handle_issue_comment_on_pr(edited, db_session)
+
+    assert len(posted) == 2

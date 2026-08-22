@@ -30,20 +30,32 @@ def github_activity_marker(value: dict | None, *, kind: str, fallback: str = "")
     return f"github:{kind}:{fallback}" if fallback else ""
 
 
-def github_activity_revision_marker(marker: str, body: str) -> str:
+# Separates the timestamp from the body in the revision digest, so a body that starts
+# with a date cannot collide with a different timestamp and an empty-ish body.
+_REVISION_SEPARATOR = "\n--boardman-rev--\n"
+
+
+def github_activity_revision_marker(marker: str, body: str, edited_at: str = "") -> str:
     """Identity for one *version* of a comment: the comment, plus what it currently says.
 
     Plaky's API can create a comment and nothing else -- there is no edit verb and no
     delete verb -- so an edited GitHub comment cannot update the text already on the
     board. Dropping the edit hides a correction; posting it unconditionally duplicates
-    the comment on every redelivery. Keying on (comment id, body) gives the only
-    behaviour that is both honest and idempotent: each distinct wording of a comment is
-    mirrored exactly once, no matter how many times GitHub delivers it, and a redelivered
-    `edited` with unchanged text is recognised as already mirrored.
+    the comment on every redelivery. Keying on (comment id, when it was edited, what it
+    says) gives the only behaviour that is both honest and idempotent: each distinct
+    version reaches the board once however many times GitHub delivers it, and a
+    redelivered `edited` carrying the same updated_at is recognised as already mirrored.
     """
     if not marker:
         return ""
-    digest = hashlib.sha256((body or "").encode("utf-8")).hexdigest()[:16]
+    # `edited_at` (GitHub's comment.updated_at) is what separates a REDELIVERY from a
+    # REVERT. Hashing the body alone made them identical, so editing a comment back to an
+    # earlier wording matched the earlier row and was skipped -- leaving the board's
+    # newest entry showing text the author had taken back. GitHub stamps a new
+    # updated_at for the revert, so it mirrors; a redelivery carries the same one and
+    # still dedupes. Without it, body-only is the old behaviour.
+    payload = (edited_at or "") + _REVISION_SEPARATOR + (body or "")
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
     return f"{marker}:rev:{digest}"
 
 
@@ -82,6 +94,7 @@ async def mirror_github_activity(
     github_ref: str = "",
     is_revision: bool = False,
     revision_body: str | None = None,
+    edited_at: str = "",
 ) -> dict:
     """Mirror one GitHub activity item exactly once and record its identity.
 
@@ -100,7 +113,7 @@ async def mirror_github_activity(
     if not body.strip():
         return {"ok": True, "skipped": True, "message": "empty activity"}
     revision_marker = github_activity_revision_marker(
-        marker, body if revision_body is None else revision_body
+        marker, body if revision_body is None else revision_body, edited_at
     )
     # A create also checks the comment's plain identity, so anything mirrored before
     # revision markers existed is not posted a second time. An edit must not: that row

@@ -951,3 +951,23 @@ async def test_a_card_this_pr_already_owns_is_not_announced_twice(db_session, wo
     assert workflow["comments"] == [], "no second notice on a card this PR already owns"
     assert workflow["type_and_assignee"] == [same], "the rest of the pipeline still ran"
     assert workflow["qa"] == [same]
+
+
+@pytest.mark.asyncio
+async def test_the_pipeline_gate_reads_what_the_linker_reads() -> None:
+    """While the gate saw only the body, a PR titled "Fixes #12: add retries" with an
+    empty body counted as unlinked and went to the fuzzy pipeline, which can attach it to
+    an unrelated task -- while the same keyword in the body went to orphan triage."""
+    from boardman.services.pr_task_linking import should_run_pipeline
+
+    assert (
+        await should_run_pipeline("", repo_full_name=FULL, pr_title="Fixes #12: add retries")
+        is False
+    )
+    assert await should_run_pipeline("", repo_full_name=FULL, pr_title="add retries") is True
+    assert (
+        await should_run_pipeline(
+            "", repo_full_name=FULL, pr_title="add retries", head_ref="issue-12-add-retries"
+        )
+        is False
+    )
