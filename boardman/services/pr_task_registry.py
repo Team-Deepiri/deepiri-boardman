@@ -178,12 +178,21 @@ async def mark_pr_withdrawn(
         PullRequestTaskLink.withdrawn_at.is_(None),
     )
     r = await session.execute(q)
-    rows = list(r.scalars())
     now = datetime.utcnow()
     stamp = (github_updated_at or "").strip()
-    for row in rows:
+    incoming = _github_instant(stamp)
+    rows: list[PullRequestTaskLink] = []
+    for row in r.scalars():
+        already = _github_instant(row.withdrawn_github_at or "")
+        if incoming is not None and already is not None and incoming <= already:
+            # This close is not newer than the one already applied to a link that has since
+            # been revived, so it is a redelivery or an out-of-order arrival. Re-withdrawing
+            # on it leaves an OPEN PR reading as withdrawn -- the mirror image of the case
+            # the revive side guards, and nothing withdraws or revives a second time.
+            continue
         row.withdrawn_at = now
         row.withdrawn_github_at = stamp or None
+        rows.append(row)
     return rows
 
 

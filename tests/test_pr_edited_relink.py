@@ -2246,3 +2246,60 @@ async def test_a_declined_link_does_not_open_a_second_card(
     assert triaged == [], "a second card was opened beside the live one"
     rows = (await db_session.execute(select(PullRequestTaskLink))).scalars().all()
     assert sorted(r.plaky_task_id for r in rows) == sorted([TASK_94, "7183844"])
+
+
+@pytest.mark.asyncio
+async def test_a_redelivered_close_does_not_re_withdraw_a_reopened_pr(db_session) -> None:
+    """The revive side orders deliveries on GitHub's clock; the withdraw side did not.
+
+    A `closed` handled after the `reopened` -- out-of-order webhooks, or a manual
+    redelivery whose fresh delivery id gets past the dedupe -- re-withdrew the links and
+    left an open PR reading as withdrawn. Nothing withdraws or revives a second time, so
+    that state is permanent: exactly what the guard on the other side exists to prevent.
+    """
+    from boardman.services.pr_task_registry import (
+        mark_pr_withdrawn,
+        revive_pr_links,
+        task_ids_for_open_pr,
+    )
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=94,
+            plaky_task_id=TASK_94,
+            link_source="issue_keyword",
+        )
+    )
+    await db_session.commit()
+
+    await mark_pr_withdrawn(
+        db_session, github_repo=REPO, github_pr_number=88, github_updated_at="2026-08-20T12:00:00Z"
+    )
+    await db_session.commit()
+    await revive_pr_links(
+        db_session, github_repo=REPO, github_pr_number=88, not_before="2026-08-20T12:30:00Z"
+    )
+    await db_session.commit()
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == [
+        TASK_94
+    ]
+
+    # The same close arriving again, or late.
+    again = await mark_pr_withdrawn(
+        db_session, github_repo=REPO, github_pr_number=88, github_updated_at="2026-08-20T12:00:00Z"
+    )
+    await db_session.commit()
+    assert again == []
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == [
+        TASK_94
+    ]
+
+    # A genuinely later close still withdraws.
+    closed_again = await mark_pr_withdrawn(
+        db_session, github_repo=REPO, github_pr_number=88, github_updated_at="2026-08-20T14:00:00Z"
+    )
+    await db_session.commit()
+    assert [r.plaky_task_id for r in closed_again] == [TASK_94]
+    assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == []

@@ -493,6 +493,7 @@ class GitHubEventPoller:
                 # without these a developer's "Fixes #12" commit on a feature branch is never
                 # seen — which is where essentially all real work happens.
                 "pr_branches": {},
+                "reopen_probed": set(),
                 "commits": set(),
             }
             _log.info(
@@ -736,7 +737,8 @@ class GitHubEventPoller:
         # about those by number instead. There are normally none, they stop being withdrawn
         # once handled, and the per-cycle cap keeps a strange backlog from spending the
         # whole API budget on one repo.
-        for num in sorted(withdrawn_here - seen_here)[:_MAX_REOPEN_PROBES_PER_CYCLE]:
+        probed = proc.setdefault("reopen_probed", set())
+        for num in sorted(withdrawn_here - seen_here - probed)[:_MAX_REOPEN_PROBES_PER_CYCLE]:
             probe = await client.get(
                 f"https://api.github.com/repos/{full_name}/pulls/{num}", headers=self._gh_headers()
             )
@@ -744,6 +746,13 @@ class GitHubEventPoller:
                 continue
             pr = probe.json()
             if not isinstance(pr, dict) or pr.get("state") != "open":
+                # Closed, and staying closed. Nothing ever clears `withdrawn_at` for one of
+                # those, so without remembering the answer the oldest few took the whole
+                # probe budget every cycle -- permanently, and outside what
+                # `cycle_call_estimate` prices -- while a PR that HAD reopened was never
+                # reached. Per process, so a restart asks once more, which is when it
+                # matters.
+                probed.add(int(num))
                 continue
             proc["prs_closed"].discard(num)
             result = await self._run_handler(self._pr_payload(pr, full_name, "reopened"))
