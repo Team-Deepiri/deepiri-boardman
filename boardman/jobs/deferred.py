@@ -45,8 +45,16 @@ async def _run_claimed_inner(job_id: str, JOB_HANDLERS: dict[str, Any]) -> None:
         return
     try:
         out = await handler(payload)
+        # `status` follows the outcome, matching `sqlite_worker._run_one`. The two runners
+        # race for the same job, so disagreeing about what a failed handler is made the
+        # reported status depend on which one claimed it -- and a client polling for
+        # "complete" read one of them as success.
+        succeeded = bool(out.get("ok", True))
         await mark_job_finished(
-            job_id, success=bool(out.get("ok", True)), status="complete", result=out
+            job_id,
+            success=succeeded,
+            status="complete" if succeeded else "incomplete",
+            result=out,
         )
     except Exception as exc:  # noqa: BLE001 - a background failure must be recorded, not raised
         logger.exception("deferred job %s (%s) failed", job_id, kind)

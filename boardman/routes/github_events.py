@@ -81,6 +81,21 @@ async def dispatch_github_event(
             "repo": full_name,
         }
 
+    # A push is the one event that changes the CODE, and it had no branch here: it fell
+    # through to the payload-model gate, which has no model for it, so file trees,
+    # hotspots, structure and defect scans cached for that repo went on serving pre-push
+    # content for the whole TTL while the tools reported it as current. The poller path
+    # always invalidated; the webhook path -- the production one -- did not.
+    if event_type == "push":
+        full_name = repo_full_name_from_payload(payload_dict)
+        note_repo_changed(full_name, event=event_type)
+        return {
+            "ok": True,
+            "message": "repo read cache invalidated",
+            "event": event_type,
+            "repo": full_name,
+        }
+
     payload = parse_webhook_payload(event_type, payload_dict)
     if not payload:
         return {"ok": False, "message": "Unsupported event type"}
@@ -289,6 +304,14 @@ async def github_webhook(
     try:
         result = await dispatch_github_event(event_type, payload_dict, session)
     except Exception:  # noqa: BLE001 - a handler crash must still mark the delivery
+        # Roll back FIRST. A handler that failed at the database level leaves the session
+        # needing one, and `_mark_delivery` commits: without this the bookkeeping raises
+        # PendingRollbackError, which replaces the real exception on the way out and loses
+        # the failed note too.
+        try:
+            await session.rollback()
+        except Exception:  # noqa: BLE001 - nothing better to do if even that fails
+            log_degraded(_log, "github_webhook: rolling back after a handler failure")
         await _mark_delivery("failed", "unhandled exception in dispatch")
         raise
 

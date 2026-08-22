@@ -122,7 +122,13 @@ def test_idle_locks_are_cleaned_up() -> None:
         ("hotspots:Team-Deepiri/X@main:15", "team-deepiri/x"),
         ("repo-identity:Team-Deepiri/X", "team-deepiri/x"),
         ("nocolonhere", ""),
-        ("weird:notaslug", ""),
+        # A BARE repo name is a supported tool argument, and the key is built from
+        # whatever the caller passed. Returning "" for those meant `defects:boardman` and
+        # `planning:boardman:20` survived every purge, so a push left them stale for the
+        # whole TTL while the neighbouring owner/repo keys were refreshed.
+        ("defects:boardman", "team-deepiri/boardman"),
+        ("planning:boardman:20", "team-deepiri/boardman"),
+        ("weird:a/b/c/d", ""),
     ],
 )
 def test_key_repo_parsing(key: str, expected: str) -> None:

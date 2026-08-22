@@ -100,6 +100,19 @@ async def _current_status_value(
     return plaky_item_status_id(info["item"], fk)
 
 
+async def _engineer_field_key(board_id: str) -> str:
+    """The board's developer/Assignee person column, however this deployment names it."""
+    from boardman.plaky.board_aware import board_person_field_keys
+
+    bid = (board_id or "").strip()
+    if not bid:
+        return ""
+    keys = await board_person_field_keys(bid)
+    if keys is not None:
+        return str(keys.get("engineer") or "")
+    return str(getattr(load_team_assignments(), "plaky_field_engineer", "") or "").strip()
+
+
 async def _current_person_field_value(
     plaky: PlakyClient, board_id: str, task_id: str, field_key: str
 ) -> str:
@@ -1556,6 +1569,21 @@ async def handle_pr_edited(
                         now_at,
                     )
                     task_status, task_status_key = "", None
+            # Fill-only, the rule `_apply_pr_type_and_assignee` enforces and this branch
+            # did not. `state.assignee_login` falls back to the PR AUTHOR, so a card
+            # assigned to the developer who owns the issue was reassigned to whoever
+            # opened a PR against it -- and the reconciliation sweep runs this for every
+            # linked PR, so any manual fix in Plaky came back undone fifteen minutes
+            # later. The status in this same call was already guarded; the assignee
+            # was not.
+            task_engineer = engineer_id
+            if task_engineer and board_id:
+                people_plaky = PlakyClient()
+                eng_key = await _engineer_field_key(board_id)
+                if eng_key and await _current_person_field_value(
+                    people_plaky, board_id, task_id, eng_key
+                ):
+                    task_engineer = ""
             mutation = await update_task_internal(
                 task_id,
                 UpdateTaskInput(
@@ -1563,7 +1591,7 @@ async def handle_pr_edited(
                     description=standalone_description if task_id in standalone_ids else None,
                     task_type=state.task_type,
                     priority=state.priority if state.priority_explicit else None,
-                    engineer_plaky_id=engineer_id or None,
+                    engineer_plaky_id=task_engineer or None,
                     plaky_board_id=board_id or None,
                     status=task_status or None,
                     status_plaky_field_key=task_status_key,

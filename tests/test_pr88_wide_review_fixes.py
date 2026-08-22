@@ -175,3 +175,76 @@ async def test_a_merged_pr_is_not_reconciled_as_closed_without_merge(monkeypatch
     await rc.reconcile_repo("Team-Deepiri/deepiri-boardman", None)
 
     assert routed == ["merged"], routed
+
+
+def test_a_directory_path_does_not_become_the_session_repo() -> None:
+    """The resolved repo is persisted to the session, so a wrong one grounds every later
+    turn. Rejecting only filenames was not enough: `tests/test_smoke` and
+    `.github/workflows` both read as repos, and the assistant then presented them as
+    real."""
+    from boardman.agent.repo_resolution import resolve_repo
+
+    def repo_of(message: str) -> str | None:
+        return resolve_repo(message=message, explicit_repo=None, session_repo=None).repo
+
+    assert repo_of("the flaky test is in tests/test_smoke, file a task") != "tests/test_smoke"
+    assert repo_of("the workflow in .github/workflows is broken") != ".github/workflows"
+
+    # A repo in the watched org is still taken from the message.
+    named = resolve_repo(
+        message="check Team-Deepiri/deepiri-boardman please", explicit_repo=None, session_repo=None
+    )
+    assert named.repo == "Team-Deepiri/deepiri-boardman" and named.source == "message"
+
+
+def test_a_bare_repo_name_in_a_cache_key_is_still_purged() -> None:
+    """A bare name is a supported tool argument and the key is built from whatever the
+    caller passed, so `defects:boardman` survived every purge -- stale for the whole TTL
+    beside owner/repo keys that had just been refreshed."""
+    from boardman.github import read_cache
+
+    assert read_cache._key_repo("defects:boardman") == "team-deepiri/boardman"
+    assert read_cache._key_repo("planning:boardman:20") == "team-deepiri/boardman"
+    assert read_cache._key_repo("structure:Team-Deepiri/X") == "team-deepiri/x"
+
+
+def test_a_push_invalidates_what_is_cached_about_the_repo() -> None:
+    """A push is the one event that changes the code, and it had no branch in the
+    dispatcher: it fell through to the payload-model gate, which has no model for it, so
+    the file trees and scans cached for that repo went on serving pre-push content."""
+    import asyncio
+
+    from boardman.routes.github_events import dispatch_github_event
+
+    payload = {"repository": {"full_name": "Team-Deepiri/deepiri-boardman", "name": "x"}}
+    result = asyncio.get_event_loop().run_until_complete(
+        dispatch_github_event("push", payload, None)
+    )
+    assert result["ok"] is True
+    assert result["repo"] == "Team-Deepiri/deepiri-boardman"
+
+
+def test_a_bot_comment_does_not_reach_the_card() -> None:
+    """A repo running CodeRabbit or Dependabot posts one comment per finding or per bump,
+    and every one was landing on the card the QA reviewer reads."""
+    import inspect
+
+    from boardman.services import pr_review_handler as rh
+
+    source = inspect.getsource(rh.handle_issue_comment_on_pr)
+    assert 'commenter.endswith("[bot]")' in source, "the conversation path has no bot filter"
+
+    review_source = inspect.getsource(rh.handle_pull_request_review)
+    assert 'reviewer_login.endswith("[bot]")' in review_source
+
+
+def test_a_failed_deferred_job_reports_the_same_status_from_either_runner() -> None:
+    """The two runners race for the same job, so disagreeing about what a failed handler
+    is made the reported status depend on which one claimed it -- and a client polling for
+    "complete" read one of them as success."""
+    import inspect
+
+    from boardman.jobs import deferred
+
+    source = inspect.getsource(deferred)
+    assert 'status="complete" if succeeded else "incomplete"' in source

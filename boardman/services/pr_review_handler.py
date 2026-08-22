@@ -255,7 +255,10 @@ async def handle_pull_request_review(
         fallback=f"{repo_name}:{pr_number}:{reviewer_login}:{state}:{review_body}",
     )
     review_mirrors: list[dict[str, Any]] = []
-    if review_body:
+    # A review bot leaves a summary on every push. Mirroring those buries the human
+    # review the QA reviewer is looking for; the bot's verdict still drives nothing here,
+    # since authorization is checked separately below.
+    if review_body and not reviewer_login.endswith("[bot]"):
         review_url = str(review_data.get("html_url") or "").strip()
         review_text = (
             f"📝 **GitHub PR review** by `{reviewer_login or 'unknown'}` on PR #{pr_number}:\n\n"
@@ -544,6 +547,12 @@ async def handle_issue_comment_on_pr(
             commenter = str(u.get("login") or "").strip()
         comment_body = str(payload.comment.get("body") or "")
         comment_edited_at = str(payload.comment.get("updated_at") or "").strip()
+
+    # Same filter the plain-issue path applies, and the inline-review path claims this
+    # path already had. A repo running CodeRabbit or Dependabot posts one comment per
+    # finding or per bump, and every one of them was landing on the Plaky card.
+    if commenter.endswith("[bot]"):
+        return {"ok": True, "skipped": True, "message": "bot comment ignored"}
 
     bid = (board_id or "").strip()
     comment_url = (

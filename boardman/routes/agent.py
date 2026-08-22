@@ -196,7 +196,10 @@ async def agent_job_status(job_id: str) -> dict[str, Any]:
     if data is None:
         return {"ok": True, "job_id": job_id, "status": "not_found"}
     out: dict[str, Any] = {"ok": True, "job_id": job_id, "status": data["status"]}
-    if data["status"] == "complete":
+    # `incomplete` carries the reason now, and gating on "complete" stripped it before it
+    # reached any HTTP caller -- leaving the bare status and no way to find out, which is
+    # the exact thing the queue change was written to fix.
+    if data["status"] in ("complete", "incomplete"):
         if "success" in data:
             out["success"] = data["success"]
         if "result" in data:

@@ -125,7 +125,10 @@ async def reconcile_repo(
                         IssueEventPayload(action="edited", issue=issue, repository=repo_block),
                         session,
                     )
-                if res.get("event") == "issue_labels_synced":
+                # `issue_labels_synced` came from a handler this path no longer calls, so
+                # the counter read zero however much drift the sweep repaired -- and that
+                # number is the whole operator-facing signal that it did anything.
+                if res.get("ok") and not res.get("skipped"):
                     out["issues_resynced"] += 1
         except Exception as e:  # noqa: BLE001 - sync failure must not crash the service
             log_degraded(logger, f"reconcile_repo: reconciling issue #{num}", e)

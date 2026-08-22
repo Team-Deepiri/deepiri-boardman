@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from boardman.assignment.qa_picker import ensure_github_owner_repo
 from boardman.repos_config import list_registered_repos
+from boardman.settings import settings
 
 
 @dataclass(frozen=True)
@@ -55,13 +56,22 @@ def resolve_repo(
     # `boardman/agent` -- and the answer is persisted to the session, so every later
     # question in the conversation was grounded in a repo that does not exist. A path has
     # more slashes or a file extension on the last segment; a repo mention has neither.
+    # The answer is PERSISTED to the session, so a wrong one grounds every later turn in
+    # the conversation. Rejecting only filenames was not enough -- `tests/test_smoke`,
+    # `boardman/services` and `.github/workflows` all read as repos. An owner/repo pair
+    # taken from prose has to be confirmed by something: the org this deployment watches,
+    # or a repo somebody configured.
+    known = {r.casefold() for r in (canonical_repo(k) or "" for k in list_registered_repos()) if r}
+    org = (getattr(settings, "github_org", "") or "").strip().casefold()
     for token in re.findall(
         r"(?<![\w./-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?![\w/-])", message or ""
     ):
         if "." in token.rsplit("/", 1)[-1]:
             continue  # a filename, not a repo
         named = canonical_repo(token)
-        if named:
+        if not named:
+            continue
+        if named.casefold() in known or (org and named.partition("/")[0].casefold() == org):
             return RepoResolution(named, "message")
 
     registered = list_registered_repos()

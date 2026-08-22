@@ -74,8 +74,22 @@ def _key_repo(key: str) -> str:
     _, _, rest = (key or "").partition(":")
     if not rest:
         return ""
-    slug = rest.split("@", 1)[0].split(":", 1)[0]
-    return slug.strip().casefold() if slug.count("/") == 1 else ""
+    slug = rest.split("@", 1)[0].split(":", 1)[0].strip().casefold()
+    if slug.count("/") == 1:
+        return slug
+    # A BARE repo name is a supported tool argument, and the key is built from whatever
+    # the caller passed -- so `defects:boardman` and `planning:boardman:20` were never
+    # purged, and the epoch guard that discards a fetch started before the event could
+    # not fire for them either. Resolve it the same way the tools do.
+    if slug and "/" not in slug:
+        try:
+            from boardman.assignment.qa_picker import ensure_github_owner_repo
+
+            resolved = ensure_github_owner_repo(slug)
+        except Exception:  # noqa: BLE001 - a cache key must never break a purge
+            return ""
+        return str(resolved or "").strip().casefold()
+    return ""
 
 
 def invalidate_repo(full_name: str) -> int:

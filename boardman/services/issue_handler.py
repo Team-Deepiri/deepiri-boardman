@@ -656,7 +656,16 @@ async def _pre_close_status(session: AsyncSession, task_id: str) -> tuple[str | 
     )
     if last_reopen is not None:
         q = q.where(SyncLog.id > last_reopen)
-    rows = (await session.execute(q.order_by(SyncLog.id.desc()).limit(20))).scalars().all()
+    # Ask for the rows that captured something. The sweep replays `closed` for every
+    # closed issue on its page, and by then the task already sits at Completed, so each
+    # replay appends a row with a blank capture -- twenty of those (about five hours at
+    # the default interval) used to push the only real one out of the window, and the
+    # reopen then fell back to the assignee ladder and lost In QA.
+    flagged = q.where(SyncLog.detail.contains('"captured_previous": true'))
+    rows = list((await session.execute(flagged.order_by(SyncLog.id.desc()).limit(5))).scalars())
+    if not rows:
+        # Rows written before the flag existed: same scan as before.
+        rows = list((await session.execute(q.order_by(SyncLog.id.desc()).limit(20))).scalars())
     for row in rows:
         if not row.detail:
             continue
@@ -778,6 +787,10 @@ async def _issue_status_transition(
     if capture_previous:
         detail["previous_status_value"] = previous_status
         detail["previous_status_key"] = status_field_key or ""
+        # Flagged so `_pre_close_status` can ASK for the rows that captured something,
+        # rather than scanning back through however many blank replays the reconciliation
+        # sweep has appended since.
+        detail["captured_previous"] = bool(previous_status)
     session.add(
         SyncLog(
             action=action_name,

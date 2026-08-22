@@ -138,6 +138,7 @@ def _maybe_load_disk_cache() -> None:
 # burst; writing to disk after each one was 11 atomic JSON serializations of the same
 # growing dict, with only the last one surviving.
 _last_disk_save: float = 0.0
+# Reset by `clear_contribution_caches`, so the debounce cannot carry state between tests.
 _SAVE_DEBOUNCE_SECONDS = 30.0
 
 
@@ -185,8 +186,13 @@ def _save_disk_cache(*, force: bool = False) -> None:
 
 
 def clear_contribution_caches() -> None:
+    global _last_disk_save
+
     _repo_info_cache.clear()
     _profile_cache.clear()
+    # The debounce is process state too. Left alone, a test that saved a moment ago makes
+    # the next one's save silently do nothing.
+    _last_disk_save = 0.0
 
 
 def _gh_headers() -> dict[str, str]:
@@ -326,7 +332,11 @@ async def fetch_contribution_profile(
     profile.token_weights = dict(toks)
 
     _profile_cache[key] = (now + PROFILE_TTL_SECONDS, profile)
-    _save_disk_cache(force=True)
+    # Not forced. The warmer refreshes eleven profiles in a burst, and forcing here meant
+    # eleven full JSON serializations of the same growing dict plus eleven os.replace
+    # calls, synchronously, on the event loop -- which is the cost the debounce was added
+    # to remove. What the debounce skips is picked up by the next save.
+    _save_disk_cache()
     return profile
 
 
