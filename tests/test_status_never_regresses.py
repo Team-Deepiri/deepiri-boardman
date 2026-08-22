@@ -539,3 +539,46 @@ async def test_the_guard_reads_the_board_schema_once_and_fails_closed_without_it
 
     monkeypatch.setattr(dq, "_load_normalized", failing_load)
     assert await dq.current_status_intent(BOARD, TASK, "status_key_STATUS") == dq.UNREADABLE_STATUS
+
+
+@pytest.mark.asyncio
+async def test_a_board_this_vocabulary_cannot_place_still_gets_its_qa_request(
+    monkeypatch,
+) -> None:
+    """Failing closed is right when the board did not ANSWER. It is wrong when the board
+    answered and simply names its columns in a way this code cannot place: there is no
+    workflow position to protect, and refusing forever silently disables late-link QA on
+    that board for good -- every later `edited` takes the same path."""
+    from boardman.plaky import dynamic_qa_status as dq
+    from boardman.services import pr_handler as ph
+
+    writes: list[str] = []
+
+    async def fake_status(task_id, value, board_id, *, status_field_key=None):
+        writes.append(str(task_id))
+        return {"ok": True}
+
+    async def no_intent_resolves(_bid, *, intent, preloaded_normalized=None):
+        return None
+
+    monkeypatch.setattr(ph.settings, "plaky_status_needs_qa", "Needs QA ✅", raising=False)
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+    monkeypatch.setattr(dq, "resolve_plaky_status_patch", no_intent_resolves)
+
+    # The schema loads; nothing in it matches. Nothing to protect, so the write stands.
+    async def schema_loads(_bid):
+        return {"fields": [{"key": "status", "options": []}]}
+
+    monkeypatch.setattr(dq, "_load_normalized", schema_loads)
+    await ph._maybe_set_needs_qa(None, TASK, False, BOARD, allow_regression=False)
+    assert writes == [TASK]
+
+    # The board did not answer at all. That is the transient case, and it fails closed.
+    writes.clear()
+
+    async def schema_unreadable(_bid):
+        return None
+
+    monkeypatch.setattr(dq, "_load_normalized", schema_unreadable)
+    await ph._maybe_set_needs_qa(None, TASK, False, BOARD, allow_regression=False)
+    assert writes == []

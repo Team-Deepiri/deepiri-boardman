@@ -438,17 +438,31 @@ async def _maybe_set_needs_qa(
         from boardman.plaky.dynamic_qa_status import current_status_intent
 
         if not guard_field_key:
-            # No column to read means the guard cannot run. It fails CLOSED, like every
-            # other unreadable-board path: with PLAKY_STATUS_NEEDS_QA configured, `st` is
-            # set whatever the board says, so failing open here wrote Needs QA over a task
-            # in QA or already Completed on any transient schema failure. A late link that
-            # skips one QA request is recoverable; a rewound QA queue is not.
-            _log.info(
-                "task %s: cannot resolve the Needs QA column; not asking from a late link",
-                task_id,
-            )
-            return
-        now_at = await current_status_intent(bid, task_id, guard_field_key)
+            # The Needs QA intent did not resolve, which is two different situations. Ask
+            # the board directly which column carries the workflow.
+            from boardman.plaky.dynamic_qa_status import workflow_status_field_key
+
+            fallback_key = await workflow_status_field_key(bid)
+            if fallback_key is None:
+                # The board did not answer. Fail CLOSED, like every other unreadable-board
+                # path: with PLAKY_STATUS_NEEDS_QA configured `st` is set whatever the
+                # board says, so going ahead here writes Needs QA over a task already in
+                # QA or Completed on any transient schema failure. One skipped QA request
+                # is recoverable; a rewound QA queue is not.
+                _log.info(
+                    "task %s: board %s did not answer; not asking for QA from a late link",
+                    task_id,
+                    bid,
+                )
+                return
+            # `""` means the schema loaded and none of this vocabulary matched a column.
+            # There is no workflow position to read and none to protect, so the write
+            # stands: refusing forever would silently disable late-link QA on every board
+            # that names its columns in a way this code cannot place.
+            guard_field_key = fallback_key
+        now_at = (
+            await current_status_intent(bid, task_id, guard_field_key) if guard_field_key else ""
+        )
         if status_would_move_backwards(now_at, "workflow_needs_qa"):
             _log.info("task %s is at %s; not asking for QA again from a late link", task_id, now_at)
             return
@@ -831,6 +845,11 @@ async def _ensure_links_live(payload: PullRequestEventPayload, session: AsyncSes
 
 async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSession) -> dict:
     repo_name = payload.repository.name
+    # `reopened` comes through here too, and it is not a PR arriving for the first time:
+    # the task may be sitting at QA Verified from before the close, and re-running the
+    # open pipeline with regression allowed wrote Needs QA straight over it. Same
+    # treatment as a link made late -- fill in what is missing, move nothing backwards.
+    is_rerun = str(getattr(payload, "action", "") or "").casefold() == "reopened"
     await _ensure_links_live(payload, session)
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
@@ -880,7 +899,8 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                 mapping=mapping,
                 board_id=board_id,
                 is_draft=is_draft,
-                headline="**PR Opened:**",
+                headline="**PR Reopened:**" if is_rerun else "**PR Opened:**",
+                is_late_link=is_rerun,
                 link_source=_issue_link_source(int(issue_num), body_written_issues, written_issues),
             )
             results.append({"issue": issue_num, "task_id": mapping.plaky_task_id})

@@ -1405,3 +1405,72 @@ async def test_dropping_one_of_two_issues_withdraws_that_link(
     # Idempotent: replaying the same edit changes nothing further.
     again = await ph.reconcile_pr_issue_links(_pr("Fixes #95"), db_session)
     assert again["changed"] is False
+
+
+@pytest.mark.parametrize("ref", ["release/gh-2024-q1", "gh-2023-h2", "issue-2024-01-hotfix"])
+def test_a_date_in_a_branch_name_is_not_an_issue_number(ref: str) -> None:
+    """`gh-2024-q1` is the first quarter of 2024. Reading 2024 as an issue number files
+    this PR's notice, Type, assignee and QA assignment onto whatever card issue 2024
+    owns."""
+    from boardman.services.issue_handler import branch_issue_numbers
+
+    assert branch_issue_numbers(ref) == []
+
+
+@pytest.mark.parametrize("ref", ["issue-94-add-retries", "gh-123-fix-thing", "issue-94-fix-2fa"])
+def test_a_description_after_the_number_still_links(ref: str) -> None:
+    """The convention this team actually uses: the number, then what the work is."""
+    from boardman.services.issue_handler import branch_issue_numbers
+
+    assert branch_issue_numbers(ref) in ([94], [123])
+
+
+@pytest.mark.asyncio
+async def test_reopening_a_pr_does_not_ask_qa_to_start_again(db_session, monkeypatch) -> None:
+    """`reopened` routes through handle_pr_opened, and a task can be at QA Verified when
+    it arrives -- closing a PR reverts Needs QA, In QA and Needs QA Again, and deliberately
+    leaves a verified task alone. Re-running the open pipeline with regression allowed
+    then wrote Needs QA straight over it, and QA's verdict was gone."""
+    guards: list[tuple[str, bool]] = []
+
+    async def fake_needs_qa(_plaky, task_id, is_draft, board_id, *, allow_regression=True):
+        guards.append((str(task_id), allow_regression))
+        return {"ok": True}
+
+    async def fake_type_and_assignee(_plaky, *, task_id, allow_status_regression=True, **_k):
+        guards.append((f"assignee:{task_id}", allow_status_regression))
+        return {}
+
+    class Routing:
+        plaky_board_id = "269031"
+        plaky_group_id = "g1"
+
+    async def fake_routing(*_a, **_k):
+        return Routing()
+
+    class FakePlaky:
+        async def add_comment(self, task_id, body, *, board_id=None):
+            return {"ok": True}
+
+    monkeypatch.setattr(ph, "PlakyClient", lambda *a, **k: FakePlaky())
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+    monkeypatch.setattr(ph, "_maybe_set_needs_qa", fake_needs_qa)
+    monkeypatch.setattr(ph, "_apply_pr_type_and_assignee", fake_type_and_assignee)
+    monkeypatch.setattr(ph, "_assign_qa_for_pr", lambda *a, **k: _noop_qa())
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+
+    opened = _pr("Fixes #94")
+    await ph.handle_pr_opened(opened, db_session)
+    assert (TASK_94, True) in guards, "a PR arriving for the first time asks for QA"
+
+    guards.clear()
+    reopened = _pr("Fixes #94")
+    reopened.action = "reopened"
+    await ph.handle_pr_opened(reopened, db_session)
+    assert guards, "the pipeline still runs on reopen"
+    assert all(allow is False for _, allow in guards), guards
+
+
+async def _noop_qa():
+    return {"assigned": True}

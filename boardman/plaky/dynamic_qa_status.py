@@ -461,6 +461,31 @@ async def resolve_qa_assignee_field_key(board_id: str, yaml_fallback: str) -> st
 UNREADABLE_STATUS = "__unreadable__"
 
 
+async def workflow_status_field_key(board_id: str) -> str | None:
+    """The board's workflow status column, for a caller that needs one to read a task.
+
+    Three answers, and they are not the same thing. A key: read the task there. `""`: the
+    schema loaded and none of this code's vocabulary matched any column, so there is no
+    workflow position to protect and nothing to be careful about. `None`: the board did
+    not answer at all, which is the case a guard must fail closed on.
+    """
+    bid = (board_id or "").strip()
+    if not bid:
+        return ""
+    normalized = await _load_normalized(bid)
+    if not normalized:
+        return None
+    from boardman.services.sync_state import WORKFLOW_RANK
+
+    for intent in WORKFLOW_RANK:
+        resolved = await resolve_plaky_status_patch(
+            bid, intent=intent, preloaded_normalized=normalized
+        )
+        if resolved and resolved[0]:
+            return str(resolved[0])
+    return ""
+
+
 async def current_status_intent(board_id: str, task_id: str, status_field_key: str) -> str:
     """Which workflow intent the task's CURRENT status option corresponds to, "" if unknown.
 
