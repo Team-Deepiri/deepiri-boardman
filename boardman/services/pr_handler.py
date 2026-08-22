@@ -924,7 +924,12 @@ async def handle_pr_opened(
     # sweep replays an already-open PR whose link row went missing, and the work behind it
     # can be anywhere by then. It was the last entry into this pipeline still running with
     # regression allowed.
-    is_rerun = is_replay or str(getattr(payload, "action", "") or "").casefold() == "reopened"
+    is_reopen = str(getattr(payload, "action", "") or "").casefold() == "reopened"
+    # Every replay takes the guards; only a reopen may SAY it is one. A sweep and an
+    # `edited` both replay this pipeline for a PR that was never closed, and posting
+    # "PR Reopened" for those is both untrue and destructive: the notice is keyed on its
+    # headline, so it also dedupes away the notice for the genuine reopen later.
+    is_rerun = is_replay or is_reopen
     await _ensure_links_live(payload, session)
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
@@ -974,7 +979,7 @@ async def handle_pr_opened(
                 mapping=mapping,
                 board_id=board_id,
                 is_draft=is_draft,
-                headline="**PR Reopened:**" if is_rerun else "**PR Opened:**",
+                headline="**PR Reopened:**" if is_reopen else "**PR Opened:**",
                 is_late_link=is_rerun,
                 link_source=_issue_link_source(int(issue_num), body_written_issues, written_issues),
             )
@@ -1045,7 +1050,7 @@ async def handle_pr_opened(
                 )
                 comment = format_pr_notice_with_url(
                     headline=(
-                        f"**PR {'Reopened' if is_rerun else 'Opened'}** "
+                        f"**PR {'Reopened' if is_reopen else 'Opened'}** "
                         f"(automation link — {pipe.decision}):"
                     ),
                     pr_number=pr_number,
@@ -1913,6 +1918,20 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
         for row in merged_rows
         if str(row.link_source or "") not in _WEAK_COMPLETION_LINK_SOURCES
     }
+    # A card orphan triage created for this PR is the PR's own, and merging finishes it --
+    # unless it ALSO became an issue's card, which happens when the PR named an issue that
+    # had no task yet. Then it answers to that issue, and the same rule applies: GitHub
+    # acts on a closing keyword in the description and nowhere else, so a title-only or
+    # branch-inferred reference must not mark it done while the issue stays open.
+    claimed = await session.execute(
+        select(IssueTaskMap).where(
+            IssueTaskMap.github_repo == repo_name,
+            IssueTaskMap.plaky_task_id.in_([str(t) for t in stated_tasks] or [""]),
+        )
+    )
+    for row in claimed.scalars():
+        if int(row.github_issue_number) not in body_closes:
+            stated_tasks.discard(str(row.plaky_task_id))
     for issue_num in linked_issues:
         mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
         if mapping:

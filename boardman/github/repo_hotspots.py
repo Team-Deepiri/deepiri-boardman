@@ -52,8 +52,9 @@ _VENDOR_MARKERS = ("node_modules/", "vendor/", "site-packages/", "dist/", "build
 # GITHUB_EXTRA_ARTIFACT_RULES ("marker:why; marker:why") -- see _artifact_rules() below.
 _BUILTIN_ARTIFACT_RULES: tuple[tuple[str, str], ...] = (
     (".env", "environment file with likely secrets is tracked in git"),
-    # ORDER MATTERS: the matcher breaks on the first hit and ".db" matches ".db-wal" by
-    # substring, so the more specific markers have to come first or they never fire.
+    # Order is no longer load-bearing -- `_extension_hit` requires the marker to BE the
+    # extension, so ".db" cannot claim "prod.db-wal" any more. Kept specific-first because
+    # the matcher still breaks on the first hit and this reads in the right order.
     (".db-wal", "SQLite write-ahead log committed to the repo"),
     (".db-shm", "SQLite shared-memory file committed to the repo"),
     (".db", "SQLite database committed to the repo"),

@@ -1958,3 +1958,80 @@ async def test_repointing_a_row_does_not_carry_the_origin_to_another_card(db_ses
     await db_session.commit()
     row = (await db_session.execute(select(PullRequestTaskLink))).scalars().one()
     assert (row.plaky_task_id, row.link_source) == ("7199999", "auto_link")
+
+
+@pytest.mark.asyncio
+async def test_a_triage_card_that_became_an_issues_card_completes_on_the_issues_terms(
+    db_session, workflow, monkeypatch
+) -> None:
+    """Orphan triage creates a card FOR the PR, and merging finishes it. Unless that card
+    also became an issue's card, which is what happens when the PR named an issue that had
+    no task yet -- then the same rule applies as everywhere else: GitHub acts on a closing
+    keyword in the description and nowhere else, so a title-only reference must not mark
+    the work done while the issue stays open on GitHub.
+    """
+    from boardman.database.models import IssueTaskMap
+
+    completed: list[str] = []
+
+    async def fake_status(task_id, value, board_id, *, status_field_key=None):
+        completed.append(str(task_id))
+        return {"ok": True}
+
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+
+    db_session.add_all(
+        [
+            PullRequestTaskLink(
+                github_repo=REPO,
+                github_pr_number=88,
+                github_issue_number=0,
+                plaky_task_id="7183844",
+                link_source="pr_task_created",
+            ),
+            IssueTaskMap(github_repo=REPO, github_issue_number=94, plaky_task_id="7183844"),
+        ]
+    )
+    await db_session.commit()
+
+    titled = _pr("")
+    titled.pull_request.title = "Fixes #94: retry the flaky upload"
+    titled.pull_request.merged = True
+    titled.pull_request.state = "closed"
+    res = await ph.handle_pr_merged(titled, db_session)
+
+    assert completed == [], "a title-only keyword completed an issue's card"
+    assert [r.get("reason") for r in res["updated"]] == ["weak_link"]
+
+
+@pytest.mark.asyncio
+async def test_a_triage_card_of_its_own_still_completes_on_merge(
+    db_session, workflow, monkeypatch
+) -> None:
+    """The other half: a card that is only ever this PR's card is finished by the merge,
+    because the PR IS the work it tracks."""
+    completed: list[str] = []
+
+    async def fake_status(task_id, value, board_id, *, status_field_key=None):
+        completed.append(str(task_id))
+        return {"ok": True}
+
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="pr_task_created",
+        )
+    )
+    await db_session.commit()
+
+    merged = _pr("no issue reference at all")
+    merged.pull_request.merged = True
+    merged.pull_request.state = "closed"
+    await ph.handle_pr_merged(merged, db_session)
+
+    assert completed == ["7183844"]
