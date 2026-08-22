@@ -45,19 +45,27 @@ BODY_HASH_ISSUE_RE = re.compile(r"(?<!\w)#(\d+)\b")
 BRANCH_ISSUE_KEYWORD_RE = re.compile(
     r"(?:^|[-_/])(?:issue|iss|fix(?:es)?|bug|gh|task)[-_/]?(\d{1,6})(?=[-_/.]|$)", re.I
 )
-BRANCH_LEADING_NUM_RE = re.compile(r"^(\d{1,6})(?=$|[-_.])")
+# A bare leading number is NOT read as an issue reference. `feature/2-factor-auth` and
+# `release/2024-q1` are indistinguishable from `94-add-retries`, and here the cost is
+# higher than a missed link: an issue-reference overlap is worth +100 in the scorer, which
+# clears the auto-link threshold on its own. The hard-link path dropped this shape for the
+# same reason -- see issue_handler.branch_issue_numbers, which this now defers to.
 
 
 def branch_issue_numbers(ref: str) -> set[int]:
-    """Issue numbers a branch name plausibly references (context-aware, see regexes above)."""
-    out: set[int] = set()
+    """Issue numbers a branch name plausibly references.
+
+    One reading of a branch name for the whole codebase: the prefixed forms
+    (`issue-94`, `gh-94`, `issue/94`), minus the date shapes. Scoring a PR against a
+    number this cannot mean is worse here than in the hard-link path -- the overlap bonus
+    is +100, enough to auto-link on its own.
+    """
+    from boardman.services.issue_handler import branch_issue_numbers as prefixed
+
     ref = (ref or "").replace("refs/heads/", "")
+    out = {int(n) for n in prefixed(ref)}
     for m in BRANCH_ISSUE_KEYWORD_RE.finditer(ref):
         out.add(int(m.group(1)))
-    for part in ref.split("/"):
-        m = BRANCH_LEADING_NUM_RE.match(part)
-        if m:
-            out.add(int(m.group(1)))
     return {n for n in out if 1 <= n < 1_000_000}
 
 

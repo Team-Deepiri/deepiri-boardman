@@ -26,12 +26,21 @@ from boardman.services.pr_task_linking import branch_issue_numbers, referenced_i
 
 
 def test_branch_numbers_keyword_and_leading_only() -> None:
+    """The prefixed forms, and nothing that merely starts with a number.
+
+    A bare leading number used to count here. It reads `feature/2-factor-auth` and
+    `release/2024-q1` as issues 2 and 2024, and in this path the cost is higher than a
+    missed link: an issue-reference overlap is worth +100 in the scorer, which clears the
+    auto-link threshold on its own and attaches the PR to a stranger's task. The hard-link
+    path dropped the same shape for the same reason, and this now defers to it.
+    """
     assert branch_issue_numbers("issue-42") == {42}
-    assert branch_issue_numbers("fix/42-sync") == {42}
-    assert branch_issue_numbers("feature/42-bugfix") == {42}
-    assert branch_issue_numbers("42-add-tests") == {42}
+    assert branch_issue_numbers("fix/issue-42-sync") == {42}
     assert branch_issue_numbers("gh-123/cleanup") == {123}
     assert branch_issue_numbers("refs/heads/bug_7") == {7}
+    # A number with nothing saying it is an issue number:
+    assert branch_issue_numbers("feature/42-bugfix") == set()
+    assert branch_issue_numbers("42-add-tests") == set()
     # The false positives that used to auto-link PRs to unrelated tasks:
     assert branch_issue_numbers("upgrade-node-20") == set()
     assert branch_issue_numbers("migrate-py-311") == set()

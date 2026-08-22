@@ -681,10 +681,18 @@ class GitHubEventPoller:
                     (result or {}).get("message") or result,
                 )
 
-            if pr.get("state") == "open" and num in proc["prs_closed"]:
+            if pr.get("state") == "open" and (
+                num in proc["prs_closed"]
+                or await self._has_withdrawn_links(full_name.partition("/")[2], num)
+            ):
                 # Closed, then open again. Closing withdrew this PR's links, so without a
                 # reopened event every later review, comment and push resolves to no task
                 # at all -- permanently, since nothing else clears the flag.
+                #
+                # The in-process set alone was not enough: it is empty after a restart, so
+                # a PR reopened while this was down emitted nothing. The registry remembers
+                # what the set forgets, and once the links are revived the condition stops
+                # being true, so this fires once rather than every cycle.
                 proc["prs_closed"].discard(num)
                 result = await self._run_handler(self._pr_payload(pr, full_name, "reopened"))
                 _log.info(
@@ -881,6 +889,19 @@ class GitHubEventPoller:
                 full_name,
                 result.get("message") or result.get("action") or result,
             )
+
+    async def _has_withdrawn_links(self, repo_short: str, pr_number: int) -> bool:
+        """Does the registry still hold retired links for this PR? (See has_withdrawn_links.)"""
+        from boardman.services.pr_task_registry import has_withdrawn_links
+
+        try:
+            async with async_session() as session:
+                return await has_withdrawn_links(
+                    session, github_repo=repo_short, github_pr_number=pr_number
+                )
+        except Exception as exc:  # noqa: BLE001 - a poll must not die on a DB blip
+            log_degraded(_log, f"poller: checking withdrawn links for PR #{pr_number}", exc)
+            return False
 
     async def _run_handler(self, parsed: Any) -> dict[str, Any] | None:
         """Mirror of the dispatch in routes/github_events.py, with a poller-owned DB session."""

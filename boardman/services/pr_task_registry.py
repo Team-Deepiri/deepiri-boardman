@@ -269,6 +269,33 @@ async def mark_pr_merged(
     return rows
 
 
+async def has_withdrawn_links(
+    session: AsyncSession,
+    *,
+    github_repo: str,
+    github_pr_number: int,
+) -> bool:
+    """True when this PR has links that a close retired and nothing has revived.
+
+    Durable answer to "did this PR reopen while we were not watching". The poller's own
+    memory of which PRs it saw close is in-process, so a restart loses it and a PR reopened
+    in the meantime emits nothing at all -- its links stay withdrawn, and
+    `has_any_open_pr_for_task` then lets merge-gated completion finish the task while that
+    PR is still open. Superseded rows are excluded: those were retired on purpose.
+    """
+    q = (
+        select(PullRequestTaskLink.id)
+        .where(
+            PullRequestTaskLink.github_repo == github_repo,
+            PullRequestTaskLink.github_pr_number == github_pr_number,
+            PullRequestTaskLink.withdrawn_at.is_not(None),
+            PullRequestTaskLink.link_source != _SUPERSEDED_LINK_SOURCE,
+        )
+        .limit(1)
+    )
+    return (await session.execute(q)).first() is not None
+
+
 async def task_ids_for_open_pr(
     session: AsyncSession,
     *,

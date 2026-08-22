@@ -1956,15 +1956,21 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
     # had no task yet. Then it answers to that issue, and the same rule applies: GitHub
     # acts on a closing keyword in the description and nowhere else, so a title-only or
     # branch-inferred reference must not mark it done while the issue stays open.
-    claimed = await session.execute(
-        select(IssueTaskMap).where(
-            IssueTaskMap.github_repo == repo_name,
-            IssueTaskMap.plaky_task_id.in_([str(t) for t in stated_tasks] or [""]),
+    triage_tasks = {
+        str(row.plaky_task_id)
+        for row in merged_rows
+        if str(row.link_source or "") in _PR_OWNED_LINK_SOURCES
+    }
+    if triage_tasks:
+        claimed = await session.execute(
+            select(IssueTaskMap).where(
+                IssueTaskMap.github_repo == repo_name,
+                IssueTaskMap.plaky_task_id.in_(sorted(triage_tasks)),
+            )
         )
-    )
-    for row in claimed.scalars():
-        if int(row.github_issue_number) not in body_closes:
-            stated_tasks.discard(str(row.plaky_task_id))
+        for row in claimed.scalars():
+            if int(row.github_issue_number) not in body_closes:
+                stated_tasks.discard(str(row.plaky_task_id))
     for issue_num in linked_issues:
         mapping = await find_plaky_task_by_issue(repo_name, issue_num, session)
         if mapping:

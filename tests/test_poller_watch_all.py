@@ -302,3 +302,67 @@ async def test_the_interval_follows_the_open_prs_that_come_and_go() -> None:
             )
     assert poller._tracked_branch_count(repos) == 0
     assert poller._safe_interval(15.0, len(repos), 0) < busy
+
+
+@pytest.mark.asyncio
+async def test_a_pr_reopened_while_the_poller_was_down_is_still_noticed() -> None:
+    """Which PRs closed is in-process memory, and a restart loses it.
+
+    A PR reopened in the meantime emitted nothing at all: its links stayed withdrawn, so
+    `has_any_open_pr_for_task` reported no open PR and merge-gated completion could finish
+    the task while that PR was still open. The registry remembers what the set forgets.
+    """
+    from datetime import datetime
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+    from boardman.database.models import Base, PullRequestTaskLink
+    from boardman.services.pr_task_registry import has_withdrawn_links
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+    async with factory() as session:
+        session.add_all(
+            [
+                PullRequestTaskLink(
+                    github_repo="deepiri-boardman",
+                    github_pr_number=88,
+                    github_issue_number=94,
+                    plaky_task_id="7209283",
+                    link_source="issue_keyword",
+                    withdrawn_at=datetime(2026, 8, 21, 3, 0, 0),
+                ),
+                PullRequestTaskLink(
+                    github_repo="deepiri-boardman",
+                    github_pr_number=89,
+                    github_issue_number=95,
+                    plaky_task_id="7209999",
+                    link_source="issue_keyword",
+                ),
+                # Retired on purpose when the PR re-pointed at another issue. Reopening
+                # does not un-say which issue a PR closes, so this must not look like one.
+                PullRequestTaskLink(
+                    github_repo="deepiri-boardman",
+                    github_pr_number=90,
+                    github_issue_number=0,
+                    plaky_task_id="7183844",
+                    link_source="superseded_by_issue_link",
+                    withdrawn_at=datetime(2026, 8, 21, 3, 0, 0),
+                ),
+            ]
+        )
+        await session.commit()
+
+        assert await has_withdrawn_links(
+            session, github_repo="deepiri-boardman", github_pr_number=88
+        )
+        assert not await has_withdrawn_links(
+            session, github_repo="deepiri-boardman", github_pr_number=89
+        )
+        assert not await has_withdrawn_links(
+            session, github_repo="deepiri-boardman", github_pr_number=90
+        )
+    await engine.dispose()
