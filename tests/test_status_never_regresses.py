@@ -625,3 +625,32 @@ async def test_a_repo_with_no_board_does_not_get_an_unguarded_qa_write(monkeypat
     # A PR arriving for the first time is a different statement, and still writes.
     await ph._maybe_set_needs_qa(None, TASK, False, "", allow_regression=True)
     assert writes == [TASK]
+
+
+@pytest.mark.asyncio
+async def test_a_plaky_blip_loading_the_schema_does_not_fail_the_webhook(monkeypatch) -> None:
+    """The board schema is a network call and `get_board` re-raises what httpx raised.
+
+    Every caller here is a resolver or a guard on the ordinary webhook path, so letting
+    that out fails the whole event and leaves the board half-written. The honest answer is
+    "I could not tell", which is also what the guards fail closed on.
+    """
+    import httpx
+
+    from boardman.plaky import dynamic_qa_status as dq
+
+    class FakePlaky:
+        async def get_board_item_public(self, _board_id, _item_id):
+            return {"ok": True, "item": {"id": TASK}}
+
+    async def boom(_bid):
+        raise httpx.ConnectError("connection reset by peer")
+
+    monkeypatch.setattr("boardman.plaky.client.PlakyClient", lambda *a, **k: FakePlaky())
+    monkeypatch.setattr("boardman.plaky.board_schema.plaky_item_status_id", lambda _i, _f: "3")
+    monkeypatch.setattr(dq, "fetch_board_schema_bundle", boom)
+
+    assert await dq._load_normalized(BOARD) is None
+    assert await dq.resolve_plaky_status_patch(BOARD, intent="workflow_needs_qa") is None
+    assert await dq.workflow_status_field_key(BOARD) is None, "None means the board is silent"
+    assert await dq.current_status_intent(BOARD, TASK, "status_key") == dq.UNREADABLE_STATUS

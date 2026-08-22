@@ -1486,3 +1486,55 @@ async def test_reopening_a_pr_does_not_ask_qa_to_start_again(db_session, monkeyp
 
 async def _noop_qa():
     return {"assigned": True}
+
+
+@pytest.mark.asyncio
+async def test_reopening_a_fuzzy_linked_pr_also_leaves_qa_alone(db_session, monkeypatch) -> None:
+    """The reopen guard reached the issue-linked branch and not the fuzzy one, and the
+    task behind a fuzzy link sits at QA Verified just as readily."""
+    guards: list[tuple[str, bool]] = []
+
+    async def fake_needs_qa(_plaky, task_id, is_draft, board_id, *, allow_regression=True):
+        guards.append((str(task_id), allow_regression))
+        return {"ok": True}
+
+    async def fake_type_and_assignee(_plaky, *, task_id, allow_status_regression=True, **_k):
+        guards.append((f"assignee:{task_id}", allow_status_regression))
+        return {}
+
+    class Routing:
+        plaky_board_id = "269031"
+        plaky_group_id = "g1"
+
+    async def fake_routing(*_a, **_k):
+        return Routing()
+
+    class FakePlaky:
+        async def add_comment(self, task_id, body, *, board_id=None):
+            return {"ok": True}
+
+    class Pipe:
+        task_id = "7183844"
+        decision = "auto_link"
+        score = 91.0
+        top_scored: list[Any] = []
+        reason = "high_confidence"
+        log_detail: dict[str, Any] = {}
+
+    async def fake_pipeline(**_k):
+        return Pipe()
+
+    monkeypatch.setattr(ph, "PlakyClient", lambda *a, **k: FakePlaky())
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+    monkeypatch.setattr(ph, "_maybe_set_needs_qa", fake_needs_qa)
+    monkeypatch.setattr(ph, "_apply_pr_type_and_assignee", fake_type_and_assignee)
+    monkeypatch.setattr(ph, "_assign_qa_for_pr", lambda *a, **k: _noop_qa())
+    monkeypatch.setattr(ph, "run_pr_task_pipeline", fake_pipeline)
+
+    reopened = _pr("no issue reference at all")
+    reopened.action = "reopened"
+    res = await ph.handle_pr_opened(reopened, db_session)
+
+    assert res.get("pipeline") == "auto_link", res
+    assert guards, "the fuzzy branch still runs on reopen"
+    assert all(allow is False for _, allow in guards), guards

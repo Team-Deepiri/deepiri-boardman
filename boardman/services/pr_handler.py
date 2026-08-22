@@ -772,7 +772,15 @@ async def _link_pr_to_issue_task(
             plaky,
             task_id=mapping.plaky_task_id,
             action="pr_link_notice",
-            marker=f"github:pr-link-notice:{repo_name}:{pr_number}:{issue_number}",
+            # The headline is part of the identity. Keyed on (repo, pr, issue) alone, a
+            # "PR Reopened" notice matched the "PR Opened" one already on the card and was
+            # silently skipped -- so a PR coming back from closed said nothing at all. A
+            # redelivery of the same event still carries the same headline and still
+            # dedupes.
+            marker=(
+                f"github:pr-link-notice:{repo_name}:{pr_number}:{issue_number}"
+                f"{'' if headline == '**PR Opened:**' else ':' + headline.strip('*: ')}"
+            ),
             body=format_pr_notice_with_url(headline=headline, pr_number=pr_number, pr_url=pr_url),
             board_id=board_id or "",
             github_repo=repo_name,
@@ -976,7 +984,10 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                     link_source=pipe.decision,
                 )
                 comment = format_pr_notice_with_url(
-                    headline=f"**PR Opened** (automation link — {pipe.decision}):",
+                    headline=(
+                        f"**PR {'Reopened' if is_rerun else 'Opened'}** "
+                        f"(automation link — {pipe.decision}):"
+                    ),
                     pr_number=pr_number,
                     pr_url=pr_url,
                 )
@@ -987,6 +998,10 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                     board_id=board_id,
                     pull_request=payload.pull_request,
                     repo_full=full_name,
+                    # A fuzzy link is reached by the same reopen the issue-linked branch
+                    # guards, and the task behind it can be sitting at QA Verified just the
+                    # same. Missing here, a reopen wrote Needs QA straight over it.
+                    allow_status_regression=not is_rerun,
                 )
                 qa_res2 = await _assign_qa_for_pr(
                     plaky,
@@ -1001,7 +1016,9 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                     pr_number,
                     {k: qa_res2[k] for k in list(qa_res2)[:3]},
                 )
-                await _maybe_set_needs_qa(plaky, pipe.task_id, is_draft, board_id)
+                await _maybe_set_needs_qa(
+                    plaky, pipe.task_id, is_draft, board_id, allow_regression=not is_rerun
+                )
                 log = SyncLog(
                     action="pr_linked_fuzzy",
                     github_repo=repo_name,

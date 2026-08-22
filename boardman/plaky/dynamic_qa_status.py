@@ -241,10 +241,24 @@ def _pick_best_option(
 
 
 async def _load_normalized(board_id: str) -> dict[str, Any] | None:
+    """The board's schema, or None when it cannot be had right now.
+
+    None covers a transport failure as well as a board that answered unusably. The fetch
+    is a network call and `get_board` re-raises what httpx raised, while every caller here
+    is a resolver or a guard reached from ordinary webhook handling: letting the exception
+    out fails the whole event and leaves the board half-written, when the honest answer is
+    "I could not tell".
+    """
+    from boardman.observability.degradation import log_degraded
+
     bid = (board_id or "").strip()
     if not bid:
         return None
-    bundle = await fetch_board_schema_bundle(bid)
+    try:
+        bundle = await fetch_board_schema_bundle(bid)
+    except Exception as exc:  # noqa: BLE001 - a resolver must not break the sync it serves
+        log_degraded(_log, f"loading board {bid} schema", exc)
+        return None
     if not bundle.get("ok") or not bundle.get("normalized"):
         return None
     n = bundle["normalized"]
