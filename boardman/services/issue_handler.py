@@ -267,6 +267,24 @@ async def handle_issue_changed(
     # developer working the open PR, since ownership normally arrives via the PR flow.
     # Closing is different: a closed issue is finished regardless of who owned it.
     owns_assignment = payload.action in ("assigned", "unassigned")
+
+    # Fill-only for the engineer column, the same rule the PR side enforces. A label,
+    # milestone or edit event carries an assignee because the payload includes the whole
+    # issue, not because somebody just assigned one. Writing it unconditionally undid a
+    # lead's manual reassignment in Plaky on every unrelated webhook for that issue.
+    push_engineer = engineer_id
+    if push_engineer and board_id and not owns_assignment:
+        from boardman.services.pr_handler import _current_person_field_value, _engineer_field_key
+
+        eng_key = await _engineer_field_key(board_id)
+        if eng_key:
+            from boardman.plaky.client import PlakyClient as _PC
+
+            if await _current_person_field_value(
+                _PC(), board_id, str(mapping.plaky_task_id), eng_key
+            ):
+                push_engineer = ""
+
     # A replayed `opened` whose post-create patch failed is the one non-ownership event
     # that MUST set status: that replay exists to repair the write that did not land, and
     # status is the field it was built to repair.
@@ -337,7 +355,9 @@ async def handle_issue_changed(
         status_plaky_field_key=status_field_key,
         task_type=state.task_type,
         priority=state.priority if push_priority else None,
-        engineer_plaky_id=engineer_id or None,
+        # `engineer_id` may have been blanked above when the board was unreadable, so
+        # the fill-only value follows it rather than the snapshot taken before the guard.
+        engineer_plaky_id=(push_engineer if engineer_id else "") or None,
         # Only an assignment event may EMPTY the column. A label change carrying no
         # assignee is not evidence that nobody owns the work.
         clear_engineer_assignee=owns_assignment and not state.assignee_login,

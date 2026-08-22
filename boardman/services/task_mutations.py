@@ -1340,7 +1340,9 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
     # with the intent ladder's Assigned -- the exact regression it exists to prevent.
     _DIAGNOSTIC_OPS = ("field_diff", "text_diff")
     op_results = [v for k, v in ops.items() if isinstance(v, dict) and k not in _DIAGNOSTIC_OPS]
-    ok = bool(op_results) and all(bool(v.get("ok")) for v in op_results if "ok" in v)
+    # An empty op_results with requested_any=True means diff_only found nothing to change.
+    # That is a success (the board already matches), not a failure.
+    ok = all(bool(v.get("ok")) for v in op_results if "ok" in v) if op_results else requested_any
     out: dict[str, Any] = {"ok": ok, "task_id": task_id, "operations": ops}
     if developer_refusals:
         # The requested developer was not eligible; the column was left alone rather
