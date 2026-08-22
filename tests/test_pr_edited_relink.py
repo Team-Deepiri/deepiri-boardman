@@ -1111,3 +1111,91 @@ async def test_editing_a_pr_does_not_rewrite_a_card_somebody_else_wrote(
     assert written["task-theirs"].description is None
     # The rest of the metadata still syncs to both -- that part was never the PR's to lose.
     assert written["task-theirs"].task_type
+
+
+@pytest.mark.asyncio
+async def test_a_card_the_pipeline_only_matched_is_not_told_it_was_created_for_the_pr(
+    db_session, workflow, monkeypatch
+) -> None:
+    """Issue number 0 does not mean "this PR opened the card".
+
+    The fuzzy pipeline links to cards that were ALREADY on the board and stores them with
+    the same 0. Sweeping on that alone, adding `Fixes #94` to a PR posted "this card was
+    created for the PR and will not receive further updates" onto somebody else's card and
+    pulled it out of the QA queue -- work this PR never started, undone by an edit to a
+    different PR's description.
+    """
+    rewound: list[str] = []
+
+    async def fake_status(task_id, value, board_id, *, status_field_key=None):
+        rewound.append(str(task_id))
+        return {"ok": True}
+
+    async def fake_resolve(_bid, *, intent, preloaded_normalized=None):
+        return ("status_key", intent)
+
+    async def fake_current(_bid, _task_id, _field_key):
+        return "workflow_needs_qa"
+
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_plaky_status_patch", fake_resolve)
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.current_status_intent", fake_current)
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+    db_session.add(
+        PullRequestTaskLink(
+            github_repo=REPO,
+            github_pr_number=88,
+            github_issue_number=0,
+            plaky_task_id="7183844",
+            link_source="auto_link",  # the pipeline MATCHED this card; it did not make it
+        )
+    )
+    await db_session.commit()
+
+    res = await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+    assert res["changed"] is True
+    assert [w["task_id"] for w in res["withdrawn"]] == ["7183844"], "the guess is still unlinked"
+
+    notices = [body for task_id, body in workflow["comments"] if task_id == "7183844"]
+    assert notices, "the card is still told the PR's updates have moved"
+    assert "created for the PR" not in notices[0]
+    assert TASK_94 in notices[0], "and it names where they went"
+    assert rewound == [], "its QA position is its own"
+
+
+@pytest.mark.asyncio
+async def test_a_late_link_that_cannot_read_the_board_does_not_ask_for_qa(monkeypatch) -> None:
+    """The late-link guard has to fail CLOSED, like every other unreadable-board path.
+
+    With PLAKY_STATUS_NEEDS_QA configured, the value to write is known whatever the board
+    says, so a transient failure resolving the Needs QA COLUMN left the guard with nothing
+    to read and it went ahead anyway -- writing Needs QA over a task already In QA, or
+    Completed. A late link that skips one QA request is recoverable; a rewound QA queue is
+    not.
+    """
+    writes: list[tuple[str, str]] = []
+
+    async def fake_status(task_id, value, board_id, *, status_field_key=None):
+        writes.append((str(task_id), str(value)))
+        return {"ok": True}
+
+    async def unresolvable(_bid, *, intent, preloaded_normalized=None):
+        return None
+
+    def read_should_not_happen(*_a, **_k):
+        raise AssertionError("the guard read a column it could not resolve")
+
+    monkeypatch.setattr(ph.settings, "plaky_status_needs_qa", "Needs QA ✅", raising=False)
+    monkeypatch.setattr(ph, "_update_plaky_task_status", fake_status)
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_plaky_status_patch", unresolvable)
+    monkeypatch.setattr(
+        "boardman.plaky.dynamic_qa_status.current_status_intent", read_should_not_happen
+    )
+
+    await ph._maybe_set_needs_qa(None, TASK_94, False, "269031", allow_regression=False)
+    assert writes == [], "a late link wrote Needs QA with no way to check where the task was"
+
+    # A PR being opened is a different statement -- it is new work, and Needs QA is right.
+    await ph._maybe_set_needs_qa(None, TASK_94, False, "269031", allow_regression=True)
+    assert [t for t, _ in writes] == [TASK_94]

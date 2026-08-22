@@ -434,6 +434,17 @@ async def _maybe_set_needs_qa(
         # right for a new PR and wrong for a task already in or past QA.
         from boardman.plaky.dynamic_qa_status import current_status_intent
 
+        if not guard_field_key:
+            # No column to read means the guard cannot run. It fails CLOSED, like every
+            # other unreadable-board path: with PLAKY_STATUS_NEEDS_QA configured, `st` is
+            # set whatever the board says, so failing open here wrote Needs QA over a task
+            # in QA or already Completed on any transient schema failure. A late link that
+            # skips one QA request is recoverable; a rewound QA queue is not.
+            _log.info(
+                "task %s: cannot resolve the Needs QA column; not asking from a late link",
+                task_id,
+            )
+            return
         now_at = await current_status_intent(bid, task_id, guard_field_key)
         if status_would_move_backwards(now_at, "workflow_needs_qa"):
             _log.info("task %s is at %s; not asking for QA again from a late link", task_id, now_at)
@@ -988,6 +999,7 @@ async def _retire_superseded_task(
     repo_name: str,
     pr_number: int,
     canonical_task_ids: str,
+    pr_owned: bool = True,
 ) -> None:
     """Tell a superseded card it is superseded, and stop it asking QA for review.
 
@@ -995,11 +1007,25 @@ async def _retire_superseded_task(
     edits, and this code cannot know whether the work it describes is done. Moving it out
     of the QA queue and naming its replacement is the honest half -- a person decides the
     rest.
+
+    `pr_owned` says this PR OPENED the card. When it did not -- the fuzzy pipeline matched
+    a card that was already on the board, and those links carry issue number 0 too -- the
+    card is somebody else's: it says so plainly and changes nothing else. Announcing "this
+    card was created for the PR" there would be false, and rewinding its QA position would
+    undo work this PR never started.
     """
     note = (
-        f"↪️ **Superseded:** PR #{pr_number} now says which issue it closes, so its work is "
-        f"tracked on task {canonical_task_ids}. This card was created for the PR before "
-        "that was known and will not receive further updates."
+        (
+            f"↪️ **Superseded:** PR #{pr_number} now says which issue it closes, so its work "
+            f"is tracked on task {canonical_task_ids}. This card was created for the PR "
+            "before that was known and will not receive further updates."
+        )
+        if pr_owned
+        else (
+            f"↪️ **Unlinked:** PR #{pr_number} now says which issue it closes, so its "
+            f"updates go to task {canonical_task_ids} from here. This card was matched to "
+            "the PR automatically; its own status is unchanged."
+        )
     )
     await mirror_github_activity(
         session,
@@ -1023,6 +1049,8 @@ async def _retire_superseded_task(
         return
     # Only when it is actually sitting in the QA queue. A card someone already moved on
     # is theirs, not ours to rewind.
+    if not pr_owned:
+        return
     if await current_status_intent(bid, task_id, needs_qa[0] or "") != "workflow_needs_qa":
         return
     await _update_plaky_task_status(task_id, in_progress[1], bid, status_field_key=in_progress[0])
@@ -1150,6 +1178,9 @@ async def reconcile_pr_issue_links(
         canonical = ", ".join(sorted(linked_task_ids))
         for row in superseded:
             issue_number = int(row.github_issue_number)
+            # Read before the row is stamped superseded a few lines down, which would
+            # otherwise erase the only record of who opened this card.
+            row_pr_owned = str(row.link_source or "") in _PR_OWNED_LINK_SOURCES
             if str(row.plaky_task_id) in linked_task_ids:
                 # The standalone row and the issue's mapping can name the SAME task: the
                 # ambiguous-triage path writes both when a PR names an issue that had no
@@ -1201,6 +1232,11 @@ async def reconcile_pr_issue_links(
                 repo_name=repo_name,
                 pr_number=pr_number,
                 canonical_task_ids=canonical,
+                # Issue number 0 does not mean this PR opened the card. The fuzzy pipeline
+                # links to cards that were already on the board and stores them with the
+                # same 0, and telling one of those it "was created for the PR" -- then
+                # pulling it out of the QA queue -- is a lie about somebody else's work.
+                pr_owned=row_pr_owned,
             )
 
     if linked or withdrawn:
