@@ -538,3 +538,44 @@ async def test_false_positives_cannot_exhaust_a_rules_quota(monkeypatch) -> None
 
     assert out is not None
     assert {a["path"] for a in out["tracked_artifacts"]} == {"zz/prod.db"}
+
+
+@pytest.mark.parametrize(
+    "path,marker",
+    [
+        ("data/data.db.gz", ".db"),
+        ("dumps/backup.sqlite.zip", ".sqlite"),
+        ("app.db.tar.gz", ".db"),
+        ("certs/keystore.p12.enc", ".p12"),
+        ("certs/cert.pem.crt", ".pem"),
+    ],
+)
+def test_a_wrapped_artifact_is_still_the_artifact(path: str, marker: str) -> None:
+    """A compressed or encrypted database is a committed database, and an encrypted
+    private key is still key material.
+
+    All five were findings before the extension test existed. Excluding README.db.md is
+    worth doing; dropping these with it turns a tightening into a hole in a
+    security-sensitive detection list.
+    """
+    from boardman.github.repo_hotspots import _extension_hit
+
+    assert _extension_hit(path.rsplit("/", 1)[-1], marker) is True
+
+
+@pytest.mark.parametrize(
+    "path,marker",
+    [
+        ("docs/README.db.md", ".db"),
+        ("data/data.dbf", ".db"),
+        ("notes.db.txt", ".db"),
+        ("keys/id_ed25519.pub", "id_ed25519"),
+        ("certs/server.pem.pub", ".pem"),
+    ],
+)
+def test_a_file_that_merely_contains_the_letters_is_not_a_finding(path: str, marker: str) -> None:
+    """The false positives the extension test exists for -- and a public key, which is
+    never a finding however it is spelled."""
+    from boardman.github.repo_hotspots import _extension_hit
+
+    assert _extension_hit(path.rsplit("/", 1)[-1], marker) is False

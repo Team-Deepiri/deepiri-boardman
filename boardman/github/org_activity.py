@@ -109,7 +109,9 @@ async def org_activity_ranking(*, limit: int = 8, split_top: int | None = None) 
     effective_split_top = _split_top_n() if split_top is None else int(split_top)
     # Never pay for a split on a row the final `[: limit]` slice throws away: with
     # limit=3 and the default split of 8, that was five wasted rate-limited calls.
-    effective_split_top = min(effective_split_top, max(1, int(limit)))
+    # max(0, ...): limit=0 discards every row, so even one split call is a call spent on
+    # a row nobody sees.
+    effective_split_top = min(effective_split_top, max(0, int(limit)))
     head = ranked[: max(0, min(effective_split_top, len(ranked)))]
 
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}

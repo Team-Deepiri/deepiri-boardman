@@ -411,7 +411,10 @@ async def _maybe_set_needs_qa(
     status_field_key: str | None = None
     guard_field_key = ""
     bid = (board_id or "").strip()
-    if bid:
+    # Skipped when the VALUE is configured and no guard will run: with allow_regression
+    # the column is never read, and resolving it would put a Plaky lookup on every PR
+    # open for an answer nothing consults.
+    if bid and (not st or not allow_regression):
         from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
         resolved = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
@@ -1156,7 +1159,9 @@ async def _retire_superseded_task(
         github_ref=str(pr_number),
     )
     bid = (board_id or "").strip()
-    if not bid:
+    # Only a card this PR opened is ours to rewind, and asked FIRST: everything below is
+    # Plaky round trips, and a card the pipeline merely matched pays none of them.
+    if not bid or not pr_owned:
         return
     from boardman.plaky.dynamic_qa_status import current_status_intent, resolve_plaky_status_patch
 
@@ -1164,10 +1169,8 @@ async def _retire_superseded_task(
     in_progress = await resolve_plaky_status_patch(bid, intent="workflow_in_progress")
     if not needs_qa or not in_progress:
         return
-    # Only when it is actually sitting in the QA queue. A card someone already moved on
-    # is theirs, not ours to rewind.
-    if not pr_owned:
-        return
+    # And only when it is actually sitting in the QA queue. A card someone already moved
+    # on is theirs, not ours to rewind.
     if await current_status_intent(bid, task_id, needs_qa[0] or "") != "workflow_needs_qa":
         return
     await _update_plaky_task_status(task_id, in_progress[1], bid, status_field_key=in_progress[0])

@@ -85,12 +85,28 @@ _MAX_REPORTED_ARTIFACTS = 20
 # per-rule quota gives every rule a seat without interpreting anybody's sentence.
 _MAX_PATHS_PER_RULE = 5
 
-# What may follow an extension marker and still be the same file: a version digit
-# (db.sqlite3), a rotation or backup segment (prod.db.backup, server.pem.bak, key.p12~),
-# or both. Anything else -- ".md", "f", "file" -- is a different file that merely contains
-# the marker's letters, which is how README.db.md got reported as a committed database.
+# What may follow an extension marker and still be the same file:
+#   - a version digit: db.sqlite3
+#   - a rotation or backup segment: prod.db.backup, server.pem.bak, key.p12~
+#   - a WRAPPER: data.db.gz, backup.sqlite.zip, app.db.tar.gz, keystore.p12.enc. A
+#     compressed or encrypted database is a committed database, and an encrypted private
+#     key is still key material -- the scanner reported all of these before the tail test
+#     existed, and dropping them would be a hole, not a tightening.
+#   - another certificate extension: cert.pem.crt is a certificate either way.
+# Anything else -- ".md", "f", "file" -- is a different file that merely contains the
+# marker's letters, which is how README.db.md got reported as a committed database.
+_ARTIFACT_TAIL_SEGMENT = (
+    r"bak|backup|old|orig|save|copy|tmp"
+    r"|gz|tgz|bz2|xz|zst|zip|7z|tar|rar"
+    r"|enc|gpg|pgp|age|asc"
+    # Deliberately no `pub`: a public key is never a finding, and _NEVER_AN_ARTIFACT
+    # already says so -- spelling it here too would only be a second place to get it
+    # wrong.
+    r"|crt|cer|key"
+    r"|\d+"
+)
 _ARTIFACT_TAIL_RE = re.compile(
-    r"^\d*(?:[.\-](?:bak|backup|old|orig|save|copy|tmp|\d+))*~?$",
+    rf"^\d*(?:[.\-](?:{_ARTIFACT_TAIL_SEGMENT}))*~?$",
     re.IGNORECASE,
 )
 
