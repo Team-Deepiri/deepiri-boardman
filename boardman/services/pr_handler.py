@@ -1579,6 +1579,11 @@ async def handle_pr_edited(
             f"**Author:** `{state.author_login or 'unknown'}`\n\n{state.body}"
         )
         plaky_results: list[dict[str, Any]] = []
+        # Hoisted: board_id is invariant across the loop, so resolving the engineer
+        # column once covers every task. A PR closing three issues resolved it three
+        # times, with a cache-lock acquisition each time.
+        _eng_key = await _engineer_field_key(board_id) if engineer_id and board_id else ""
+        _people_plaky = PlakyClient() if _eng_key else None
         for task_id in task_ids:
             # Per task, because "how far along is it" is a property of the task, not of
             # the PR. A draft PR resolves to Assigned, and writing that over a task QA is
@@ -1605,13 +1610,12 @@ async def handle_pr_edited(
             # later. The status in this same call was already guarded; the assignee
             # was not.
             task_engineer = engineer_id
-            if task_engineer and board_id:
-                people_plaky = PlakyClient()
-                eng_key = await _engineer_field_key(board_id)
-                if eng_key and await _current_person_field_value(
-                    people_plaky, board_id, task_id, eng_key
-                ):
-                    task_engineer = ""
+            if (
+                task_engineer
+                and _eng_key
+                and await _current_person_field_value(_people_plaky, board_id, task_id, _eng_key)
+            ):
+                task_engineer = ""
             mutation = await update_task_internal(
                 task_id,
                 UpdateTaskInput(
