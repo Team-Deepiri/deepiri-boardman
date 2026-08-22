@@ -613,3 +613,32 @@ def test_a_configured_marker_matches_the_file_not_every_mention_of_it() -> None:
 
     # The built-in `id_rsa` rule is a substring rule on purpose, so id_rsa_backup counts.
     assert artifact_hit("keys/id_rsa_backup", "id_rsa") is True
+
+
+def test_prose_about_a_key_is_not_the_key() -> None:
+    """`id_rsa` is a substring rule on purpose, so `id_rsa_backup` and `id_rsa.old` count.
+
+    Documentation and scripts do not. `id_rsa` sits in the top priority band with a
+    five-path quota, so a handful of doc files naming it crowd real .env and .db findings
+    out of a report that holds twenty rows.
+    """
+    from boardman.github.repo_hotspots import artifact_hit
+
+    assert artifact_hit("keys/id_rsa", "id_rsa") is True
+    assert artifact_hit("keys/id_rsa_backup", "id_rsa") is True
+    assert artifact_hit("keys/id_rsa.old", "id_rsa") is True
+    assert artifact_hit("docs/id_rsa_rotation.md", "id_rsa") is False
+    assert artifact_hit("scripts/rotate_id_rsa.sh", "id_rsa") is False
+
+
+def test_the_specific_database_markers_still_have_to_come_first() -> None:
+    """`_extension_hit` accepts a `-` after the marker -- that is what keeps
+    `server.pem-old` a finding -- so ".db" does match "prod.db-wal". The matcher breaks on
+    the first hit, so a reorder would report a WAL file as a database, with the wrong
+    reason and sharing the ".db" quota."""
+    from boardman.github.repo_hotspots import _BUILTIN_ARTIFACT_RULES, artifact_hit
+
+    assert artifact_hit("data/prod.db-wal", ".db") is True, "the overlap is real"
+    order = [marker for marker, _why in _BUILTIN_ARTIFACT_RULES]
+    assert order.index(".db-wal") < order.index(".db")
+    assert order.index(".db-shm") < order.index(".db")

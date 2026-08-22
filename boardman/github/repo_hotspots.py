@@ -52,9 +52,10 @@ _VENDOR_MARKERS = ("node_modules/", "vendor/", "site-packages/", "dist/", "build
 # GITHUB_EXTRA_ARTIFACT_RULES ("marker:why; marker:why") -- see _artifact_rules() below.
 _BUILTIN_ARTIFACT_RULES: tuple[tuple[str, str], ...] = (
     (".env", "environment file with likely secrets is tracked in git"),
-    # Order is no longer load-bearing -- `_extension_hit` requires the marker to BE the
-    # extension, so ".db" cannot claim "prod.db-wal" any more. Kept specific-first because
-    # the matcher still breaks on the first hit and this reads in the right order.
+    # ORDER MATTERS, still: `_extension_hit` accepts a `-` after the marker (that is what
+    # keeps `server.pem-old` a finding), so ".db" does match "prod.db-wal". The matcher
+    # breaks on the first hit, so the specific markers have to come first or a WAL file is
+    # reported as a database, with the wrong reason and sharing the ".db" per-rule quota.
     (".db-wal", "SQLite write-ahead log committed to the repo"),
     (".db-shm", "SQLite shared-memory file committed to the repo"),
     (".db", "SQLite database committed to the repo"),
@@ -213,6 +214,12 @@ def artifact_hit(path: str, marker: str, *, suffix_only: bool = False) -> bool:
         return base == marker or base.startswith(".env.") or _extension_hit(base, marker)
     if suffix_only or marker.startswith("."):
         return _extension_hit(base, marker)
+    # A substring rule still may not claim prose about the key or a script that rotates
+    # it: `docs/id_rsa_rotation.md` and `scripts/rotate_id_rsa.sh` are not private keys,
+    # and `id_rsa` sits in the top priority band with a five-path quota, so a few of those
+    # crowd real findings out of the report entirely.
+    if base.endswith(_A_DIFFERENT_KIND_OF_FILE):
+        return False
     return marker in base
 
 

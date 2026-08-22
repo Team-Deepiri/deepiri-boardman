@@ -16,12 +16,23 @@ branch_labels = None
 depends_on = None
 
 
+def _has_column(name: str) -> bool:
+    inspector = sa.inspect(op.get_bind())
+    return any(c["name"] == name for c in inspector.get_columns("pr_task_links"))
+
+
 def upgrade() -> None:
-    op.add_column(
-        "pr_task_links",
-        sa.Column("withdrawn_github_at", sa.String(length=40), nullable=True),
-    )
+    # Guarded, because `init_db`'s SQLite shim adds this column at startup so an instance
+    # running from an older file keeps working. An app that starts before
+    # `alembic upgrade head` -- the exact sequence this migration exists for -- would
+    # otherwise make the upgrade fail with "duplicate column name".
+    if not _has_column("withdrawn_github_at"):
+        op.add_column(
+            "pr_task_links",
+            sa.Column("withdrawn_github_at", sa.String(length=40), nullable=True),
+        )
 
 
 def downgrade() -> None:
-    op.drop_column("pr_task_links", "withdrawn_github_at")
+    if _has_column("withdrawn_github_at"):
+        op.drop_column("pr_task_links", "withdrawn_github_at")
