@@ -332,12 +332,17 @@ class GitHubEventPoller:
         needed = 3600.0 / cycles_per_hour if cycles_per_hour > 0 else configured
         if needed <= configured:
             return configured
+        observed = (
+            f"assuming {repo_count * _ASSUMED_OPEN_PRS_PER_REPO}"
+            if branch_count is None
+            else str(max(0, branch_count))
+        )
         _log.warning(
             "TESTING_LIVE_PLAKY: %d repos (%s open PR branches) at %.0fs would spend ~%.0f "
             "GitHub calls/hour; polling every %.0fs instead to stay inside the ~%d/hour the "
             "poller may use",
             repo_count,
-            "assuming" if branch_count is None else branch_count,
+            observed,
             configured,
             (3600.0 / configured) * per_cycle,
             needed,

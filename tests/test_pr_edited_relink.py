@@ -1026,3 +1026,88 @@ async def test_a_merged_pr_does_not_revive(db_session, workflow) -> None:
     await ph._ensure_links_live(payload, db_session)
 
     assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == []
+
+
+@pytest.mark.asyncio
+async def test_editing_a_pr_does_not_rewrite_a_card_somebody_else_wrote(
+    db_session, monkeypatch
+) -> None:
+    """The PR's title and description belong on the card the PR CREATED. Nowhere else.
+
+    A fuzzy pipeline link points at a card that already existed, with a title and a
+    description a person wrote, and it is stored with issue number 0 exactly like a
+    PR-created card. Selecting on that 0 alone, every edit of the PR overwrote their text
+    with the PR's own -- silently, and a Plaky item's text cannot be edited back.
+    """
+    from boardman.database.models import PullRequestTaskLink
+    from boardman.services import pr_handler as ph
+
+    class Routing:
+        plaky_board_id = "269031"
+        plaky_group_id = "g1"
+
+    async def fake_routing(*_a, **_k):
+        return Routing()
+
+    written: dict[str, Any] = {}
+
+    async def fake_update(task_id, inp):
+        written[str(task_id)] = inp
+        return {"ok": True}
+
+    async def task_ids(_session, *, github_repo, github_pr_number):
+        return ["task-mine"] if github_pr_number == 88 else ["task-theirs"]
+
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+    monkeypatch.setattr(ph, "update_task_internal", fake_update)
+    monkeypatch.setattr(ph, "distinct_task_ids_for_pr", task_ids)
+
+    db_session.add_all(
+        [
+            # PR #88 opened its own card: the PR is what that card is.
+            PullRequestTaskLink(
+                github_repo=REPO,
+                github_pr_number=88,
+                plaky_task_id="task-mine",
+                github_issue_number=0,
+                link_source="pr_task_created",
+            ),
+            # PR #89 was matched to a card that was already on the board.
+            PullRequestTaskLink(
+                github_repo=REPO,
+                github_pr_number=89,
+                plaky_task_id="task-theirs",
+                github_issue_number=0,
+                link_source="auto_link",
+            ),
+        ]
+    )
+    await db_session.commit()
+
+    def _edited(number: int) -> PullRequestEventPayload:
+        return PullRequestEventPayload(
+            action="edited",
+            pull_request={
+                "number": number,
+                "title": "Retry the flaky upload step",
+                "body": "no issue reference",
+                "html_url": f"https://github.com/{FULL}/pull/{number}",
+                "state": "open",
+                "merged": False,
+                "draft": False,
+                "user": {"login": "ali-ferris"},
+                "head": {"ref": "feat/x"},
+            },
+            repository={"full_name": FULL, "name": REPO},
+        )
+
+    assert (await ph.handle_pr_edited(_edited(88), db_session))["event"] == "pr_metadata_synced"
+    assert (await ph.handle_pr_edited(_edited(89), db_session))["event"] == "pr_metadata_synced"
+
+    assert written["task-mine"].title == "Retry the flaky upload step"
+    assert written["task-mine"].description, "the card this PR opened tracks the PR"
+
+    assert written["task-theirs"].title is None, "a matched card kept the title it had"
+    assert written["task-theirs"].description is None
+    # The rest of the metadata still syncs to both -- that part was never the PR's to lose.
+    assert written["task-theirs"].task_type

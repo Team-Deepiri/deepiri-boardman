@@ -51,6 +51,13 @@ from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
+# A row this PR opened a card for, before and after the card exists. Only these carry a
+# title and description that belong to the PR; every other link_source points at a card
+# that was already there, whose text somebody else wrote.
+_PR_TASK_PENDING_LINK_SOURCE = "pr_task_pending"
+_PR_TASK_CREATED_LINK_SOURCE = "pr_task_created"
+_PR_OWNED_LINK_SOURCES = (_PR_TASK_PENDING_LINK_SOURCE, _PR_TASK_CREATED_LINK_SOURCE)
+
 
 async def _update_plaky_task_status(
     task_id: str,
@@ -512,7 +519,7 @@ async def _maybe_triage_ambiguous_pr(
         github_pr_number=pr_number,
         plaky_task_id=f"pending:{uuid.uuid4().hex}",
         github_issue_number=0,
-        link_source="pr_task_pending",
+        link_source=_PR_TASK_PENDING_LINK_SOURCE,
     )
     try:
         async with session.begin_nested():
@@ -596,7 +603,7 @@ async def _maybe_triage_ambiguous_pr(
 
     if task_id:
         reservation.plaky_task_id = task_id
-        reservation.link_source = "pr_task_created"
+        reservation.link_source = _PR_TASK_CREATED_LINK_SOURCE
         # The PR named an issue that has no task yet. Claim that issue for THIS card, so
         # when the issue itself syncs it updates this one instead of opening a second
         # card for the same piece of work.
@@ -1262,6 +1269,10 @@ async def handle_pr_edited(
             resolved = await resolve_plaky_status_patch(board_id, intent="workflow_assigned")
             if resolved:
                 status_key, status_value = resolved[0], resolved[1]
+        # Cards this PR CREATED, and only those. Issue-number 0 alone was too wide: the
+        # fuzzy pipeline links to EXISTING cards and stores them with the same 0, so every
+        # edit of the PR overwrote a human-written title and description with the PR's
+        # own. Losing what somebody wrote is worse than a card whose title lags its PR.
         standalone_ids = {
             str(row.plaky_task_id)
             for row in (
@@ -1270,6 +1281,7 @@ async def handle_pr_edited(
                         PullRequestTaskLink.github_repo == repo_name,
                         PullRequestTaskLink.github_pr_number == pr_number,
                         PullRequestTaskLink.github_issue_number == 0,
+                        PullRequestTaskLink.link_source.in_(_PR_OWNED_LINK_SOURCES),
                     )
                 )
             ).scalars()
