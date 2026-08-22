@@ -753,6 +753,98 @@ async def test_orphan_pr_becomes_a_real_linked_task(db_session, monkeypatch) -> 
 
 
 @pytest.mark.asyncio
+async def test_a_branch_name_does_not_claim_an_issue_nobody_referenced(
+    db_session, monkeypatch
+) -> None:
+    """A branch is a hint about which issue a PR is FOR. It is not a statement that the
+    PR's card should become that issue's card.
+
+    Claiming one writes an IssueTaskMap, and from then on every edit, comment, assignment
+    and close of that GitHub issue is mirrored onto this PR's card. `hotfix/issue-99` on a
+    repo where #99 is an unrelated open bug binds them permanently, and nobody wrote
+    anything connecting them. Explicit references only, which is the same rule
+    reconcile_pr_issue_links applies to relinking.
+    """
+    from boardman.database.models import IssueTaskMap, PullRequestTaskLink
+
+    class Amb:
+        enabled = True
+        triage_board_id = ""
+        triage_group_id = ""
+        assign_qa = False
+        title_template = "Triage: PR #{number} - {repo}"
+
+    class Cfg:
+        ambiguous_pr = Amb()
+        plaky_field_qa = "person-6"
+
+    class Routing:
+        plaky_board_id = "269028"
+        plaky_group_id = "933385"
+
+    async def fake_routing(*a: Any, **kw: Any):
+        return Routing()
+
+    created: list[Any] = []
+
+    async def fake_create(inp):
+        created.append(inp)
+        return {"ok": True, "task": {"id": "task-branch"}, "task_url": "https://plaky/x"}
+
+    async def fake_resolve(actor):
+        return "481106"
+
+    class FakePlaky:
+        async def add_comment(self, tid, body, **kw):
+            return {"ok": True}
+
+    monkeypatch.setattr(ph, "load_team_assignments", lambda: Cfg())
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+    monkeypatch.setattr("boardman.services.task_mutations.create_task_internal", fake_create)
+    monkeypatch.setattr(
+        "boardman.plaky.dynamic_qa_status.resolve_github_user_to_plaky_user_id", fake_resolve
+    )
+    monkeypatch.setattr(ph, "PlakyClient", FakePlaky)
+
+    def _payload(body: str, head_ref: str, number: int) -> PullRequestEventPayload:
+        return PullRequestEventPayload(
+            action="opened",
+            pull_request={
+                "number": number,
+                "title": "Restore the retry backoff",
+                "body": body,
+                "html_url": f"https://github.com/o/r/pull/{number}",
+                "state": "open",
+                "merged": False,
+                "draft": False,
+                "user": {"login": "Blasted-ctrl"},
+                "head": {"ref": head_ref},
+                "labels": [],
+            },
+            repository={"full_name": "Team-Deepiri/deepiri-boardman", "name": "deepiri-boardman"},
+        )
+
+    res = await ph.handle_pr_opened(
+        _payload("No issue reference.", "hotfix/issue-99", 91), db_session
+    )
+    assert res.get("created_from_pr") is True, res
+
+    links = (await db_session.execute(select(PullRequestTaskLink))).scalars().all()
+    assert [(x.github_pr_number, x.plaky_task_id) for x in links] == [(91, "task-branch")]
+    maps = (await db_session.execute(select(IssueTaskMap))).scalars().all()
+    assert (
+        maps == []
+    ), f"branch-derived #99 claimed an issue: {[(m.github_issue_number) for m in maps]}"
+
+    # Written down, it IS a claim -- that is the case this path exists for.
+    created.clear()
+    res2 = await ph.handle_pr_opened(_payload("Fixes #99", "hotfix/issue-99", 92), db_session)
+    assert res2.get("created_from_pr") is True, res2
+    claimed = (await db_session.execute(select(IssueTaskMap))).scalars().all()
+    assert [(m.github_issue_number, m.plaky_task_id) for m in claimed] == [(99, "task-branch")]
+
+
+@pytest.mark.asyncio
 async def test_issue_created_with_assignee_lands_assigned(
     db_session, monkeypatch, fake_plaky
 ) -> None:

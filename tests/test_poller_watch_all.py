@@ -187,8 +187,8 @@ def test_the_interval_stretches_to_fit_the_api_budget() -> None:
     """31 repos at 15s is ~30,000 GitHub calls/hour against a 5,000/hour limit the
     assistant's own tools also spend from."""
     from boardman.services.github_poller import (
-        _CALLS_PER_REPO_PER_CYCLE,
         _POLLER_HOURLY_CALL_BUDGET,
+        cycle_call_estimate,
     )
     from boardman.services.github_poller import GitHubEventPoller as P
 
@@ -196,11 +196,11 @@ def test_the_interval_stretches_to_fit_the_api_budget() -> None:
     # stretched too -- modestly, and honestly.
     small = P._safe_interval(15.0, 3)
     assert 15.0 < small < 30.0, small
-    assert (3600.0 / small) * 3 * _CALLS_PER_REPO_PER_CYCLE <= _POLLER_HOURLY_CALL_BUDGET + 1
+    assert (3600.0 / small) * cycle_call_estimate(3) <= _POLLER_HOURLY_CALL_BUDGET + 1
 
     stretched = P._safe_interval(15.0, 31)
     assert stretched > 15.0
-    calls_per_hour = (3600.0 / stretched) * 31 * _CALLS_PER_REPO_PER_CYCLE
+    calls_per_hour = (3600.0 / stretched) * cycle_call_estimate(31)
     assert calls_per_hour <= _POLLER_HOURLY_CALL_BUDGET + 1, calls_per_hour
     # And it never speeds anything UP: a generous interval is left alone.
     assert P._safe_interval(600.0, 31) == 600.0
@@ -247,3 +247,58 @@ async def test_an_explicit_list_still_honours_an_org_default(monkeypatch, _org) 
 
     assert watched == ["Team-Deepiri/unconfigured"]
     assert excluded == []
+
+
+def test_a_busy_org_is_priced_by_the_branches_it_actually_has() -> None:
+    """The per-cycle cost is not a per-repo constant.
+
+    31 repos each holding five open PRs is 155 extra /commits calls a cycle on top of the
+    124 fixed ones -- more than twice what a flat per-repo guess charged. Pricing the
+    cycle at the guess let the throttle report a safe interval that spent ~4,500 calls an
+    hour: past the poller's own budget, and most of GitHub's whole allowance.
+    """
+    from boardman.services.github_poller import (
+        _POLLER_HOURLY_CALL_BUDGET,
+        cycle_call_estimate,
+    )
+    from boardman.services.github_poller import GitHubEventPoller as P
+
+    busy = cycle_call_estimate(31, 155)
+    assert busy > cycle_call_estimate(31), (busy, cycle_call_estimate(31))
+
+    interval = P._safe_interval(15.0, 31, 155)
+    assert (3600.0 / interval) * busy <= _POLLER_HOURLY_CALL_BUDGET + 1
+
+    # And a quiet org is not overcharged for PRs it does not have: an observed zero is a
+    # real number, and buys a faster loop than the pre-observation allowance.
+    assert cycle_call_estimate(31, 0) < cycle_call_estimate(31)
+    assert P._safe_interval(15.0, 31, 0) < P._safe_interval(15.0, 31)
+
+
+@pytest.mark.asyncio
+async def test_the_interval_follows_the_open_prs_that_come_and_go() -> None:
+    """Resolved once at startup, the interval would keep pricing a cycle from a PR count
+    that stopped being true the moment somebody opened one."""
+    from boardman.services.github_poller import GitHubEventPoller, track_pr_branch
+
+    poller = GitHubEventPoller()
+    repos = [f"Team-Deepiri/repo-{i}" for i in range(31)]
+    assert poller._tracked_branch_count(repos) == 0
+
+    for repo in repos:
+        branches: dict[int, str] = {}
+        for pr in range(5):
+            track_pr_branch(branches, pr, f"feat/branch-{pr}", "open")
+        poller._processed[repo] = {"pr_branches": branches}
+
+    assert poller._tracked_branch_count(repos) == 155
+    busy = poller._safe_interval(15.0, len(repos), poller._tracked_branch_count(repos))
+
+    # PRs merge, branches are forgotten, and the loop is allowed to speed back up.
+    for repo in repos:
+        for pr in range(5):
+            track_pr_branch(
+                poller._processed[repo]["pr_branches"], pr, f"feat/branch-{pr}", "closed"
+            )
+    assert poller._tracked_branch_count(repos) == 0
+    assert poller._safe_interval(15.0, len(repos), 0) < busy

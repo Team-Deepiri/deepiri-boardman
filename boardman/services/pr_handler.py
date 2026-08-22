@@ -807,6 +807,9 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
         head_ref=opened_state.head_ref,
         repo_full_name=full_name,
     )
+    written_issues = explicit_issue_numbers(
+        payload.pull_request.body, payload.pull_request.title, repo_full_name=full_name
+    )
 
     from boardman.repos_config import get_routing_async
 
@@ -950,7 +953,11 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
             payload,
             session,
             top_scored=pipe_top,
-            orphan_issue_number=int(linked_issues[0]) if linked_issues else 0,
+            # WRITTEN references only. Claiming an issue for this PR's card writes an
+            # IssueTaskMap that later edits and closes of that issue follow, so a branch
+            # called `hotfix/issue-99` would permanently bind issue #99 to a card nobody
+            # connected it to. Same weak-signal rule reconcile_pr_issue_links enforces.
+            orphan_issue_number=int(written_issues[0]) if written_issues else 0,
         )
         if triage is not None:
             return triage

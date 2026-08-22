@@ -361,13 +361,17 @@ async def test_the_current_status_lookup_compares_the_field_not_just_the_option_
         async def get_board_item_public(self, _board_id, _item_id):
             return {"ok": True, "item": {"id": TASK}}
 
-    async def fake_resolve(board_id, *, intent):
+    async def fake_resolve(board_id, *, intent, preloaded_normalized=None):
         # Every intent lives on the Status column and happens to use option id "3";
         # the caller is asking about the Priority column.
         return ("status_key_STATUS", "3")
 
+    async def fake_load(_board_id):
+        return {"fields": []}
+
     monkeypatch.setattr("boardman.plaky.client.PlakyClient", lambda *a, **k: FakePlaky())
     monkeypatch.setattr(dq, "resolve_plaky_status_patch", fake_resolve)
+    monkeypatch.setattr(dq, "_load_normalized", fake_load)
     monkeypatch.setattr("boardman.plaky.board_schema.plaky_item_status_id", lambda _item, _fk: "3")
 
     same_field = await dq.current_status_intent(BOARD, TASK, "status_key_STATUS")
@@ -492,3 +496,46 @@ async def test_a_board_that_answers_but_cannot_be_read_is_also_unreadable(monkey
     monkeypatch.setattr("boardman.plaky.client.PlakyClient", lambda *a, **k: NoItem())
 
     assert await dq.current_status_intent(BOARD, TASK, "status_key") == dq.UNREADABLE_STATUS
+
+
+@pytest.mark.asyncio
+async def test_the_guard_reads_the_board_schema_once_and_fails_closed_without_it(
+    monkeypatch,
+) -> None:
+    """Ten intents resolved separately is ten schema loads -- twenty Plaky calls per guard
+    with the schema cache disabled, on a path that runs during ordinary webhook handling.
+    Worse, a transient failure on any one of them came back as "" and read as "nothing to
+    regress from", which is exactly the case the guard exists for.
+    """
+    from boardman.plaky import dynamic_qa_status as dq
+
+    class FakePlaky:
+        async def get_board_item_public(self, _board_id, _item_id):
+            return {"ok": True, "item": {"id": TASK}}
+
+    monkeypatch.setattr("boardman.plaky.client.PlakyClient", lambda *a, **k: FakePlaky())
+    monkeypatch.setattr("boardman.plaky.board_schema.plaky_item_status_id", lambda _i, _f: "3")
+
+    loads: list[str] = []
+
+    async def counting_load(board_id):
+        loads.append(board_id)
+        return {"fields": []}
+
+    async def fake_resolve(board_id, *, intent, preloaded_normalized=None):
+        assert preloaded_normalized is not None, f"{intent} loaded the schema again"
+        return ("status_key_STATUS", "3" if intent == "workflow_in_qa" else "9")
+
+    monkeypatch.setattr(dq, "_load_normalized", counting_load)
+    monkeypatch.setattr(dq, "resolve_plaky_status_patch", fake_resolve)
+
+    assert await dq.current_status_intent(BOARD, TASK, "status_key_STATUS") == "workflow_in_qa"
+    assert len(loads) == 1, f"{len(loads)} schema loads for one guard call"
+
+    # And when the schema will not load at all, the answer is "I could not tell", which
+    # refuses the write -- not "", which permits it.
+    async def failing_load(_board_id):
+        return None
+
+    monkeypatch.setattr(dq, "_load_normalized", failing_load)
+    assert await dq.current_status_intent(BOARD, TASK, "status_key_STATUS") == dq.UNREADABLE_STATUS

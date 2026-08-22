@@ -154,13 +154,34 @@ _ORG_DEFAULT_SOURCE = "org_default"
 # that first org listing happened to fail.
 _WATCH_LIST_REFRESH_CYCLES = 20
 # GitHub allows 5000 authenticated requests/hour, and the agent's own tools spend from the
-# same budget. Per repo per cycle the poller makes four fixed calls (issues, pulls, the
-# events feed, the default-branch commits) plus one per OPEN PR branch. Six is that four
-# plus a working allowance of two open PRs; branches are pruned when a PR closes, so this
-# no longer drifts upward with every PR a repo has ever had. It is an estimate, and it is
-# deliberately the pessimistic one -- underestimating here means the throttle logs
-# protection it is not delivering.
-_CALLS_PER_REPO_PER_CYCLE = 6
+# same budget. Per repo per cycle the poller makes exactly four calls that do not depend on
+# what the repo contains: issues, pulls, the events feed, and the default-branch commits.
+_FIXED_CALLS_PER_REPO_PER_CYCLE = 4
+# Plus one /commits call per OPEN PR head branch, which is not a constant -- a busy repo
+# with a dozen live PRs costs four times what a quiet one does. A fixed per-repo guess was
+# wrong in the direction that matters: 31 repos each holding five open PRs is ~4,500
+# calls/hour at an interval the throttle called safe, past both the poller's own budget and
+# GitHub's whole allowance. So the estimate counts the branches actually being tracked, and
+# the interval is recomputed each cycle as that number moves.
+_ASSUMED_OPEN_PRS_PER_REPO = 2
+
+
+def cycle_call_estimate(repo_count: int, branch_count: int | None = None) -> float:
+    """GitHub calls one poll cycle costs, from the open PR branches actually tracked.
+
+    `branch_count` is None before the first cycle has run, when nothing is tracked yet and
+    zero would understate the cost of every repo. An allowance stands in until observation
+    replaces it, and from then on the real number is used -- including a real zero, which
+    is what a set of quiet repos genuinely costs.
+    """
+    if repo_count <= 0:
+        return 0.0
+    branches = (
+        repo_count * _ASSUMED_OPEN_PRS_PER_REPO if branch_count is None else max(0, branch_count)
+    )
+    return repo_count * _FIXED_CALLS_PER_REPO_PER_CYCLE + branches
+
+
 # What the poller may spend of GitHub's 5,000/hour, leaving the rest for the assistant --
 # the interactive thing, and a poller that starves it has made the product worse to keep a
 # background loop punctual.
@@ -292,30 +313,41 @@ class GitHubEventPoller:
         self._processed: dict[str, dict[str, set]] = {}
 
     @staticmethod
-    def _safe_interval(configured: float, repo_count: int) -> float:
+    def _safe_interval(
+        configured: float, repo_count: int, branch_count: int | None = None
+    ) -> float:
         """Stretch the poll interval so the watch list fits inside the API budget.
 
         A 15s interval over three repos is 2,880 calls/hour. The same interval over the
         31 repos `all` resolves to is nearly 30,000 — six times GitHub's entire hourly
         allowance, shared with the agent's own tools. Rather than silently rate-limiting
         the assistant, slow the loop down to what the budget affords and say so.
+
+        The cost per cycle is not fixed, so this is re-asked as open PRs come and go.
         """
         if repo_count <= 0:
             return configured
-        cycles_per_hour = _POLLER_HOURLY_CALL_BUDGET / (repo_count * _CALLS_PER_REPO_PER_CYCLE)
+        per_cycle = cycle_call_estimate(repo_count, branch_count)
+        cycles_per_hour = _POLLER_HOURLY_CALL_BUDGET / per_cycle if per_cycle > 0 else 0.0
         needed = 3600.0 / cycles_per_hour if cycles_per_hour > 0 else configured
         if needed <= configured:
             return configured
         _log.warning(
-            "TESTING_LIVE_PLAKY: %d repos at %.0fs would spend ~%.0f GitHub calls/hour; "
-            "polling every %.0fs instead to stay inside the ~%d/hour the poller may use",
+            "TESTING_LIVE_PLAKY: %d repos (%s open PR branches) at %.0fs would spend ~%.0f "
+            "GitHub calls/hour; polling every %.0fs instead to stay inside the ~%d/hour the "
+            "poller may use",
             repo_count,
+            "assuming" if branch_count is None else branch_count,
             configured,
-            (3600.0 / configured) * repo_count * _CALLS_PER_REPO_PER_CYCLE,
+            (3600.0 / configured) * per_cycle,
             needed,
             _POLLER_HOURLY_CALL_BUDGET,
         )
         return needed
+
+    def _tracked_branch_count(self, repos: list[str]) -> int:
+        """Open PR head branches currently polled for commits, across the watched repos."""
+        return sum(len(self._processed.get(r, {}).get("pr_branches") or {}) for r in repos)
 
     def _gh_headers(self) -> dict[str, str]:
         return {
@@ -371,7 +403,21 @@ class GitHubEventPoller:
                         len(fresh_excluded),
                     )
                     repos = fresh
-                    interval = self._safe_interval(configured_interval, len(repos))
+            # Re-asked every cycle, because the cost of a cycle moves with the open PRs
+            # the org happens to have right now, not with anything resolved at startup.
+            was = interval
+            interval = self._safe_interval(
+                configured_interval,
+                len(repos),
+                self._tracked_branch_count(repos) if cycles else None,
+            )
+            if cycles and abs(interval - was) > 1.0:
+                _log.info(
+                    "TESTING_LIVE_PLAKY: poll interval now %.0fs (%d repos, %d open PR branches)",
+                    interval,
+                    len(repos),
+                    self._tracked_branch_count(repos),
+                )
             cycles += 1
             for repo in repos:
                 # Real-time REST endpoints (no events-feed lag) for the creation/push actions,

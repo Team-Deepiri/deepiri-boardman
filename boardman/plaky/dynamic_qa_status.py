@@ -502,10 +502,21 @@ async def current_status_intent(board_id: str, task_id: str, status_field_key: s
     if not current:
         return ""
 
+    # One schema load for all ten intents. Resolving each separately was twenty Plaky
+    # calls per guard with the schema cache disabled, and a transient failure on any one
+    # of them came back as "" -- read as "no regression", which silently defeats the
+    # guard. A load we cannot do is UNREADABLE, and refuses the write.
+    normalized = await _load_normalized(bid)
+    if not normalized:
+        _log.warning("could not load board %s schema; workflow position unknown", bid)
+        return UNREADABLE_STATUS
+
     best = ""
     best_rank: int | None = None
     for intent in WORKFLOW_RANK:
-        resolved = await resolve_plaky_status_patch(bid, intent=intent)
+        resolved = await resolve_plaky_status_patch(
+            bid, intent=intent, preloaded_normalized=normalized
+        )
         # Compare the FIELD as well as the option: Plaky types Type and Priority as STATUS
         # columns and their option ids restart per field, so "3" on Priority would
         # otherwise read as "3" on Status and hold back a legitimate write.
