@@ -1843,3 +1843,69 @@ async def test_a_link_left_withdrawn_is_still_retired_by_a_later_relink(
     by_task = {r.plaky_task_id: r.link_source for r in rows}
     assert by_task["7183844"] == "superseded_by_issue_link"
     assert by_task[TASK_94] == "issue_keyword"
+
+
+@pytest.mark.asyncio
+async def test_reopening_a_pr_still_asks_someone_to_review_it(db_session, monkeypatch) -> None:
+    """A reopened PR takes the anti-regression guards, and still needs a reviewer.
+
+    "Do not stage review work" is about a link made LATE onto a task that is already
+    finished -- nobody is going to review a card marked Completed. A reopened PR is not
+    that: the code is open again and somebody has to look at it. Sharing one flag between
+    the two left reopened PRs with no QA assignee, no QA comment and no reviewer request.
+    """
+    from boardman.plaky import dynamic_qa_status as dq
+
+    async def field_key(_bid):
+        return "status_key"
+
+    async def completed(_bid, _task_id, _fk):
+        return "workflow_completed"
+
+    class Routing:
+        plaky_board_id = "269031"
+        plaky_group_id = "g1"
+
+    async def fake_routing(*_a, **_k):
+        return Routing()
+
+    class FakePlaky:
+        async def add_comment(self, task_id, body, *, board_id=None):
+            return {"ok": True}
+
+    qa_calls: list[str] = []
+
+    async def fake_qa(_plaky, *, task_id, **_k):
+        qa_calls.append(str(task_id))
+        return {"assigned": True}
+
+    monkeypatch.setattr(dq, "workflow_status_field_key", field_key)
+    monkeypatch.setattr(dq, "current_status_intent", completed)
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+    monkeypatch.setattr(ph, "PlakyClient", lambda *a, **k: FakePlaky())
+    monkeypatch.setattr(ph, "_assign_qa_for_pr", fake_qa)
+    monkeypatch.setattr(ph, "_apply_pr_type_and_assignee", _noop_type_and_assignee)
+    monkeypatch.setattr(ph, "_maybe_set_needs_qa", _noop_needs_qa)
+
+    await _seed_issue_task(db_session, 94, TASK_94)
+
+    reopened = _pr("Fixes #94")
+    reopened.action = "reopened"
+    await ph.handle_pr_opened(reopened, db_session)
+    assert qa_calls == [TASK_94], "a reopened PR was left with nobody asked to review it"
+
+    # A LATE link onto the same finished task still declines, which is the case the
+    # short-circuit exists for.
+    qa_calls.clear()
+    await db_session.execute(PullRequestTaskLink.__table__.delete())
+    await db_session.commit()
+    await ph.reconcile_pr_issue_links(_pr("Fixes #94"), db_session)
+    assert qa_calls == []
+
+
+async def _noop_type_and_assignee(_plaky, *, task_id, **_k):
+    return {}
+
+
+async def _noop_needs_qa(_plaky, task_id, is_draft, board_id, *, allow_regression=True):
+    return {"ok": True}

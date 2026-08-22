@@ -125,7 +125,7 @@ async def test_reconcile_skips_unlinked_closed_prs(db_session, monkeypatch) -> N
 
     opened: list[int] = []
 
-    async def fake_opened(payload: Any, session: Any) -> dict[str, Any]:
+    async def fake_opened(payload: Any, session: Any, *, is_replay: bool = False) -> dict[str, Any]:
         opened.append(payload.pull_request.number)
         return {"plaky_task_id": "t-new"}
 

@@ -113,7 +113,10 @@ def handlers(monkeypatch):
         calls["issue_synced"].append(payload.issue.number)
         return {"ok": True, "event": "issue_labels_synced"}
 
-    async def fake_pr_opened(payload, session):
+    async def fake_pr_opened(payload, session, *, is_replay=False):
+        # `is_replay` mirrors the real signature: a sweep is a replay, and the pipeline
+        # runs its anti-regression guards for one.
+        assert is_replay is True, "reconciliation replayed a PR as brand new work"
         # Stands in for handle_pr_opened, so it writes the link row that one writes.
         calls["pr_opened"].append(payload.pull_request.number)
         session.add(

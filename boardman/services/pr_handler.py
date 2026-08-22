@@ -745,6 +745,7 @@ async def _link_pr_to_issue_task(
     is_late_link: bool = False,
     announce: bool = True,
     link_source: str = "issue_keyword",
+    skip_qa_if_finished: bool = False,
 ) -> None:
     """Attach one PR to the Plaky task an issue already owns, and run the PR workflow.
 
@@ -804,7 +805,7 @@ async def _link_pr_to_issue_task(
     # bring it into the QA queue. Only a task we can SEE is finished is skipped: a board
     # that did not answer is not a reason to leave an open PR with nobody asked to review
     # it, and the assignment moves no status of its own.
-    if is_late_link and board_id:
+    if skip_qa_if_finished and board_id:
         from boardman.plaky.dynamic_qa_status import (
             current_status_intent,
             workflow_status_field_key,
@@ -910,13 +911,20 @@ async def _ensure_links_live(payload: PullRequestEventPayload, session: AsyncSes
         await session.commit()
 
 
-async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSession) -> dict:
+async def handle_pr_opened(
+    payload: PullRequestEventPayload, session: AsyncSession, *, is_replay: bool = False
+) -> dict:
     repo_name = payload.repository.name
     # `reopened` comes through here too, and it is not a PR arriving for the first time:
     # the task may be sitting at QA Verified from before the close, and re-running the
     # open pipeline with regression allowed wrote Needs QA straight over it. Same
     # treatment as a link made late -- fill in what is missing, move nothing backwards.
-    is_rerun = str(getattr(payload, "action", "") or "").casefold() == "reopened"
+    #
+    # `is_replay` says the same thing for a caller that is not GitHub: the reconciliation
+    # sweep replays an already-open PR whose link row went missing, and the work behind it
+    # can be anywhere by then. It was the last entry into this pipeline still running with
+    # regression allowed.
+    is_rerun = is_replay or str(getattr(payload, "action", "") or "").casefold() == "reopened"
     await _ensure_links_live(payload, session)
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
@@ -1290,6 +1298,10 @@ async def reconcile_pr_issue_links(
             is_draft=is_draft,
             headline="**PR Linked:**",
             is_late_link=True,
+            # Only here. This is a link made late onto a task that may already be
+            # finished; a reopened PR takes the same regression guards but genuinely
+            # needs somebody to review it.
+            skip_qa_if_finished=True,
             announce=str(mapping.plaky_task_id) not in already_ours,
             link_source=_issue_link_source(int(issue_num), body_written, written),
         )

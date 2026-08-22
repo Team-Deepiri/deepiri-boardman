@@ -174,7 +174,16 @@ async def reconcile_repo(
                         ),
                         session,
                     )
-                    out["prs_resynced"] += int(bool(res.get("updated")))
+                    # `handle_pr_edited` re-resolves the PR's issue references, so
+                    # it can REPAIR a link itself -- a PR edited to add `Fixes #94` while
+                    # Boardman was down reaches its task here. That is a repair, not a
+                    # resync, and counting it as the latter hid the only path that can now
+                    # fix a link silently.
+                    if (res.get("relink") or {}).get("linked"):
+                        out["prs_relinked"] += 1
+                        logger.info("reconcile: PR #%s gained an issue link; repaired", num)
+                    else:
+                        out["prs_resynced"] += int(bool(res.get("updated")))
                 continue  # a stable link exists; metadata/state was reconciled above
             if str(pr.get("state") or "open").casefold() != "open" or pr.get("merged"):
                 # An unlinked CLOSED pull request is history, not drift. Replaying it
@@ -188,6 +197,10 @@ async def reconcile_repo(
             res = await handle_pr_opened(
                 PullRequestEventPayload(action="opened", pull_request=pr, repository=repo_block),
                 session,
+                # A sweep is a replay, whatever the action says. This PR has been open for
+                # a while and the task behind it can be anywhere; repairing the link must
+                # not also drag it back to Assigned or Needs QA.
+                is_replay=True,
             )
             if res.get("linked") or res.get("plaky_task_id"):
                 out["prs_relinked"] += 1
