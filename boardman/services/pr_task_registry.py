@@ -370,17 +370,24 @@ async def has_any_open_pr_for_task(
 
 
 async def active_pr_counts_by_qa(session: AsyncSession) -> dict[str, int]:
-    """Count open (not merged, not withdrawn) PR links per QA person.
+    """Count distinct open (not merged, not withdrawn) PRs per QA person.
 
-    Returns {qa_plaky_id: count} for every QA with at least one active link.
-    Used by the QA picker to skip overloaded reviewers.
+    A PR closing three issues has three link rows but is one review. Counting
+    rows would inflate the workload and hit the cap prematurely.
     """
-    from sqlalchemy import func
+    from sqlalchemy import cast, distinct, func
+    from sqlalchemy.types import String
 
     q = (
         select(
             PullRequestTaskLink.qa_plaky_id,
-            func.count(PullRequestTaskLink.id),
+            func.count(
+                distinct(
+                    PullRequestTaskLink.github_repo
+                    + ":"
+                    + cast(PullRequestTaskLink.github_pr_number, String)
+                )
+            ),
         )
         .where(
             PullRequestTaskLink.qa_plaky_id.is_not(None),

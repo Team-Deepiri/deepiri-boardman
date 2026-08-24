@@ -420,8 +420,8 @@ async def _assign_qa_for_pr(
                 from boardman.services.pr_task_registry import active_pr_counts_by_qa
 
                 qa_workload = await active_pr_counts_by_qa(session)
-            except Exception:  # noqa: BLE001
-                pass
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("qa workload count failed, picking without cap: %s", exc)
         qid, why = await _pick(repo_full, exclude_login=pr_author_login, qa_workload=qa_workload)
     if not qid:
         return {"skipped": "no eligible QA", "reason": why}
@@ -449,8 +449,8 @@ async def _assign_qa_for_pr(
             await stamp_qa_on_pr_links(
                 session, github_repo=repo_short, github_pr_number=pr_number, qa_plaky_id=str(qid)
             )
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("stamp_qa_on_pr_links failed for PR #%s: %s", pr_number, exc)
 
     mention = f"@{qa_login}" if qa_login else (qa_display or "QA")
     task_ref = task_url or f"Plaky task `{task_id}`"

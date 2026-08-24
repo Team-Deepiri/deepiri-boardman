@@ -189,3 +189,32 @@ async def test_merged_prs_do_not_count_toward_workload(db_factory):
     async with db_factory() as session:
         counts = await active_pr_counts_by_qa(session)
         assert counts["qa-alice"] == 1
+
+
+@pytest.mark.asyncio
+async def test_multi_issue_pr_counts_as_one(db_factory):
+    """A PR closing three issues is one review, not three."""
+    async with db_factory() as session:
+        session.add(
+            PullRequestTaskLink(
+                github_repo="repo", github_pr_number=5, github_issue_number=10,
+                plaky_task_id="t10", link_source="issue_keyword", qa_plaky_id="qa-alice",
+            )
+        )
+        session.add(
+            PullRequestTaskLink(
+                github_repo="repo", github_pr_number=5, github_issue_number=11,
+                plaky_task_id="t11", link_source="issue_keyword", qa_plaky_id="qa-alice",
+            )
+        )
+        session.add(
+            PullRequestTaskLink(
+                github_repo="repo", github_pr_number=5, github_issue_number=12,
+                plaky_task_id="t12", link_source="issue_keyword", qa_plaky_id="qa-alice",
+            )
+        )
+        await session.commit()
+
+    async with db_factory() as session:
+        counts = await active_pr_counts_by_qa(session)
+        assert counts["qa-alice"] == 1, f"expected 1 PR, got {counts['qa-alice']}"
