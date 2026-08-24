@@ -40,6 +40,7 @@ DEFAULT_QA_EXCLUDED: tuple[str, ...] = (
     # never auto-assigned as PR QA.
     "Asheen Hameeda",
     "AndyN-star",
+    "David Poindexter",
 )
 
 # Optional: route all bug-typed tasks to one named QA. Per Joe's PR #81 review this is

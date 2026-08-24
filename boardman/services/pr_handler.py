@@ -361,6 +361,7 @@ async def _assign_qa_for_pr(
     pr_number: int,
     pr_author_login: str = "",
     task_url: str = "",
+    session: AsyncSession | None = None,
 ) -> dict[str, Any]:
     """QA assignment happens HERE — when a PR opens — not at task creation (employer flow).
 
@@ -413,7 +414,15 @@ async def _assign_qa_for_pr(
         # The author is never a candidate (self-review). GitHub refuses a review from
         # the PR's own author, so assigning them leaves the task with a reviewer who
         # cannot act, and the QA-gated rejection path stops responding to anyone.
-        qid, why = await _pick(repo_full, exclude_login=pr_author_login)
+        qa_workload: dict[str, int] | None = None
+        if session is not None:
+            try:
+                from boardman.services.pr_task_registry import active_pr_counts_by_qa
+
+                qa_workload = await active_pr_counts_by_qa(session)
+            except Exception:  # noqa: BLE001
+                pass
+        qid, why = await _pick(repo_full, exclude_login=pr_author_login, qa_workload=qa_workload)
     if not qid:
         return {"skipped": "no eligible QA", "reason": why}
 
@@ -431,6 +440,17 @@ async def _assign_qa_for_pr(
         "ok": res.get("ok"),
         "reason": why[:220],
     }
+
+    if session is not None:
+        try:
+            from boardman.services.pr_task_registry import stamp_qa_on_pr_links
+
+            repo_short = repo_full.rsplit("/", 1)[-1] if "/" in repo_full else repo_full
+            await stamp_qa_on_pr_links(
+                session, github_repo=repo_short, github_pr_number=pr_number, qa_plaky_id=str(qid)
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     mention = f"@{qa_login}" if qa_login else (qa_display or "QA")
     task_ref = task_url or f"Plaky task `{task_id}`"
@@ -716,6 +736,7 @@ async def _maybe_triage_ambiguous_pr(
                 pr_number=pr_number,
                 pr_author_login=author_login,
                 task_url=str(res.get("task_url") or ""),
+                session=session,
             )
         else:
             qa_res = {"skipped": "ambiguous_pr.assign_qa is false"}
@@ -903,6 +924,7 @@ async def _link_pr_to_issue_task(
         pr_number=pr_number,
         pr_author_login=(str(pr_user0.get("login") or "") if isinstance(pr_user0, dict) else ""),
         task_url=mapping.plaky_task_url or "",
+        session=session,
     )
     _log.info("PR #%s QA assignment: %s", pr_number, {k: qa_res[k] for k in list(qa_res)[:3]})
     # A newly OPENED PR asks for QA even when the issue's task is already past that point:
@@ -1159,6 +1181,7 @@ async def handle_pr_opened(
                     repo_full=full_name,
                     pr_number=pr_number,
                     pr_author_login=str(pr_author_login or ""),
+                    session=session,
                 )
                 _log.info(
                     "PR #%s QA assignment (fuzzy link): %s",

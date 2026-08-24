@@ -58,6 +58,7 @@ class PullRequestTaskLink(Base):
     # which a queued job or a poller catch-up can put an hour late, and it comes from a
     # different clock than the timestamps it would be compared against.
     withdrawn_github_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    qa_plaky_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

@@ -13,6 +13,7 @@ qa_excluded:
 # Added per Joe's PR #81 review (leads/managers on the support team, never PR QA):
 - Asheen Hameeda
 - AndyN-star
+- David Poindexter
 
 member_defaults:
   roles:

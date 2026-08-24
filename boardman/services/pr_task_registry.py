@@ -369,6 +369,49 @@ async def has_any_open_pr_for_task(
     return r.scalar_one_or_none() is not None
 
 
+async def active_pr_counts_by_qa(session: AsyncSession) -> dict[str, int]:
+    """Count open (not merged, not withdrawn) PR links per QA person.
+
+    Returns {qa_plaky_id: count} for every QA with at least one active link.
+    Used by the QA picker to skip overloaded reviewers.
+    """
+    from sqlalchemy import func
+
+    q = (
+        select(
+            PullRequestTaskLink.qa_plaky_id,
+            func.count(PullRequestTaskLink.id),
+        )
+        .where(
+            PullRequestTaskLink.qa_plaky_id.is_not(None),
+            PullRequestTaskLink.qa_plaky_id != "",
+            _active_link_clause(),
+        )
+        .group_by(PullRequestTaskLink.qa_plaky_id)
+    )
+    rows = (await session.execute(q)).all()
+    return {str(qid): int(cnt) for qid, cnt in rows}
+
+
+async def stamp_qa_on_pr_links(
+    session: AsyncSession,
+    *,
+    github_repo: str,
+    github_pr_number: int,
+    qa_plaky_id: str,
+) -> int:
+    """Stamp the assigned QA on all active link rows for a PR. Returns rows updated."""
+    q = select(PullRequestTaskLink).where(
+        PullRequestTaskLink.github_repo == github_repo,
+        PullRequestTaskLink.github_pr_number == github_pr_number,
+        _active_link_clause(),
+    )
+    rows = list((await session.execute(q)).scalars())
+    for row in rows:
+        row.qa_plaky_id = qa_plaky_id
+    return len(rows)
+
+
 async def distinct_task_ids_for_pr(
     session: AsyncSession,
     *,

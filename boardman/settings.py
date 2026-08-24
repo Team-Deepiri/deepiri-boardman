@@ -182,6 +182,7 @@ class Settings(BaseSettings):
     # QA pick ranking from GitHub contribution profiles (cosine similarity vs the target
     # repo). False = legacy overlap-pool weighted-random pick only.
     qa_github_fit_enabled: bool = True
+    qa_max_active_prs: int = 5
 
     database_url: str = "sqlite+aiosqlite:///./boardman.db"
 

@@ -92,6 +92,10 @@ async def init_db() -> None:
                     sync_conn.execute(
                         text("ALTER TABLE pr_task_links ADD COLUMN withdrawn_github_at VARCHAR(40)")
                     )
+                if link_cols and "qa_plaky_id" not in link_cols:
+                    sync_conn.execute(
+                        text("ALTER TABLE pr_task_links ADD COLUMN qa_plaky_id VARCHAR(255)")
+                    )
 
                 # `create_all` skips an existing table, so the unique constraint that stops
                 # two concurrent deliveries filing two cards for one issue never reached a

@@ -74,6 +74,7 @@ def test_default_exclusion_list_names() -> None:
         "Nathan Adams",
         "Asheen Hameeda",
         "AndyN-star",
+        "David Poindexter",
     }
 
 
@@ -287,8 +288,9 @@ async def test_assign_qa_for_pr_full_path(monkeypatch: pytest.MonkeyPatch) -> No
 
     picked_with: list[str] = []
 
-    async def fake_pick(repo_full: str, cfg: Any = None, *, exclude_login: str = ""):
-        # The PR author must reach the picker so they can be excluded from their own review.
+    async def fake_pick(
+        repo_full: str, cfg: Any = None, *, exclude_login: str = "", qa_workload: Any = None
+    ):
         picked_with.append(exclude_login)
         return "plaky-42", "qa=Regular QA ranking[...]"
 

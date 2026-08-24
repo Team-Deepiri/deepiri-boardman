@@ -288,10 +288,15 @@ async def pick_qa_for_repo(
     cfg: TeamAssignmentsConfig | None = None,
     *,
     exclude_login: str = "",
+    qa_workload: dict[str, int] | None = None,
 ) -> tuple[str | None, str]:
     """
     Returns (plaky_person_id_or_value, reason_summary).
     Uses tier from repos.yml, or auto-classifies if not found.
+
+    ``qa_workload`` is {plaky_person_id: active_pr_count}. When provided, candidates
+    at or above ``settings.qa_max_active_prs`` are deferred. If every candidate is
+    at cap, the one with the fewest active PRs is chosen anyway.
 
     ``exclude_login`` removes one GitHub login from the pool — the PR author. Nobody
     reviews their own pull request, and assigning them is worse than useless: GitHub
@@ -391,6 +396,29 @@ async def pick_qa_for_repo(
                 "heavy repo: no QA after legacy hardware tier filter (light/minimal/low dropped)",
             )
 
+    # Workload cap: prefer QAs below the active-PR limit. If every candidate is at cap,
+    # fall back to the one with the fewest active PRs rather than leaving QA unassigned.
+    workload = qa_workload or {}
+    cap = max(1, int(settings.qa_max_active_prs))
+    all_qas_before_cap = list(qas)
+    if workload:
+        from boardman.observability.counters import bump
+
+        available = [m for m in qas if workload.get(m.id, 0) < cap]
+        if available:
+            qas = available
+            bump("qa.workload_cap.had_capacity")
+        else:
+            bump("qa.workload_cap.all_at_cap")
+            qas = sorted(all_qas_before_cap, key=lambda m: workload.get(m.id, 0))
+            _log.info(
+                "qa_picker: all %d candidates at cap (%d); falling back to least-loaded (%s, %d active)",
+                len(all_qas_before_cap),
+                cap,
+                qas[0].display if qas else "?",
+                workload.get(qas[0].id, 0) if qas else 0,
+            )
+
     # GitHub-fit scored ranking; legacy overlap-pool weighted-random as the fallback.
     fits: dict[str, tuple[float, str]] | None = None
     try:
@@ -405,12 +433,16 @@ async def pick_qa_for_repo(
         _log.warning("qa_picker: GitHub fit scoring unavailable for %s: %s", fn, e)
         log_unexpected(_log, f"pick_qa_for_repo: _github_fit_scores({fn})", e)
 
+    load_tag = ""
+    if workload:
+        load_tag = f" active_prs={workload.get(qas[0].id if qas else '', 0)}/{cap}"
+
     if fits:
         chosen, rank_detail = _ranked_choice(qas, cfg, fits)
         if chosen:
             return (
                 chosen.id,
-                f"qa={chosen.display} repo_tier={repo_tier} candidates={len(qas)} {rank_detail}",
+                f"qa={chosen.display} repo_tier={repo_tier} candidates={len(qas)}{load_tag} {rank_detail}",
             )
 
     pool = _overlap_component(qas)
@@ -419,7 +451,7 @@ async def pick_qa_for_repo(
         return None, "weighted pick failed"
     return (
         chosen.id,
-        f"qa={chosen.display} pool_size={len(pool)} repo_tier={repo_tier} (legacy weighted pick; GitHub fit unavailable)",
+        f"qa={chosen.display} pool_size={len(pool)} repo_tier={repo_tier}{load_tag} (legacy weighted pick; GitHub fit unavailable)",
     )
 
 
