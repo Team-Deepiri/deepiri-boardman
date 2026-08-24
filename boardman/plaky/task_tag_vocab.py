@@ -152,6 +152,12 @@ def status_field_patch_candidates(canonical_status: str) -> tuple[str, ...]:
 #      board that motivated it in a comment.
 #   5. Prefer adding the option to the board over adding a fallback here. A fallback is
 #      an admission that boards disagree; the table should not keep growing.
+#
+# NOT derived from TASK_TYPE_TAGS, deliberately: TASK_TYPE_TAGS is the exact-cased
+# canonical vocabulary matched by `_canonical_from_vocab`, while these keys/values are
+# casefolded free-text candidates tried against whatever a live board actually calls its
+# options (see `select_field_patch_pair_from_schema`) and are not themselves required to
+# be canonical types. Keeping them as two tables, not one, is the intended design.
 _TYPE_FALLBACKS: dict[str, tuple[str, ...]] = {
     "feature": ("story", "task", "enhancement"),
     "story": ("feature", "task"),

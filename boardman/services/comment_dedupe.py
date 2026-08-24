@@ -55,6 +55,24 @@ def github_activity_revision_marker(marker: str, body: str, edited_at: str = "")
     # updated_at for the revert, so it mirrors; a redelivery carries the same one and
     # still dedupes. Without it, body-only is the old behaviour.
     payload = (edited_at or "") + _REVISION_SEPARATOR + (body or "")
+    # 32 hex chars (128 bits) rather than 16 (64 bits) -- a dedupe key needs enough
+    # collision resistance that two distinct edits never fold into the same row.
+    digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:32]
+    return f"{marker}:rev:{digest}"
+
+
+def _github_activity_revision_marker_legacy(marker: str, body: str, edited_at: str = "") -> str:
+    """The pre-widening 16-hex-char digest, for the seen-check only.
+
+    `SyncLog.detail` is matched by exact substring (`comment_already_synced`), so a row
+    written before the digest widened above is keyed on the OLD 16-char value and would
+    never match the new 32-char one -- every already-mirrored edited comment would look
+    unseen and get reposted once, right after this deploys. Checked alongside the new
+    marker so history keeps matching; never used to WRITE a new row.
+    """
+    if not marker:
+        return ""
+    payload = (edited_at or "") + _REVISION_SEPARATOR + (body or "")
     digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
     return f"{marker}:rev:{digest}"
 
@@ -133,16 +151,20 @@ async def mirror_github_activity(
     """
     if not body.strip():
         return {"ok": True, "skipped": True, "message": "empty activity"}
-    revision_marker = github_activity_revision_marker(
-        marker, body if revision_body is None else revision_body, edited_at
-    )
+    wording = body if revision_body is None else revision_body
+    revision_marker = github_activity_revision_marker(marker, wording, edited_at)
+    legacy_revision_marker = _github_activity_revision_marker_legacy(marker, wording, edited_at)
     # A create also checks the comment's plain identity, so anything mirrored before
     # revision markers existed is not posted a second time. An edit must not: that row
-    # is the ORIGINAL wording, and matching it would drop the correction.
+    # is the ORIGINAL wording, and matching it would drop the correction. The legacy
+    # marker is checked the same way, for the same reason -- rows written under the old
+    # 16-char digest.
     seen = (
-        await comment_already_synced(session, action, revision_marker)
+        await comment_already_synced(session, action, revision_marker, legacy_revision_marker)
         if is_revision
-        else await comment_already_synced(session, action, revision_marker, marker)
+        else await comment_already_synced(
+            session, action, revision_marker, legacy_revision_marker, marker
+        )
     )
     if marker and seen:
         return {"ok": True, "skipped": True, "message": "activity already mirrored"}

@@ -305,7 +305,13 @@ async def fetch_repo_file_text(
         _fetch_full,
         ok=lambda s: isinstance(s, str) and not s.startswith("("),
     )
-    return str(full)[:max_chars]
+    text = str(full)
+    if len(text) > max_chars:
+        _log.warning(
+            "fetch_repo_file_text truncated %s/%s:%s from %d to %d chars",
+            owner, repo, path, len(text), max_chars,
+        )
+    return text[:max_chars]
 
 
 async def fetch_default_branch(client: httpx.AsyncClient, owner: str, repo: str) -> str:

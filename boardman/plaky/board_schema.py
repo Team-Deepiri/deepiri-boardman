@@ -389,7 +389,10 @@ def select_field_patch_pair_from_schema(
                 if lab == wc:
                     exact = opt
                     break
-                if fuzzy is None and (wc in lab or lab in wc):
+                # A short candidate (e.g. "qa") can appear inside an unrelated label as
+                # plain substring text; require both sides to carry at least a few
+                # characters before falling back to substring containment.
+                if fuzzy is None and len(wc) >= 3 and len(lab) >= 3 and (wc in lab or lab in wc):
                     fuzzy = opt
             chosen = exact or fuzzy
             if chosen is not None:

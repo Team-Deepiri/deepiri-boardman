@@ -215,6 +215,9 @@ def _refresh_in_background(stamp: tuple[Any, ...]) -> None:
             _log.warning("background roster refresh failed; keeping the cached roster")
             log_unexpected(_log, "_refresh_in_background: _build_team_assignments", exc)
         finally:
+            # `finally` runs even if the `except` block above raised, so this reset is
+            # unconditional regardless of where `_rebuild` failed -- there is nothing
+            # left in this block that could itself throw and skip it.
             _team_cfg_refreshing = False
 
     try:
