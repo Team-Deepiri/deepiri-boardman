@@ -90,7 +90,7 @@ def _default_model_for_provider(provider: str) -> str:
     if provider == "anthropic":
         return "claude-sonnet-4-20250514"
     if provider == "openai":
-        return "gpt-4.1"
+        return "gpt-4.1"  # real OpenAI model (released April 2025)
     if provider == "openrouter":
         return "anthropic/claude-3.5-sonnet"
     if provider == "gemini":

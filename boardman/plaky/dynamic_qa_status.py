@@ -417,7 +417,7 @@ async def resolve_github_user_to_plaky_user_id(
             if gl and mid and gl == want:
                 return mid
     except Exception:  # noqa: BLE001 — roster trouble must never break identity resolution
-        _log.debug("roster unavailable during GitHub user resolution", exc_info=True)
+        _log.warning("roster unavailable during GitHub user resolution", exc_info=True)
 
     c = PlakyClient()
     r = await c.list_workspace_users()

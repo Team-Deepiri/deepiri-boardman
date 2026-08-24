@@ -55,7 +55,7 @@ async def init_db() -> None:
 
         if settings.database_url.startswith("sqlite"):
 
-            def _add_optional_columns(sync_conn):
+            def _add_optional_columns(sync_conn):  # rolling-deploy shim; remove once all instances run alembic upgrade head
                 r = sync_conn.execute(text("PRAGMA table_info(agent_sessions)"))
                 cols = [row[1] for row in r.fetchall()]
                 if "task_draft_json" not in cols:

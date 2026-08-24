@@ -71,7 +71,7 @@ def note_repo_changed(full_name: str, *, event: str = "") -> int:
     except (
         Exception
     ):  # never let cache bookkeeping break a sync path  # noqa: BLE001 - observability failure must not affect the request
-        logger.debug("cache invalidation failed for %s", name, exc_info=True)
+        logger.warning("cache invalidation failed for %s", name, exc_info=True)
         return 0
     if dropped:
         logger.info("repo changed (%s): dropped %d cached reads for %s", kind or "?", dropped, name)

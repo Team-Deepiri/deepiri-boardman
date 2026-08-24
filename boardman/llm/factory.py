@@ -43,7 +43,7 @@ def get_chat_model() -> Any:
         _PROVIDER_DEFAULTS = {
             "anthropic": "claude-sonnet-4-20250514",
             "claude": "claude-sonnet-4-20250514",
-            "openai": "gpt-4.1",
+            "openai": "gpt-4.1",  # real OpenAI model (released April 2025)
             "gpt": "gpt-4.1",
             "openrouter": "anthropic/claude-3.5-sonnet",
             "or": "anthropic/claude-3.5-sonnet",
@@ -94,6 +94,7 @@ def _build_chat_model() -> Any:
     if p in ("openai", "gpt"):
         from langchain_openai import ChatOpenAI
 
+        # gpt-4.1: real OpenAI model (released April 2025), not a typo
         model = (settings.llm_model or "").strip() or "gpt-4.1"
         kw = {
             "model": model,

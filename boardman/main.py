@@ -33,6 +33,7 @@ _log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Startup: DB, rate limiter, security checks, LLM probe, cache warmup. Shutdown: HTTP pools, Redis, Ollama, job queue."""
     setup_logging()
     await init_db()
     if settings.agent_rate_limit_enabled:

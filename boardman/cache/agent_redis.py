@@ -56,10 +56,8 @@ async def get_agent_redis() -> Any:
         except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
             if not _warned_unreachable:
                 _log.warning("Agent Redis cache: unreachable (%s); using in-process cache only", e)
+                log_unexpected(_log, "get_agent_redis: from_url", e)
                 _warned_unreachable = True
-            # Outside the _warned_unreachable latch: an ordinary outage trips that one on
-            # the first call, and a real bug arriving afterwards still deserves its trace.
-            log_unexpected(_log, "get_agent_redis: from_url", e)
             return None
 
 

@@ -69,7 +69,7 @@ def _credentials_only_for_live_tests(request, monkeypatch: pytest.MonkeyPatch) -
 
     for field in _LIVE_CREDENTIALS:
         current = getattr(bs.settings, field, None)
-        monkeypatch.setattr(bs.settings, field, type(current)() if current else current)
+        monkeypatch.setattr(bs.settings, field, "" if isinstance(current, str) else current)
 
 
 @pytest.fixture(autouse=True)
