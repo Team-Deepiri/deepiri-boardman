@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from boardman.observability.degradation import log_degraded
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.task_payload_ids import placement_ids_from_plaky_task
 from boardman.settings import settings
@@ -31,4 +32,4 @@ async def maybe_enqueue_plaky_reorder_after_task(plaky: PlakyClient, task_id: st
             {"board_id": bid, "group_id": gid},
         )
     except Exception:  # noqa: BLE001 - observability failure must not affect the request
-        _log.exception("enqueue plaky_reorder_group_job failed")
+        log_degraded(_log, "enqueue plaky_reorder_group_job")
