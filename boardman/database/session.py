@@ -81,6 +81,11 @@ async def init_db() -> None:
                 # fails with "no such column" the moment a link is read. Migration 007 adds
                 # this properly; the shim is what keeps an instance running from an older
                 # file working before anybody runs `alembic upgrade head`.
+                #
+                # TEMPORARY, by design: every ALTER here has a matching Alembic migration
+                # already checked in. Safe to delete this whole function once every
+                # instance this app runs on has had `alembic upgrade head` run against it
+                # at least once -- until then, deleting it breaks any instance that hasn't.
                 r = sync_conn.execute(text("PRAGMA table_info(pr_task_links)"))
                 link_cols = [row[1] for row in r.fetchall()]
                 if link_cols and "withdrawn_github_at" not in link_cols:

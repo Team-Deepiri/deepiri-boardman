@@ -14,25 +14,34 @@ from boardman.settings import settings
 _log = logging.getLogger(__name__)
 
 
-async def github_request(client: httpx.AsyncClient, path: str) -> httpx.Response:
+async def github_request(
+    client: httpx.AsyncClient, path: str, *, timeout: float | None = None
+) -> httpx.Response:
+    # Stripped: a trailing newline or space from how GITHUB_PAT got into the environment
+    # would otherwise ride along into the header and turn every call into a 401, which
+    # reads exactly like a revoked token.
     headers = {
-        "Authorization": f"Bearer {settings.github_pat}",
+        "Authorization": f"Bearer {(settings.github_pat or '').strip()}",
         "Accept": "application/vnd.github+json",
     }
     # follow_redirects: renamed repos return 301 to the new owner/name; without this every
     # helper sees the bare 301 and reports the repo as inaccessible.
+    # timeout: only overridden when the caller passes one -- an explicit `timeout=None`
+    # here would disable httpx's timeout entirely rather than falling back to the shared
+    # client's default, so the kwarg is omitted, not passed as None, when unset.
+    kwargs: dict[str, object] = {"headers": headers, "follow_redirects": True}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
     started = time.monotonic()
     try:
-        return await client.get(
-            f"https://api.github.com{path}", headers=headers, follow_redirects=True
-        )
+        return await client.get(f"https://api.github.com{path}", **kwargs)
     finally:
         _log.debug("GitHub GET %s took %.2fs", path, time.monotonic() - started)
 
 
 def github_request_sync(client: httpx.Client, path: str) -> httpx.Response:
     headers = {
-        "Authorization": f"Bearer {settings.github_pat}",
+        "Authorization": f"Bearer {(settings.github_pat or '').strip()}",
         "Accept": "application/vnd.github+json",
     }
     started = time.monotonic()

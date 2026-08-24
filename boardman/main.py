@@ -61,7 +61,16 @@ async def lifespan(app: FastAPI):
         )
     pk = (settings.plaky_api_key or "").strip()
     if pk:
-        _log.info("Plaky: API key present (length=%d), base=%s", len(pk), settings.plaky_api_base)
+        from boardman.readiness import _is_placeholder
+
+        if _is_placeholder(pk):
+            _log.warning(
+                "Plaky: PLAKY_API_KEY looks like an unfilled placeholder (%r) rather than a "
+                "real key — Boards/match and agent Plaky tools will get 400s from Plaky.",
+                pk,
+            )
+        else:
+            _log.info("Plaky: API key present (length=%d), base=%s", len(pk), settings.plaky_api_base)
     else:
         _log.warning(
             "Plaky: PLAKY_API_KEY is empty — set it in `.env` (docker: env_file) or the environment. "

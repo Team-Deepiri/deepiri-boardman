@@ -43,27 +43,25 @@ async def stored_revision(session: AsyncSession, repo: str) -> str | None:
 
 
 async def current_revision(repo: str) -> tuple[str, str]:
-    """(pushed_at, error) for a repo. One GitHub call, deliberately the cheapest one."""
+    """(pushed_at, error) for a repo. One GitHub call, deliberately the cheapest one.
+
+    Deliberately NOT `fetch_repo_identity` (boardman/github/repo_metadata.py): that helper
+    goes through the short-TTL read cache, and this sweep exists specifically to catch a
+    push whose webhook never arrived -- serving a cached identity would blind the sweep to
+    exactly the case it is for. It still shares `github_request` with every other GitHub
+    reader, so it gets the same headers and the same redirect handling for a renamed repo.
+    """
     from boardman.github.http import shared_github_client
+    from boardman.github.repo_fetch import github_request
     from boardman.settings import settings
 
     token = (settings.github_pat or "").strip()
     if not token or "/" not in repo:
         return "", "no token or malformed repo"
-    # Uses the shared client pool (connection reuse + counting hook). Headers are passed
-    # explicitly because github_request is internal to repo_fetch.
     owner, name = repo.split("/", 1)
     try:
-
         async with shared_github_client() as client:
-            r = await client.get(
-                f"https://api.github.com/repos/{owner}/{name}",
-                headers={
-                    "Authorization": f"Bearer {token}",
-                    "Accept": "application/vnd.github+json",
-                },
-                timeout=20.0,
-            )
+            r = await github_request(client, f"/repos/{owner}/{name}", timeout=20.0)
     except (httpx.HTTPError, OSError, ValueError) as e:
         return "", f"{type(e).__name__}: {e}"
     if r.status_code != 200:

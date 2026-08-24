@@ -17,6 +17,16 @@ _org_repos_cache: dict[tuple[str, bool], tuple[float, list[str]]] = {}
 # to discard them and then "which repos are busiest" had no way to answer. Same request,
 # same TTL, kept rather than thrown away.
 _org_rows_cache: dict[tuple[str, bool], tuple[float, list[dict]]] = {}
+# The key is (org, skip_archived), naturally tiny for a single-org deployment. Capped
+# anyway so a future multi-org deployment cannot grow either cache without bound.
+_ORG_CACHE_MAX_ENTRIES = 32
+
+
+def _evict_oldest_if_over_cap(cache: dict[tuple[str, bool], tuple[float, list]]) -> None:
+    if len(cache) <= _ORG_CACHE_MAX_ENTRIES:
+        return
+    oldest_key = min(cache, key=lambda k: cache[k][0])
+    cache.pop(oldest_key, None)
 
 
 def clear_org_repos_cache() -> None:
@@ -129,4 +139,6 @@ async def fetch_org_repository_full_names(
         expiry = time.monotonic() + _ORG_REPOS_TTL_SECONDS
         _org_repos_cache[cache_key] = (expiry, list(result))
         _org_rows_cache[cache_key] = (expiry, list(rows))
+        _evict_oldest_if_over_cap(_org_repos_cache)
+        _evict_oldest_if_over_cap(_org_rows_cache)
     return result

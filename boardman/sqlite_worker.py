@@ -13,6 +13,8 @@ from boardman.broker.job_queue import claim_next_job_row, fail_stale_running_job
 from boardman.database.session import async_session, init_db
 from boardman.jobs.handlers import JOB_HANDLERS
 from boardman.logging_config import setup_logging
+from boardman.observability.counters import background_work
+from boardman.observability.degradation import log_degraded
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -33,13 +35,14 @@ async def _repo_knowledge_loop() -> None:
         if not (settings.github_pat or "").strip():
             continue
         try:
-            await sweep_repo_knowledge(
-                sweep_targets(),
-                concurrency=max(1, int(settings.repo_knowledge_sweep_concurrency or 3)),
-            )
+            async with background_work():
+                await sweep_repo_knowledge(
+                    sweep_targets(),
+                    concurrency=max(1, int(settings.repo_knowledge_sweep_concurrency or 3)),
+                )
         except Exception:  # noqa: BLE001 - GitHub API failure degrades gracefully
             # A sweep is an optimisation. It must never take the worker down with it.
-            _log.exception("repo knowledge sweep failed")
+            log_degraded(_log, "repo knowledge sweep")
 
 
 async def _reconciliation_loop() -> None:
@@ -60,12 +63,13 @@ async def _reconciliation_loop() -> None:
         for full_name in repos:
             async with async_session() as session:
                 try:
-                    result = await reconcile_repo(
-                        full_name,
-                        session,
-                        max_items=max(1, min(int(settings.github_reconcile_max_items), 100)),
-                    )
-                    await session.commit()
+                    async with background_work():
+                        result = await reconcile_repo(
+                            full_name,
+                            session,
+                            max_items=max(1, min(int(settings.github_reconcile_max_items), 100)),
+                        )
+                        await session.commit()
                     _log.info(
                         "reconciliation repo=%s ok=%s issues=%s prs=%s errors=%s",
                         full_name,
@@ -76,7 +80,7 @@ async def _reconciliation_loop() -> None:
                     )
                 except Exception:  # noqa: BLE001 - graceful degradation
                     await session.rollback()
-                    _log.exception("reconciliation failed for %s", full_name)
+                    log_degraded(_log, f"reconciliation for {full_name}")
 
 
 async def _run_one(job_id: str, kind: str, payload: dict) -> None:
@@ -90,7 +94,8 @@ async def _run_one(job_id: str, kind: str, payload: dict) -> None:
         )
         return
     try:
-        out = await handler(payload)
+        async with background_work():
+            out = await handler(payload)
         ok = bool(isinstance(out, dict) and out.get("ok", True))
         await mark_job_finished(
             job_id,
