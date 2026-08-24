@@ -63,6 +63,7 @@ def resolve_repo(
     # or a repo somebody configured.
     known = {r.casefold() for r in (canonical_repo(k) or "" for k in list_registered_repos()) if r}
     org = (getattr(settings, "github_org", "") or "").strip().casefold()
+    # Match owner/repo mentions; negative lookarounds exclude embedded file paths.
     for token in re.findall(
         r"(?<![\w./-])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)(?![\w/-])", message or ""
     ):

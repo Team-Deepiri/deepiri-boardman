@@ -45,6 +45,7 @@ BODY_HASH_ISSUE_RE = re.compile(r"(?<!\w)#(\d+)\b")
 BRANCH_ISSUE_KEYWORD_RE = re.compile(
     r"(?:^|[-_/])(?:issue|iss|fix(?:es)?|bug|gh|task)[-_/]?(\d{1,6})(?=[-_/.]|$)", re.I
 )
+# Bare leading numbers skipped to prevent false-positive auto-linking (e.g. "feature/2-factor-auth").
 # A bare leading number is NOT read as an issue reference. `feature/2-factor-auth` and
 # `release/2024-q1` are indistinguishable from `94-add-retries`, and here the cost is
 # higher than a missed link: an issue-reference overlap is worth +100 in the scorer, which
