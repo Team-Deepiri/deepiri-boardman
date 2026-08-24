@@ -626,6 +626,12 @@ async def run_agent_chat(
 
     # The model gets the answer instead of instructions for finding it.
     repo_context_prompt = render_project_state(project_state)
+    from boardman.cognition.rendering import render_cognition_block
+
+    cognition_data = (
+        project_state.briefing.payload.get("cognition") if project_state.briefing.present else None
+    )
+    repo_context_prompt += render_cognition_block(cognition_data)
     # Serve what we have, then repair it behind the reply. Not awaited: this turn is
     # already answered, and queuing the refresh is a DB write the asker must not wait on.
     schedule_revalidation(project_state)
@@ -875,6 +881,12 @@ async def iter_agent_chat_sse(
 
     # The model gets the answer instead of instructions for finding it.
     repo_context_prompt = render_project_state(project_state)
+    from boardman.cognition.rendering import render_cognition_block
+
+    cognition_data = (
+        project_state.briefing.payload.get("cognition") if project_state.briefing.present else None
+    )
+    repo_context_prompt += render_cognition_block(cognition_data)
     # Serve what we have, then repair it behind the reply. Not awaited: this turn is
     # already answered, and queuing the refresh is a DB write the asker must not wait on.
     schedule_revalidation(project_state)

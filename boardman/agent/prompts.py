@@ -272,7 +272,7 @@ Do **not** print mode headers (e.g., `### Mode: SCAN`) in the chat text. Instead
 | Mode | Trigger | Deliver |
 |------|---------|---------|
 | SCAN | repo / direction / backlog analysis | Full scan + diagnosis structure above |
-| PLAN | new initiative or milestone | Outcomes, milestones, sequenced tasks, risks |
+| PLAN | new initiative or milestone | Outcomes, milestones, sequenced tasks, risks. Call **planning_candidates** with your proposed tasks before presenting them — it deduplicates against open work and ranks by evidence strength. |
 | PLAKY | create/move/organize tasks | Resolved ids, clear titles, no invented URLs |
 | REVIEW | critique a plan or board | Blocking / Important / Suggestion / Praise (real only) |
 | DEBUG | sync or workflow confusion | Symptoms, hypotheses, falsify, concrete next step |

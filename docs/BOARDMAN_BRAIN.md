@@ -139,6 +139,12 @@ turn `db+persist` is 0.02-0.10s and context assembly is 0.00-0.08s, while `llm+t
 5-12s. `get_project_state` itself measures 9.8ms p50. The assistant-side cost of
 everything described here is under a tenth of a second; the spread belongs to the model.
 
+## Extension: Cognition Engine
+
+See `docs/COGNITION_ENGINE.md` for the typed evidence model, intent-vs-reality verdicts,
+contradiction detection, and evidence-backed planning that build on the Brain's L1 snapshot.
+All cognition state lives inside `context_json["cognition"]` -- no new tables.
+
 ## What was deliberately not built
 
 - **No vector database.** Nothing here needs similarity search; the questions are lookups.

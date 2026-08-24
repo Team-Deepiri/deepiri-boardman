@@ -1,4 +1,5 @@
 from boardman.agent.tools.assignment_tools import assignment_preview_tool
+from boardman.agent.tools.cognition_tools import planning_candidates_tool
 from boardman.agent.tools.github_tools import build_github_tools
 from boardman.agent.tools.plaky_tools import build_plaky_tools
 from boardman.agent.tools.repo_tools import scan_local_repo_tool, thoughts_tool
@@ -31,6 +32,7 @@ def build_all_tools(*, allow_writes: bool, timed: bool = False):
             scan_local_repo_tool(),
             thoughts_tool(),
             assignment_preview_tool(),
+            planning_candidates_tool(),
             *build_github_tools(),
         ]
         if timed:

@@ -85,5 +85,5 @@ def test_import_tools():
     # Base counts + code-reading tools (search/scan) + PR-reading tools (list/read),
     # so a merge judgement rests on the PR itself rather than the repo around it, plus
     # github_org_activity for "which repos are busiest".
-    assert len(build_all_tools(allow_writes=False)) == 24
-    assert len(build_all_tools(allow_writes=True)) == 32
+    assert len(build_all_tools(allow_writes=False)) == 25
+    assert len(build_all_tools(allow_writes=True)) == 33

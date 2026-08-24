@@ -143,7 +143,7 @@ async def save_planning_snapshot(
             ).scalar_one_or_none()
             if row is None:
                 return
-    row.context_json = _payload_text(payload)
+    row.context_json = _payload_text(merge_planning_snapshot(row.context_json, payload))
     row.context_source_revision = (source_revision or "").strip()[:255] or None
     row.context_fetched_at = now
     if not row.summary:
@@ -162,6 +162,7 @@ _RICH_FIELDS = (
     "open_pull_requests_markdown",
     "notable_files",
     "hotspots_markdown",
+    "cognition",
 )
 
 
@@ -209,6 +210,87 @@ def _has_content(value: Any) -> bool:
     if isinstance(value, str):
         return bool(value.strip()) and not value.strip().startswith("(")
     return True
+
+
+_MAX_COGNITION_EVIDENCE = 50
+_MAX_COGNITION_CONTRADICTIONS = 20
+
+
+async def save_cognition_state(
+    session: AsyncSession | None,
+    repo: str,
+    cognition: dict,
+) -> None:
+    """Splice cognition into the existing context_json without destroying the L1 briefing."""
+    key = _repo_key(repo)
+    if session is None or not key or not isinstance(cognition, dict):
+        return
+    try:
+        row = (
+            await session.execute(select(ProjectContext).where(ProjectContext.repo == key))
+        ).scalar_one_or_none()
+    except SQLAlchemyError:
+        await session.rollback()
+        return
+    if row is None:
+        try:
+            async with session.begin_nested():
+                row = ProjectContext(repo=key)
+                session.add(row)
+                await session.flush()
+        except IntegrityError:
+            row = (
+                await session.execute(select(ProjectContext).where(ProjectContext.repo == key))
+            ).scalar_one_or_none()
+            if row is None:
+                return
+
+    existing: dict = {}
+    if row.context_json:
+        try:
+            loaded = json.loads(row.context_json)
+            if isinstance(loaded, dict):
+                existing = loaded
+        except (TypeError, ValueError):
+            pass
+
+    if "evidence" in cognition and isinstance(cognition["evidence"], list):
+        cognition["evidence"] = cognition["evidence"][-_MAX_COGNITION_EVIDENCE:]
+    if "contradictions" in cognition and isinstance(cognition["contradictions"], list):
+        cognition["contradictions"] = cognition["contradictions"][-_MAX_COGNITION_CONTRADICTIONS:]
+
+    prev_cognition = existing.get("cognition") if isinstance(existing.get("cognition"), dict) else {}
+    merged_cognition = dict(prev_cognition)
+    merged_cognition.update(cognition)
+    existing["cognition"] = merged_cognition
+    existing.setdefault("ok", True)
+    row.context_json = _payload_text(existing)
+
+
+async def load_cognition_state(
+    session: AsyncSession | None,
+    repo: str,
+) -> dict | None:
+    """Read the cognition subtree from context_json, or None on miss/error."""
+    key = _repo_key(repo)
+    if session is None or not key:
+        return None
+    try:
+        row = (
+            await session.execute(select(ProjectContext).where(ProjectContext.repo == key))
+        ).scalar_one_or_none()
+    except SQLAlchemyError:
+        await session.rollback()
+        return None
+    if row is None or not row.context_json:
+        return None
+    try:
+        payload = json.loads(row.context_json)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return payload.get("cognition")
 
 
 def snapshot_prompt_block(payload_json: str | None, *, max_chars: int = 6500) -> str:

@@ -220,4 +220,41 @@ async def reconcile_repo(
             out["errors"].append(f"PR #{num}: {type(e).__name__}: {e}"[:200])
 
     out["ok"] = not out["errors"]
+
+    from boardman.agent.repo_context import load_cognition_state, save_cognition_state
+    from boardman.observability.counters import bump
+
+    repaired = (
+        out.get("issues_resynced", 0) + out.get("prs_resynced", 0) + out.get("prs_relinked", 0)
+    )
+    try:
+        existing_cognition = await load_cognition_state(session, full_name) or {}
+        old_contradictions = existing_cognition.get("contradictions") or []
+
+        if repaired > 0:
+            from datetime import datetime
+
+            contradiction = {
+                "entity": f"repo:{full_name}",
+                "description": (
+                    f"reconciliation repaired drift: {out.get('issues_resynced', 0)} issues, "
+                    f"{out.get('prs_resynced', 0)} PRs resynced, "
+                    f"{out.get('prs_relinked', 0)} PRs relinked"
+                ),
+                "severity": "high",
+                "detected_at": datetime.utcnow().isoformat(),
+            }
+            new_contradictions = old_contradictions + [contradiction]
+            bump("cognition.contradictions.detected")
+        else:
+            new_contradictions = []
+            if old_contradictions:
+                bump("cognition.contradictions.resolved", len(old_contradictions))
+
+        existing_cognition["contradictions"] = new_contradictions
+        existing_cognition.setdefault("cognition_state", "fresh")
+        await save_cognition_state(session, full_name, existing_cognition)
+    except Exception as exc:  # noqa: BLE001 - cognition is observability, not correctness
+        log_degraded(logger, f"reconcile_repo: cognition update for {full_name}", exc)
+
     return out

@@ -41,6 +41,10 @@ SCENARIOS: dict[str, tuple[str, bool]] = {
     "live_state": ("what pull requests are open on boardman right now?", False),
     "five_task_planning": ("what are the five most important things boardman needs?", False),
     "deep_code": ("how does boardman decide which QA engineer to assign?", False),
+    "audit_behavior": (
+        "is the GitHub to Plaky lifecycle actually implemented correctly?",
+        False,
+    ),
     "task_creation": (
         "create one task for boardman: add a retry budget to the plaky client. "
         "prefix the title with [bench] so it is easy to find.",

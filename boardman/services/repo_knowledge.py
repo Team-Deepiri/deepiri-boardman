@@ -88,6 +88,21 @@ async def refresh_if_moved(session: AsyncSession, repo: str) -> dict[str, Any]:
     from boardman.jobs.handlers import boardman_repo_refresh_job
 
     out = await boardman_repo_refresh_job({"repo": repo})
+
+    if out.get("ok"):
+        from boardman.cognition.intent_reality import compute_cognition_verdicts
+
+        try:
+            await compute_cognition_verdicts(repo, session)
+        except Exception:  # noqa: BLE001 - cognition is best effort
+            log_unexpected(logger, f"compute_cognition_verdicts({repo})")
+            from boardman.agent.repo_context import save_cognition_state
+
+            try:
+                await save_cognition_state(session, repo, {"cognition_state": "stale"})
+            except Exception:  # noqa: BLE001
+                pass
+
     return {
         "repo": repo,
         "action": "refreshed" if out.get("ok") else "failed",
