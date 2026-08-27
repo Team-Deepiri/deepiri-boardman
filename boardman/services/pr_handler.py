@@ -456,8 +456,8 @@ async def _assign_qa_for_pr(
     task_ref = task_url or f"Plaky task `{task_id}`"
     body = (
         f"{mention} you've been assigned as **QA reviewer** for this PR by Boardman.\n\n"
-        f"Linked task: {task_ref}\n"
-        f"Why you: {why[:300]}"
+        f"Linked task: {task_ref}\n\n"
+        f"{why[:500]}"
     )
     out["github_comment"] = await comment_on_pr(repo_full, pr_number, body)
     if qa_login and qa_login.casefold() != (pr_author_login or "").casefold():
