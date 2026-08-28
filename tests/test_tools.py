@@ -632,11 +632,16 @@ class TestRepoConfig:
         monkeypatch.setattr(settings, "github_org", "deepiri-org")
         monkeypatch.setattr(settings, "github_bare_repo_owner", "Team-Deepiri")
         reload_repos_config()
-
-        r = get_routing("Team-Deepiri/myrepo", "myrepo", "deepiri-org")
-        assert r is not None
-        assert r.plaky_table == "SomeTable"
-        assert repos_yaml_canonical_repo_key("Team-Deepiri/myrepo") == "myrepo"
+        try:
+            r = get_routing("Team-Deepiri/myrepo", "myrepo", "deepiri-org")
+            assert r is not None
+            assert r.plaky_table == "SomeTable"
+            assert repos_yaml_canonical_repo_key("Team-Deepiri/myrepo") == "myrepo"
+        finally:
+            # _load_raw() is a module-level lru_cache with no args — the tmp_path data
+            # loaded above would otherwise survive monkeypatch's teardown and poison
+            # every later test in the session that reads the real repos.yml.
+            reload_repos_config()
 
 
 class TestToolBuilding:
