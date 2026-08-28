@@ -76,6 +76,32 @@ def test_generic_this_repo_and_task_count_keep_single_repo_fallback(monkeypatch)
         assert result.source == "single-configured"
 
 
+def test_known_repo_keys_overrides_yaml_registry(monkeypatch) -> None:
+    """When a live org repo listing is passed in, matching must use it — not the yaml-only
+    registry — so a repo added on GitHub but not (yet) in repos.yml still resolves, and one
+    only ever in repos.yml (removed from GitHub) does not."""
+    _registered(monkeypatch, {"stale-yaml-only-repo": RepoRouting()})
+
+    result = resolve_repo(
+        explicit_repo=None,
+        session_repo=None,
+        message="what's the status of the live-only-repo?",
+        known_repo_keys=["deepiri/live-only-repo"],
+    )
+
+    assert result.repo == "deepiri/live-only-repo"
+    assert result.source == "message"
+
+    # The yaml-only entry must not resolve once a live list is supplied.
+    result2 = resolve_repo(
+        explicit_repo=None,
+        session_repo=None,
+        message="what's the status of stale-yaml-only-repo?",
+        known_repo_keys=["deepiri/live-only-repo"],
+    )
+    assert result2.repo != "deepiri/stale-yaml-only-repo"
+
+
 def test_ambiguous_configured_mentions_are_not_silently_routed(monkeypatch) -> None:
     _registered(
         monkeypatch,
