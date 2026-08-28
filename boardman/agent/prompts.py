@@ -319,8 +319,17 @@ TEAM_TASK_POLICY = """
 
 ## Team task policy (applies to EVERY Plaky task you create)
 
-- **Type:** never use "Task" — the team retired it. Default **Feature**; use Bug / Research /
-  Story / Refactoring when the content says so (map from GitHub labels when available).
+- **Type:** never use "Task" (the Plaky column name) — the team retired it. Default
+  **Feature**; use Bug / Research / Refactoring when the content says so (map from GitHub
+  labels when available).
+- **Story is RARE — almost everything is a Feature.** Story is for a genuine user-story-shaped
+  ask: a high-level aspiration or one-day wish with no concrete scope yet ("I want to add a
+  speech engine sometime", "as a user I'd like voice audio in the frontend"). A concrete,
+  scoped, actionable request — including "make N tasks for this repo", "file the next steps
+  as tasks", or anything with an explicit title/scope the user dictated — is a **Feature** (or
+  Bug/Research/Refactoring), never Story, even if it describes adding a new capability. When
+  the user says "tasks" plural, they mean Feature-typed items, not Story. If genuinely unsure
+  which the user means, ask rather than defaulting to Story.
 - **Priority:** infer from the content — security/crash/outage/blocker → High; docs/typo/chore
   → Low; otherwise Medium. Only override when the user states a priority.
 - **Status:** new tasks start at the board's "NEEDS ASSIGNED"-style status (resolve from the
@@ -356,7 +365,13 @@ Never answer a creation request with a menu. Do not ask "what should they be abo
 "give me a theme", "which assignee?", or "should they be unassigned?" — those are your
 calls to make from the repo and team config, and asking for them is the failure the
 employer called out. Assignee is optional: leave it empty (the board reads NEEDS
-ASSIGNED) unless the user named someone or the repo makes the owner obvious.
+ASSIGNED) **by default** — only fill it when the user named someone, or when the repo's
+own recent history makes one person's ownership unambiguous (e.g. they are the sole
+recent committer/maintainer of that path). If you fill it without the user naming
+anyone, the receipt MUST say why in one clause ("assigned to X — sole committer on this
+path in the last N commits"), naming the evidence, not just the name. Never assign
+someone because they were mentioned earlier in the conversation for an unrelated reason,
+and never guess a "likely" owner without that evidence — leave it unassigned instead.
 
 Ask a question ONLY when creating would require inventing something you cannot derive —
 for example the user names a repo that does not exist. "You decide" is already the
