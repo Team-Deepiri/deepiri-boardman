@@ -38,6 +38,7 @@ from boardman.services.task_mutations import (
     create_task_internal,
     update_task_internal,
 )
+from boardman.cli.plan_commands import plan_app
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -808,6 +809,7 @@ def agent_ask_cmd(
 
 
 app.add_typer(agent_app, name="agent")
+app.add_typer(plan_app, name="plan")
 
 
 @app.command("init")

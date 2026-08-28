@@ -44,6 +44,40 @@ GITHUB_WEBHOOK_SECRET=fake-webhook-secret
     assert env["GITHUB_WEBHOOK_SECRET"] == "fake-webhook-secret"
 
 
+def test_readiness_includes_planning_checks(tmp_path):
+    _write_minimum_repo(tmp_path)
+    (tmp_path / ".env").write_text(
+        """
+PLAKY_API_KEY=fake-plaky-key
+GITHUB_PAT=fake-github-token
+GITHUB_WEBHOOK_SECRET=fake-webhook-secret
+BOARDMAN_TARGET_ENV=production
+GITHUB_AUTH_MODE=pat
+BOARDMAN_PUBLIC_URL=https://boardman.example.com
+BOARDMAN_SECRETS_ROTATED=true
+LLM_PROVIDER=openai
+OPENAI_API_KEY=fake-openai-key
+""".lstrip(),
+        encoding="utf-8",
+    )
+    (tmp_path / "repos.yml").write_text("repos: {}\n", encoding="utf-8")
+    (tmp_path / "team_assignments.yml").write_text(
+        "field_keys:\n  repo: repo_key\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "team_repos.json").write_text('{"qa": ["deepiri-platform"]}\n', encoding="utf-8")
+    (tmp_path / "team_plaky_boards.json").write_text(
+        '{"qa": {"board_id": "123"}}',
+        encoding="utf-8",
+    )
+
+    report = build_readiness_report(tmp_path)
+    planning = [check for check in report.checks if check.area == "planning"]
+    assert planning
+    assert any(check.name == "Plaky API key" and check.status == "pass" for check in planning)
+    assert any(check.name == "team repos" and check.status == "pass" for check in planning)
+
+
 def test_readiness_flags_placeholders_and_missing_decisions(tmp_path):
     _write_minimum_repo(tmp_path)
     (tmp_path / ".env").write_text(
