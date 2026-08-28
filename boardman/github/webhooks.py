@@ -1,3 +1,5 @@
+"""Parse raw GitHub webhook payloads into typed event models."""
+
 import hashlib
 import hmac
 from typing import Any
@@ -27,6 +29,11 @@ class GitHubIssue(BaseModel):
     # GitHub's native issue Type (org feature): {"name": "Feature", ...} or None.
     # PRs never have one — for them, labels are the only typing signal.
     type: Any | None = None
+    priority: Any | None = None
+    # Sidebar issue fields (org feature): rows like {"issue_field_name": "Priority",
+    # "single_select_option": {"name": "High"}}. Undeclared keys are DROPPED by
+    # pydantic, which silently ate the team's actual priority signal.
+    issue_field_values: list[Any] = Field(default_factory=list)
     assignee: Any | None = None
     assignees: list[Any] = Field(default_factory=list)
 
@@ -43,6 +50,16 @@ class GitHubPullRequest(BaseModel):
     html_url: str = ""
     state: str = ""
     merged: bool = False
+    # GitHub stamps these once and leaves them stamped, which makes them the one part of
+    # the payload that does not depend on delivery order: `state` is a snapshot taken when
+    # the delivery was built, so a redelivery or a queued retry from before the close still
+    # says "open". Anything that would revive a closed PR's links checks these instead.
+    closed_at: str | None = None
+    merged_at: str | None = None
+    # When this snapshot was built. The one field that orders two deliveries against each
+    # other, which is what tells a genuine reopen from a retry of an event that predates
+    # the close -- both of those say state "open" with closed_at null.
+    updated_at: str | None = None
     draft: bool = False
     user: Any | None = None
     base: Any | None = None
@@ -67,6 +84,7 @@ class PullRequestEventPayload(BaseModel):
     action: str
     pull_request: GitHubPullRequest
     repository: GitHubRepository
+    label: dict | None = None
 
 
 class GitHubReview(BaseModel):
@@ -75,6 +93,11 @@ class GitHubReview(BaseModel):
     user: dict | None = None
     state: str = ""
     body: str | None = None
+    id: int | str | None = None
+    node_id: str | None = None
+    html_url: str | None = None
+    submitted_at: str | None = None
+    updated_at: str | None = None
 
 
 class PullRequestReviewEventPayload(BaseModel):
@@ -100,6 +123,11 @@ class IssueCommentEventPayload(BaseModel):
     issue: IssueCommentIssuePayload
     comment: dict
     repository: GitHubRepository
+    # What the `edited` event actually changed. GitHub includes `body` here only when the
+    # TEXT changed, so its absence is how a no-op edit -- saving without a change, or an
+    # edit to something other than the text -- is told from a real correction. Without it
+    # every `edited` delivery looks like new wording, because updated_at moved.
+    changes: dict | None = None
 
 
 class PullRequestReviewCommentEventPayload(BaseModel):
@@ -109,6 +137,8 @@ class PullRequestReviewCommentEventPayload(BaseModel):
     comment: dict | None = None
     pull_request: GitHubPullRequest | None = None
     repository: GitHubRepository
+    # See IssueCommentEventPayload.changes.
+    changes: dict | None = None
 
 
 class PingEventPayload(BaseModel):

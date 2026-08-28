@@ -3,29 +3,52 @@
 from __future__ import annotations
 
 import base64
+import logging
+import time
 
 import httpx
 
 from boardman.github.http import shared_github_client
 from boardman.settings import settings
 
+_log = logging.getLogger(__name__)
 
-async def github_request(client: httpx.AsyncClient, path: str) -> httpx.Response:
+
+async def github_request(
+    client: httpx.AsyncClient, path: str, *, timeout: float | None = None
+) -> httpx.Response:
+    # Stripped: a trailing newline or space from how GITHUB_PAT got into the environment
+    # would otherwise ride along into the header and turn every call into a 401, which
+    # reads exactly like a revoked token.
     headers = {
-        "Authorization": f"Bearer {settings.github_pat}",
+        "Authorization": f"Bearer {(settings.github_pat or '').strip()}",
         "Accept": "application/vnd.github+json",
     }
     # follow_redirects: renamed repos return 301 to the new owner/name; without this every
     # helper sees the bare 301 and reports the repo as inaccessible.
-    return await client.get(f"https://api.github.com{path}", headers=headers, follow_redirects=True)
+    # timeout: only overridden when the caller passes one -- an explicit `timeout=None`
+    # here would disable httpx's timeout entirely rather than falling back to the shared
+    # client's default, so the kwarg is omitted, not passed as None, when unset.
+    kwargs: dict[str, object] = {"headers": headers, "follow_redirects": True}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    started = time.monotonic()
+    try:
+        return await client.get(f"https://api.github.com{path}", **kwargs)
+    finally:
+        _log.debug("GitHub GET %s took %.2fs", path, time.monotonic() - started)
 
 
 def github_request_sync(client: httpx.Client, path: str) -> httpx.Response:
     headers = {
-        "Authorization": f"Bearer {settings.github_pat}",
+        "Authorization": f"Bearer {(settings.github_pat or '').strip()}",
         "Accept": "application/vnd.github+json",
     }
-    return client.get(f"https://api.github.com{path}", headers=headers, follow_redirects=True)
+    started = time.monotonic()
+    try:
+        return client.get(f"https://api.github.com{path}", headers=headers, follow_redirects=True)
+    finally:
+        _log.debug("GitHub GET %s took %.2fs", path, time.monotonic() - started)
 
 
 def _parse_owner_repo(owner_repo: str) -> tuple[str, str] | None:
@@ -101,23 +124,24 @@ async def fetch_repo_overview(client: httpx.AsyncClient, owner: str, repo: str) 
     what it is (description/topics), what it is written in (languages), how it is
     laid out (tree summary), and where to look next (manifests + entry points).
     """
+    from boardman.github.repo_metadata import fetch_repo_identity, fetch_repo_tree
+
     out: dict = {"full_name": f"{owner}/{repo}"}
 
-    r = await github_request(client, f"/repos/{owner}/{repo}")
-    if r.status_code == 200 and isinstance(r.json(), dict):
-        data = r.json()
+    data = await fetch_repo_identity(client, owner, repo)
+    if data:
         out["description"] = data.get("description") or ""
         out["topics"] = data.get("topics") or []
         out["default_branch"] = data.get("default_branch") or "main"
         out["pushed_at"] = data.get("pushed_at") or ""
         out["archived"] = bool(data.get("archived"))
     else:
-        out["error"] = f"repo metadata unavailable: HTTP {r.status_code}"
+        out["error"] = "repo metadata unavailable"
         return out
 
     rl = await github_request(client, f"/repos/{owner}/{repo}/languages")
-    if rl.status_code == 200 and isinstance(rl.json(), dict):
-        langs = rl.json()
+    langs = rl.json() if rl.status_code == 200 else None
+    if isinstance(langs, dict):
         total = sum(v for v in langs.values() if isinstance(v, int | float)) or 1
         out["languages"] = {
             k: round(100.0 * v / total, 1)
@@ -125,12 +149,12 @@ async def fetch_repo_overview(client: httpx.AsyncClient, owner: str, repo: str) 
         }
 
     branch = out.get("default_branch", "main")
-    rt = await github_request(client, f"/repos/{owner}/{repo}/git/trees/{branch}?recursive=1")
-    if rt.status_code == 200 and isinstance(rt.json(), dict):
-        tree = rt.json().get("tree") or []
+    tree_payload = await fetch_repo_tree(client, owner, repo, branch)
+    if tree_payload:
+        tree = tree_payload.get("tree") or []
         paths = [t.get("path", "") for t in tree if isinstance(t, dict) and t.get("type") == "blob"]
         out["file_count"] = len(paths)
-        out["truncated_tree"] = bool(rt.json().get("truncated"))
+        out["truncated_tree"] = bool(tree_payload.get("truncated"))
 
         top_level: dict[str, int] = {}
         manifests: list[str] = []
@@ -154,7 +178,7 @@ async def fetch_repo_overview(client: httpx.AsyncClient, owner: str, repo: str) 
         shallow = [p for p in paths if p.count("/") <= 1]
         out["path_sample"] = shallow[:80]
     else:
-        out["tree_error"] = f"tree unavailable: HTTP {rt.status_code}"
+        out["tree_error"] = "tree unavailable"
 
     return out
 
@@ -290,15 +314,20 @@ async def fetch_repo_file_text(
         _fetch_full,
         ok=lambda s: isinstance(s, str) and not s.startswith("("),
     )
-    return str(full)[:max_chars]
+    text = str(full)
+    if len(text) > max_chars:
+        _log.warning(
+            "fetch_repo_file_text truncated %s/%s:%s from %d to %d chars",
+            owner, repo, path, len(text), max_chars,
+        )
+    return text[:max_chars]
 
 
 async def fetch_default_branch(client: httpx.AsyncClient, owner: str, repo: str) -> str:
-    r = await github_request(client, f"/repos/{owner}/{repo}")
-    if r.status_code != 200:
-        return "main"
-    data = r.json()
-    if isinstance(data, dict):
+    from boardman.github.repo_metadata import fetch_repo_identity
+
+    data = await fetch_repo_identity(client, owner, repo)
+    if data:
         b = data.get("default_branch")
         if isinstance(b, str) and b.strip():
             return b.strip()

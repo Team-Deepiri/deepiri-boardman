@@ -76,3 +76,6 @@ alembic/versions/*.pyc
 .DS_Store
 Thumbs.db
 .qa_profiles_cache.json
+
+# Local benchmark results (before/after runs are machine-specific)
+.benchmarks/

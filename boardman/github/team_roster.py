@@ -10,6 +10,7 @@ from urllib.parse import quote
 import httpx
 
 from boardman.github.repo_fetch import github_request, github_request_sync
+from boardman.observability.degradation import log_unexpected
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -169,8 +170,11 @@ async def fetch_support_team_members(
         if enrich_names and out:
             try:
                 await _enrich_public_names(client, out)
-            except Exception as e:
+            except (
+                Exception
+            ) as e:  # noqa: BLE001 - observability failure must not affect the request
                 _log.warning("Could not enrich GitHub names: %s", e)
+                log_unexpected(_log, "fetch_support_team_members: _enrich_public_names")
 
     out.sort(key=lambda x: (x.get("name") or x.get("login") or "").lower())
     return {"ok": True, "message": "", "team": spec, "members": out}
@@ -278,8 +282,11 @@ def fetch_support_team_members_sync(
         if enrich_names and out:
             try:
                 _enrich_public_names_sync(client, out)
-            except Exception as e:
+            except (
+                Exception
+            ) as e:  # noqa: BLE001 - observability failure must not affect the request
                 _log.warning("Could not enrich GitHub names (sync): %s", e)
+                log_unexpected(_log, "fetch_support_team_members_sync: _enrich_public_names_sync")
 
     out.sort(key=lambda x: (x.get("name") or x.get("login") or "").lower())
     return {"ok": True, "message": "", "team": spec, "members": out}

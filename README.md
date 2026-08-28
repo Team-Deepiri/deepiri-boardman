@@ -7,18 +7,23 @@ GitHub ↔ Plaky sync automation service.
 Automatically syncs GitHub issues and pull requests to Plaky tasks:
 
 - **Issue opened** → Creates Plaky task tagged with repo name
-- **PR opened** → Adds PR link as comment on linked Plaky task
-- **PR merged** → Updates Plaky task status (configurable, default: `in_review`)
+- **Issue edited/labeled/assigned** → Reconciles title, body, Type, Priority, assignee, and workflow status
+- **PR opened/edited/labeled** → Links or updates task metadata and developer ownership
+- **PR reviews/comments** → Mirrors activity once and drives QA workflow statuses
+- **PR merged/closed** → Completes or returns linked work according to the configured lifecycle
 
 ## Features
 
 - FastAPI REST API on port 8090
 - GitHub webhook receiver with HMAC verification
+- Durable webhook dedupe with optional HTTP-202 SQLite-worker processing and retries
+- Bounded reconciliation endpoint and optional worker repair loop for missed webhook delivery
 - SQLite database for issue↔task mapping
 - CLI for manual operations (`boardman`)
 - **`repos.yml`** routing → Plaky table hints on new tasks (webhook + scan)
 - **AI scan** (`boardman scan`, `POST /api/v1/agent/scan`) — `DIRECTION.md` + GitHub + LLM → Plaky tasks
 - **Agent chat** — LangChain tool-calling agent (Plaky + GitHub + local repo tools) with **`allow_writes`** guardrail; falls back to plain chat if tools fail
+- **Progressive repo context** — parallel GitHub reads, short-TTL caching, compact persistent `ProjectContext` snapshots, deterministic repo resolution, and stale-read fallback
 - **`boardman-ui`** — Vite/React chat + floating messages panel (Cyrex-style); dev proxy or nginx in Docker
 - **Docker Compose** — production cloud stack without Ollama; local/dev stack can include an Ollama sidecar
 - Docker deployment ready
@@ -142,6 +147,7 @@ bash scripts/deploy_smoke.sh
 
 - `GET /api/v1/health` - Health check
 - `POST /api/v1/webhooks/github` - GitHub webhook receiver
+- `POST /api/v1/reconcile/{owner}/{repo}` - bounded GitHub → Plaky drift repair
 - `POST /api/v1/tasks` - Create Plaky task
 - `GET /api/v1/tasks` - List Plaky tasks
 - `GET /api/v1/mappings` - List issue↔task mappings
@@ -149,7 +155,7 @@ bash scripts/deploy_smoke.sh
 - `POST /api/v1/agent/chat` - Agent chat (`message`, `session_id?`, `repo?`, `provider?`, `model?`, **`allow_writes`**)
 - `GET /api/v1/agent/sessions/{id}/history` - Session transcript
 - `DELETE /api/v1/agent/sessions/{id}` - Drop session
-- `POST /api/v1/agent/scan` - `{ "repo": "owner/name", "dry_run": false, ... }`
+- `POST /api/v1/agent/scan` - `{ "repo": "owner/name", "dry_run": false, "queue": false, ... }`; set `queue: true` for a worker job and poll `/api/v1/agent/jobs/{job_id}`
 - `POST /api/v1/agent/init-direction` - opens a PR for `DIRECTION.md` using signed-in `gh` user (`{ "repo": "owner/name", "branch?": "main", "force?": false }`)
 
 ## Configuration
@@ -163,10 +169,15 @@ See `.env.example` for all options. Key variables:
 - `PLAKY_PR_MERGE_STATUS` - Status to set on PR merge (default: `in_review`)
 - `TESTING_LIVE_PLAKY` - Local testing mode: poll GitHub and apply Plaky updates while running (default `false`)
 - `TESTING_LIVE_PLAKY_REPOS` - Comma-separated `owner/repo` list the poller watches
+- `GITHUB_WEBHOOK_ASYNC_ENABLED` - Queue verified webhook mutations for `boardman-worker`
+- `GITHUB_WEBHOOK_JOB_RETRIES` - Worker retry count for failed webhook dispatches
+- `GITHUB_RECONCILE_ENABLED` / `GITHUB_RECONCILE_INTERVAL_SECONDS` - Optional worker repair loop
 - `TESTING_LIVE_PLAKY_POLL_SECONDS` - Poll interval (default 60, min 15)
 - `QA_GITHUB_FIT_ENABLED` - GitHub-contribution scored QA picking (default `true`)
 - `LLM_PROVIDER`, `LLM_MODEL`, `OLLAMA_BASE_URL`, cloud API keys — see `.env.example`
   - OpenRouter is supported via `LLM_PROVIDER=openrouter`, `OPENROUTER_API_KEY`, and provider-prefixed model IDs like `anthropic/claude-3.5-sonnet`.
+- `GITHUB_READ_CACHE_TTL_SECONDS`, `AGENT_REPO_CONTEXT_CACHE_TTL_SECONDS`, and
+  `AGENT_REPO_CONTEXT_STALE_IF_ERROR_SECONDS` tune repo retrieval reuse and degraded mode.
 
 Deployment runbook: [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
@@ -181,4 +192,8 @@ Agent context (for AI coding tools): [AGENTS.md](AGENTS.md) ([CLAUDE.md](CLAUDE.
 ```bash
 poetry install --with dev
 poetry run pytest tests/
+poetry run python scripts/benchmark_context_retrieval.py
 ```
+
+The context benchmark uses a deterministic delayed fetch; it reports cold versus warm
+cache time and concurrent fetch coalescing without requiring live GitHub credentials.

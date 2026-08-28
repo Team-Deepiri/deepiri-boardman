@@ -5,9 +5,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Any
+
+from boardman.observability.degradation import log_degraded
+
+_log = logging.getLogger(__name__)
 
 
 def _template_body(repo_full: str) -> str:
@@ -58,7 +63,8 @@ async def init_direction_file(
         return {"ok": False, "message": f"Repo metadata via gh failed: {err or out}"}
     try:
         repo_meta = json.loads(out)
-    except Exception:
+    except ValueError:  # `gh` printed something that is not JSON
+        _log.warning("gh api repos/%s/%s returned non-JSON: %s", owner, repo, out[:200])
         return {"ok": False, "message": "Failed to parse repo metadata from GitHub CLI"}
     can_push = bool((repo_meta.get("permissions") or {}).get("push"))
     if not can_push:
@@ -77,7 +83,8 @@ async def init_direction_file(
     if rc == 0 and out:
         try:
             existing = json.loads(out)
-        except Exception:
+        except ValueError:  # no readable DIRECTION.md payload; treat it as absent
+            _log.debug("DIRECTION.md contents for %s were not JSON: %s", repo_full, out[:200])
             existing = None
     elif rc != 0 and "404" not in (err or out):
         return {"ok": False, "message": f"GitHub GET failed: {err or out}"}
@@ -94,7 +101,8 @@ async def init_direction_file(
         remote_b64 = (existing.get("content") or "").replace("\n", "")
         try:
             remote_text = base64.b64decode(remote_b64).decode("utf-8")
-        except Exception:
+        except Exception:  # noqa: BLE001 - graceful degradation
+            log_degraded(_log, "init_direction_file: b64decode")
             remote_text = ""
         if remote_text == content:
             return {

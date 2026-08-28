@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
 import time
 from typing import Any
+
+from boardman.observability.degradation import log_degraded
+
+_log = logging.getLogger(__name__)
 
 # LLMs often invent Jira-like keys; reject before hitting Plaky.
 _PLACEHOLDER_FIELD_KEY = re.compile(
@@ -18,11 +23,26 @@ from boardman.settings import settings
 
 _schema_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _schema_lock = asyncio.Lock()
+# One fetch lock PER BOARD. The cache lock above only ever covered the dict read and
+# write, so N concurrent misses on the same board all sailed past it and hit Plaky N
+# times — which is exactly the burst that made the cold first question slow. A single
+# global lock across the fetch would fix the stampede by serialising unrelated boards,
+# so the lock has to be per board.
+_schema_fetch_locks: dict[str, asyncio.Lock] = {}
+
+
+def _fetch_lock(board_id: str) -> asyncio.Lock:
+    lock = _schema_fetch_locks.get(board_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _schema_fetch_locks[board_id] = lock
+    return lock
 
 
 def clear_board_schema_cache() -> None:
     """Tests / hot reload (in-process only; Redis entries expire by TTL)."""
     _schema_cache.clear()
+    _schema_fetch_locks.clear()
 
 
 def _schema_redis_key(board_id: str) -> str:
@@ -369,7 +389,10 @@ def select_field_patch_pair_from_schema(
                 if lab == wc:
                     exact = opt
                     break
-                if fuzzy is None and (wc in lab or lab in wc):
+                # A short candidate (e.g. "qa") can appear inside an unrelated label as
+                # plain substring text; require both sides to carry at least a few
+                # characters before falling back to substring containment.
+                if fuzzy is None and len(wc) >= 3 and len(lab) >= 3 and (wc in lab or lab in wc):
                     fuzzy = opt
             chosen = exact or fuzzy
             if chosen is not None:
@@ -979,12 +1002,15 @@ async def fetch_board_schema_bundle(board_id: str) -> dict[str, Any]:
             "normalized": None,
         }
 
+    from boardman.observability.counters import cache_hit, cache_miss
+
     ttl = float(settings.plaky_board_schema_cache_ttl_seconds or 0.0)
     if ttl > 0:
         now = time.monotonic()
         async with _schema_lock:
             hit = _schema_cache.get(bid)
             if hit is not None and (now - hit[0]) < ttl:
+                cache_hit("board_schema")
                 return hit[1]
 
     if ttl > 0:
@@ -1003,66 +1029,87 @@ async def fetch_board_schema_bundle(board_id: str) -> dict[str, Any]:
                 if isinstance(data, dict):
                     async with _schema_lock:
                         _schema_cache[bid] = (time.monotonic(), data)
+                    cache_hit("board_schema_redis")
                     return data
             except (json.JSONDecodeError, TypeError):
                 pass
 
-    c = PlakyClient()
-    groups_r, board_r = await asyncio.gather(c.list_groups(bid), c.get_board(bid))
-    groups = groups_r.get("groups") or []
-    if not isinstance(groups, list):
-        groups = []
-    board_raw = board_r.get("board") if board_r.get("ok") else None
-    raw_keys: list[str] = []
-    if isinstance(board_raw, dict):
-        raw_keys = [str(k) for k in board_raw.keys()]
+    # One fetch per board, not one per caller. Without this every concurrent miss
+    # made its own pair of Plaky calls, and the burst is exactly when it hurts.
+    async with _fetch_lock(bid):
+        if ttl > 0:
+            async with _schema_lock:
+                hit = _schema_cache.get(bid)
+                if hit is not None and (time.monotonic() - hit[0]) < ttl:
+                    # Filled while this caller waited on the lock.
+                    cache_hit("board_schema")
+                    return hit[1]
+        cache_miss("board_schema")
+        c = PlakyClient()
+        groups_r, board_r = await asyncio.gather(c.list_groups(bid), c.get_board(bid))
+        groups = groups_r.get("groups") or []
+        if not isinstance(groups, list):
+            groups = []
+        board_raw = board_r.get("board") if board_r.get("ok") else None
+        raw_keys: list[str] = []
+        if isinstance(board_raw, dict):
+            raw_keys = [str(k) for k in board_raw.keys()]
 
-    normalized = normalize_board_payload(board_raw if isinstance(board_raw, dict) else None, groups)
-
-    ok_board = bool(board_r.get("ok"))
-    if ok_board and bid and c._public_root():
-        try:
-            listed = await c.list_board_items(bid, max_pages=1)
-            rows = [x for x in (listed.get("items") or []) if isinstance(x, dict)]
-            stubs = field_stubs_from_board_items(rows)
-            if stubs:
-                normalized["fields"] = merge_normalized_field_list(
-                    normalized.get("fields") or [], stubs
-                )
-        except Exception:
-            pass
-    ok_groups = bool(groups_r.get("ok"))
-    ok = ok_board or ok_groups
-    msg_parts = []
-    if not ok_board and board_r.get("message"):
-        msg_parts.append(f"board: {board_r.get('message')}")
-    if not ok_groups and groups_r.get("message"):
-        msg_parts.append(f"groups: {groups_r.get('message')}")
-    message = "; ".join(msg_parts) if msg_parts else ""
-
-    md = format_board_schema_markdown(
-        bid,
-        ok=ok,
-        message=message,
-        normalized=normalized,
-        raw_top_keys=raw_keys if not normalized.get("fields") else None,
-    )
-    result: dict[str, Any] = {
-        "ok": ok,
-        "message": message,
-        "markdown": md,
-        "normalized": normalized,
-        "board_fetch_ok": ok_board,
-        "groups_fetch_ok": ok_groups,
-    }
-    if ttl > 0:
-        async with _schema_lock:
-            _schema_cache[bid] = (time.monotonic(), result)
-        from boardman.cache.agent_redis import agent_redis_set_json
-
-        await agent_redis_set_json(
-            _schema_redis_key(bid),
-            {"_boardman_schema_v1": True, "data": json.dumps(result, default=str)},
-            int(ttl),
+        normalized = normalize_board_payload(
+            board_raw if isinstance(board_raw, dict) else None, groups
         )
-    return result
+
+        ok_board = bool(board_r.get("ok"))
+        if ok_board and bid and c._public_root():
+            try:
+                listed = await c.list_board_items(bid, max_pages=1)
+                rows = [x for x in (listed.get("items") or []) if isinstance(x, dict)]
+                stubs = field_stubs_from_board_items(rows)
+                if stubs:
+                    normalized["fields"] = merge_normalized_field_list(
+                        normalized.get("fields") or [], stubs
+                    )
+            except Exception:  # noqa: BLE001 - failure is silenced for resilience
+                log_degraded(_log, "fetch_board_schema_bundle: list_board_items")
+        ok_groups = bool(groups_r.get("ok"))
+        # The BOARD call is what carries the fields, so a groups-only success is not a
+        # schema. Accepting one cached a fields-less bundle for the whole TTL, and every
+        # status, assignee and priority key then resolved to nothing -- which the guards
+        # read as "this board has no such column" and let writes through unchecked.
+        ok = ok_board
+        msg_parts = []
+        if not ok_board and board_r.get("message"):
+            msg_parts.append(f"board: {board_r.get('message')}")
+        if not ok_groups and groups_r.get("message"):
+            msg_parts.append(f"groups: {groups_r.get('message')}")
+        message = "; ".join(msg_parts) if msg_parts else ""
+
+        md = format_board_schema_markdown(
+            bid,
+            ok=ok,
+            message=message,
+            normalized=normalized,
+            raw_top_keys=raw_keys if not normalized.get("fields") else None,
+        )
+        result: dict[str, Any] = {
+            "ok": ok,
+            "message": message,
+            "markdown": md,
+            "normalized": normalized,
+            "board_fetch_ok": ok_board,
+            "groups_fetch_ok": ok_groups,
+        }
+        # A failed read is not an answer worth keeping. Caching it pinned an empty schema
+        # for ninety seconds, and a create during that window resolves no field keys at
+        # all — the board would take the task and drop every column on it.
+        if ttl > 0 and ok:
+            async with _schema_lock:
+                _schema_cache[bid] = (time.monotonic(), result)
+            from boardman.cache.agent_redis import agent_redis_set_json
+
+            await agent_redis_set_json(
+                _schema_redis_key(bid),
+                {"_boardman_schema_v1": True, "data": json.dumps(result, default=str)},
+                int(ttl),
+            )
+        return result

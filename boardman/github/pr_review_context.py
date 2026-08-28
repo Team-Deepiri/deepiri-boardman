@@ -11,6 +11,7 @@ caller renders the difference.
 
 from __future__ import annotations
 
+import logging
 import re
 from typing import Any
 from urllib.parse import quote
@@ -18,10 +19,57 @@ from urllib.parse import quote
 import httpx
 
 from boardman.github.repo_fetch import _parse_owner_repo
-from boardman.settings import settings
+from boardman.settings import (
+    DEFAULT_GITHUB_PR_MAX_BODY_CHARS,
+    DEFAULT_GITHUB_PR_MAX_FILES,
+    positive_or_default,
+    settings,
+)
 
-_MAX_FILES = 40  # fallback; settings.github_pr_max_files wins when set
-_MAX_BODY_CHARS = 4000  # fallback; settings.github_pr_max_body_chars wins when set
+# The numbers live in settings.py (DEFAULT_GITHUB_PR_*) so the Field default and this
+# fallback cannot drift apart. Read them through these helpers rather than re-deriving
+# `getattr(settings, ...) or <literal>` at each call site (Sorge review, PR #88).
+
+
+_log = logging.getLogger(__name__)
+
+# GitHub's list-files endpoint caps per_page at 100 and this reader does not paginate,
+# so asking for more silently returns 100 (or 422s and loses the whole section).
+_GITHUB_MAX_PER_PAGE = 100
+# The clamp is a configuration problem, not a per-request one: warn once, not on every
+# PR anyone reads.
+_warned_per_page_clamp = False
+
+
+def _max_files() -> int:
+    """Changed files listed for one PR. <=0/unset -> the settings default.
+
+    Clamped to GitHub's per_page ceiling: a configured 500 would otherwise read as a
+    working setting while the API quietly returned 100.
+    """
+    want = positive_or_default(
+        getattr(settings, "github_pr_max_files", 0), DEFAULT_GITHUB_PR_MAX_FILES
+    )
+    if want > _GITHUB_MAX_PER_PAGE:
+        global _warned_per_page_clamp
+        if not _warned_per_page_clamp:
+            _warned_per_page_clamp = True
+            _log.warning(
+                "GITHUB_PR_MAX_FILES=%d exceeds GitHub's per_page ceiling; using %d",
+                want,
+                _GITHUB_MAX_PER_PAGE,
+            )
+        return _GITHUB_MAX_PER_PAGE
+    return want
+
+
+def _max_body_chars() -> int:
+    """Characters of PR body kept. <=0/unset -> the settings default."""
+    return positive_or_default(
+        getattr(settings, "github_pr_max_body_chars", 0), DEFAULT_GITHUB_PR_MAX_BODY_CHARS
+    )
+
+
 # GitHub's actual closing keywords. "refs #12" links an issue without closing it, so it
 # belongs in mentioned_issues — claiming a PR closes an issue it merely cites is a lie
 # a reviewer would act on.
@@ -73,8 +121,7 @@ async def fetch_pull_request_context(
     client: httpx.AsyncClient | None = None,
 ) -> dict[str, Any]:
     """Everything needed to judge a PR, with per-section errors preserved."""
-    if not max_files:
-        max_files = int(getattr(settings, "github_pr_max_files", 0) or _MAX_FILES)
+    max_files = min(int(max_files), _GITHUB_MAX_PER_PAGE) if max_files else _max_files()
     parsed = _parse_owner_repo(full_name)
     if not parsed:
         return {"ok": False, "error": f"{full_name!r} is not in owner/repo form"}
@@ -84,8 +131,10 @@ async def fetch_pull_request_context(
     base = f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
     n = int(pr_number)
 
-    # Injected client (tests) is honored; otherwise the shared keep-alive pool. The pool
-    # client must never be closed here, so owns_client stays False for it.
+    # Injected client (tests) is honored; otherwise the shared keep-alive pool.
+    # github_http_client() returns the SHARED instance bound to the current event loop.
+    # It is managed by the lifespan shutdown (aclose_shared_http_clients) and must never
+    # be closed here; owns_client stays False so the finally block skips it.
     owns_client = False
     if client is None:
         from boardman.github.http import github_http_client
@@ -121,7 +170,7 @@ async def fetch_pull_request_context(
             await client.aclose()
 
     body = str(pr.get("body") or "").strip()
-    max_body = int(getattr(settings, "github_pr_max_body_chars", 0) or _MAX_BODY_CHARS)
+    max_body = _max_body_chars()
     body_truncated = len(body) > max_body
     if body_truncated:
         body = body[:max_body]

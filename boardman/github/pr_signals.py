@@ -90,6 +90,11 @@ def infer_task_type_from_pr(
                 if tail in _TYPE_BY_TOKEN:
                     return _TYPE_BY_TOKEN[tail]
         for tok, canon in _TYPE_BY_TOKEN.items():
+            # "issue" counts only as an exact label or a prefixed one, both handled
+            # above. Loose containment made "good first issue" — an onboarding label
+            # with no type meaning — resolve to Issue, and then to Bug on this board.
+            if tok == "issue":
+                continue
             if re.search(rf"\b{re.escape(tok)}\b", name):
                 return canon
     return ""

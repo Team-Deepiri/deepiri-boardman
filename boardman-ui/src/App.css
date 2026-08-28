@@ -481,6 +481,12 @@ body {
   font-weight: 600;
 }
 
+.main__status {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
 .chat-shell {
   flex: 1;
   display: flex;

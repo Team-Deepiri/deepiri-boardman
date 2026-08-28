@@ -45,6 +45,7 @@ from boardman.github.qa_activity_inference import infer_qa_tier_from_pr_activity
 from boardman.github.qa_tier_teams import fetch_login_max_qa_tier_from_org_teams
 from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.github.team_roster import fetch_support_team_members, parse_github_team_spec
+from boardman.observability.degradation import log_unexpected
 from boardman.settings import settings
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -73,8 +74,9 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
     repo_names = []
     try:
         repo_names = await fetch_org_repository_full_names(client, ORG)
-    except Exception:
-        pass
+    except (httpx.HTTPError, OSError, ValueError) as e:
+        # The configured org may simply not be the PAT's org; the discovery below covers it.
+        _log.info("org %s not readable (%s); falling back to the PAT's org memberships", ORG, e)
 
     global _RESOLVED_ORG
     if not repo_names:
@@ -86,7 +88,8 @@ async def build_idf_model(client: httpx.AsyncClient) -> None:
                 if repo_names:
                     _RESOLVED_ORG = org
                     break
-            except Exception:
+            except (httpx.HTTPError, OSError, ValueError) as e:
+                _log.info("org %s not readable (%s); trying the next one", org, e)
                 continue
     else:
         _RESOLVED_ORG = ORG
@@ -229,8 +232,9 @@ async def sync_qa_team(client: httpx.AsyncClient) -> None:
                 gh_headers,
                 skip_team_slug=support_slug_lower or None,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - the scan is optional; never block the sync
             _log.warning("QA tier team scan failed (%s); using activity-only.", e)
+            log_unexpected(_log, "fetch_login_max_qa_tier_from_org_teams", e)
 
     for m in members:
         login = (m.get("login") or "").lower()

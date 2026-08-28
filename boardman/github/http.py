@@ -35,10 +35,26 @@ def _ssl() -> ssl.SSLContext:
     return _ssl_ctx
 
 
+def _counting_hook(kind: str):
+    """Count every outbound call at the one place they all pass through.
+
+    Instrumenting call sites would mean touching dozens of them and missing the next one
+    someone adds. Both pools are created here, so this is the only seam that can't drift.
+    """
+
+    async def _hook(_request: httpx.Request) -> None:
+        from boardman.observability.counters import bump
+
+        bump(f"{kind}.requests")
+
+    return _hook
+
+
 def _client_for_loop(pool: dict[Any, httpx.AsyncClient]) -> httpx.AsyncClient:
     loop = asyncio.get_running_loop()
     c = pool.get(loop)
     if c is None or c.is_closed:
+        kind = "github" if pool is _gh_clients else "plaky"
         c = httpx.AsyncClient(
             verify=_ssl(),
             # read=90s is the largest budget any current call site used; shrinking it
@@ -46,6 +62,7 @@ def _client_for_loop(pool: dict[Any, httpx.AsyncClient]) -> httpx.AsyncClient:
             timeout=httpx.Timeout(connect=10.0, read=90.0, write=30.0, pool=60.0),
             limits=httpx.Limits(max_keepalive_connections=24, max_connections=48),
             follow_redirects=True,
+            event_hooks={"request": [_counting_hook(kind)]},
         )
         pool[loop] = c
     return c

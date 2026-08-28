@@ -206,6 +206,8 @@ async def get_routing_async(
     Set ``PLAKY_PLACEMENT_AUTO_DISCOVER=false`` to use legacy ``repos.yml``/defaults
     routing only.
     """
+    # PRECEDENCE: explicit repos.yml entry wins unconditionally. This early return
+    # is the enforcement; auto-discovery below only runs for repos with no explicit entry.
     legacy_r, legacy_src = get_routing(full_name, short_name, org, with_source=True)
     if legacy_r is not None and legacy_src == "explicit":
         return (legacy_r, legacy_src) if with_source else legacy_r

@@ -11,12 +11,16 @@ via exact linked GitHub handle on the Plaky user row when present, then the same
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
+from boardman.services.sync_state import UNREADABLE_STATUS as _SYNC_STATE_UNREADABLE
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
 
 # (hint phrases / words — normalized with underscores as spaces), negative substrings penalize.
 _GITHUB_APPROVE_HINTS: tuple[str, ...] = (
@@ -238,10 +242,24 @@ def _pick_best_option(
 
 
 async def _load_normalized(board_id: str) -> dict[str, Any] | None:
+    """The board's schema, or None when it cannot be had right now.
+
+    None covers a transport failure as well as a board that answered unusably. The fetch
+    is a network call and `get_board` re-raises what httpx raised, while every caller here
+    is a resolver or a guard reached from ordinary webhook handling: letting the exception
+    out fails the whole event and leaves the board half-written, when the honest answer is
+    "I could not tell".
+    """
+    from boardman.observability.degradation import log_degraded
+
     bid = (board_id or "").strip()
     if not bid:
         return None
-    bundle = await fetch_board_schema_bundle(bid)
+    try:
+        bundle = await fetch_board_schema_bundle(bid)
+    except Exception as exc:  # noqa: BLE001 - a resolver must not break the sync it serves
+        log_degraded(_log, f"loading board {bid} schema", exc)
+        return None
     if not bundle.get("ok") or not bundle.get("normalized"):
         return None
     n = bundle["normalized"]
@@ -290,7 +308,9 @@ async def resolve_plaky_status_patch(
         hints, neg = _WORKFLOW_NEEDS_QA_HINTS, ()
     elif intent == "workflow_needs_qa_again":
         # Only matches a dedicated "...AGAIN" column; otherwise the caller falls back to
-        # workflow_needs_qa (a board with a single "Needs QA" status reuses it).
+        # workflow_needs_qa. Returning to Needs QA is the INTENDED behavior (Ali:
+        # "needs QA again means it just goes back to Needs QA"), not a degradation —
+        # a separate column is optional and no board is expected to define one.
         hints, neg, require_substring = _WORKFLOW_NEEDS_QA_AGAIN_HINTS, (), "again"
     elif intent == "workflow_needs_assigned":
         hints, neg = _WORKFLOW_NEEDS_ASSIGNED_HINTS, _WORKFLOW_NEEDS_ASSIGNED_NEG
@@ -397,7 +417,7 @@ async def resolve_github_user_to_plaky_user_id(
             if gl and mid and gl == want:
                 return mid
     except Exception:  # noqa: BLE001 — roster trouble must never break identity resolution
-        pass
+        _log.warning("roster unavailable during GitHub user resolution", exc_info=True)
 
     c = PlakyClient()
     r = await c.list_workspace_users()
@@ -447,3 +467,107 @@ async def resolve_qa_assignee_field_key(board_id: str, yaml_fallback: str) -> st
     if discovered:
         return discovered
     return (yaml_fallback or "").strip()
+
+
+# Returned when the board could not be read at all. Distinct from "" (read fine, but the
+# option matches no intent this code knows), because the two demand opposite behaviour:
+# an unknown LABEL is not evidence of anything, while an unknown BOARD means the guard
+# simply did not run and a status write would be taken on faith.
+# Imported rather than repeated: two copies that drifted would leave both fail-closed
+# guards permitting exactly the writes they exist to refuse, with nothing failing.
+UNREADABLE_STATUS = _SYNC_STATE_UNREADABLE
+
+
+async def workflow_status_field_key(board_id: str) -> str | None:
+    """The board's workflow status column, for a caller that needs one to read a task.
+
+    Three answers, and they are not the same thing. A key: read the task there. `""`: the
+    schema loaded and none of this code's vocabulary matched any column, so there is no
+    workflow position to protect and nothing to be careful about. `None`: the board did
+    not answer at all, which is the case a guard must fail closed on.
+    """
+    bid = (board_id or "").strip()
+    if not bid:
+        return ""
+    normalized = await _load_normalized(bid)
+    if not normalized:
+        return None
+    from boardman.services.sync_state import WORKFLOW_RANK
+
+    for intent in WORKFLOW_RANK:
+        resolved = await resolve_plaky_status_patch(
+            bid, intent=intent, preloaded_normalized=normalized
+        )
+        if resolved and resolved[0]:
+            return str(resolved[0])
+    return ""
+
+
+async def current_status_intent(board_id: str, task_id: str, status_field_key: str) -> str:
+    """Which workflow intent the task's CURRENT status option corresponds to, "" if unknown.
+
+    The inverse of `resolve_plaky_status_patch`: that turns an intent into this board's
+    option id, and this turns an option id back into the intent it came from. Boards name
+    their columns differently, so the only honest way to ask "how far along is this task"
+    is to resolve every intent against the board and see which one the task is sitting on.
+
+    Every lookup rides the board-schema cache, so this costs one item read and no extra
+    Plaky calls. Returns "" for an option no intent claims -- a board using vocabulary
+    this code cannot place is not evidence of anything.
+    """
+    from boardman.observability.degradation import log_degraded
+    from boardman.plaky.board_schema import plaky_item_status_id
+    from boardman.plaky.client import PlakyClient
+    from boardman.services.sync_state import WORKFLOW_RANK, workflow_rank
+
+    bid = (board_id or "").strip()
+    fk = (status_field_key or "").strip()
+    if not bid or not fk or not str(task_id or "").strip():
+        return ""
+    try:
+        info = await PlakyClient().get_board_item_public(bid, str(task_id))
+    except Exception as exc:  # noqa: BLE001 - a guard must not break the sync it guards
+        # The read is new: these callers made no item read before the guard existed, so a
+        # Plaky transport blip must not start aborting whole issue and PR syncs.
+        log_degraded(_log, f"current_status_intent: reading task {task_id}", exc)
+        return UNREADABLE_STATUS
+    if not info.get("ok") or not info.get("item"):
+        # Distinct from "": the board did not answer, so the caller knows the guard could
+        # not run rather than being told the task is nowhere in particular.
+        _log.warning(
+            "could not read task %s status on board %s; workflow position unknown",
+            task_id,
+            bid,
+        )
+        return UNREADABLE_STATUS
+    current = plaky_item_status_id(info["item"], fk)
+    if not current:
+        return ""
+
+    # One schema load for all ten intents. Resolving each separately was twenty Plaky
+    # calls per guard with the schema cache disabled, and a transient failure on any one
+    # of them came back as "" -- read as "no regression", which silently defeats the
+    # guard. A load we cannot do is UNREADABLE, and refuses the write.
+    normalized = await _load_normalized(bid)
+    if not normalized:
+        _log.warning("could not load board %s schema; workflow position unknown", bid)
+        return UNREADABLE_STATUS
+
+    best = ""
+    best_rank: int | None = None
+    for intent in WORKFLOW_RANK:
+        resolved = await resolve_plaky_status_patch(
+            bid, intent=intent, preloaded_normalized=normalized
+        )
+        # Compare the FIELD as well as the option: Plaky types Type and Priority as STATUS
+        # columns and their option ids restart per field, so "3" on Priority would
+        # otherwise read as "3" on Status and hold back a legitimate write.
+        if not resolved or str(resolved[0] or "") != fk or str(resolved[1]) != str(current):
+            continue
+        rank = workflow_rank(intent)
+        # Several intents can share one option (a board with no "Needs QA Again" column
+        # maps both there). Take the LOWEST rank of the matches: the guard should refuse
+        # a write only when it is certain the task is further along, never on a guess.
+        if rank is not None and (best_rank is None or rank < best_rank):
+            best, best_rank = intent, rank
+    return best

@@ -98,7 +98,7 @@ def _timed(name: str, coro_fn: Callable[..., Any]) -> Callable[..., Any]:
         outcome = "ok"
         try:
             return await coro_fn(*args, **kwargs)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - graceful degradation
             outcome = f"ERROR {type(e).__name__}"
             raise
         finally:

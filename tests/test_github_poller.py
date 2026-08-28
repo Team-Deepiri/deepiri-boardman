@@ -343,7 +343,7 @@ async def test_direct_poll_issue_opened_and_dedupes(monkeypatch: pytest.MonkeyPa
 
     handled: list = []
 
-    async def fake_run(parsed):
+    async def fake_run(parsed, **_kw):
         handled.append(parsed)
         return {"ok": True, "message": "created"}
 
@@ -393,7 +393,7 @@ async def test_direct_poll_pr_merged_and_opened(monkeypatch: pytest.MonkeyPatch)
 
     handled: list = []
 
-    async def fake_run(parsed):
+    async def fake_run(parsed, **_kw):
         handled.append(parsed)
         return {"ok": True}
 
@@ -498,7 +498,7 @@ async def test_direct_poll_detects_close_and_reopen(monkeypatch: pytest.MonkeyPa
     poller = gp.GitHubEventPoller()
     seen: list[str] = []
 
-    async def fake_run_handler(payload):
+    async def fake_run_handler(payload, **_kw):
         seen.append(payload.action)
         return {"ok": True}
 
@@ -572,7 +572,7 @@ async def test_poll_detects_ready_for_review_and_review_requested(
     poller = gp.GitHubEventPoller()
     seen: list[str] = []
 
-    async def fake_run_handler(payload):
+    async def fake_run_handler(payload, **_kw):
         seen.append(payload.action)
         return {"ok": True}
 
@@ -690,7 +690,9 @@ async def test_commit_poll_covers_open_pr_branches(monkeypatch: pytest.MonkeyPat
                 ]
             )
 
-    proc = {"commits": set(), "pr_branches": {"fix/78-retry"}}
+    # pr_branches is keyed by PR number so a closed PR cannot drop a branch a live PR
+    # still needs; the values are the refs to poll.
+    proc = {"commits": set(), "pr_branches": {78: "fix/78-retry"}}
     await poller._poll_commits(Client(), "o/r", "2026-01-01T00:00:00Z", proc)
 
     # Both the default branch and the PR's head branch were queried.
@@ -715,7 +717,7 @@ async def test_direct_poll_detects_label_change(monkeypatch: pytest.MonkeyPatch)
     poller = gp.GitHubEventPoller()
     seen: list[tuple[str, list[str]]] = []
 
-    async def fake_run_handler(payload):
+    async def fake_run_handler(payload, **_kw):
         names = [
             (lb or {}).get("name") for lb in (payload.issue.labels or []) if isinstance(lb, dict)
         ]
@@ -776,3 +778,21 @@ async def test_direct_poll_detects_label_change(monkeypatch: pytest.MonkeyPatch)
 
     assert [a for a, _ in seen] == ["opened", "labeled", "labeled"]
     assert seen[1][1] == ["bug", "NEEDS HELP"]
+
+
+def test_a_closed_pr_does_not_drop_a_branch_a_live_pr_still_uses() -> None:
+    """Two PRs can share a head ref (close one, open another from the same branch). Keying
+    the watched branches on the ref let the closed one end commit polling for the live
+    one, so this exercises the real bookkeeping rather than a copy of it."""
+    branches: dict[int, str] = {}
+    ref = "fix/78-retry"
+
+    # The list comes back newest-first, so the OPEN PR is seen before the closed one.
+    gp.track_pr_branch(branches, 79, ref, "open")
+    gp.track_pr_branch(branches, 78, ref, "closed")
+
+    assert set(branches.values()) == {ref}, "the live PR's branch survives"
+    assert branches == {79: ref}
+
+    gp.track_pr_branch(branches, 79, ref, "closed")
+    assert branches == {}, "and it is forgotten once nothing is open on it"

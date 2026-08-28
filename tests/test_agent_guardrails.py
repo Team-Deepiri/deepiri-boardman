@@ -88,3 +88,47 @@ async def test_setting_toggle_keeps_writes_enabled_when_confirm_not_required(mon
         assert captured[-1] is True
     finally:
         await engine.dispose()
+
+
+def test_one_tool_cache_covers_every_variant():
+    """There used to be a second cache in runner.py holding the timing-wrapped copies:
+    two layers memoising the same tools and two places to get the key wrong (Sorge review,
+    PR #88). The key must include the timing variant, and a read-only turn must never be
+    handed the write list from a neighbouring key."""
+    from boardman.agent import runner
+    from boardman.agent.tools import _tools_cache, build_all_tools
+
+    assert not hasattr(runner, "_timed_tools_cache"), "the second cache is back"
+
+    _tools_cache.clear()
+    ro = build_all_tools(allow_writes=False)
+    rw = build_all_tools(allow_writes=True)
+    timed_ro = runner._timed_tools(False)
+    timed_rw = runner._timed_tools(True)
+
+    assert set(_tools_cache) == {(False, False), (True, False), (False, True), (True, True)}
+    assert len(rw) > len(ro), "write mode must expose more tools"
+    assert len(timed_ro) == len(ro) and len(timed_rw) == len(rw)
+    assert {t.name for t in timed_ro} == {t.name for t in ro}
+    assert timed_ro is not ro, "timed tools are wrapped copies, not the raw list"
+    # The mistake this cache can make: a read-only turn seeing a write tool.
+    assert not ({t.name for t in timed_ro} & ({t.name for t in rw} - {t.name for t in ro}))
+
+
+def test_the_tool_list_is_only_built_once_per_variant(monkeypatch):
+    """The whole reason the cache exists: pydantic schema inference is ~200-300ms."""
+    from boardman.agent import tools as tools_mod
+
+    tools_mod._tools_cache.clear()
+    calls: list[bool] = []
+    original = tools_mod.build_plaky_tools
+
+    def counting(*, allow_writes: bool):
+        calls.append(allow_writes)
+        return original(allow_writes=allow_writes)
+
+    monkeypatch.setattr(tools_mod, "build_plaky_tools", counting)
+    for _ in range(4):
+        tools_mod.build_all_tools(allow_writes=False)
+        tools_mod.build_all_tools(allow_writes=False, timed=True)
+    assert len(calls) == 2, f"rebuilt {len(calls)} times for two variants"

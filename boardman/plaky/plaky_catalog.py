@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from boardman.observability.degradation import log_unexpected
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.repo_category import is_categorical_plaky_board
 from boardman.settings import settings
@@ -231,8 +232,9 @@ async def refresh_plaky_catalog(
         if live.boards:
             save_catalog_cache(live)
             return live, source
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - observability failure must not affect the request
         _log.warning("plaky catalog: live fetch failed: %s", exc)
+        log_unexpected(_log, "plaky catalog: live fetch", exc)
         if cached:
             return cached, f"stale-cache:{cached.source}"
         raise

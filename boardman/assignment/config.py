@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import shutil
 import time
@@ -16,6 +17,7 @@ from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.assignment.llm_identity_match import clear_identity_llm_cache
 from boardman.assignment.repo_rules import QaRepoRules, default_qa_repo_rules
 from boardman.github.team_roster import clear_support_team_cache, get_cached_support_team_roster
+from boardman.observability.degradation import log_unexpected
 from boardman.plaky.board_schema import (
     field_likely_github_repo_column,
     field_likely_person_column,
@@ -38,6 +40,7 @@ DEFAULT_QA_EXCLUDED: tuple[str, ...] = (
     # never auto-assigned as PR QA.
     "Asheen Hameeda",
     "AndyN-star",
+    "David Poindexter",
 )
 
 # Optional: route all bug-typed tasks to one named QA. Per Joe's PR #81 review this is
@@ -91,6 +94,10 @@ class TeamAssignmentsConfig:
     random_jitter: float = 0.12
     ambiguous_pr: AmbiguousPRConfig = field(default_factory=AmbiguousPRConfig)
     qa_excluded: list[str] = field(default_factory=lambda: list(DEFAULT_QA_EXCLUDED))
+    # People who may never be written into the DEVELOPER (Assignee) column, by
+    # display name or GitHub login. Role-based rules in developer_eligibility.py
+    # cover QA-only/IT accounts; this is the explicit override on top.
+    developer_excluded: list[str] = field(default_factory=list)
     qa_bug_specialist: str = DEFAULT_QA_BUG_SPECIALIST
     # The yaml `members:` list, kept even when the live GitHub roster wins. Policy roles
     # (e.g. the bug specialist) must resolve even for people outside the support team.
@@ -119,9 +126,105 @@ def _raw() -> dict[str, Any]:
 
 
 def reload_team_assignments() -> None:
+    global _team_cfg_cache
+    _team_cfg_cache = None
     _raw.cache_clear()
     clear_support_team_cache()
     clear_identity_llm_cache()
+
+
+# Assembling the config hits the network: the GitHub support-team roster (TTL-cached
+# 120s) and then PlakyClient().list_workspace_users_sync(), which is a BLOCKING,
+# paginated HTTP call with no cache of its own. load_team_assignments() is called
+# several times per created task (create path, QA picker, field maps, draft merge), so
+# a 5-task batch stalled the event loop on that sync call over a dozen times and both
+# create lanes waited on it. The assembled config is stable for the life of a request
+# burst, so cache it for a short TTL; reload_team_assignments() still clears it.
+_TEAM_CFG_TTL_SECONDS = 120.0
+_team_cfg_cache: tuple[float, tuple[Any, ...], TeamAssignmentsConfig] | None = None
+# One background rebuild at a time; a burst of expired reads must not start twenty.
+_team_cfg_refreshing = False
+
+
+def _config_stamp() -> tuple[Any, ...]:
+    """Identity of the source yaml, so an edited file is never served from cache."""
+    try:
+        path = _path()
+        st = path.stat()
+        return (str(path), st.st_mtime_ns, st.st_size)
+    except OSError:
+        return ("missing",)
+
+
+def load_team_assignments(*, refresh: bool = False) -> TeamAssignmentsConfig:
+    """Assembled roster + field keys + policy, memoised for ``_TEAM_CFG_TTL_SECONDS``.
+
+    Keyed on the yaml's mtime/size as well as the clock: editing the file (or a test
+    writing its own) takes effect immediately rather than waiting out the TTL.
+    """
+    global _team_cfg_cache
+    now = time.monotonic()
+    stamp = _config_stamp()
+    # Snapshot once: reload_team_assignments() can null this from another thread
+    # between the check and the unpack.
+    snap = _team_cfg_cache
+    if not refresh and snap is not None:
+        stamped_at, stamped_src, cfg = snap
+        if stamped_src == stamp and now - stamped_at < _TEAM_CFG_TTL_SECONDS:
+            return cfg
+    if snap is not None and snap[1] != stamp:
+        # The yaml itself changed. _raw() is lru_cached with no arguments, so without
+        # this the rebuild would re-read the SAME stale parse forever.
+        _raw.cache_clear()
+    elif not refresh and snap is not None and _on_event_loop():
+        # Expired, but we have a previous answer AND we are on the event loop. Rebuilding
+        # here makes a blocking, paginated Plaky call that stalls every concurrent chat
+        # stream and webhook in the process (raised by a Sorge review on PR #88). The
+        # roster changes on the timescale of someone joining the team, so a two-minute-old
+        # copy is a correct answer; a frozen event loop is not. Serve it and rebuild on a
+        # worker thread. A COLD cache still blocks, deliberately: there is no previous
+        # answer to be right with, and startup warm-up fills it before the first request.
+        _refresh_in_background(stamp)
+        return snap[2]
+    cfg = _build_team_assignments()
+    _team_cfg_cache = (now, stamp, cfg)
+    return cfg
+
+
+def _on_event_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _refresh_in_background(stamp: tuple[Any, ...]) -> None:
+    """Rebuild the roster off the event loop, at most one rebuild at a time."""
+    global _team_cfg_refreshing
+    if _team_cfg_refreshing:
+        return
+    _team_cfg_refreshing = True
+
+    def _rebuild() -> None:
+        global _team_cfg_cache, _team_cfg_refreshing
+        try:
+            cfg = _build_team_assignments()
+            _team_cfg_cache = (time.monotonic(), stamp, cfg)
+        # A failed refresh keeps the previous answer; it never clears it.
+        except Exception as exc:  # noqa: BLE001 - the cached roster is still served
+            _log.warning("background roster refresh failed; keeping the cached roster")
+            log_unexpected(_log, "_refresh_in_background: _build_team_assignments", exc)
+        finally:
+            # `finally` runs even if the `except` block above raised, so this reset is
+            # unconditional regardless of where `_rebuild` failed -- there is nothing
+            # left in this block that could itself throw and skip it.
+            _team_cfg_refreshing = False
+
+    try:
+        asyncio.get_running_loop().run_in_executor(None, _rebuild)
+    except RuntimeError:
+        _team_cfg_refreshing = False
 
 
 def ensure_team_assignments_file_exists() -> Path:
@@ -457,7 +560,7 @@ def _members_from_github_roster(data: dict[str, Any]) -> list[TeamMember]:
     return members
 
 
-def load_team_assignments() -> TeamAssignmentsConfig:
+def _build_team_assignments() -> TeamAssignmentsConfig:
     data = _raw()
     keys = data.get("plaky_field_keys") or {}
     if not isinstance(keys, dict):
@@ -603,6 +706,9 @@ def load_team_assignments() -> TeamAssignmentsConfig:
         random_jitter=max(0.0, min(jitter, 0.5)),
         ambiguous_pr=ambiguous,
         qa_excluded=excluded,
+        developer_excluded=[
+            str(x).strip() for x in (data.get("developer_excluded") or []) if str(x).strip()
+        ],
         qa_bug_specialist=bug_specialist,
         fallback_members=_members_from_yaml() if has_explicit_members else [],
     )

@@ -89,13 +89,15 @@ async function sendChatStream(
   }
   const reader = res.body?.getReader();
   if (!reader) throw new Error("No response body");
-  // Abort mid-stream: cancel the reader too, otherwise the response body keeps draining in
-  // the background and tokens from a stopped answer land in the next one.
+  // Abort mid-stream: cancel the reader so the response body stops draining in the
+  // background. { once: true } auto-removes the listener after it fires; no manual
+  // removeEventListener needed, and no risk of dangling listeners on unmount because
+  // this function is awaited inside onSend (not a useEffect), and the AbortController
+  // is scoped to that single send — it is replaced on the next message (line 436).
   const onAbort = () => void reader.cancel().catch(() => {});
   signal?.addEventListener("abort", onAbort, { once: true });
   const dec = new TextDecoder();
   let buf = "";
-  try {
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
@@ -117,9 +119,6 @@ async function sendChatStream(
       else if (j.type === "status") onStatus?.(j.text);
       else if (j.type === "error") throw new Error(j.message || "stream error");
     }
-  }
-  } finally {
-    signal?.removeEventListener("abort", onAbort);
   }
 }
 
@@ -832,6 +831,13 @@ export default function App() {
             <h1 className="main__title">Chat</h1>
             <p className="main__subtitle">
               <strong>Deepiri</strong> Board Manager Agent
+            </p>
+            <p className="main__status" role="status" aria-live="polite">
+              {loading
+                ? "Generating — press Esc or Stop to interrupt."
+                : selectedRepos[0]
+                  ? `Scoped to ${selectedRepos[0]}.`
+                  : "Repo scope follows your selection or the repository named in your message."}
             </p>
           </div>
         </header>

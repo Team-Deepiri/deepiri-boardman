@@ -40,10 +40,23 @@ def test_referenced_issue_numbers_branch_and_url():
         repo_full="deepiri-org/boardman",
         pr_title="Fix",
         pr_body="See https://github.com/deepiri-org/boardman/issues/7",
-        head_ref="feature/42-bugfix",
+        head_ref="fix/issue-42-bugfix",
     )
     assert 7 in ref
     assert 42 in ref
+
+
+def test_a_bare_leading_number_in_a_branch_is_not_a_reference():
+    """`feature/42-bugfix` is not issue 42 -- it is indistinguishable from
+    `feature/2-factor-auth`. An overlap is worth +100 in the scorer, enough to auto-link
+    on its own, so a guess here attaches the PR to a stranger's task."""
+    ref = referenced_issue_numbers(
+        repo_full="deepiri-org/boardman",
+        pr_title="Fix",
+        pr_body="",
+        head_ref="feature/42-bugfix",
+    )
+    assert ref == set()
 
 
 def test_referenced_issue_numbers_hash():
@@ -307,7 +320,7 @@ async def test_pipeline_auto_link_db_and_branch(monkeypatch):
             pr_number=100,
             pr_title="Implement feature",
             pr_body="",
-            head={"ref": "feature/42-add-auth"},
+            head={"ref": "issue-42-add-auth"},
         )
 
     assert r.decision == "auto_link"

@@ -213,7 +213,8 @@ async def test_repo_tier_classification():
     async with httpx.AsyncClient(timeout=30) as client:
         try:
             repo_names = await fetch_org_repository_full_names(client, org)
-        except Exception:
+        except (httpx.HTTPError, OSError, ValueError) as e:
+            warn("configured org not readable", f"{org}: {type(e).__name__}: {e}")
             repo_names = []
         if not repo_names:
             # Discover orgs from PAT and try each
@@ -229,7 +230,7 @@ async def test_repo_tier_classification():
                     if repo_names:
                         org = candidate
                         break
-                except Exception:
+                except (httpx.HTTPError, OSError, ValueError):
                     continue
 
     if not repo_names:

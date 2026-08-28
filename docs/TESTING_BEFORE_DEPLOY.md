@@ -6,9 +6,10 @@ cannot.
 | Layer | Command | Time | Touches |
 |---|---|---|---|
 | 1. Unit suite | `poetry run pytest -q` | ~2 min | nothing external |
-| 2. Automation matrix | `poetry run python scripts/plaky_automation_matrix.py --loop 3` | ~4 min | real Plaky board (creates + deletes a task) |
-| 3. Edge guards | `poetry run python scripts/plaky_automation_matrix.py --edge` | ~2 min | real Plaky board |
-| 4. Live on GitHub | by hand, see below | ~10 min | real repo + real board |
+| 2. Webhook/worker tests | `poetry run pytest -q tests/test_sync_state.py tests/test_webhook_worker.py` | <1 min | nothing external |
+| 3. Automation matrix | `poetry run python scripts/plaky_automation_matrix.py --loop 3` | ~4 min | real Plaky board (creates + deletes a task) |
+| 4. Edge guards | `poetry run python scripts/plaky_automation_matrix.py --edge` | ~2 min | real Plaky board |
+| 5. Live on GitHub | by hand, see below | ~10 min | real repo + real board |
 
 Layers 2 and 3 need the backend running (`poetry run python -m boardman.main`) because
 they POST to the real webhook endpoint at `localhost:8090`.
@@ -24,6 +25,10 @@ poetry run ruff check boardman tests && poetry run black --check boardman tests
 
 Covers handler logic with no network: status resolution, QA scoring, priority inference,
 type mapping, dedupe, the roster exclusion list.
+
+The sync-state and worker tests also verify that the same canonical metadata resolver is
+used for event updates, that an async webhook is acknowledged only after a durable queue
+handoff, and that a handler returning `ok: false` is recorded as an incomplete job.
 
 ## Layer 2 — the automation matrix
 
@@ -105,6 +110,8 @@ on a branch with no PR is not seen — that is intended, not a bug.
       GitHub webhook delivers the same events instead.
 - [ ] Webhook registered at the org or repo, pointing at the deployed HTTPS URL, with a
       shared secret set in `GITHUB_WEBHOOK_SECRET`.
+- [ ] Production has `GITHUB_WEBHOOK_ASYNC_ENABLED=true` and a running `boardman-worker`;
+      use `GITHUB_RECONCILE_ENABLED=true` for the periodic bounded repair loop.
 - [ ] `GITHUB_PAT` has **Issues: write** and **Pull requests: write** — without them QA is
       still assigned in Plaky, but the GitHub @mention and reviewer request are skipped.
       Boardman logs one clear hint rather than failing silently.

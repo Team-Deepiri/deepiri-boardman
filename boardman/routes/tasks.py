@@ -1,3 +1,5 @@
+"""Plaky task CRUD endpoints."""
+
 from typing import Any
 
 from fastapi import APIRouter, Depends
