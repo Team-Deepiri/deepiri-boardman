@@ -784,6 +784,23 @@ body {
   height: 5px;
 }
 
+.typing--status {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  opacity: 0.85;
+  animation: fade-pulse 1.6s ease infinite;
+}
+
+@keyframes fade-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.95;
+  }
+}
+
 @keyframes bounce {
   0%,
   80%,

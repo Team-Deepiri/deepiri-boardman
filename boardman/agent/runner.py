@@ -252,6 +252,24 @@ async def run_tool_agent(
     return text
 
 
+_STATUS_ARG_KEYS = ("full_name", "repo", "path", "file_path", "filename", "query", "term", "url")
+
+
+def _tool_status_text(tool_name: str, tool_input: Any) -> str:
+    """Human status line for a tool call, built from its own name/args — no per-tool table."""
+    label = str(tool_name or "tool").replace("_", " ").strip() or "tool"
+    detail = None
+    if isinstance(tool_input, dict):
+        for key in _STATUS_ARG_KEYS:
+            val = tool_input.get(key)
+            if isinstance(val, str) and val.strip():
+                detail = val.strip()
+                break
+    if detail:
+        return f"Running {label} on `{detail}`…"
+    return f"Running {label}…"
+
+
 async def iter_tool_agent(
     user_input: str,
     *,
@@ -259,8 +277,12 @@ async def iter_tool_agent(
     allow_writes: bool,
     system_extra: str = "",
     trace_out: list[dict[str, Any]] | None = None,
-) -> AsyncIterator[str]:
-    """Stream assistant tokens from the tool-calling agent.
+) -> AsyncIterator[str | dict[str, Any]]:
+    """Stream assistant tokens (str) and status updates (dict) from the tool-calling agent.
+
+    A status update is ``{"status": <human text>}``, derived live from each tool call's own
+    name/args as it starts — never a fixed per-tool message table — so the UI can show
+    "Running search_repo_code on `foo`…" instead of a silent spinner while the agent works.
 
     If ``trace_out`` is a list, it is replaced with :func:`_extract_tool_trace` output
     when the graph finishes (from the final ``on_chain_end`` payload when available).
@@ -286,6 +308,10 @@ async def iter_tool_agent(
         config={"recursion_limit": _recursion_limit(allow_writes)},
     ):
         kind = event.get("event")
+        if kind == "on_tool_start":
+            name = event.get("name") or ""
+            tool_input = (event.get("data") or {}).get("input")
+            yield {"status": _tool_status_text(name, tool_input)}
         if trace_out is not None and kind == "on_chain_end":
             data = event.get("data") or {}
             out = data.get("output")

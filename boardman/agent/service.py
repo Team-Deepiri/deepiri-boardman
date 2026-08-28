@@ -23,6 +23,8 @@ from boardman.agent.runner import iter_tool_agent, run_tool_agent
 from boardman.agent.task_draft import format_task_draft_for_prompt, load_task_draft
 from boardman.agent.tool_context import agent_tool_context
 from boardman.database.models import AgentMessage, AgentSession
+from boardman.github.http import shared_github_client
+from boardman.github.repo_matcher import resolve_repo_from_text
 from boardman.llm.completion import chat_complete, chat_complete_stream
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.settings import settings
@@ -336,6 +338,32 @@ async def _plaky_system_suffix(
     return out
 
 
+async def _auto_scope_repo(message: str, current_repo: str | None) -> tuple[str | None, str | None]:
+    """
+    Best-effort repo auto-detection from the message text against the live org repo list —
+    no hardcoded names. Returns (resolved_repo, clarifying_reply). If the match is confident,
+    resolved_repo is set and clarifying_reply is None. If it's ambiguous between a few repos,
+    resolved_repo is None and clarifying_reply asks the user to pick one instead of guessing.
+    """
+    if current_repo:
+        return current_repo, None
+    try:
+        async with shared_github_client() as client:
+            result = await resolve_repo_from_text(client, message)
+    except Exception:
+        logger.warning("Repo auto-detection failed; continuing unscoped", exc_info=True)
+        return None, None
+    if result.matched:
+        return result.matched, None
+    if result.is_ambiguous:
+        options = "\n".join(f"- `{name}`" for name in result.candidates)
+        return None, (
+            "I couldn't tell which repo you mean from your message — it could be:\n\n"
+            f"{options}\n\nCould you tell me which one (or set it in the repo panel)?"
+        )
+    return None, None
+
+
 async def run_agent_chat(
     session: AsyncSession,
     *,
@@ -361,6 +389,7 @@ async def run_agent_chat(
     ag: AgentSession | None = res.scalar_one_or_none()
 
     if ag is None:
+        repo, clarify = await _auto_scope_repo(message, repo)
         ag = AgentSession(
             session_id=sid,
             repo=repo,
@@ -373,14 +402,24 @@ async def run_agent_chat(
         history_msgs: list[AgentMessage] = []
     else:
         ag.last_active = datetime.utcnow()
+        clarify = None
         if repo and not ag.repo:
             ag.repo = repo
+        elif not ag.repo:
+            repo, clarify = await _auto_scope_repo(message, None)
+            if repo:
+                ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
     # The user's message goes into history BEFORE the LLM phase: a provider failure
     # (the TPM 429 in the live transcript) must not erase what the user said — losing
     # "X is the assignee" and then filing tasks unassigned is worse than the error.
     session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
+
+    if clarify:
+        session.add(AgentMessage(session_pk=ag.id, role="assistant", content=clarify))
+        await session.commit()
+        return clarify, sid
 
     # Release the SQLite write lock NOW: the session-row insert/update above would otherwise
     # hold it through the whole (possibly minutes-long) LLM/tool phase, and every concurrent
@@ -528,6 +567,7 @@ async def iter_agent_chat_sse(
     ag: AgentSession | None = res.scalar_one_or_none()
 
     if ag is None:
+        repo, clarify = await _auto_scope_repo(message, repo)
         ag = AgentSession(
             session_id=sid,
             repo=repo,
@@ -540,8 +580,13 @@ async def iter_agent_chat_sse(
         history_msgs: list[AgentMessage] = []
     else:
         ag.last_active = datetime.utcnow()
+        clarify = None
         if repo and not ag.repo:
             ag.repo = repo
+        elif not ag.repo:
+            repo, clarify = await _auto_scope_repo(message, None)
+            if repo:
+                ag.repo = repo
         history_msgs = sorted(ag.messages, key=lambda m: m.id)[-settings.agent_max_history :]
 
     # Latency plan step 1: request id + per-stage wall clocks, logged as one line.
@@ -551,6 +596,14 @@ async def iter_agent_chat_sse(
     # The user's message goes into history BEFORE the LLM phase — a provider failure
     # (the TPM 429 in the live transcript) must not erase what the user said.
     session.add(AgentMessage(session_pk=ag.id, role="user", content=message))
+
+    if clarify:
+        session.add(AgentMessage(session_pk=ag.id, role="assistant", content=clarify))
+        await session.commit()
+        yield _sse_event({"type": "session", "session_id": sid})
+        yield _sse_event({"type": "token", "text": clarify})
+        yield _sse_event({"type": "done"})
+        return
 
     # Release the SQLite write lock NOW: the session-row insert/update above would otherwise
     # hold it through the whole (possibly minutes-long) LLM/tool phase, and every concurrent
@@ -614,6 +667,11 @@ async def iter_agent_chat_sse(
                     trace_out=trace_buf,
                 ):
                     if not chunk:
+                        continue
+                    if isinstance(chunk, dict):
+                        status = chunk.get("status")
+                        if status:
+                            yield _sse_event({"type": "status", "text": status})
                         continue
                     parts.append(chunk)
                     yield _sse_event({"type": "token", "text": chunk})

@@ -174,6 +174,64 @@ async def _apply_pr_type_and_assignee(
     return out
 
 
+async def _create_task_for_unmatched_pr(
+    plaky: PlakyClient,
+    *,
+    board_id: str,
+    group_id: str,
+    pull_request: Any,
+    repo_full: str,
+    pr_number: int,
+    pr_url: str,
+) -> dict[str, Any]:
+    """No existing Plaky task plausibly matches this PR — make one instead of leaving it
+    untracked. Mirrors the same type/assignee/QA rules a matched task gets so the two paths
+    (link vs. create) end at the same state."""
+    if not board_id or not group_id:
+        return {"ok": False, "message": "no board/group configured for this repo"}
+
+    title = str(getattr(pull_request, "title", "") or f"PR #{pr_number}").strip()
+    body = str(getattr(pull_request, "body", "") or "").strip()
+    description = f"{body}\n\n**Source PR:** {pr_url}".strip()
+
+    create_res = await plaky.create_task(
+        title=title,
+        description=description,
+        board_id=board_id,
+        group_id=group_id,
+    )
+    if not create_res.get("ok"):
+        return create_res
+    task = create_res.get("task") or {}
+    task_id = str(task.get("id") or task.get("itemId") or "").strip()
+    if not task_id:
+        return {"ok": False, "message": "created task but no id returned"}
+
+    await _apply_pr_type_and_assignee(
+        plaky,
+        task_id=task_id,
+        board_id=board_id,
+        pull_request=pull_request,
+        repo_full=repo_full,
+    )
+    pr_user = getattr(pull_request, "user", None) or {}
+    qa_res = await _assign_qa_for_pr(
+        plaky,
+        task_id=task_id,
+        board_id=board_id,
+        repo_full=repo_full,
+        pr_number=pr_number,
+        pr_author_login=str(pr_user.get("login") or "") if isinstance(pr_user, dict) else "",
+    )
+    comment = format_pr_notice_with_url(
+        headline="**PR Opened** (no matching task found — created this one):",
+        pr_number=pr_number,
+        pr_url=pr_url,
+    )
+    await plaky.add_comment(task_id, comment, board_id=board_id)
+    return {"ok": True, "task_id": task_id, "qa": qa_res}
+
+
 def _member_by_name(cfg: Any, name: str) -> Any | None:
     """Resolve a policy role (e.g. the bug specialist) by display name or GitHub login.
 
@@ -546,6 +604,7 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
 
     routing = await get_routing_async(full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
+    group_id = (routing.plaky_group_id if routing and routing.plaky_group_id else "") or ""
 
     plaky = PlakyClient()
     results = []
@@ -709,6 +768,49 @@ async def handle_pr_opened(payload: PullRequestEventPayload, session: AsyncSessi
                 }
 
             await session.commit()
+
+            # Nothing plausibly matched (not just ambiguous) — track the PR with a task
+            # instead of leaving it to fall through silently, per the "check for an
+            # existing task, else create one and assign QA" workflow.
+            no_plausible_match = pipe.decision == "triage" or (
+                pipe.decision == "none" and pipe.reason == "no_candidates"
+            )
+            if no_plausible_match and board_id and group_id:
+                create_res = await _create_task_for_unmatched_pr(
+                    plaky,
+                    board_id=board_id,
+                    group_id=group_id,
+                    pull_request=payload.pull_request,
+                    repo_full=full_name,
+                    pr_number=pr_number,
+                    pr_url=pr_url,
+                )
+                if create_res.get("ok"):
+                    task_id = create_res["task_id"]
+                    await upsert_pr_task_link(
+                        session,
+                        github_repo=repo_name,
+                        github_pr_number=pr_number,
+                        plaky_task_id=task_id,
+                        github_issue_number=0,
+                        link_source="pr_created_task",
+                    )
+                    session.add(
+                        SyncLog(
+                            action="pr_created_task",
+                            github_repo=repo_name,
+                            github_ref=str(pr_number),
+                            plaky_task_id=task_id,
+                            detail=json.dumps({"pr_url": pr_url}, default=str),
+                        )
+                    )
+                    await session.commit()
+                    return {
+                        "ok": True,
+                        "created": [{"task_id": task_id}],
+                        "pipeline": pipe.decision,
+                    }
+                _log.warning("Could not create Plaky task for unmatched PR #%s: %s", pr_number, create_res.get("message"))
 
         triage = await _maybe_triage_ambiguous_pr(payload, session, top_scored=pipe_top)
         if triage is not None:

@@ -458,12 +458,27 @@ def score_candidate(
     ts = _blend_seq_cos(ts_seq, ts_cos, cosine_blend)
     b["title_cos"] = round(ts_cos, 4)
     if ts_seq >= 0.98:
-        # Near exact match gets a huge boost to clear auto_link threshold
-        b["title_exact_match"] = 80.0
-        score += 80.0
+        # Near-exact title match is as strong a signal as an explicit issue reference —
+        # on its own it must clear the auto-link threshold, so a task made with the same
+        # title as a PR links instead of leaving the PR to spawn a duplicate task.
+        b["title_exact_match"] = 95.0
+        score += 95.0
     else:
         b["title_sim"] = round(ts, 4)
         score += 25.0 * ts
+
+        # Keyword overlap on meaningful title words: catches "QA: happy path rap song" vs
+        # "QA-end-to-end Happy path" — different phrasing, same subject — which sequence/cosine
+        # similarity on the raw strings under-scores because word order and filler differ.
+        pr_kw = _tokenize_ref(pr_title)
+        cand_kw = _tokenize_ref(cand.title)
+        if pr_kw and cand_kw:
+            kw_overlap = pr_kw & cand_kw
+            if kw_overlap:
+                jaccard = len(kw_overlap) / len(pr_kw | cand_kw)
+                boost = min(20.0, jaccard * 40.0)
+                b["title_keyword_overlap"] = round(boost, 2)
+                score += boost
 
     # --- Branch Name Keyword/Token Matching ---
     if head_ref:

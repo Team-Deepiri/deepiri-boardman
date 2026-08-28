@@ -133,6 +133,65 @@ def test_score_assignee_identity_match():
     )
 
 
+def test_exact_title_match_clears_auto_link_threshold_alone():
+    """A task made with the same title as the PR must auto-link on title alone — no other
+    signal (issue ref, status, assignee) required — or it ends up duplicated instead of linked."""
+    c = TaskCandidate(
+        task_id="t1",
+        title="Stability: live audio recording latency and dropout hardening in Calliope",
+        description="",
+        issue_numbers=set(),
+        sources=["board_item"],
+    )
+    result = score_candidate(
+        c,
+        ref_issues=set(),
+        pr_title="Stability: live audio recording latency and dropout hardening in Calliope",
+        pr_body="",
+        repo_full="Team-Deepiri/deepiri-calliope",
+        pr_number=44,
+        session_penalty=False,
+    )
+    assert result.breakdown.get("title_exact_match") == 95.0
+    assert result.score >= settings.pr_linking_high_threshold
+
+
+def test_keyword_overlap_boosts_differently_phrased_similar_titles():
+    """'QA: happy path rap song' (Plaky) vs 'QA-end-to-end Happy path' (PR) share no
+    substring but share meaningful words — that overlap should score higher than a
+    title with no shared words at all."""
+    same_subject = TaskCandidate(
+        task_id="t1",
+        title="QA: happy path rap song",
+        description="",
+    )
+    unrelated = TaskCandidate(
+        task_id="t2",
+        title="Unrelated task about billing exports",
+        description="",
+    )
+    r1 = score_candidate(
+        same_subject,
+        ref_issues=set(),
+        pr_title="QA-end-to-end Happy path",
+        pr_body="",
+        repo_full="x/boardman",
+        pr_number=46,
+        session_penalty=False,
+    )
+    r2 = score_candidate(
+        unrelated,
+        ref_issues=set(),
+        pr_title="QA-end-to-end Happy path",
+        pr_body="",
+        repo_full="x/boardman",
+        pr_number=46,
+        session_penalty=False,
+    )
+    assert r1.breakdown.get("title_keyword_overlap", 0) > 0
+    assert r1.score > r2.score
+
+
 def test_score_pr_title_name_boost():
     """Test that PR title containing assignee name adds small boost."""
     c = TaskCandidate(

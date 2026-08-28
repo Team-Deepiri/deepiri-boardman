@@ -36,6 +36,7 @@ const api = axios.create({
 type StreamSsePayload =
   | { type: "session"; session_id: string }
   | { type: "token"; text: string }
+  | { type: "status"; text: string }
   | { type: "done" }
   | { type: "error"; message: string };
 
@@ -53,7 +54,8 @@ async function sendChatStream(
   },
   onSession: (sessionId: string) => void,
   onToken: (delta: string) => void,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  onStatus?: (text: string) => void
 ): Promise<void> {
   const base = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
   const url = `${base}/api/v1/agent/chat/stream`;
@@ -112,6 +114,7 @@ async function sendChatStream(
       }
       if (j.type === "session") onSession(j.session_id);
       else if (j.type === "token") onToken(j.text);
+      else if (j.type === "status") onStatus?.(j.text);
       else if (j.type === "error") throw new Error(j.message || "stream error");
     }
   }
@@ -128,8 +131,9 @@ function EmptyState() {
       </div>
       <h3 className="empty-state__title">Start a conversation</h3>
       <p className="empty-state__text">
-        Ask about priorities, Plaky tasks, or repo context. Optional: set a GitHub repo in the panel so
-        replies stay scoped to that project — built for <strong>Deepiri</strong> delivery workflows.
+        Ask about priorities, Plaky tasks, or repo context. Mention a repo by name and Boardman scopes
+        to it automatically; pick one in the panel only if it can't tell, or to override — built for{" "}
+        <strong>Deepiri</strong> delivery workflows.
       </p>
     </div>
   );
@@ -145,6 +149,7 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [statusText, setStatusText] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const [boards, setBoards] = useState<PlakyBoardRow[]>([]);
@@ -441,6 +446,7 @@ export default function App() {
     setInput("");
     setMessages((m) => [...m, { role: "user", content: text }]);
     setLoading(true);
+    setStatusText(null);
     try {
       let acc = "";
       await sendChatStream(
@@ -461,6 +467,7 @@ export default function App() {
           if (!isCurrent()) return;
           if (!acc) {
             // First token: add the assistant message to the list
+            setStatusText(null);
             setMessages((m) => [...m, { role: "assistant", content: delta }]);
           } else {
             // Subsequent tokens: update the last assistant message
@@ -475,7 +482,10 @@ export default function App() {
           }
           acc += delta;
         },
-        controller.signal
+        controller.signal,
+        (text) => {
+          if (isCurrent()) setStatusText(text);
+        }
       );
     } catch (e: unknown) {
       // A stop the user asked for is not a failure. Keep whatever was already said and
@@ -523,6 +533,7 @@ export default function App() {
       // An interrupted run must not clear the spinner for the run that replaced it.
       if (isCurrent()) {
         setLoading(false);
+        setStatusText(null);
         abortRef.current = null;
         textareaRef.current?.focus();
       }
@@ -867,11 +878,17 @@ export default function App() {
                     </div>
                     <div className="message__body">
                       <div className="message__meta">Assistant</div>
-                      <div className="typing" aria-label="Waiting for response">
-                        <span />
-                        <span />
-                        <span />
-                      </div>
+                      {statusText ? (
+                        <div className="typing typing--status" aria-label={statusText}>
+                          {statusText}
+                        </div>
+                      ) : (
+                        <div className="typing" aria-label="Waiting for response">
+                          <span />
+                          <span />
+                          <span />
+                        </div>
+                      )}
                     </div>
                   </li>
                 ) : null}
@@ -966,11 +983,17 @@ export default function App() {
                 {loading && messages[messages.length - 1]?.role !== "assistant" ? (
                   <li className="drawer__msg drawer__msg--assistant" aria-live="polite">
                     <span className="drawer__msg-role">Assistant</span>
-                    <div className="typing typing--sm">
-                      <span />
-                      <span />
-                      <span />
-                    </div>
+                    {statusText ? (
+                      <div className="typing typing--sm typing--status" aria-label={statusText}>
+                        {statusText}
+                      </div>
+                    ) : (
+                      <div className="typing typing--sm">
+                        <span />
+                        <span />
+                        <span />
+                      </div>
+                    )}
                   </li>
                 ) : null}
               </ul>
