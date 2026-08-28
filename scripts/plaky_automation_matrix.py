@@ -61,7 +61,7 @@ async def _post(c: httpx.AsyncClient, event: str, delivery: str, payload: dict) 
     )
     try:
         return r.json()
-    except Exception:
+    except ValueError:  # non-JSON body: the raw text below is the whole report
         return {"ok": False, "raw": r.text[:200]}
 
 
@@ -321,9 +321,8 @@ async def run_once(*, keep: bool) -> tuple[int, int, list[str]]:
             "13 review_requested -> In QA", (await _status(task_id, "In QA")).get("Status"), "In QA"
         )
 
-        # Editing an already-linked PR (retitle, checklist added) must be a no-op. Rerunning
-        # the open pipeline would drag the task back from In QA and re-post the "PR Opened"
-        # comment every time someone fixes a typo in their description.
+        # Editing an already-linked PR updates canonical metadata without rerunning the open
+        # pipeline, changing QA selection, or re-posting the "PR Opened" comment.
         before_edit = await _read(task_id)
         edited = await _post(
             c,
@@ -340,7 +339,11 @@ async def run_once(*, keep: bool) -> tuple[int, int, list[str]]:
         )
         await asyncio.sleep(2)
         after_edit = await _read(task_id)
-        check("13b edit on a linked PR is skipped", edited.get("skipped") is True, "True")
+        check(
+            "13b edit on a linked PR updates metadata only",
+            edited.get("event") == "pr_metadata_synced",
+            "True",
+        )
         check("13c edit did not churn status", after_edit.get("Status"), "In QA")
         check(
             "13d edit did not re-comment",

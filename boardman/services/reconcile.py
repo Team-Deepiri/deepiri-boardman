@@ -7,7 +7,8 @@ the same handlers the webhook path uses. Those handlers are already idempotent (
 live retro-sync of issues #82/#83 ran exactly this way), so reconciliation cannot
 duplicate tasks or comments, and a second run over a healthy repo is a no-op.
 
-Bounded on purpose: open items plus a single bounded page each, never full history.
+Bounded on purpose: the latest bounded page of issues and PRs is fetched, including closed
+items, so terminal-state drift can be repaired without walking full repository history.
 """
 
 from __future__ import annotations
@@ -19,12 +20,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.github.http import github_http_client
 from boardman.github.webhooks import IssueEventPayload, PullRequestEventPayload
+from boardman.observability.degradation import log_degraded
 from boardman.services.issue_handler import (
     find_plaky_task_by_issue,
-    handle_issue_labels_changed,
     handle_issue_opened,
 )
-from boardman.services.pr_handler import handle_pr_opened
+from boardman.services.pr_handler import (
+    handle_pr_closed_without_merge,
+    handle_pr_edited,
+    handle_pr_merged,
+    handle_pr_opened,
+)
 from boardman.services.pr_task_registry import distinct_task_ids_for_pr
 from boardman.settings import settings
 
@@ -60,12 +66,19 @@ async def reconcile_repo(
         "tasks_created": 0,
         "issues_resynced": 0,
         "prs_checked": 0,
+        # Two different things, deliberately not one number. `prs_relinked` is REPAIR: the
+        # PR had no task and now has one. `prs_resynced` is a PR that was already linked
+        # and had its metadata and state replayed, which changes nothing when there is no
+        # drift. Counting both as "relinked" made every run report ten repairs on a repo
+        # where nothing was wrong, and a reconciliation you cannot read is one you cannot
+        # verify.
         "prs_relinked": 0,
+        "prs_resynced": 0,
         "errors": [],
     }
 
     r = await client.get(
-        f"https://api.github.com/repos/{full_name}/issues?state=open&per_page={max_items}",
+        f"https://api.github.com/repos/{full_name}/issues?state=all&sort=updated&direction=desc&per_page={max_items}",
         headers=_gh_headers(),
     )
     if r.status_code != 200:
@@ -78,6 +91,12 @@ async def reconcile_repo(
         try:
             mapping = await find_plaky_task_by_issue(short, num, session)
             if mapping is None or not mapping.plaky_task_id:
+                if str(issue.get("state") or "open").casefold() != "open":
+                    # Same rule as pull requests: a closed issue nobody ever tracked is
+                    # history. handle_issue_opened would file it at NEEDS ASSIGNED, so
+                    # the board would grow work items for things already finished.
+                    out["issues_skipped_closed"] = out.get("issues_skipped_closed", 0) + 1
+                    continue
                 res = await handle_issue_opened(
                     IssueEventPayload(action="opened", issue=issue, repository=repo_block),
                     session,
@@ -90,19 +109,33 @@ async def reconcile_repo(
                         res.get("plaky_task_id"),
                     )
             else:
-                # Metadata sync is fill-only and idempotent: Type from native type or
-                # labels, assignee filled when Plaky has none. Healthy items no-op.
-                res = await handle_issue_labels_changed(
-                    IssueEventPayload(action="labeled", issue=issue, repository=repo_block),
-                    session,
-                )
-                if res.get("event") == "issue_labels_synced":
+                # The generalized issue metadata path also re-resolves priority,
+                # title/body, assignee removal, and open/closed workflow state.
+                if str(issue.get("state") or "open").casefold() == "closed":
+                    from boardman.services.issue_handler import handle_issue_closed
+
+                    res = await handle_issue_closed(
+                        IssueEventPayload(action="closed", issue=issue, repository=repo_block),
+                        session,
+                    )
+                else:
+                    from boardman.services.issue_handler import handle_issue_edited
+
+                    res = await handle_issue_edited(
+                        IssueEventPayload(action="edited", issue=issue, repository=repo_block),
+                        session,
+                    )
+                # `issue_labels_synced` came from a handler this path no longer calls, so
+                # the counter read zero however much drift the sweep repaired -- and that
+                # number is the whole operator-facing signal that it did anything.
+                if res.get("ok") and not res.get("skipped"):
                     out["issues_resynced"] += 1
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - sync failure must not crash the service
+            log_degraded(logger, f"reconcile_repo: reconciling issue #{num}", e)
             out["errors"].append(f"issue #{num}: {type(e).__name__}: {e}"[:200])
 
     r2 = await client.get(
-        f"https://api.github.com/repos/{full_name}/pulls?state=open&per_page={max_items}",
+        f"https://api.github.com/repos/{full_name}/pulls?state=all&sort=updated&direction=desc&per_page={max_items}",
         headers=_gh_headers(),
     )
     if r2.status_code != 200:
@@ -118,16 +151,110 @@ async def reconcile_repo(
                 session, github_repo=short, github_pr_number=num
             )
             if linked:
-                continue  # a stable link exists; PR events keep it current
+                pr_state = str(pr.get("state") or "open").casefold()
+                # GitHub's LIST pulls endpoint omits the `merged` boolean -- only the
+                # single-PR GET carries it -- so reading it directly sent every merged PR
+                # to the closed-without-merge handler. That withdraws links and rewinds a
+                # task out of QA, every fifteen minutes, for PRs that shipped. `merged_at`
+                # is on the list payload and says the same thing. Same derivation the
+                # poller documents in `_pr_payload`.
+                pr["merged"] = bool(pr.get("merged")) or bool(pr.get("merged_at"))
+                if bool(pr.get("merged")):
+                    res = await handle_pr_merged(
+                        PullRequestEventPayload(
+                            action="closed", pull_request=pr, repository=repo_block
+                        ),
+                        session,
+                    )
+                    out["prs_resynced"] += int(bool(res.get("updated")))
+                elif pr_state == "closed":
+                    res = await handle_pr_closed_without_merge(
+                        PullRequestEventPayload(
+                            action="closed", pull_request=pr, repository=repo_block
+                        ),
+                        session,
+                    )
+                    out["prs_resynced"] += int(bool(res.get("withdrawn_links")))
+                elif "updated_at" in pr:
+                    # Real GitHub list payloads carry updated_at; the guard also keeps
+                    # small legacy fixtures from turning reconciliation into a write.
+                    res = await handle_pr_edited(
+                        PullRequestEventPayload(
+                            action="edited", pull_request=pr, repository=repo_block
+                        ),
+                        session,
+                    )
+                    # `handle_pr_edited` re-resolves the PR's issue references, so
+                    # it can REPAIR a link itself -- a PR edited to add `Fixes #94` while
+                    # Boardman was down reaches its task here. That is a repair, not a
+                    # resync, and counting it as the latter hid the only path that can now
+                    # fix a link silently.
+                    if (res.get("relink") or {}).get("linked"):
+                        out["prs_relinked"] += 1
+                        logger.info("reconcile: PR #%s gained an issue link; repaired", num)
+                    else:
+                        out["prs_resynced"] += int(bool(res.get("updated")))
+                continue  # a stable link exists; metadata/state was reconciled above
+            if str(pr.get("state") or "open").casefold() != "open" or pr.get("merged"):
+                # An unlinked CLOSED pull request is history, not drift. Replaying it
+                # through handle_pr_opened manufactures a brand-new task, assigns a QA
+                # and parks it at Needs QA for work that shipped long ago — which is
+                # exactly how the board filled with tasks named "Merge main into dev"
+                # and a merged dependabot bump sitting in Needs QA. Only open PRs
+                # still need a task to represent them.
+                out["prs_skipped_closed"] = out.get("prs_skipped_closed", 0) + 1
+                continue
             res = await handle_pr_opened(
                 PullRequestEventPayload(action="opened", pull_request=pr, repository=repo_block),
                 session,
+                # A sweep is a replay, whatever the action says. This PR has been open for
+                # a while and the task behind it can be anywhere; repairing the link must
+                # not also drag it back to Assigned or Needs QA.
+                is_replay=True,
             )
             if res.get("linked") or res.get("plaky_task_id"):
                 out["prs_relinked"] += 1
                 logger.info("reconcile: PR #%s was unlinked; repaired", num)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
+            log_degraded(logger, f"reconcile_repo: reconciling PR #{num}", e)
             out["errors"].append(f"PR #{num}: {type(e).__name__}: {e}"[:200])
 
     out["ok"] = not out["errors"]
+
+    from boardman.agent.repo_context import load_cognition_state, save_cognition_state
+    from boardman.observability.counters import bump
+
+    repaired = (
+        out.get("issues_resynced", 0) + out.get("prs_resynced", 0) + out.get("prs_relinked", 0)
+    )
+    try:
+        existing_cognition = await load_cognition_state(session, full_name) or {}
+        old_contradictions = existing_cognition.get("contradictions") or []
+
+        if repaired > 0:
+            from datetime import datetime
+
+            contradiction = {
+                "entity": f"repo:{full_name}",
+                "description": (
+                    f"reconciliation repaired drift: {out.get('issues_resynced', 0)} issues, "
+                    f"{out.get('prs_resynced', 0)} PRs resynced, "
+                    f"{out.get('prs_relinked', 0)} PRs relinked"
+                ),
+                "severity": "high",
+                "detected_at": datetime.utcnow().isoformat(),
+            }
+            new_contradictions = old_contradictions + [contradiction]
+            bump("cognition.contradictions.detected")
+        else:
+            new_contradictions = []
+            if old_contradictions:
+                bump("cognition.contradictions.resolved", len(old_contradictions))
+
+        existing_cognition["contradictions"] = new_contradictions
+        existing_cognition.setdefault("cognition_state", "fresh")
+        await save_cognition_state(session, full_name, existing_cognition)
+    except Exception as exc:  # noqa: BLE001 - cognition is observability, not correctness
+        log_degraded(logger, f"reconcile_repo: cognition update for {full_name}", exc)
+
     return out

@@ -11,6 +11,7 @@ import json
 import logging
 from typing import Any
 
+from boardman.observability.degradation import log_unexpected
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -18,6 +19,10 @@ _log = logging.getLogger(__name__)
 _client: Any = None
 _lock = asyncio.Lock()
 _warned_unreachable = False
+# On flooding: every cache miss retries, so a persistent Redis fault reaches these handlers
+# on every call. log_unexpected() dedupes the traceback per call site and per exception
+# type, so a routine outage stays quiet, one bug traces once, and a SECOND, different bug
+# still gets its own trace.
 
 
 def agent_redis_configured() -> bool:
@@ -48,9 +53,10 @@ async def get_agent_redis() -> Any:
             _client = r
             _log.info("Agent Redis cache: connected (%s)", url.split("@")[-1])
             return _client
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
             if not _warned_unreachable:
                 _log.warning("Agent Redis cache: unreachable (%s); using in-process cache only", e)
+                log_unexpected(_log, "get_agent_redis: from_url", e)
                 _warned_unreachable = True
             return None
 
@@ -64,8 +70,9 @@ async def agent_redis_get_json(key: str) -> dict[str, Any] | None:
         if not raw:
             return None
         return json.loads(raw) if isinstance(raw, str) else json.loads(str(raw))
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
         _log.debug("agent redis get %s: %s", key, e)
+        log_unexpected(_log, f"agent_redis_get_json({key})", e)
         return None
 
 
@@ -76,8 +83,9 @@ async def agent_redis_set_json(key: str, value: dict[str, Any], ttl_seconds: int
     try:
         ttl = max(1, int(ttl_seconds))
         await r.set(key, json.dumps(value, default=str), ex=ttl)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
         _log.debug("agent redis set %s: %s", key, e)
+        log_unexpected(_log, f"agent_redis_set_json({key})", e)
 
 
 async def aclose_agent_redis() -> None:
@@ -86,8 +94,9 @@ async def aclose_agent_redis() -> None:
         return
     try:
         await _client.aclose()
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
         _log.debug("agent redis close: %s", e)
+        log_unexpected(_log, "aclose_agent_redis: aclose", e)
     finally:
         _client = None
         _warned_unreachable = False

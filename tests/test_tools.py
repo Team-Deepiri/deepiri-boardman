@@ -150,6 +150,15 @@ class TestPlakyClient:
         assert "missing" in result["message"].lower()
 
     @pytest.mark.asyncio
+    async def test_update_item_text_missing_api_key(self, plaky_key_cleared):
+        from boardman.plaky.client import PlakyClient
+
+        c = PlakyClient(api_key=None)
+        result = await c.update_item_text("board-1", "item-1", title="New title")
+        assert result["ok"] is False
+        assert "missing" in result["message"].lower()
+
+    @pytest.mark.asyncio
     async def test_create_subtask_missing_api_key(self, plaky_key_cleared):
         from boardman.plaky.client import PlakyClient
 
@@ -186,6 +195,7 @@ _PLAKY_TOOL_NAMES_WRITE = frozenset(
     {
         "plaky_create_task",
         "plaky_create_tasks",
+        "plaky_create_tasks_deferred",
         "plaky_patch_item_fields",
         "plaky_update_task",
         "plaky_add_comment",
@@ -529,6 +539,7 @@ _GITHUB_TOOL_NAMES = frozenset(
         "github_scan_defects",
         "github_list_pull_requests",
         "github_read_pull_request",
+        "github_org_activity",
     }
 )
 
@@ -621,11 +632,16 @@ class TestRepoConfig:
         monkeypatch.setattr(settings, "github_org", "deepiri-org")
         monkeypatch.setattr(settings, "github_bare_repo_owner", "Team-Deepiri")
         reload_repos_config()
-
-        r = get_routing("Team-Deepiri/myrepo", "myrepo", "deepiri-org")
-        assert r is not None
-        assert r.plaky_table == "SomeTable"
-        assert repos_yaml_canonical_repo_key("Team-Deepiri/myrepo") == "myrepo"
+        try:
+            r = get_routing("Team-Deepiri/myrepo", "myrepo", "deepiri-org")
+            assert r is not None
+            assert r.plaky_table == "SomeTable"
+            assert repos_yaml_canonical_repo_key("Team-Deepiri/myrepo") == "myrepo"
+        finally:
+            # _load_raw() is a module-level lru_cache with no args — the tmp_path data
+            # loaded above would otherwise survive monkeypatch's teardown and poison
+            # every later test in the session that reads the real repos.yml.
+            reload_repos_config()
 
 
 class TestToolBuilding:

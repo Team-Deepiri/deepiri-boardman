@@ -33,6 +33,44 @@ _load_dotenv_file_into_environ()
 import httpx
 import pytest
 
+# Markers whose tests are DELIBERATELY live: they exist to talk to the real Plaky, GitHub
+# or Ollama, and they carry their own opt-in env guard. Everything else is a unit test.
+_LIVE_MARKERS = frozenset(
+    {
+        "integration",
+        "live_ollama",
+        "plaky_live",
+        "plaky_pr_workflow_live",
+        "agent_e2e_live",
+        "stack_latency",
+    }
+)
+# Credentials that let a test mutate something real. plaky_api_key is the dangerous one:
+# `add_comment` is a write, and a unit test that reaches it posts to the team's board.
+_LIVE_CREDENTIALS = ("plaky_api_key", "github_pat", "github_webhook_secret")
+
+
+@pytest.fixture(autouse=True)
+def _credentials_only_for_live_tests(request, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide the real API keys from every test that is not marked live.
+
+    `_load_dotenv_file_into_environ` above exists so the live-marked tests can reach the
+    real services. It loads into the process environment, though, so every unit test got
+    them too -- and a unit test that forgets one stub does not fail, it quietly calls the
+    production API. Auditing this suite with the network blocked found 42 tests reaching
+    out, some through `PlakyClient.add_comment`, which posts a comment to the real board.
+
+    A test that genuinely needs a credential sets it with its own monkeypatch, which runs
+    after this and wins. A test that needs a REAL one marks itself live.
+    """
+    if set(m.name for m in request.node.iter_markers()) & _LIVE_MARKERS:
+        return
+    import boardman.settings as bs
+
+    for field in _LIVE_CREDENTIALS:
+        current = getattr(bs.settings, field, None)
+        monkeypatch.setattr(bs.settings, field, "" if isinstance(current, str) else current)
+
 
 @pytest.fixture(autouse=True)
 def _clear_github_read_cache() -> None:

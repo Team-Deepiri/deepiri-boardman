@@ -9,6 +9,7 @@ cheap enough to run on every audit-style question.
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 import httpx
@@ -42,16 +43,266 @@ _TEST_MARKERS = ("test_", "_test.", "/tests/", "/test/", ".spec.", ".test.")
 _VENDOR_MARKERS = ("node_modules/", "vendor/", "site-packages/", "dist/", "build/", ".venv/")
 
 # Things that should essentially never be committed. Each is a finding on its own.
-_ARTIFACT_RULES: tuple[tuple[str, str], ...] = (
+#
+# MAINTENANCE: this is a security-sensitive detection list and it is only as complete as
+# the last person to look at it. New key formats, new database engines and new tool
+# artifacts appear all the time (id_ed25519, .kdbx, .jks, .tfstate, service-account JSON),
+# so review it whenever the org adopts a new tool, and treat a miss as a gap in this list
+# rather than a clean repo. A deployment can extend it without a code change via
+# GITHUB_EXTRA_ARTIFACT_RULES ("marker:why; marker:why") -- see _artifact_rules() below.
+_BUILTIN_ARTIFACT_RULES: tuple[tuple[str, str], ...] = (
     (".env", "environment file with likely secrets is tracked in git"),
-    (".db", "SQLite database committed to the repo"),
-    (".sqlite", "SQLite database committed to the repo"),
+    # ORDER MATTERS, still: `_extension_hit` accepts a `-` after the marker (that is what
+    # keeps `server.pem-old` a finding), so ".db" does match "prod.db-wal". The matcher
+    # breaks on the first hit, so the specific markers have to come first or a WAL file is
+    # reported as a database, with the wrong reason and sharing the ".db" per-rule quota.
     (".db-wal", "SQLite write-ahead log committed to the repo"),
     (".db-shm", "SQLite shared-memory file committed to the repo"),
+    (".db", "SQLite database committed to the repo"),
+    (".sqlite", "SQLite database committed to the repo"),
     (".pem", "private key material tracked in git"),
     (".p12", "keystore tracked in git"),
     ("id_rsa", "private SSH key tracked in git"),
 )
+
+# The report is capped, so a repo with 30 committed .env files must not push a private key
+# off the end of it. Lower number = reported first. Extra (configured) rules sit between:
+# somebody thought them worth adding, but nobody reviewed what they mean.
+_ARTIFACT_PRIORITY: dict[str, int] = {
+    ".pem": 0,
+    ".p12": 0,
+    "id_rsa": 0,
+    ".env": 1,
+    ".db": 2,
+    ".sqlite": 2,
+    ".db-wal": 3,
+    ".db-shm": 3,
+}
+_EXTRA_RULE_PRIORITY = 1
+_MAX_REPORTED_ARTIFACTS = 20
+# At most this many paths per rule. This is what actually keeps 30 committed .env files
+# from filling the report and hiding a single .pem -- and it needs no guess about how
+# severe a configured rule is. Reading an operator's prose for words like "secret" got
+# ".parquet:data extract, no secrets inside" promoted to the private-key band; a fixed
+# per-rule quota gives every rule a seat without interpreting anybody's sentence.
+_MAX_PATHS_PER_RULE = 5
+
+# A version digit or a trailing `~`, which is the whole of some tails: db.sqlite3, key.p12~
+_ARTIFACT_VERSION_TAIL_RE = re.compile(r"^\d*~?$")
+# Extensions that make it a DIFFERENT KIND OF FILE -- prose about the thing, or code that
+# uses it. `README.db.md` is documentation, not a committed database, and that false
+# positive is the reason this test exists at all.
+#
+# Everything else after the marker is treated as the same file, deliberately. A whitelist
+# of "allowed" tails was tried and it silently narrowed the scanner: `key.pem.txt`,
+# `deploy_key.pem.bak.txt` and `prod.db.sql` stopped being reported. Renaming a private
+# key does not stop it being a private key, and a missed one costs far more than a line in
+# a report that turns out to be a dump nobody minds.
+_A_DIFFERENT_KIND_OF_FILE = (
+    ".md",
+    ".rst",
+    ".adoc",
+    ".html",
+    ".htm",
+    ".pdf",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".gif",
+    ".svg",
+    ".py",
+    ".js",
+    ".jsx",
+    ".ts",
+    ".tsx",
+    ".go",
+    ".rs",
+    ".java",
+    ".kt",
+    ".rb",
+    ".php",
+    ".c",
+    ".h",
+    ".cpp",
+    ".hpp",
+    ".cs",
+    ".swift",
+    ".scala",
+    ".sh",
+    ".css",
+    ".scss",
+    # Deliberately NOT .json/.yml/.toml/.ini/.cfg/.lock. A key or a database stored in one
+    # of those is still the thing: `backup/id_rsa.json`, `secrets.env.json` and
+    # `gcp/service-account.json` are exactly what an operator adds a rule for, and the
+    # module's own maintenance note tells them to. The cost of the other reading is a line
+    # in a report about a config file; the cost of this one is a leaked key nobody saw.
+)
+
+
+def _extension_hit(base: str, marker: str) -> bool:
+    """True when `marker` is `base`'s extension rather than letters inside its name.
+
+    The marker has to END the name, allow only a version digit after it, or be followed by
+    a further extension that does not turn it into something else. `data.dbf` is not a
+    database (no separator, so ".db" is just letters), `README.db.md` is documentation, and
+    `key.pem.txt` is still a private key.
+    """
+    idx = base.rfind(marker)
+    while idx != -1:
+        tail = base[idx + len(marker) :]
+        if _ARTIFACT_VERSION_TAIL_RE.match(tail):
+            return True
+        if tail[:1] in (".", "-", "_") and not tail.endswith(_A_DIFFERENT_KIND_OF_FILE):
+            return True
+        idx = base.rfind(marker, 0, idx)
+    return False
+
+
+_DEFAULT_EXTRA_REASON = "matched a configured artifact rule (GITHUB_EXTRA_ARTIFACT_RULES)"
+# A configured marker must be at least this long. "db" as a substring rule matches
+# dbutils.py and adbc_client.go and buries every real finding under noise.
+_MIN_EXTRA_MARKER_LEN = 3
+# A public key is not a private key, and neither is a template. Never a finding.
+_NEVER_AN_ARTIFACT = (".example", ".sample", ".template", ".pub")
+# Conventional names for a committed .env TEMPLATE. These live in the repo on purpose and
+# hold placeholders, so they are the opposite of the finding the .env rule is after.
+# .env siblings that are committed on purpose: templates with placeholder values, and
+# files that are already encrypted at rest (dotenv-vault, sops, git-crypt, age).
+# Deliberately NOT ".ci" or ".test": a .env.ci or .env.test routinely holds real CI
+# credentials, and it is flagged for the same reason .env.production is.
+_ENV_NOT_A_FINDING_SUFFIXES = (
+    # templates
+    ".dist",
+    ".defaults",
+    ".default",
+    ".schema",
+    ".tpl",
+    ".tmpl",
+    # encrypted at rest
+    ".vault",
+    ".enc",
+    ".encrypted",
+    ".gpg",
+    ".pgp",
+    ".age",
+    ".sops",
+)
+
+
+def artifact_hit(path: str, marker: str, *, suffix_only: bool = False) -> bool:
+    """Would `path` be reported for the rule `marker`? The whole decision, in one place.
+
+    `_extension_hit` answers only half of it -- the exclusions for templates, samples and
+    public keys are applied before any rule runs -- so this is what a caller (or a test)
+    should ask when the question is "is this file a finding".
+
+    `suffix_only` is what a CONFIGURED rule carries: an operator writing
+    `id_ed25519:private SSH key` means the file, not every file whose name mentions it, and
+    without the flag `docs/id_ed25519_rotation.md` is reported as a committed private key.
+    Only the built-in `id_rsa`-style rules are substring rules, deliberately, so that
+    `id_rsa_backup` and `id_rsa.old` are caught too.
+    """
+    base = path.lower().rsplit("/", 1)[-1]
+    if base.endswith(_NEVER_AN_ARTIFACT):
+        return False
+    if marker == ".env":
+        if base.endswith(_ENV_NOT_A_FINDING_SUFFIXES):
+            return False
+        return base == marker or base.startswith(".env.") or _extension_hit(base, marker)
+    if suffix_only or marker.startswith("."):
+        return _extension_hit(base, marker)
+    # A substring rule still may not claim prose about the key or a script that rotates
+    # it: `docs/id_rsa_rotation.md` and `scripts/rotate_id_rsa.sh` are not private keys,
+    # and `id_rsa` sits in the top priority band with a five-path quota, so a few of those
+    # crowd real findings out of the report entirely.
+    if base.endswith(_A_DIFFERENT_KIND_OF_FILE):
+        return False
+    return marker in base
+
+
+def _parse_extra_artifact_rules(raw: str) -> tuple[tuple[str, str], ...]:
+    """Parse GITHUB_EXTRA_ARTIFACT_RULES: "marker:why; marker:why".
+
+    Rules are separated by ``;`` and NOT by ``,``, because reasons are prose and prose has
+    commas in it. Splitting on the comma turned the tail of a reason into a live substring
+    matcher -- "id_rsa:private ssh key, keys" started flagging `api_keys.py` as a committed
+    secret. A marker is a filename fragment, so anything containing whitespace is a
+    fragment of somebody's sentence and is refused rather than matched.
+
+    The reason is optional: "id_ed25519;.tfstate" flags both files with a generic reason.
+    A security detection must never fail *open* because the sentence explaining it is
+    missing. Malformed entries are skipped rather than raising -- a typo in one env var
+    must not stop the whole hotspot scan, and the built-in rules still apply.
+    """
+    out: list[tuple[str, str]] = []
+    for chunk in (raw or "").split(";"):
+        entry = chunk.strip()
+        if not entry:
+            continue
+        marker, _, why = entry.partition(":")
+        marker = marker.strip().lower()
+        why = why.strip()
+        if not marker:
+            _log.warning(
+                "ignoring GITHUB_EXTRA_ARTIFACT_RULES entry %r: no marker before the colon",
+                entry,
+            )
+            continue
+        if not any(ch.isalnum() for ch in marker):
+            # A bare "." left by a trailing separator would match every file with an
+            # extension and report the entire repository as committed secrets.
+            _log.warning(
+                "ignoring GITHUB_EXTRA_ARTIFACT_RULES entry %r: marker %r has no letters "
+                "or digits, so it would match almost every path",
+                entry,
+                marker,
+            )
+            continue
+        if len(marker) < _MIN_EXTRA_MARKER_LEN:
+            _log.warning(
+                "ignoring GITHUB_EXTRA_ARTIFACT_RULES entry %r: marker %r is shorter than "
+                "%d characters and would match far too many paths (try '.%s')",
+                entry,
+                marker,
+                _MIN_EXTRA_MARKER_LEN,
+                marker,
+            )
+            continue
+        if any(ch.isspace() for ch in marker):
+            # Almost certainly the tail of a reason that used the wrong separator.
+            # Matching on it would flag unrelated files as committed secrets.
+            _log.warning(
+                "ignoring GITHUB_EXTRA_ARTIFACT_RULES entry %r: a marker is a filename "
+                "fragment and cannot contain spaces (rules are separated by ';')",
+                entry,
+            )
+            continue
+        out.append((marker, why or _DEFAULT_EXTRA_REASON))
+    return tuple(out)
+
+
+# Memoised on the raw setting string: this runs per scan, and re-parsing meant one
+# malformed entry re-emitted its warning on every scan instead of once.
+_rules_cache: tuple[str, tuple[tuple[str, str, bool], ...]] | None = None
+
+
+def _artifact_rules() -> tuple[tuple[str, str, bool], ...]:
+    """Built-in rules plus anything the deployment added, as (marker, why, suffix_only).
+
+    Configured markers are suffix-only. Substring matching is what makes the built-in
+    list work (`id_rsa` inside `id_rsa_backup`), but on a marker nobody reviewed it is a
+    liability: "id_ed25519" would flag `id_ed25519.pub`, a PUBLIC key, as private key
+    material, and every short marker matches half the repository.
+    """
+    global _rules_cache
+    raw = getattr(settings, "github_extra_artifact_rules", "") or ""
+    if _rules_cache is not None and _rules_cache[0] == raw:
+        return _rules_cache[1]
+    rules: tuple[tuple[str, str, bool], ...] = tuple(
+        (marker, why, False) for marker, why in _BUILTIN_ARTIFACT_RULES
+    ) + tuple((marker, why, True) for marker, why in _parse_extra_artifact_rules(raw))
+    _rules_cache = (raw, rules)
+    return rules
 
 
 def _is_source(path: str) -> bool:
@@ -99,41 +350,27 @@ async def _fetch_repo_hotspots_uncached(
     token = (settings.github_pat or "").strip()
     if not token:
         return None
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
-
     ref = (branch or "").strip()
-    if not ref:
-        try:
-            r = await client.get(
-                f"https://api.github.com/repos/{owner}/{repo}",
-                headers=headers,
-                follow_redirects=True,
-            )
-            if r.status_code != 200:
-                return None
-            ref = str((r.json() or {}).get("default_branch") or "main")
-        except Exception as e:  # noqa: BLE001
-            _log.debug("hotspots: default branch lookup failed for %s/%s: %s", owner, repo, e)
-            return None
+    from boardman.github.repo_metadata import fetch_repo_identity, fetch_repo_tree
 
-    try:
-        tr = await client.get(
-            f"https://api.github.com/repos/{owner}/{repo}/git/trees/{ref}?recursive=1",
-            headers=headers,
-            follow_redirects=True,
-        )
-        if tr.status_code != 200:
-            return None
-        data = tr.json() or {}
-    except Exception as e:  # noqa: BLE001
-        _log.debug("hotspots: tree fetch failed for %s/%s: %s", owner, repo, e)
+    identity = await fetch_repo_identity(client, owner, repo)
+    if not identity:
+        _log.debug("hotspots: repo identity unavailable for %s/%s", owner, repo)
+        return None
+    if not ref:
+        ref = str(identity.get("default_branch") or "main")
+
+    data = await fetch_repo_tree(client, owner, repo, ref)
+    if not data:
+        _log.debug("hotspots: tree unavailable for %s/%s", owner, repo)
         return None
 
     blobs = [n for n in (data.get("tree") or []) if isinstance(n, dict) and n.get("type") == "blob"]
     source: list[tuple[str, int]] = []
     tests = 0
     dir_counts: dict[str, int] = {}
-    artifacts: list[dict[str, str]] = []
+    artifacts: list[tuple[int, str, dict[str, str]]] = []
+    rules = _artifact_rules()
 
     for n in blobs:
         path = str(n.get("path") or "")
@@ -143,12 +380,21 @@ async def _fetch_repo_hotspots_uncached(
         low = path.lower()
         base = low.rsplit("/", 1)[-1]
 
-        for marker, why in _ARTIFACT_RULES:
-            # ".env" must not match ".env.example"; suffix rules match anywhere in the name.
-            hit = base == marker if marker == ".env" else (base.endswith(marker) or marker in base)
-            if hit and not base.endswith((".example", ".sample", ".template")):
-                artifacts.append({"path": path, "why": why})
-                break
+        if base.endswith(_NEVER_AN_ARTIFACT):
+            # A template, a sample, or a PUBLIC key. Never the thing the rule is after.
+            pass
+        else:
+            for marker, why, suffix_only in rules:
+                # One place decides this, so the scan and anything that asks the same
+                # question cannot drift apart.
+                if artifact_hit(base, marker, suffix_only=suffix_only):
+                    rank = (
+                        _EXTRA_RULE_PRIORITY
+                        if suffix_only
+                        else _ARTIFACT_PRIORITY.get(marker, _EXTRA_RULE_PRIORITY)
+                    )
+                    artifacts.append((rank, marker, {"path": path, "why": why}))
+                    break
 
         if _is_source(path):
             top = path.split("/", 1)[0] if "/" in path else "(root)"
@@ -157,6 +403,26 @@ async def _fetch_repo_hotspots_uncached(
                 tests += 1
             else:
                 source.append((path, size))
+
+    # Stable sort on the rule's priority: key material outranks env files outranks
+    # databases, and paths keep tree order inside each band.
+    artifacts.sort(key=lambda t: t[0])
+    per_rule: dict[str, int] = {}
+    reported_artifacts: list[dict[str, str]] = []
+    for _rank, marker, row in artifacts:
+        if len(reported_artifacts) >= _MAX_REPORTED_ARTIFACTS:
+            break
+        if per_rule.get(marker, 0) >= _MAX_PATHS_PER_RULE:
+            continue
+        per_rule[marker] = per_rule.get(marker, 0) + 1
+        reported_artifacts.append(row)
+    hidden_artifacts = len(artifacts) - len(reported_artifacts)
+    artifacts_note = (
+        f"Showing {len(reported_artifacts)} of {len(artifacts)} committed-artifact findings, "
+        f"most severe first, at most {_MAX_PATHS_PER_RULE} paths per rule."
+        if hidden_artifacts
+        else ""
+    )
 
     source.sort(key=lambda t: -t[1])
     src_count = len(source)
@@ -181,5 +447,7 @@ async def _fetch_repo_hotspots_uncached(
             "a line number you have not read; say 'largest module (~N KB)' instead."
         ),
         "files_by_top_dir": dict(sorted(dir_counts.items(), key=lambda kv: -kv[1])[:12]),
-        "tracked_artifacts": artifacts[:20],
+        "tracked_artifacts": reported_artifacts,
+        # Silence would read as "that is all of them".
+        "tracked_artifacts_note": artifacts_note,
     }

@@ -80,11 +80,19 @@ Configurable via `PLAKY_PR_MERGE_STATUS` (default `in_review`). Set to board-spe
 
 **Canonical:** `DIRECTION.md` at repo root (template: [DIRECTION_TEMPLATE.md](./DIRECTION_TEMPLATE.md)).
 
-**Cache:** `ProjectContext` table updated after scan/agent operations.
+**Cache:** `ProjectContext` stores a bounded structured planning snapshot after planning reads and scans; the assistant also uses a short-TTL process cache and stale snapshots only when live retrieval fails.
 
 **Also supported in scans:** README, `docs/`, open GitHub issues, recent commits.
 
 ---
+
+## Current sync completion note (2026-08-19)
+
+The GitHub-to-Plaky side now covers the full event lifecycle: canonical metadata and
+assignee reconciliation for issue/PR edits and labels, durable one-time mirroring for
+comments and reviews, retryable queued webhook dispatch, mapping uniqueness, and bounded
+reconciliation. The remaining planned direction in this document is specifically the
+reverse Plaky-to-GitHub flow.
 
 # Brainstorming: CLI Task Generation (archived)
 

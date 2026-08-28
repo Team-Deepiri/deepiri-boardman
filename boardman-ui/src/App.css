@@ -481,6 +481,12 @@ body {
   font-weight: 600;
 }
 
+.main__status {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  color: var(--text-secondary);
+}
+
 .chat-shell {
   flex: 1;
   display: flex;
@@ -782,6 +788,23 @@ body {
 .typing--sm span {
   width: 5px;
   height: 5px;
+}
+
+.typing--status {
+  font-size: 0.8rem;
+  color: var(--text-secondary);
+  opacity: 0.85;
+  animation: fade-pulse 1.6s ease infinite;
+}
+
+@keyframes fade-pulse {
+  0%,
+  100% {
+    opacity: 0.55;
+  }
+  50% {
+    opacity: 0.95;
+  }
 }
 
 @keyframes bounce {

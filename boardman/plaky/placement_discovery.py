@@ -1,9 +1,10 @@
 """Resolve GitHub repo → Plaky board_id + group_id (auto-discovery, no repos.yml).
 
 Algorithm (``discover_placement_from_catalog``):
-  Scan every group on Devin's five categorical boards; fuzzy-match the repo slug
-  to a group name (``rank_plaky_rows``, min score from ``PLAKY_PLACEMENT_MIN_SCORE``).
-  Highest score wins globally (e.g. ``deepiri-boardman`` → Bots / ``deepiri-boardman``).
+  Scan every group on repo-catalog boards (see ``plaky_catalog.filter_categorical_boards``);
+  fuzzy-match the repo slug to a group name (``rank_plaky_rows``, min score from
+  ``PLAKY_PLACEMENT_MIN_SCORE``). Highest score wins globally
+  (e.g. ``deepiri-boardman`` → Bots / ``deepiri-boardman``).
 
   Boards use one Plaky group per repo. If no group matches, return None — do not
   fall back to Backlog, Open PRs, or another repo's group.
@@ -16,6 +17,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from boardman.observability.degradation import log_unexpected
 from boardman.plaky.name_match import rank_plaky_rows
 from boardman.plaky.plaky_catalog import (
     PlakyBoardEntry,
@@ -24,7 +26,6 @@ from boardman.plaky.plaky_catalog import (
     filter_categorical_boards,
     get_plaky_catalog,
 )
-from boardman.plaky.repo_category import infer_repo_category
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -32,13 +33,19 @@ _log = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class PlacementResult:
-    """Resolved Plaky placement for one GitHub repo slug."""
+    """Resolved Plaky placement for one GitHub repo slug.
+
+    ``category`` is the Plaky **board display name** from the live catalog (same as
+    ``board_name``), e.g. ``\"Bots\"`` or ``\"AI / ML Libraries\"``. It is *not* the
+    former axiom-style slug (``platform`` / ``ai-runtime`` / ``dx`` / …); those hints
+    were removed so placement follows Plaky layout only.
+    """
 
     board_id: str
     group_id: str
     board_name: str
     group_name: str
-    category: str  # internal slug: platform | ai-runtime | dx | creative | infra | unknown
+    category: str  # Plaky board display name (same as board_name; not an axiom slug)
     source: str  # group_slug_match
     score: int  # fuzzy match score from rank_plaky_rows
 
@@ -109,13 +116,12 @@ def discover_placement_from_catalog(
         return None
 
     board, group, score = best_global
-    category = infer_repo_category(slug, description)
     return PlacementResult(
         board_id=board.id,
         group_id=group.id,
         board_name=board.name,
         group_name=group.name,
-        category=category,
+        category=board.name,
         source="group_slug_match",
         score=score,
     )
@@ -136,8 +142,9 @@ async def resolve_placement_for_repo(
         return None
     try:
         catalog, cache_label = await get_plaky_catalog(force=force_catalog_refresh)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - observability failure must not affect the request
         _log.warning("plaky placement: catalog unavailable for %r: %s", full_name, exc)
+        log_unexpected(_log, "resolve_placement_for_repo: get_plaky_catalog")
         return None
     result = discover_placement_from_catalog(
         catalog, full_name, short_name, description=description

@@ -1,0 +1,11 @@
+{
+  "ai-ml": {
+    "board_id": "YOUR_BOARD_ID"
+  },
+  "qa": {
+    "board_id": "YOUR_BOARD_ID"
+  },
+  "frontend-backend-infra": {
+    "board_id": "YOUR_BOARD_ID"
+  }
+}

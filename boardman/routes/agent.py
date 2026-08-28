@@ -1,3 +1,5 @@
+"""HTTP endpoints for the Boardman assistant (chat, streaming, job polling)."""
+
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 
@@ -59,6 +61,10 @@ class ScanRequest(BaseModel):
     dry_run: bool = False
     provider: str | None = None
     model: str | None = None
+    queue: bool = Field(
+        False,
+        description="If true, enqueue the scan to the SQLite worker; poll GET /agent/jobs/{job_id}.",
+    )
 
 
 class InitDirectionRequest(BaseModel):
@@ -167,7 +173,7 @@ async def agent_chat_stream(body: AgentChatRequest, request: Request) -> Streami
                     ):
                         yield chunk
                     await db.commit()
-                except Exception:
+                except Exception:  # noqa: BLE001 - graceful degradation
                     await db.rollback()
                     raise
 
@@ -190,7 +196,10 @@ async def agent_job_status(job_id: str) -> dict[str, Any]:
     if data is None:
         return {"ok": True, "job_id": job_id, "status": "not_found"}
     out: dict[str, Any] = {"ok": True, "job_id": job_id, "status": data["status"]}
-    if data["status"] == "complete":
+    # `incomplete` carries the reason now, and gating on "complete" stripped it before it
+    # reached any HTTP caller -- leaving the bare status and no way to find out, which is
+    # the exact thing the queue change was written to fix.
+    if data["status"] in ("complete", "incomplete"):
         if "success" in data:
             out["success"] = data["success"]
         if "result" in data:
@@ -219,6 +228,14 @@ async def agent_scan(
     session: AsyncSession = Depends(get_db),
 ) -> dict:
     await require_agent_rate_limit(request)
+    if body.queue:
+        if not settings.agent_async_enqueue_enabled:
+            raise HTTPException(
+                status_code=503, detail="Async agent enqueue is disabled in settings."
+            )
+        payload = body.model_dump(exclude={"queue"}, exclude_none=True)
+        job = await get_job_queue().enqueue_job("boardman_repo_scan_job", payload)
+        return {"ok": True, "queued": True, "job_id": job.job_id}
     result = await run_repo_scan(
         session,
         body.repo,

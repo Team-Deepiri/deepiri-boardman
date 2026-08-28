@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 import httpx
 from langchain_core.tools import StructuredTool
 
+from boardman.agent.repo_context import load_planning_snapshot, save_planning_snapshot
+from boardman.agent.tool_context import get_tool_db_session
 from boardman.github.code_search import scan_repo_defects, search_repo_code
 from boardman.github.http import shared_github_client
 from boardman.github.read_cache import cached, json_ok
@@ -22,8 +25,15 @@ from boardman.github.repo_fetch import (
 )
 from boardman.github.repo_hotspots import fetch_repo_hotspots
 from boardman.github.repo_metadata import fetch_repo_metadata
+from boardman.observability.degradation import log_degraded
 from boardman.repos_config import list_workspace_repos
-from boardman.settings import settings
+from boardman.settings import (
+    DEFAULT_LLM_CONTEXT_BUDGET_CHARS,
+    positive_or_default,
+    settings,
+)
+
+logger = logging.getLogger(__name__)
 
 _NOTABLE_FILE_BASENAMES = {
     "readme.md",
@@ -59,7 +69,8 @@ async def _workspace_repo_suggestions(
     try:
         repos = await list_workspace_repos(client)
         names = list(repos.keys())
-    except Exception:
+    except Exception:  # noqa: BLE001 - GitHub API failure degrades gracefully
+        log_degraded(logger, "_workspace_repo_suggestions: list_workspace_repos")
         return []
     want = (requested or "").split("/")[-1].strip().lower()
     if not want or not names:
@@ -131,6 +142,17 @@ async def _github_read_pull_request(owner_repo: str, pr_number: int) -> str:
     return render_pull_request_context(ctx)
 
 
+# Said at the point of decision, because a system-prompt rule about it was followed only
+# some of the time. GitHub is half the picture: Plaky carries work that is finished,
+# closed, or never had an issue, and "I don't see anything for that" after reading only
+# this listing has been wrong every time it mattered.
+_NOT_ON_GITHUB_NEXT_STEP = (
+    "This is GitHub only. If you did not find what the user asked about, call "
+    "plaky_list_tasks and search the board BEFORE saying it is not tracked, then name "
+    "both places you looked."
+)
+
+
 async def _github_list_pull_requests(owner_repo: str, state: str = "open") -> str:
     if not settings.github_pat:
         return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
@@ -169,7 +191,19 @@ async def _github_list_pull_requests(owner_repo: str, state: str = "open") -> st
         for p in prs
         if isinstance(p, dict)
     ]
-    return json.dumps({"ok": True, "state": want, "returned": len(slim), "pull_requests": slim})
+    return json.dumps(
+        {
+            "ok": True,
+            "state": want,
+            "returned": len(slim),
+            # One page of 30, newest first. Without this the model called 30 closed PRs
+            # "all 30 PRs" and ruled work out on the strength of a partial page.
+            "page_size": 30,
+            "truncated": len(slim) >= 30,
+            "next_step": _NOT_ON_GITHUB_NEXT_STEP,
+            "pull_requests": slim,
+        }
+    )
 
 
 async def _github_list_open_issues(owner_repo: str) -> str:
@@ -197,7 +231,16 @@ async def _github_list_open_issues(owner_repo: str) -> str:
             for i in issues
             if isinstance(i, dict) and "pull_request" not in i
         ]
-        return json.dumps({"ok": True, "issues": slim})
+        return json.dumps(
+            {
+                "ok": True,
+                "returned": len(slim),
+                "page_size": 30,
+                "truncated": len(slim) >= 30,
+                "next_step": _NOT_ON_GITHUB_NEXT_STEP,
+                "issues": slim,
+            }
+        )
 
 
 async def _github_fetch_direction(owner_repo: str) -> str:
@@ -288,7 +331,15 @@ async def _github_repo_structure_uncached(owner_repo: str) -> str:
 
 
 def _context_budget() -> int:
-    return int(getattr(settings, "llm_context_budget_chars", 0) or 24000)
+    """Character budget for the repo planning payload. <=0/unset -> the settings default.
+
+    The number lives in settings.py: the Field default and this fallback disagreed
+    (20000 vs 24000) for exactly as long as it was written in two places.
+    """
+    # <= 0 is unset: this slices the payload, so a negative would trim from the wrong end.
+    return positive_or_default(
+        getattr(settings, "llm_context_budget_chars", 0), DEFAULT_LLM_CONTEXT_BUDGET_CHARS
+    )
 
 
 # Longest first: a repo's own docs earn more room than the commit list.
@@ -345,11 +396,40 @@ async def _github_repo_planning_context(owner_repo: str, commits_limit: int = 20
     common case, and re-fetching seven endpoints to answer "and what about its tests?"
     is latency the user pays for nothing.
     """
-    return await cached(
+    db = get_tool_db_session()
+    persistent, cache_state = await load_planning_snapshot(db, _canonical_owner_repo(owner_repo))
+    if persistent:
+        return persistent
+
+    result = await cached(
         f"planning:{(owner_repo or '').strip().lower()}:{commits_limit}",
         lambda: _github_repo_planning_context_uncached(owner_repo, commits_limit),
         ok=json_ok,
     )
+    if json_ok(result):
+        return result
+
+    # A stale structured snapshot is better than turning an optional GitHub outage into
+    # a blank repo. The payload labels itself as stale so the model does not mistake it
+    # for current review/CI state.
+    stale, stale_state = await load_planning_snapshot(
+        db, _canonical_owner_repo(owner_repo), allow_stale=True
+    )
+    if stale:
+        return stale
+    return result
+
+
+def _canonical_owner_repo(owner_repo: str) -> str:
+    raw = (owner_repo or "").strip()
+    parsed = parse_owner_repo(raw)
+    if parsed:
+        return f"{parsed[0]}/{parsed[1]}"
+    if raw and "/" not in raw:
+        from boardman.assignment.qa_picker import ensure_github_owner_repo
+
+        return ensure_github_owner_repo(raw)
+    return raw
 
 
 async def _github_repo_planning_context_uncached(owner_repo: str, commits_limit: int = 20) -> str:
@@ -416,10 +496,13 @@ async def _github_repo_planning_context_uncached(owner_repo: str, commits_limit:
         "ok": True,
         "repo": f"{owner}/{repo}",
         "structure": {
+            "description": getattr(meta, "description", ""),
             "language": getattr(meta, "language", ""),
+            "topics": getattr(meta, "topics", [])[:12],
             "default_branch": getattr(meta, "default_branch", ""),
             "size_kb": getattr(meta, "size_kb", 0),
             "top_level_dirs": getattr(meta, "top_level_dirs", []),
+            "important_paths": getattr(meta, "important_paths", [])[:40],
             "notable_files": notable,
             "max_depth": getattr(meta, "max_depth", 0),
         },
@@ -431,8 +514,54 @@ async def _github_repo_planning_context_uncached(owner_repo: str, commits_limit:
         "recent_commits_markdown": commits,
         "open_issues_markdown": issues,
         "open_pull_requests_markdown": prs_md,
+        "source_revision": str(getattr(meta, "pushed_at", "") or ""),
+        "routing": _repo_routing_summary(f"{owner}/{repo}"),
+        "retrieval": {
+            "layers": ["metadata", "structure", "direction", "activity"],
+            "live_state": "issues/prs are snapshots; PR review and CI require a live PR read",
+        },
     }
-    return _budget_json(out)
+    payload = _budget_json(out)
+    try:
+        parsed_payload = json.loads(payload)
+    except (TypeError, ValueError):
+        parsed_payload = None
+    if isinstance(parsed_payload, dict):
+        await save_planning_snapshot(
+            get_tool_db_session(),
+            f"{owner}/{repo}",
+            parsed_payload,
+            source_revision=str(getattr(meta, "pushed_at", "") or ""),
+        )
+    logger.debug(
+        "github planning context repo=%s payload_chars=%d source_revision=%s",
+        f"{owner}/{repo}",
+        len(payload),
+        str(getattr(meta, "pushed_at", "") or "")[:40],
+    )
+    return payload
+
+
+def _repo_routing_summary(full_name: str) -> dict[str, str]:
+    """Expose configured placement as compact context, without hitting Plaky."""
+    try:
+        from boardman.repos_config import get_routing
+
+        short = full_name.rsplit("/", 1)[-1]
+        routing = get_routing(full_name, short, settings.github_org)
+        if routing is None:
+            # No repos.yml entry and no usable org default: a repo outside the org has
+            # no configured placement, which is a fact about the config, not a failure.
+            return {}
+        return {
+            "category": str(routing.category or ""),
+            "table": str(routing.plaky_table or ""),
+            "board_id": str(routing.plaky_board_id or ""),
+            "group_id": str(routing.plaky_group_id or ""),
+        }
+    except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
+        log_degraded(logger, "_repo_routing_summary: get_routing")
+        return {}
 
 
 async def _github_search_code(owner_repo: str, query: str) -> str:
@@ -607,8 +736,39 @@ def github_scan_defects_tool() -> StructuredTool:
     )
 
 
+async def _github_org_activity(limit: int = 8) -> str:
+    """Rank the org's repos by open issues and pull requests."""
+    import json as _json
+
+    from boardman.github.org_activity import org_activity_ranking
+
+    try:
+        out = await org_activity_ranking(limit=max(1, min(int(limit or 8), 25)))
+    except Exception as e:  # noqa: BLE001 - graceful degradation
+        log_degraded(logger, "_github_org_activity: org_activity_ranking")
+        return _json.dumps({"ok": False, "message": f"{type(e).__name__}: {e}"})
+    return _json.dumps(out, default=str)[:12000]
+
+
+def github_org_activity_tool() -> StructuredTool:
+    return StructuredTool.from_function(
+        coroutine=_github_org_activity,
+        name="github_org_activity",
+        description=(
+            "Rank EVERY repo in the org by how much open work it carries: open issues and "
+            "open pull requests, most active first. Use this for 'which repos are busiest', "
+            "'where is the team working', 'which repos get the most PRs or issues', or when "
+            "choosing which repos to watch. Cheap: it reuses the org listing already cached "
+            "this turn. NOTE open_issues_and_prs is GitHub's own count and INCLUDES pull "
+            "requests; open_issues/open_prs are split only for the busiest few, and a null "
+            "there means unknown, never zero. Args: optional limit (default 8)."
+        ),
+    )
+
+
 def build_github_tools() -> list[StructuredTool]:
     return [
+        github_org_activity_tool(),
         github_list_workspace_repos_tool(),
         github_repo_planning_context_tool(),
         github_repo_structure_tool(),

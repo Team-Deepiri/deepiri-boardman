@@ -1,3 +1,5 @@
+"""FastAPI application factory and lifespan management."""
+
 import logging
 from contextlib import asynccontextmanager
 
@@ -10,19 +12,11 @@ from boardman.cache.agent_redis import aclose_agent_redis
 from boardman.database.session import init_db
 from boardman.github.http import aclose_shared_http_clients
 from boardman.llm.completion import aclose_ollama_http_client
-from boardman.llm.ollama_autodetect import effective_ollama_model
+from boardman.llm.ollama_autodetect import NoOllamaModelAvailable, effective_ollama_model
 from boardman.logging_config import setup_logging
+from boardman.observability.degradation import log_unexpected
 from boardman.ratelimit.leaky_bucket import get_agent_leaky_limiter
-from boardman.routes import (
-    agent,
-    assignment,
-    github_events,
-    github_team,
-    health,
-    plaky,
-    repos,
-    tasks,
-)
+from boardman.routes import agent, assignment, health, github_events, github_team, plaky, plans, tasks, repos
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -30,13 +24,15 @@ _log = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """Startup: DB, rate limiter, security checks, LLM probe, cache warmup. Shutdown: HTTP pools, Redis, Ollama, job queue."""
     setup_logging()
     await init_db()
     if settings.agent_rate_limit_enabled:
         try:
             await get_agent_leaky_limiter()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
             _log.warning("Agent rate limiter init skipped: %s", e)
+            log_unexpected(_log, "lifespan: get_agent_leaky_limiter")
     # Webhook signature posture: empty secret = verification disabled (dev only).
     ws = (settings.github_webhook_secret or "").strip()
     if not ws:
@@ -57,7 +53,16 @@ async def lifespan(app: FastAPI):
         )
     pk = (settings.plaky_api_key or "").strip()
     if pk:
-        _log.info("Plaky: API key present (length=%d), base=%s", len(pk), settings.plaky_api_base)
+        from boardman.readiness import _is_placeholder
+
+        if _is_placeholder(pk):
+            _log.warning(
+                "Plaky: PLAKY_API_KEY looks like an unfilled placeholder (%r) rather than a "
+                "real key — Boards/match and agent Plaky tools will get 400s from Plaky.",
+                pk,
+            )
+        else:
+            _log.info("Plaky: API key present (length=%d), base=%s", len(pk), settings.plaky_api_base)
     else:
         _log.warning(
             "Plaky: PLAKY_API_KEY is empty — set it in `.env` (docker: env_file) or the environment. "
@@ -81,8 +86,11 @@ async def lifespan(app: FastAPI):
                         "team_assignments: field-key sync skipped (%s)",
                         synced.get("message", "no changes"),
                     )
-            except Exception as e:
+            except (
+                Exception
+            ) as e:  # noqa: BLE001 - observability failure must not affect the request
                 _log.warning("team_assignments: startup field-key sync failed: %s", e)
+                log_unexpected(_log, "lifespan: sync_team_assignment_field_keys_from_board")
         else:
             _log.info(
                 "team_assignments: startup field-key sync skipped (repos.yml defaults.plaky_board_id empty)"
@@ -98,8 +106,12 @@ async def lifespan(app: FastAPI):
                 src,
                 settings.ollama_base_url,
             )
-        except Exception as e:
+        except NoOllamaModelAvailable as e:
+            # A fresh box with nothing pulled. Normal, and the reason this type exists.
+            _log.warning("Agent LLM: %s", e)
+        except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
             _log.warning("Agent LLM: could not resolve Ollama model at startup: %s", e)
+            log_unexpected(_log, "lifespan: effective_ollama_model", e)
     else:
         _log.info(
             "Agent LLM: provider=%s model=%s ollama_base=%s",
@@ -121,8 +133,18 @@ async def lifespan(app: FastAPI):
         from boardman.github.qa_contribution_profile import warm_qa_profiles_loop
 
         warmer_task = asyncio.create_task(warm_qa_profiles_loop(), name="qa-profile-warmer")
+
+    # The board schema and the team roster are the same for every question, so the first
+    # person to ask one should not be the one who waits for them.
+    import asyncio as _asyncio
+
+    from boardman.agent.warmup import warm_agent_caches
+
+    agent_warm_task = _asyncio.create_task(warm_agent_caches(), name="agent-cache-warmer")
     yield
 
+    if not agent_warm_task.done():
+        agent_warm_task.cancel()
     if warmer_task is not None:
         warmer_task.cancel()
     await stop_github_poller()
@@ -163,6 +185,7 @@ def create_app() -> FastAPI:
         app.include_router(plaky.router, prefix="/api/v1")
         app.include_router(agent.router, prefix="/api/v1")
         app.include_router(repos.router, prefix="/api/v1")
+        app.include_router(plans.router, prefix="/api/v1")
     else:
         _log.info(
             "Agent/UI API routes disabled (BOARDMAN_ENABLE_AGENT_API=false): worker-only mode"

@@ -26,12 +26,21 @@ from boardman.services.pr_task_linking import branch_issue_numbers, referenced_i
 
 
 def test_branch_numbers_keyword_and_leading_only() -> None:
+    """The prefixed forms, and nothing that merely starts with a number.
+
+    A bare leading number used to count here. It reads `feature/2-factor-auth` and
+    `release/2024-q1` as issues 2 and 2024, and in this path the cost is higher than a
+    missed link: an issue-reference overlap is worth +100 in the scorer, which clears the
+    auto-link threshold on its own and attaches the PR to a stranger's task. The hard-link
+    path dropped the same shape for the same reason, and this now defers to it.
+    """
     assert branch_issue_numbers("issue-42") == {42}
-    assert branch_issue_numbers("fix/42-sync") == {42}
-    assert branch_issue_numbers("feature/42-bugfix") == {42}
-    assert branch_issue_numbers("42-add-tests") == {42}
+    assert branch_issue_numbers("fix/issue-42-sync") == {42}
     assert branch_issue_numbers("gh-123/cleanup") == {123}
     assert branch_issue_numbers("refs/heads/bug_7") == {7}
+    # A number with nothing saying it is an issue number:
+    assert branch_issue_numbers("feature/42-bugfix") == set()
+    assert branch_issue_numbers("42-add-tests") == set()
     # The false positives that used to auto-link PRs to unrelated tasks:
     assert branch_issue_numbers("upgrade-node-20") == set()
     assert branch_issue_numbers("migrate-py-311") == set()
@@ -172,7 +181,10 @@ def _pr_payload(
 async def test_pr_edited_reruns_pipeline_only_when_unlinked(db_session, monkeypatch) -> None:
     opened_calls: list[int] = []
 
-    async def fake_opened(payload: Any, session: Any) -> dict:
+    async def fake_opened(payload: Any, session: Any, *, is_replay: bool = False) -> dict:
+        # An edit is a replay: this PR was already open, and the pipeline runs its
+        # anti-regression guards for one.
+        assert is_replay is True, "an edited PR was replayed as brand new work"
         opened_calls.append(payload.pull_request.number)
         return {"ok": True, "reran": True}
 
@@ -584,7 +596,7 @@ def _wire_specialist_env(monkeypatch, *, is_bug: bool, picked=("481106", "ranked
     async def fake_resolve(bid, fallback):
         return "person-4"
 
-    async def fake_pick(repo_full):
+    async def fake_pick(repo_full, cfg=None, *, exclude_login="", qa_workload=None):
         return picked
 
     async def fake_update(task_id, inp):
@@ -708,7 +720,15 @@ async def test_orphan_pr_becomes_a_real_linked_task(db_session, monkeypatch) -> 
     qa_calls: list[str] = []
 
     async def fake_qa(
-        plaky, *, task_id, board_id, repo_full, pr_number, pr_author_login="", task_url=""
+        plaky,
+        *,
+        task_id,
+        board_id,
+        repo_full,
+        pr_number,
+        pr_author_login="",
+        task_url="",
+        session=None,
     ):
         qa_calls.append(task_id)
         return {"plaky_qa": {"id": "476634"}}
@@ -750,6 +770,107 @@ async def test_orphan_pr_becomes_a_real_linked_task(db_session, monkeypatch) -> 
     res2 = await ph._maybe_triage_ambiguous_pr(payload, db_session)
     assert res2.get("skipped") is True
     assert len(created) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_branch_name_does_not_claim_an_issue_nobody_referenced(
+    db_session, monkeypatch
+) -> None:
+    """A branch is a hint about which issue a PR is FOR. It is not a statement that the
+    PR's card should become that issue's card.
+
+    Claiming one writes an IssueTaskMap, and from then on every edit, comment, assignment
+    and close of that GitHub issue is mirrored onto this PR's card. `hotfix/issue-99` on a
+    repo where #99 is an unrelated open bug binds them permanently, and nobody wrote
+    anything connecting them. Explicit references only, which is the same rule
+    reconcile_pr_issue_links applies to relinking.
+    """
+    from boardman.database.models import IssueTaskMap, PullRequestTaskLink
+
+    class Amb:
+        enabled = True
+        triage_board_id = ""
+        triage_group_id = ""
+        assign_qa = False
+        title_template = "Triage: PR #{number} - {repo}"
+
+    class Cfg:
+        ambiguous_pr = Amb()
+        plaky_field_qa = "person-6"
+
+    class Routing:
+        plaky_board_id = "269028"
+        plaky_group_id = "933385"
+
+    async def fake_routing(*a: Any, **kw: Any):
+        return Routing()
+
+    created: list[Any] = []
+
+    async def fake_create(inp):
+        created.append(inp)
+        return {"ok": True, "task": {"id": "task-branch"}, "task_url": "https://plaky/x"}
+
+    async def fake_resolve(actor):
+        return "481106"
+
+    class FakePlaky:
+        async def add_comment(self, tid, body, **kw):
+            return {"ok": True}
+
+        # A branch-only PR now reaches the fuzzy pipeline, which searches the board for a
+        # task that already covers this work. Empty here: nothing matches, so the PR falls
+        # through to orphan triage, which is the case under test.
+        async def list_board_items(self, _board_id, **kw):
+            return {"ok": True, "items": []}
+
+        async def list_workspace_users(self, **kw):
+            return {"ok": True, "users": []}
+
+    monkeypatch.setattr(ph, "load_team_assignments", lambda: Cfg())
+    monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
+    monkeypatch.setattr("boardman.services.task_mutations.create_task_internal", fake_create)
+    monkeypatch.setattr(
+        "boardman.plaky.dynamic_qa_status.resolve_github_user_to_plaky_user_id", fake_resolve
+    )
+    monkeypatch.setattr(ph, "PlakyClient", FakePlaky)
+
+    def _payload(body: str, head_ref: str, number: int) -> PullRequestEventPayload:
+        return PullRequestEventPayload(
+            action="opened",
+            pull_request={
+                "number": number,
+                "title": "Restore the retry backoff",
+                "body": body,
+                "html_url": f"https://github.com/o/r/pull/{number}",
+                "state": "open",
+                "merged": False,
+                "draft": False,
+                "user": {"login": "Blasted-ctrl"},
+                "head": {"ref": head_ref},
+                "labels": [],
+            },
+            repository={"full_name": "Team-Deepiri/deepiri-boardman", "name": "deepiri-boardman"},
+        )
+
+    res = await ph.handle_pr_opened(
+        _payload("No issue reference.", "hotfix/issue-99", 91), db_session
+    )
+    assert res.get("created_from_pr") is True, res
+
+    links = (await db_session.execute(select(PullRequestTaskLink))).scalars().all()
+    assert [(x.github_pr_number, x.plaky_task_id) for x in links] == [(91, "task-branch")]
+    maps = (await db_session.execute(select(IssueTaskMap))).scalars().all()
+    assert (
+        maps == []
+    ), f"branch-derived #99 claimed an issue: {[(m.github_issue_number) for m in maps]}"
+
+    # Written down, it IS a claim -- that is the case this path exists for.
+    created.clear()
+    res2 = await ph.handle_pr_opened(_payload("Fixes #99", "hotfix/issue-99", 92), db_session)
+    assert res2.get("created_from_pr") is True, res2
+    claimed = (await db_session.execute(select(IssueTaskMap))).scalars().all()
+    assert [(m.github_issue_number, m.plaky_task_id) for m in claimed] == [(99, "task-branch")]
 
 
 @pytest.mark.asyncio
@@ -958,7 +1079,7 @@ async def test_reconcile_repairs_unmapped_issue_and_skips_healthy(db_session, mo
         return ["t-9"]
 
     monkeypatch.setattr(rc, "handle_issue_opened", fake_opened)
-    monkeypatch.setattr(rc, "handle_issue_labels_changed", fake_meta)
+    monkeypatch.setattr("boardman.services.issue_handler.handle_issue_edited", fake_meta)
     monkeypatch.setattr(rc, "distinct_task_ids_for_pr", linked)
 
     out = await rc.reconcile_repo("o/r", db_session)

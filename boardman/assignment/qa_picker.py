@@ -23,11 +23,13 @@ import logging
 import random
 import re
 from fnmatch import fnmatchcase
+from typing import NamedTuple
 
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, load_team_assignments
 from boardman.assignment.repo_rules import qa_tier_allows_repo
 from boardman.assignment.tier_classifier import classify_repo_tier
 from boardman.github.repo_metadata import fetch_repo_metadata
+from boardman.observability.degradation import log_unexpected
 from boardman.repos_config import get_routing
 from boardman.settings import settings
 
@@ -42,6 +44,91 @@ FIT_WEIGHT_TOKENS = 0.25  # cosine over repo-name/topic/description token bags
 FIT_BASE_SCORE = 0.15
 # Give the whole scoring step a deadline; on timeout fall back to legacy picking.
 FIT_SCORING_TIMEOUT_SECONDS = 45.0
+
+
+class FitDetail(NamedTuple):
+    direct: float
+    lang: float
+    tokens: float
+    top_repos: list[str]
+
+
+_NO_FIT_DETAIL = FitDetail(0, 0, 0, [])
+
+
+def _confidence_pct(fit: float) -> int:
+    """Map fit score (0.0-1.0) to a readable confidence percentage."""
+    return min(97, max(20, round(20 + fit * 77)))
+
+
+def _strength_phrases(d: FitDetail) -> list[str]:
+    """Short human-readable phrases for a candidate's fit dimensions."""
+    phrases: list[str] = []
+    if d.direct >= 0.5:
+        phrases.append("active contributor to this repo")
+    elif d.direct > 0.1:
+        phrases.append("direct experience with this repo")
+    if d.lang >= 0.6:
+        phrases.append("strong language match")
+    elif d.lang >= 0.25:
+        phrases.append("some language overlap")
+    if d.tokens >= 0.4:
+        phrases.append("works on closely related projects")
+    elif d.tokens >= 0.15:
+        phrases.append("works on similar projects")
+    return phrases or ["available team member"]
+
+
+def humanize_fit_reason(
+    name: str,
+    role: str,
+    detail: FitDetail,
+    fit: float,
+    runners_up: list[str],
+) -> str:
+    """Build a natural-language paragraph explaining why *name* was chosen."""
+    confidence = _confidence_pct(fit)
+
+    strengths: list[str] = []
+    if detail.direct >= 0.5:
+        strengths.append("they're an active contributor to this repository")
+    elif detail.direct > 0.1:
+        strengths.append("they have direct experience with this repository")
+    elif detail.direct > 0:
+        strengths.append("they have some familiarity with this repository")
+    if detail.lang >= 0.6:
+        strengths.append(
+            "they work extensively with the same languages this project uses"
+        )
+    elif detail.lang >= 0.25:
+        strengths.append("they have experience with the languages used here")
+    if detail.tokens >= 0.4:
+        strengths.append(
+            "they've worked on closely related projects in the organization"
+        )
+    elif detail.tokens >= 0.15:
+        strengths.append(
+            "they've worked on similar projects in the organization"
+        )
+    if not strengths:
+        strengths.append("they're the best available match on the team right now")
+
+    if len(strengths) == 1:
+        body = strengths[0]
+    elif len(strengths) == 2:
+        body = f"{strengths[0]} and {strengths[1]}"
+    else:
+        body = ", ".join(strengths[:-1]) + f", and {strengths[-1]}"
+
+    para = f"We picked {name} as {role} because {body}."
+    if detail.top_repos:
+        repos = " and ".join(detail.top_repos[:2])
+        para += f" Their recent org work includes {repos}."
+    if runners_up:
+        ru = " and ".join(runners_up[:2])
+        para += f" Other strong candidates: {ru}."
+    para += f" Confidence: {confidence}%"
+    return para
 
 
 async def _auto_classify_repo_tier(full_name: str) -> int:
@@ -190,7 +277,7 @@ def _weighted_choice(members: list[TeamMember], cfg: TeamAssignmentsConfig) -> T
 
 async def _github_fit_scores(
     candidates: list[TeamMember], full_name: str
-) -> dict[str, tuple[float, str]] | None:
+) -> dict[str, tuple[float, FitDetail]] | None:
     """member.id -> (fit 0..1, detail) from GitHub contribution profiles vs the target repo.
 
     Returns None when the target repo info or every member profile is unavailable
@@ -246,13 +333,17 @@ async def _github_fit_scores(
                 + FIT_WEIGHT_LANGUAGE * lang_cos
                 + FIT_WEIGHT_TOKENS * tok_cos
             )
-            top = ", ".join(profile.top_repos(2)) or "no org PRs"
-            detail = f"direct={direct:.2f} lang={lang_cos:.2f} tokens={tok_cos:.2f} top:[{top}]"
+            detail = FitDetail(
+                direct=direct,
+                lang=lang_cos,
+                tokens=tok_cos,
+                top_repos=profile.top_repos(2),
+            )
             return m.id, (fit, detail)
 
         results = await asyncio.gather(*(_one(m) for m in candidates), return_exceptions=True)
 
-    out: dict[str, tuple[float, str]] = {}
+    out: dict[str, tuple[float, FitDetail]] = {}
     for res in results:
         if isinstance(res, BaseException):
             continue
@@ -263,13 +354,16 @@ async def _github_fit_scores(
 
 
 def _ranked_choice(
-    qas: list[TeamMember], cfg: TeamAssignmentsConfig, fits: dict[str, tuple[float, str]]
+    qas: list[TeamMember],
+    cfg: TeamAssignmentsConfig,
+    fits: dict[str, tuple[float, FitDetail]],
+    role: str = "reviewer",
 ) -> tuple[TeamMember | None, str]:
-    """Rank by (base + fit) * weight * hardware bias * jitter; return winner + ranking text."""
+    """Rank by (base + fit) * weight * hardware bias * jitter; return winner + humanized reason."""
     jitter = cfg.random_jitter
-    rows: list[tuple[float, TeamMember, str]] = []
+    rows: list[tuple[float, TeamMember, FitDetail]] = []
     for m in qas:
-        fit, detail = fits.get(m.id, (0.0, "no GitHub profile"))
+        fit, detail = fits.get(m.id, (0.0, _NO_FIT_DETAIL))
         score = (FIT_BASE_SCORE + fit) * max(0.05, m.weight) * _tier_bias(cfg, m.tier)
         if jitter > 0:
             score *= 1.0 + random.uniform(-jitter, jitter)
@@ -277,17 +371,38 @@ def _ranked_choice(
     rows.sort(key=lambda r: (-r[0], -(r[1].weight), r[1].display))
     if not rows:
         return None, ""
-    ranking = " > ".join(f"{m.display}:{s:.3f}" for s, m, _ in rows[:4])
-    _, winner, detail = rows[0]
-    return winner, f"fit[{detail}] ranking[{ranking}]"
+    _log.info(
+        "ranked_choice: %s",
+        " > ".join(f"{m.display}:{s:.3f}" for s, m, _ in rows[:4]),
+    )
+    _, winner, winner_detail = rows[0]
+    winner_fit = fits.get(winner.id, (0.0, _NO_FIT_DETAIL))[0]
+    runners_up = [m.display for _, m, _ in rows[1:4]]
+    return winner, humanize_fit_reason(winner.display, role, winner_detail, winner_fit, runners_up)
 
 
 async def pick_qa_for_repo(
-    full_name: str, cfg: TeamAssignmentsConfig | None = None
+    full_name: str,
+    cfg: TeamAssignmentsConfig | None = None,
+    *,
+    exclude_login: str = "",
+    qa_workload: dict[str, int] | None = None,
 ) -> tuple[str | None, str]:
     """
     Returns (plaky_person_id_or_value, reason_summary).
     Uses tier from repos.yml, or auto-classifies if not found.
+
+    ``qa_workload`` is {plaky_person_id: active_pr_count}. When provided, candidates
+    at or above ``settings.qa_max_active_prs`` are deferred. If every candidate is
+    at cap, the one with the fewest active PRs is chosen anyway.
+
+    ``exclude_login`` removes one GitHub login from the pool — the PR author. Nobody
+    reviews their own pull request, and assigning them is worse than useless: GitHub
+    refuses a self review, so the review request is skipped, the "@you are QA" comment
+    names the author, and the rejection path (the one branch that IS gated on the
+    assigned QA) becomes unreachable, so a real reviewer's "request changes" is
+    ignored. If excluding the author empties the pool, QA is left unassigned with a
+    reason rather than filled with a reviewer who cannot review.
     """
     cfg = cfg or load_team_assignments()
     fn = (full_name or "").strip()
@@ -331,6 +446,18 @@ async def pick_qa_for_repo(
         if not with_qa_role:
             return (None, "all QA-role members are on the qa_excluded list")
 
+    author = (exclude_login or "").strip().casefold()
+    if author:
+        with_qa_role = [
+            m for m in with_qa_role if (m.github_login or "").strip().casefold() != author
+        ]
+        if not with_qa_role:
+            return (
+                None,
+                f"the only eligible QA is the PR author ({exclude_login}); "
+                "nobody reviews their own pull request",
+            )
+
     qas = [m for m in with_qa_role if repo_matches_member(fn, m)]
     if not qas:
         return (
@@ -367,8 +494,31 @@ async def pick_qa_for_repo(
                 "heavy repo: no QA after legacy hardware tier filter (light/minimal/low dropped)",
             )
 
+    # Workload cap: prefer QAs below the active-PR limit. If every candidate is at cap,
+    # fall back to the one with the fewest active PRs rather than leaving QA unassigned.
+    workload = qa_workload or {}
+    cap = max(1, int(settings.qa_max_active_prs))
+    all_qas_before_cap = list(qas)
+    if workload:
+        from boardman.observability.counters import bump
+
+        available = [m for m in qas if workload.get(m.id, 0) < cap]
+        if available:
+            qas = available
+            bump("qa.workload_cap.had_capacity")
+        else:
+            bump("qa.workload_cap.all_at_cap")
+            qas = sorted(all_qas_before_cap, key=lambda m: workload.get(m.id, 0))
+            _log.info(
+                "qa_picker: all %d candidates at cap (%d); falling back to least-loaded (%s, %d active)",
+                len(all_qas_before_cap),
+                cap,
+                qas[0].display if qas else "?",
+                workload.get(qas[0].id, 0) if qas else 0,
+            )
+
     # GitHub-fit scored ranking; legacy overlap-pool weighted-random as the fallback.
-    fits: dict[str, tuple[float, str]] | None = None
+    fits: dict[str, tuple[float, FitDetail]] | None = None
     try:
         fits = await asyncio.wait_for(
             _github_fit_scores(qas, fn),
@@ -379,14 +529,16 @@ async def pick_qa_for_repo(
         )
     except Exception as e:  # noqa: BLE001 — never block assignment on scoring (incl. timeout)
         _log.warning("qa_picker: GitHub fit scoring unavailable for %s: %s", fn, e)
+        log_unexpected(_log, f"pick_qa_for_repo: _github_fit_scores({fn})", e)
 
     if fits:
-        chosen, rank_detail = _ranked_choice(qas, cfg, fits)
+        chosen, reason = _ranked_choice(qas, cfg, fits, role="QA reviewer")
         if chosen:
-            return (
-                chosen.id,
-                f"qa={chosen.display} repo_tier={repo_tier} candidates={len(qas)} {rank_detail}",
+            _log.info(
+                "pick_qa: %s repo_tier=%d candidates=%d",
+                chosen.display, repo_tier, len(qas),
             )
+            return chosen.id, reason
 
     pool = _overlap_component(qas)
     chosen = _weighted_choice(pool, cfg)
@@ -394,7 +546,8 @@ async def pick_qa_for_repo(
         return None, "weighted pick failed"
     return (
         chosen.id,
-        f"qa={chosen.display} pool_size={len(pool)} repo_tier={repo_tier} (legacy weighted pick; GitHub fit unavailable)",
+        f"We assigned {chosen.display} as QA reviewer based on team availability. "
+        "Detailed scoring was not available for this pick. Confidence: 20%",
     )
 
 

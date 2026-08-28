@@ -9,8 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import httpx
-
+from boardman.github.http import shared_github_client
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -20,8 +19,8 @@ _SCOPE_HINT = (
     "QA was still assigned in Plaky, but the GitHub @mention/reviewer request was skipped."
 )
 _NOT_FOUND_HINT = (
-    "target not found on GitHub (the PR/issue number does not exist in this repo) — "
-    "QA was still assigned in Plaky."
+    "target not found on GitHub (the PR/issue number does not exist in this repo). "
+    "If it does exist, check that the PAT has read access. QA was still assigned in Plaky."
 )
 
 
@@ -59,10 +58,18 @@ async def comment_on_pr(full_name: str, pr_number: int, body: str) -> dict[str, 
         return {"ok": False, "skipped": True, "message": "GITHUB_PAT not configured"}
     url = f"https://api.github.com/repos/{full_name}/issues/{pr_number}/comments"
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(url, headers=_headers(), json={"body": with_marker(body)})
+        async with shared_github_client() as client:
+            # follow_redirects=False for a WRITE. The shared pool follows them, and httpx
+            # turns a redirected POST into a bodyless GET -- so after a repo rename this
+            # fetched the comment list, got 200, and reported a comment it never posted.
+            r = await client.post(
+                url,
+                headers=_headers(),
+                json={"body": with_marker(body)},
+                follow_redirects=False,
+            )
     except Exception as e:  # noqa: BLE001 — network failure must not break the webhook
-        _log.warning("pr comment on %s#%s failed: %s", full_name, pr_number, e)
+        _log.warning("pr comment on %s#%s failed: %s", full_name, pr_number, e, exc_info=True)
         return {"ok": False, "message": str(e)}
     if r.status_code in (401, 403, 404):
         hint = _failure_hint(r.status_code)
@@ -82,10 +89,13 @@ async def request_reviewers(full_name: str, pr_number: int, logins: list[str]) -
         return {"ok": False, "skipped": True, "message": "GITHUB_PAT not configured"}
     url = f"https://api.github.com/repos/{full_name}/pulls/{pr_number}/requested_reviewers"
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            r = await client.post(url, headers=_headers(), json={"reviewers": logins})
-    except Exception as e:  # noqa: BLE001
-        _log.warning("reviewer request on %s#%s failed: %s", full_name, pr_number, e)
+        async with shared_github_client() as client:
+            # See `comment_on_pr`: a redirected POST silently becomes a GET.
+            r = await client.post(
+                url, headers=_headers(), json={"reviewers": logins}, follow_redirects=False
+            )
+    except Exception as e:  # noqa: BLE001 — network failure must not break the webhook
+        _log.warning("reviewer request on %s#%s failed: %s", full_name, pr_number, e, exc_info=True)
         return {"ok": False, "message": str(e)}
     if r.status_code in (401, 403, 404):
         hint = _failure_hint(r.status_code)

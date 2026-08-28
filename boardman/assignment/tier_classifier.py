@@ -18,6 +18,8 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
+from boardman.observability.degradation import log_unexpected
+
 _log = logging.getLogger(__name__)
 
 Tier = Literal[1, 2, 3]
@@ -150,8 +152,9 @@ def _load() -> tuple[dict[str, float], dict[str, float]]:
             _cache["percentiles"].get("p80", 0),
         )
         return _cache["idf"], _cache["percentiles"]
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001 - observability failure must not affect the request
         _log.warning("Failed to load repo_signals.json: %s — defaulting to tier 2", exc)
+        log_unexpected(_log, "tier_classifier._load: reading repo_signals.json", exc)
         return {}, {}
 
 

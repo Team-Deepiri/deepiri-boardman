@@ -1,5 +1,39 @@
+"""Pydantic-settings configuration (all env vars live here)."""
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# --- Analysis/context limits, defined once (Sorge review, PR #88) --------------------
+# These doubled as literals inside the modules that consume them ("or 16", "or 200"),
+# so a change here silently disagreed with the fallback there. They now live in exactly
+# one place: the Field default below *and* the module fallback both read these names.
+DEFAULT_LLM_CONTEXT_BUDGET_CHARS = 24_000
+DEFAULT_GITHUB_PR_MAX_FILES = 40
+DEFAULT_GITHUB_PR_MAX_BODY_CHARS = 4_000
+DEFAULT_GITHUB_CODE_SEARCH_MAX_FILES = 16
+DEFAULT_GITHUB_CODE_SEARCH_MAX_BYTES_PER_FILE = 120_000
+# Splitting open issues from open PRs costs one extra GitHub call per repo, so only the
+# head of the activity ranking pays it. 8 covers the repos anyone actually asks about.
+DEFAULT_GITHUB_ORG_ACTIVITY_SPLIT_TOP_N = 8
+# 200 repo names is ~1.7KB of system prompt. Large orgs truncate with a visible note.
+DEFAULT_AGENT_ORG_ROSTER_MAX_NAMES = 200
+# Above this many characters a reply is substantive even if it contains "let me check",
+# so the unfulfilled-preamble guard stops looking. See boardman/agent/runner.py.
+DEFAULT_AGENT_PREAMBLE_MAX_CHARS = 600
+
+
+def positive_or_default(raw: object, default: int) -> int:
+    """Read a limit that slices a list or a string.
+
+    Anything <= 0 (or unparseable) means "unset" and yields `default`. A negative would
+    otherwise reach the wrong end of the sequence -- `names[:-1]` silently drops a real
+    repo while the caller still reports the list as complete.
+    """
+    try:
+        n = int(raw)  # type: ignore[call-overload]  # any object; TypeError is handled
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
 
 
 class Settings(BaseSettings):
@@ -55,13 +89,36 @@ class Settings(BaseSettings):
     plaky_board_schema_cache_ttl_seconds: float = 90.0
     # Read-only GitHub repo context reuse between questions. 0 disables the cache.
     github_read_cache_ttl_seconds: float = 300.0
+    # Persistent planning-context snapshot TTL. The in-process GitHub cache is shorter;
+    # this survives API/worker restarts without turning ProjectContext into a raw repo dump.
+    agent_repo_context_cache_ttl_seconds: float = 900.0
+    # Keep a stale snapshot available as a graceful fallback when GitHub is unavailable.
+    agent_repo_context_stale_if_error_seconds: float = 86_400.0
+    # Periodic knowledge sweep (worker-owned). This is a RECONCILIATION net for what the
+    # webhooks missed, not a rescan: each cycle costs one cheap metadata call per repo and
+    # only refetches a repo whose `pushed_at` moved since its snapshot was built.
+    repo_knowledge_sweep_enabled: bool = True
+    repo_knowledge_sweep_interval_seconds: float = 600.0
+    # Bounded so one slow or broken repo cannot hold up the fleet.
+    repo_knowledge_sweep_concurrency: int = 3
+    repo_knowledge_sweep_max_repos: int = 25
     # Tunable analysis limits (Sorge review, PR #81): context budget for the repo
     # planning payload, PR review file cap, and code-search scope.
-    llm_context_budget_chars: int = 24000
-    github_pr_max_files: int = 40
-    github_pr_max_body_chars: int = 4000
-    github_code_search_max_files: int = 16
-    github_code_search_max_bytes_per_file: int = 120_000
+    llm_context_budget_chars: int = DEFAULT_LLM_CONTEXT_BUDGET_CHARS
+    github_pr_max_files: int = DEFAULT_GITHUB_PR_MAX_FILES
+    github_pr_max_body_chars: int = DEFAULT_GITHUB_PR_MAX_BODY_CHARS
+    github_code_search_max_files: int = DEFAULT_GITHUB_CODE_SEARCH_MAX_FILES
+    github_code_search_max_bytes_per_file: int = DEFAULT_GITHUB_CODE_SEARCH_MAX_BYTES_PER_FILE
+    # How many of the busiest repos get their open issues split from their open PRs.
+    # 0 means "make no extra calls"; a negative value asks for the default.
+    github_org_activity_split_top_n: int = DEFAULT_GITHUB_ORG_ACTIVITY_SPLIT_TOP_N
+    # Extra committed-artifact detections for repo hotspots, beyond the built-in list in
+    # boardman/github/repo_hotspots.py. Format: "filename_suffix:why it matters",
+    # SEMICOLON-separated, because reasons are prose and prose contains commas. A marker
+    # is a filename ENDING of at least 3 characters (endswith, not substring). e.g.
+    # "id_ed25519:private SSH key tracked in git;.tfstate:terraform state, with secrets".
+    # Lets a deployment add a new sensitive file type without a code change.
+    github_extra_artifact_rules: str = ""
     # QA GitHub-fit scoring knobs (see assignment/qa_picker.py for semantics).
     qa_fit_weight_direct: float = 0.0  # 0 = use the module default
     qa_fit_scoring_timeout_seconds: float = 0.0  # 0 = use the module default
@@ -80,6 +137,8 @@ class Settings(BaseSettings):
     # ONLY while this process runs. History from before startup is never replayed. Set false
     # in production, where real GitHub webhooks deliver events instead.
     testing_live_plaky: bool = False
+    # Comma-separated owner/repo list, or "all"/"*" to watch every non-archived repo in
+    # github_org that resolves to a Plaky board (github_poller.resolve_poller_repos).
     testing_live_plaky_repos: str = "Team-Deepiri/deepiri-boardman"
     testing_live_plaky_poll_seconds: float = 60.0
     # On startup the poller baselines existing events (no pre-start history replay). To avoid a
@@ -89,6 +148,17 @@ class Settings(BaseSettings):
     testing_live_plaky_catchup_minutes: float = 45.0
 
     github_webhook_secret: str = ""
+    # Production webhooks should acknowledge quickly and let boardman-worker run the
+    # Plaky mutation.  Kept opt-in for local/dev callers that intentionally exercise
+    # handlers inline without a worker.
+    github_webhook_async_enabled: bool = False
+    github_webhook_job_retries: int = 2
+    github_reconcile_enabled: bool = False
+    # The reconciliation sweep is a safety net for deliveries the webhook missed, not a
+    # poller. Every cycle costs GitHub calls per registered repo, on the same rate limit
+    # the agent's own tools spend. Lower it in .env for a local test, not here.
+    github_reconcile_interval_seconds: float = 900.0
+    github_reconcile_max_items: int = 50
     github_pat: str | None = None
     github_org: str = "deepiri-org"
     # Prepended to bare repo slugs (no "owner/") for QA roster + create-task; e.g. Team-Deepiri/foo.
@@ -112,6 +182,7 @@ class Settings(BaseSettings):
     # QA pick ranking from GitHub contribution profiles (cosine similarity vs the target
     # repo). False = legacy overlap-pool weighted-random pick only.
     qa_github_fit_enabled: bool = True
+    qa_max_active_prs: int = 5
 
     database_url: str = "sqlite+aiosqlite:///./boardman.db"
 
@@ -163,7 +234,15 @@ class Settings(BaseSettings):
     agent_recursion_limit: int = 0
     # When True, LangChain AgentExecutor prints step traces (noisy; dev only)
     agent_langchain_verbose: bool = False
-    prompt_version: str = "2026-04-09"
+    # Repo names injected into every system prompt (see boardman/agent/org_roster.py).
+    agent_org_roster_max_names: int = DEFAULT_AGENT_ORG_ROSTER_MAX_NAMES
+    # Length ceiling for the unfulfilled-preamble guard (boardman/agent/runner.py). Raise
+    # it if a model starts shipping longer bare promises; lower it if real short answers
+    # are being retried. 0 = use DEFAULT_AGENT_PREAMBLE_MAX_CHARS.
+    agent_preamble_max_chars: int = DEFAULT_AGENT_PREAMBLE_MAX_CHARS
+    # Bumped when the system prompt changes shape, so sessions are never compared across
+    # prompt generations. 2026-08-20: structured project state became the default context.
+    prompt_version: str = "2026-08-20"
 
     cors_origins: str = (
         "http://localhost:5176,http://127.0.0.1:5176,"
@@ -217,6 +296,21 @@ class Settings(BaseSettings):
             "AGENT_RATE_LIMIT_USE_REDIS",
         ),
     )
+
+    # Meeting plans (`boardman plan weekly|custom`) — ported from deepiri-huddle
+    planning_team_repos_file: str = "team_repos.json"
+    planning_team_plaky_boards_file: str = "team_plaky_boards.json"
+    planning_github_lookback_days: int = 14
+    planning_plaky_lookback_days: int = 14
+    planning_plaky_highlight_statuses: str = (
+        "in progress,needs qa,in qa,blocked,ready for review"
+    )
+    planning_github_skip_bots: bool = True
+    planning_llm_timeout_seconds: float = 120.0
+    planning_output_dir: str = "plans"
+    planning_sync_lookback_days: int = 7
+    planning_direction_cache_hours: int = 24
+    planning_direction_excerpt_chars: int = 500
 
 
 settings = Settings()
