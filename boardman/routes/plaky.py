@@ -2,13 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 from fastapi import APIRouter
 
+from boardman.llm.ollama_autodetect import NoOllamaModelAvailable
+from boardman.observability.degradation import log_degraded
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.name_match import rank_plaky_rows
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -41,17 +47,32 @@ async def list_llm_models() -> dict:
                                     "details": m.get("details", {}),
                                 }
                             )
-                    # Get current model
+                    # Current model. Ollama is up and we already have its list, so a
+                    # "nothing pulled yet" answer here (the name cache can lag /api/tags
+                    # by up to its TTL) must not cost the caller the models it just read.
                     from boardman.llm.ollama_autodetect import effective_ollama_model
 
-                    current = effective_ollama_model(None)
+                    try:
+                        current = effective_ollama_model(None)
+                    except NoOllamaModelAvailable as exc:
+                        _log.debug("no Ollama model resolved yet: %s", exc)
+                        current = None
                     return {
                         "ok": True,
                         "provider": "ollama",
                         "models": model_list,
                         "current": current,
                     }
-        except Exception:
+                # Ollama answered, but not with a model list. Say so: falling through to
+                # the non-Ollama return below would report ok:true with zero models.
+                return {
+                    "ok": False,
+                    "provider": "ollama",
+                    "models": [],
+                    "error": f"Ollama returned HTTP {r.status_code} for /api/tags.",
+                }
+        except Exception:  # noqa: BLE001 - LLM failure is handled by the caller
+            log_degraded(_log, "list_llm_models: AsyncClient")
             return {
                 "ok": False,
                 "provider": "ollama",

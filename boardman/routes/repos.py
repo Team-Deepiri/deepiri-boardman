@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from boardman.assignment.tier_classifier import classify_repo_tier, classify_repos_tier
 from boardman.github.repo_metadata import fetch_repo_metadata, fetch_repos_metadata
+from boardman.observability.degradation import log_degraded
 from boardman.repos_config import _load_raw, routing_yaml_candidate_map_keys, update_repo_tiers
 from boardman.settings import settings
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/repos", tags=["repos"])
 
@@ -48,7 +53,8 @@ async def classify_all_repos() -> ClassifyReposResponse:
             classified=len(tier_map),
             results=tier_map,
         )
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - GitHub API failure degrades gracefully
+        logger.warning("repo classification failed: %s", e, exc_info=True)
         return ClassifyReposResponse(ok=False, error=str(e))
     finally:
         await client.aclose()
@@ -103,7 +109,8 @@ async def get_repo_tier(full_name: str) -> SingleRepoResponse:
                     else None
                 ),
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - GitHub API failure degrades gracefully
+            log_degraded(logger, "get_repo_tier: fetch_repo_metadata")
             return SingleRepoResponse(full_name=full_name, tier=2)
         finally:
             await client.aclose()
@@ -133,7 +140,8 @@ async def list_org_repositories() -> OrgReposResponse:
             skip_archived=settings.github_skip_archived,
         )
         return OrgReposResponse(ok=True, repos=names)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - GitHub API failure degrades gracefully
+        log_degraded(logger, "list_org_repositories: fetch_org_repository_full_names")
         return OrgReposResponse(ok=False, repos=[], message=str(e))
     finally:
         await client.aclose()

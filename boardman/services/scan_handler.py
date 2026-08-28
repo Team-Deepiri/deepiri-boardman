@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import logging
 from datetime import datetime
 from typing import Any
 
-import httpx
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from boardman.agent.repo_context import merge_planning_snapshot
 from boardman.agent.task_draft import normalize_task_title
 from boardman.assignment.qa_picker import build_assignment_field_map
 from boardman.database.models import ProjectContext, ScanRun
+from boardman.github.http import shared_github_client
 from boardman.github.repo_fetch import (
     fetch_direction_md,
     fetch_open_issues,
@@ -20,10 +23,13 @@ from boardman.github.repo_fetch import (
 )
 from boardman.llm.completion import chat_complete, parse_json_tasks
 from boardman.llm.ollama_autodetect import effective_ollama_model
+from boardman.observability.degradation import log_degraded
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing_async
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
 
 
 def _normalize_task_fields(raw: Any) -> dict[str, Any]:
@@ -149,6 +155,37 @@ Rules:
 """
 
 
+def _scan_source(value: Any, fallback: str) -> str:
+    if isinstance(value, str) and value.strip():
+        return value
+    if isinstance(value, BaseException):
+        return f"({fallback}: {type(value).__name__})"
+    return fallback
+
+
+async def _fetch_scan_context(
+    repo_full: str,
+    owner: str,
+    repo: str,
+    short: str,
+) -> tuple[str, str, str, str]:
+    """Fetch independent scan inputs concurrently and degrade per source."""
+    async with shared_github_client() as client:
+        values = await asyncio.gather(
+            fetch_direction_md(client, owner, repo),
+            fetch_recent_commits(client, owner, repo),
+            fetch_open_issues(client, owner, repo),
+            fetch_plaky_titles_for_repo(repo_full, short),
+            return_exceptions=True,
+        )
+    return (
+        _scan_source(values[0], "DIRECTION.md unavailable"),
+        _scan_source(values[1], "commits unavailable"),
+        _scan_source(values[2], "issues unavailable"),
+        _scan_source(values[3], "Plaky unavailable"),
+    )
+
+
 async def run_repo_scan(
     session: AsyncSession,
     repo_full: str,
@@ -179,7 +216,8 @@ async def run_repo_scan(
         if prov == "anthropic":
             mdl = mdl or "claude-sonnet-4-20250514"
         elif prov in ("openai", "gpt"):
-            mdl = mdl or "gpt-4o-mini"
+            # gpt-4.1 is a real OpenAI model (released April 2025), not a typo for gpt-4-turbo.
+            mdl = mdl or "gpt-4.1"
         elif prov in ("gemini", "google"):
             mdl = mdl or "gemini-2.0-flash"
 
@@ -194,11 +232,9 @@ async def run_repo_scan(
     await session.flush()
 
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
-            direction = await fetch_direction_md(client, owner, repo)
-            commits = await fetch_recent_commits(client, owner, repo)
-            issues = await fetch_open_issues(client, owner, repo)
-            plaky_lines = await fetch_plaky_titles_for_repo(repo_full, short)
+        direction, commits, issues, plaky_lines = await _fetch_scan_context(
+            repo_full, owner, repo, short
+        )
 
         prompt = _scan_prompt(
             repo_full,
@@ -302,19 +338,45 @@ async def run_repo_scan(
         goals = json.dumps(
             {"last_scan_id": scan_row.id, "tasks_parsed": len(tasks), "tasks_created": created}
         )
+        context_fetched_at = datetime.utcnow()
+        # Only the four things the scan actually read. `structure`, the README and the
+        # code signals are deliberately absent: merge_planning_snapshot keeps whatever the
+        # full planning fetch stored for them rather than letting a scan blank them out.
+        scanned = {
+            "ok": True,
+            "repo": repo_full,
+            "DIRECTION_md": direction[:8000],
+            "recent_commits_markdown": commits[:3000],
+            "open_issues_markdown": issues[:3000],
+            "plaky_tasks_markdown": plaky_lines[:3000],
+            "routing": {
+                "category": str(routing.category or "") if routing else "",
+                "table": str(routing.plaky_table or "") if routing else "",
+                "board_id": str(routing.plaky_board_id or "") if routing else "",
+                "group_id": str(routing.plaky_group_id or "") if routing else "",
+            },
+            "retrieval": {"layers": ["direction", "activity", "plaky"]},
+        }
+        context_snapshot = merge_planning_snapshot(
+            pc.context_json if pc is not None else None, scanned
+        )
         if pc is None:
             session.add(
                 ProjectContext(
                     repo=repo_full,
                     summary=summary,
                     goals_json=goals,
-                    last_scanned=datetime.utcnow(),
+                    last_scanned=context_fetched_at,
+                    context_json=json.dumps(context_snapshot, ensure_ascii=False),
+                    context_fetched_at=context_fetched_at,
                 )
             )
         else:
             pc.summary = summary
             pc.goals_json = goals
-            pc.last_scanned = datetime.utcnow()
+            pc.last_scanned = context_fetched_at
+            pc.context_json = json.dumps(context_snapshot, ensure_ascii=False)
+            pc.context_fetched_at = context_fetched_at
         await session.flush()
 
         cap = tasks[:30] if isinstance(tasks, list) else []
@@ -327,7 +389,8 @@ async def run_repo_scan(
             "scan_id": scan_row.id,
             "warnings": parse_warnings + routing_warnings,
         }
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - graceful degradation
+        log_degraded(_log, f"run_repo_scan({repo_full}): fetch, draft and file tasks", e)
         scan_row.error = str(e)[:2000]
         await session.flush()
         return {"ok": False, "message": str(e), "scan_id": scan_row.id}

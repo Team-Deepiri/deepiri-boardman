@@ -82,5 +82,8 @@ async def test_assignment_sync_field_keys_route(monkeypatch):
 def test_import_tools():
     from boardman.agent.tools import build_all_tools
 
-    assert len(build_all_tools(allow_writes=False)) == 20
-    assert len(build_all_tools(allow_writes=True)) == 26
+    # Base counts + code-reading tools (search/scan) + PR-reading tools (list/read),
+    # so a merge judgement rests on the PR itself rather than the repo around it, plus
+    # github_org_activity for "which repos are busiest", plus the meeting-plan tool.
+    assert len(build_all_tools(allow_writes=False)) == 26
+    assert len(build_all_tools(allow_writes=True)) == 34

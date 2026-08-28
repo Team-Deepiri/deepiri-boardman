@@ -1,7 +1,7 @@
 # deepiri-boardman — agent context
 
 > Machine-oriented project brief. Humans: see [README.md](README.md) and [docs/](docs/).
-> Last verified: 2026-06-05 (PLAN, AGENT_PLAN, NEW_FEATURES, SETUP, DIRECTION reconciled)
+> Last verified: 2026-08-20 (Boardman Brain: layered project state, event-driven cache invalidation, deterministic intent router, worker knowledge sweep, and /api/v1/metrics)
 
 ## Purpose
 
@@ -25,6 +25,7 @@ GitHub ↔ Plaky sync automation with an AI layer: webhook-driven task/comment/s
 | [docs/BOARDMAN_READINESS.md](docs/BOARDMAN_READINESS.md) | `boardman readiness`, Plaky inventory, go-live gates |
 | [docs/BOARDMAN_SUPPORT_SESSION.md](docs/BOARDMAN_SUPPORT_SESSION.md) | Support-session checklist, pass/fail signals |
 | [docs/AGENT_PLAN.md](docs/AGENT_PLAN.md) | Agent module layout, tools, memory (supplement to PLAN.md) |
+| [docs/BOARDMAN_BRAIN.md](docs/BOARDMAN_BRAIN.md) | How the assistant knows things: L0-L3 layers, event invalidation, the deterministic router, the knowledge sweep, and the measured effect |
 | [docs/AGENTS_MAINTENANCE.md](docs/AGENTS_MAINTENANCE.md) | **Required** — when agents must update docs after code changes |
 | [docs/NEW_FEATURES_PLAN.md](docs/NEW_FEATURES_PLAN.md) | Feature backlog with Done/Partial/Planned status per item |
 | [docs/ADDITIONAL_FEATURES.md](docs/ADDITIONAL_FEATURES.md) | **Future** ideas: alternate kanban providers, local bidirectional UI |
@@ -46,7 +47,7 @@ GitHub ↔ Plaky sync automation with an AI layer: webhook-driven task/comment/s
 | [pyproject.toml](pyproject.toml) + `poetry.lock` | Poetry deps; CLI entry `boardman` |
 | [docker-compose.yml](docker-compose.yml) | Dev stack (+ optional Ollama) |
 | [docker-compose.prod.yml](docker-compose.prod.yml) | Production cloud stack (no Ollama) |
-| [alembic/versions/](alembic/versions/) | DB migrations (001 initial → 004 webhook dedupe) |
+| [alembic/versions/](alembic/versions/) | DB migrations (001 initial → 006 mapping integrity) |
 
 ## Repo map
 
@@ -57,10 +58,10 @@ deepiri-boardman/
 │   ├── settings.py              # pydantic-settings (all env vars)
 │   ├── cli/commands.py          # Typer CLI
 │   ├── routes/                  # agent, tasks, github_events, plaky, repos, assignment, health
-│   ├── services/                # issue/pr/scan handlers, PR linking, task mutations
+│   ├── services/                # issue/pr/scan handlers, canonical sync, PR linking, mutations
 │   ├── plaky/                   # HTTP client, board schema, placement, inventory
 │   ├── github/                  # org repos, webhooks, QA roster, tier teams
-│   ├── agent/                   # LangChain runner, prompts, guardrails, memory
+│   ├── agent/                   # LangChain runner, prompts, guardrails, memory, context cache/resolution
 │   │   └── tools/               # plaky_tools, repo_tools, github_tools, assignment_tools
 │   ├── llm/                     # factory, completion, ollama_autodetect
 │   ├── assignment/              # QA picker, tier classifier, identity match
@@ -68,7 +69,7 @@ deepiri-boardman/
 │   ├── broker/, jobs/           # SQLite background job queue
 │   ├── cache/                   # Optional Redis agent cache
 │   ├── ratelimit/               # Leaky-bucket for agent endpoints
-│   └── sqlite_worker.py         # boardman-worker process
+│   └── sqlite_worker.py         # boardman-worker process + optional reconciliation loop
 ├── boardman-ui/                 # Vite + React agent chat
 ├── alembic/                     # DB migrations
 ├── tests/                       # pytest (unit + live markers)
@@ -139,7 +140,7 @@ flowchart LR
 | GET | `/api/v1/agent/jobs/{job_id}` | Async agent job status |
 | GET | `/api/v1/agent/sessions/{id}/history` | Session transcript |
 | DELETE | `/api/v1/agent/sessions/{id}` | Drop session |
-| POST | `/api/v1/agent/scan` | LLM scan from `DIRECTION.md` |
+| POST | `/api/v1/agent/scan` | LLM scan from `DIRECTION.md`; `queue: true` runs it on the worker |
 | POST | `/api/v1/agent/init-direction` | PR to add `DIRECTION.md` |
 | POST | `/api/v1/assignment/pick-qa` | QA assignment (worker auth) |
 | POST | `/api/v1/assignment/sync-field-keys` | Sync Plaky field keys |
@@ -149,6 +150,11 @@ flowchart LR
 | POST | `/api/v1/repos/classify` | Classify repo tiers |
 | GET | `/api/v1/plaky/boards`, `/groups`, `/schema`, … | Plaky discovery helpers |
 | GET | `/api/v1/llm/models` | Available LLM models |
+
+Webhook delivery processing is durable: production can acknowledge verified payloads with
+HTTP 202, enqueue `boardman_github_webhook_job`, and let the SQLite worker retry failed
+dispatches. `POST /api/v1/reconcile/{owner}/{repo}` is the bounded repair path for missed
+webhooks; the worker can run it periodically when `GITHUB_RECONCILE_ENABLED=true`.
 
 Full examples: [README.md](README.md).
 
@@ -180,9 +186,11 @@ Secrets in `.env` (never commit). Key groups:
 | Plaky | `PLAKY_API_KEY`, `PLAKY_API_BASE`, `PLAKY_PR_*_STATUS`, `PLAKY_QA_ITEM_FIELD_KEY` |
 | GitHub | `GITHUB_PAT`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_ORG`, `GITHUB_BARE_REPO_OWNER`, `GITHUB_SUPPORT_TEAM` |
 | LLM | `LLM_PROVIDER`, `LLM_MODEL`, `OLLAMA_BASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` |
-| Agent | `AGENT_MAX_HISTORY`, `AGENT_LANGCHAIN_TOOLS`, `AGENT_RECURSION_LIMIT`, `PROMPT_VERSION`, `AGENT_ASYNC_ENQUEUE_ENABLED` |
+| Agent | `AGENT_MAX_HISTORY`, `AGENT_LANGCHAIN_TOOLS`, `AGENT_RECURSION_LIMIT`, `PROMPT_VERSION`, `AGENT_ASYNC_ENQUEUE_ENABLED`, context-cache TTLs |
 | Assignment | `ASSIGNMENT_IDENTITY_LLM_*`, `PR_LINKING_*` |
+| Webhook/repair | `GITHUB_WEBHOOK_ASYNC_ENABLED`, `GITHUB_WEBHOOK_JOB_RETRIES`, `GITHUB_RECONCILE_ENABLED`, `GITHUB_RECONCILE_INTERVAL_SECONDS`, `GITHUB_RECONCILE_MAX_ITEMS` |
 | Queue | `QUEUE_WORKER_POLL_SECONDS` (worker); optional `AGENT_REDIS_URL` (cache only) |
+| Knowledge | `REPO_KNOWLEDGE_SWEEP_ENABLED`, `REPO_KNOWLEDGE_SWEEP_INTERVAL_SECONDS`, `REPO_KNOWLEDGE_SWEEP_CONCURRENCY`, `REPO_KNOWLEDGE_SWEEP_MAX_REPOS` |
 | Rate limit | `AGENT_RATE_LIMIT_*` |
 
 Full list: [.env.example](.env.example). Routing config: [repos.yml](repos.yml), [team_assignments.yml](team_assignments.yml).
@@ -207,12 +215,13 @@ Full list: [.env.example](.env.example). Routing config: [repos.yml](repos.yml),
 |---------|----------------|
 | `routes/` | HTTP endpoints |
 | `services/` | Webhook handlers, scan, PR linking, task mutations, webhook side effects |
+| `services/sync_state.py` | Pure canonical issue/PR metadata resolution shared by event and reconciliation paths |
 | `plaky/` | Plaky client (`create_task`, `get_tasks`, `add_comment`, `update_task_fields`, `create_subtask`, …), board schema, placement |
-| `agent/` | `runner.py` (LangChain), `service.py`, `prompts.py`, `guardrails.py`, `memory_store.py` |
+| `agent/` | `runner.py` (LangChain), `service.py`, `brain.py` (L0-L2 project state), `fast_path.py` (deterministic router), `repo_resolution.py`, `repo_context.py`, prompts, guardrails, memory |
 | `agent/tools/` | `plaky_tools`, `repo_tools` (`scan_local_repo`), `github_tools`, `assignment_tools` |
 | `llm/` | Provider factory (Ollama, OpenAI, Anthropic, Gemini, OpenRouter) |
 | `assignment/` | QA tier classification, team assignment, identity matching |
-| `github/` | Org listing, webhook parsing, QA roster, tier team scan |
+| `github/` | Org listing, webhook parsing, QA roster, tier team scan, `change_signal.py` (event-driven cache invalidation), `org_activity.py` (busiest-repo ranking) |
 | `database/models.py` | `IssueTaskMap`, `PullRequestTaskLink`, `ScanRun`, `AgentSession`, `AgentMessage`, `ProjectContext`, `BackgroundJob`, … |
 
 ## DB tables (SQLite)
@@ -234,7 +243,7 @@ Per-repo routing in [repos.yml](repos.yml) (`boardman register`).
 
 ## Implemented vs planned
 
-**Implemented:** GitHub↔Plaky sync, `repos.yml` routing, `boardman scan`/`init`/`status`, LangChain agent + tools + session memory, `boardman-ui`, Docker prod/dev, QA assignment/tiering, PR↔task fuzzy linking, SQLite job queue, readiness/doctor.
+**Implemented:** GitHub↔Plaky full-lifecycle sync (metadata, assignees, statuses, reviews, comments, merge/close), canonical state resolution and diff-only writes, durable webhook dedupe/worker retries, bounded reconciliation, `repos.yml` routing, `boardman scan`/`init`/`status`, LangChain agent + tools + session memory, progressive cached repo context, deterministic repo/intent resolution, queued repo scans, `boardman-ui`, Docker prod/dev, QA assignment/tiering, PR↔task fuzzy linking, SQLite job queue, readiness/doctor.
 
 **Not yet built (see planning docs):**
 

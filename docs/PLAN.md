@@ -25,13 +25,16 @@ It does **not** touch Discord — that stays in norozo.
 
 | Feature | How it works |
 |---|---|
-| GitHub issue opened → Plaky task | Webhook → `issue_handler.py` → `POST /tasks` |
-| GitHub PR opened → Plaky comment | Webhook → `pr_handler.py` → `POST /tasks/{id}/comments` |
-| GitHub PR merged → Plaky status update | Webhook → `pr_handler.py` → `PATCH /tasks/{id}` |
+| GitHub issue opened → Plaky task | Webhook/worker → canonical issue state → `POST /tasks` |
+| GitHub issue edited/labeled/assigned | Canonical diff → title/body/Type/Priority/assignee/status patch |
+| GitHub PR opened/edited/labeled | Link or update canonical PR metadata and developer owner |
+| GitHub PR reviews/comments | Durable activity marker → one Plaky comment per linked task + QA transition |
+| GitHub PR merged/closed/reopened | Idempotent lifecycle status transition; merge waits for all linked PRs |
+| Missed webhook repair | Bounded reconciliation fetches current issues/PRs and reuses handlers |
 | CLI create task with repo tag | `boardman create-task --github-repo owner/repo` |
 | CLI sync open issues → Plaky | `boardman sync --repo owner/repo` |
 | CLI list tasks | `boardman list` |
-| GitHub ↔ Plaky mapping DB | `IssueTaskMap` in SQLite |
+| GitHub ↔ Plaky mapping DB | `IssueTaskMap` / `PullRequestTaskLink` in SQLite with identity uniqueness |
 
 ### Shipped since v0.1
 
@@ -40,13 +43,13 @@ It does **not** touch Discord — that stays in norozo.
 | `repos.yml` board routing | `boardman register`; `plaky/placement.py` |
 | `DIRECTION.md` + AI scan | `boardman scan`, `POST /api/v1/agent/scan`; `services/scan_handler.py` |
 | Direction bootstrap | `boardman init`, `POST /api/v1/agent/init-direction` |
-| LangChain agent + memory | `boardman agent chat/ask`, `POST /api/v1/agent/chat` (+ stream, async jobs) |
+| LangChain agent + memory | `boardman agent chat/ask`, `POST /api/v1/agent/chat` (+ stream, async jobs, deterministic fast paths) |
 | Agent tools | `plaky_tools`, `repo_tools`, `github_tools`, `assignment_tools` |
 | Web UI | `boardman-ui/` — Vite/React chat; nginx proxy `:8088` in Docker |
 | QA assignment / tiering | `assignment/`, `github/qa_*`; optional Cloudflare `worker/` |
 | PR↔task fuzzy linking | `services/pr_task_linking.py`, `PullRequestTaskLink` table |
 | PR QA workflow | `pr_handler.py` — Needs QA / In QA when env statuses configured |
-| Background jobs | SQLite `background_jobs` + `boardman-worker` |
+| Background jobs | SQLite `background_jobs` + `boardman-worker` (chat, reorder, scans, webhook retries, optional reconciliation) |
 | Readiness / doctor | `boardman readiness`, `boardman doctor` |
 
 The connection is already working. Register a GitHub webhook at:
@@ -56,6 +59,24 @@ https://<host>:8090/api/v1/webhooks/github
 Events: Issues + Pull requests
 Secret: GITHUB_WEBHOOK_SECRET
 ```
+
+### Canonical synchronization contract
+
+`boardman/services/sync_state.py` is the pure resolver for GitHub-owned task fields. Issue
+Type precedence is native GitHub Type, then labels, then `Feature`; PR Type comes from the
+branch/labels; explicit priority labels map `Low`/`Medium`/`High` directly and `Urgent` to
+`Very Important`, beating text heuristics; an issue's first assignee or
+a PR's explicit assignee/author is the developer owner. Event handlers and reconciliation
+both pass that state through diff-only Plaky mutations, so replaying an event is a no-op
+when the board already matches.
+
+The durable workflow is: `NEEDS ASSIGNED` → `Assigned` when a developer exists; draft PRs
+remain assigned, ready PRs move to `Needs QA`, review requests to `In QA`, requested changes
+to `QA Rejected`, new commits after a verdict to `Needs QA Again`, approval to `QA Verified`,
+and the last merged PR to `Completed`. Unmerged closure returns work to `In Progress`.
+Issue close/reopen maps to `Completed`/`In Progress`. Review/comment mirroring is keyed by
+stable GitHub ids in `SyncLog`, and delivery/mapping identity is protected by SQLite
+uniqueness plus worker retries.
 
 ---
 
@@ -405,10 +426,10 @@ boardman/
 
 - **Session:** `session_id`, optional `repo`, timestamps.
 - **Messages:** append-only; optional `tool_calls` / `tool_results` JSON for audit.
-- **Project context:** per-repo summary, goals, constraints — updated by tools and scan.
+- **Project context:** per-repo summary, goals, and bounded structured planning snapshot — updated by planning tools and scan.
 - **Tables:** `AgentSession`, `AgentMessage`, `ProjectContext` (Alembic) — see AGENT_PLAN.md.
 - **Agent state v1:** Implicit in conversation + `pending_confirmation` in app code.
-- **Queue v1 (shipped):** SQLite `background_jobs` + `boardman-worker` for async agent chat and Plaky reorder jobs.
+- **Queue v1 (shipped):** SQLite `background_jobs` + `boardman-worker` for async agent chat, Plaky reorder, and `/agent/scan` jobs.
 - **Queue v2+:** Optional Redis/Kafka for multi-region scale (not required).
 
 ### Long system prompt (v1 — ship in `boardman/agent/prompts.py`)
@@ -498,6 +519,7 @@ Bump **`PROMPT_VERSION`** when this changes; store on `AgentSession` for debuggi
 - `GET /api/v1/agent/jobs/{job_id}` — async job status (when `queue=true`)
 - `GET /api/v1/agent/sessions/{id}/history`
 - `DELETE /api/v1/agent/sessions/{id}`
+- `POST /api/v1/agent/scan` accepts `queue: true` for expensive scans handled by `boardman-worker`.
 - `POST /api/v1/agent/scan` — LLM scan (`dry_run`, `repo`, …)
 - `POST /api/v1/agent/init-direction` — bootstrap `DIRECTION.md` PR
 
@@ -552,7 +574,7 @@ deepiri-boardman/
 │   ├── services/                # issue/pr/scan handlers, PR linking, task mutations
 │   ├── plaky/, github/, assignment/
 │   ├── llm/                     # factory.py, completion.py, ollama_autodetect.py
-│   ├── agent/                   # runner, service, prompts, guardrails, memory_store, tools/
+│   ├── agent/                   # runner, service, prompts, guardrails, memory, context cache/resolution, tools/
 │   ├── database/models.py
 │   ├── broker/, jobs/, cache/, ratelimit/
 │   └── sqlite_worker.py
@@ -618,6 +640,9 @@ PROMPT_VERSION=2026-04-09
 - [x] Agent does not invent task IDs (guardrails + tool-first policy; `test_agent_guardrails.py`)
 - [x] Bulk Plaky change requires confirmation when flag on (`AGENT_REQUIRE_CONFIRM_BULK`, `allow_writes`)
 - [x] Scan/agent repo tools return real paths/excerpts (`repo_tools`, `test_tools.py`)
+- [x] Repo planning reads are parallel, bounded, cached, and share identity/tree fetches (`test_repo_shared_fetches.py`)
+- [x] Session repo scope resolves deterministically and read-only current/routing/task intents have fast paths
+- [x] Deep scans can be queued on the SQLite worker; chat streams status and UI scope is visible
 - [x] `boardman-ui` dev server proxies API to boardman; agent chat round-trips in browser
 
 ---
@@ -634,3 +659,4 @@ Original product intent (pre-implementation): installable `boardman` CLI that po
 |------|--------|
 | 2026-04-09 | UI/nginx plan; Python deps via **Poetry** (`pyproject.toml` + `poetry.lock`); Docker uses Poetry. |
 | 2026-06-05 | Reconciled shipped vs planned: agent, scan, UI, worker marked done; added AGENTS.md maintenance note; verification checklist checked off. |
+| 2026-08-18 | Added progressive repo context caching/snapshots, deterministic scope + fast paths, queued scans, shared GitHub identity/tree reads, and streaming scope status. |

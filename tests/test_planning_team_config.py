@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 import yaml
 
 from boardman.repos_config import (
@@ -8,6 +9,13 @@ from boardman.repos_config import (
     derive_team_repos_from_repos_yml,
     reload_repos_config,
 )
+
+
+@pytest.fixture(autouse=True)
+def _restore_real_repos_config():
+    """See tests/test_repos_config.py::_restore_real_repos_config — same lru_cache leak."""
+    yield
+    reload_repos_config()
 
 
 def test_category_to_team_focus_aliases() -> None:

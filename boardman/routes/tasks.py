@@ -1,3 +1,5 @@
+"""Plaky task CRUD endpoints."""
+
 from typing import Any
 
 from fastapi import APIRouter, Depends
@@ -198,3 +200,21 @@ async def link_pr(task_id: str, req: LinkPRRequest, session: AsyncSession = Depe
         )
 
     return result
+
+
+@router.post("/reconcile/{owner}/{repo}")
+async def reconcile_repository(
+    owner: str,
+    repo: str,
+    max_items: int = 50,
+    session: AsyncSession = Depends(get_db),
+) -> dict:
+    """Detect and repair GitHub-Plaky drift for one repo (bounded, idempotent).
+
+    Webhooks are the fast path; this is the safety net for missed deliveries. It walks
+    CURRENT open issues and PRs and replays them through the normal handlers, which
+    dedupe, so running it twice changes nothing.
+    """
+    from boardman.services.reconcile import reconcile_repo
+
+    return await reconcile_repo(f"{owner}/{repo}", session, max_items=max(1, min(max_items, 100)))

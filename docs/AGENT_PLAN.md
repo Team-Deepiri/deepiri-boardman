@@ -53,6 +53,9 @@ Providers are LangChain chat models (not separate `ollama.py` / `openai.py` file
 boardman/agent/
 ├── runner.py            # LangChain tool-calling agent (AgentExecutor / graph)
 ├── service.py           # run_agent_chat(), session orchestration
+├── fast_path.py         # deterministic read-only intents before an LLM turn
+├── repo_resolution.py   # explicit/session/message/configured repo precedence
+├── repo_context.py      # bounded persistent ProjectContext snapshot + prompt block
 ├── prompts.py           # BOARD_MANAGER_SYSTEM + prompt constants
 ├── guardrails.py        # allow_writes, bulk confirmation policy
 ├── memory_store.py      # AgentSession / AgentMessage persistence
@@ -119,7 +122,7 @@ Route tasks to the appropriate table based on repo category.
 ## Memory System (`boardman/agent/memory_store.py`)
 
 - **Conversation history**: `AgentMessage` rows per `session_id` (limit `AGENT_MAX_HISTORY`)
-- **Project context**: `ProjectContext` table — per-repo summary, goals, `last_scanned`
+- **Project context**: `ProjectContext` table — per-repo summary, goals, `last_scanned`, and bounded structured planning snapshot with source revision/fetch time
 - **Session metadata**: `AgentSession` — `repo`, `prompt_version`, optional `task_draft_json`
 - **Tool audit**: `tool_calls_json` on messages when tools run
 - **SQLite** via SQLAlchemy async session; Alembic migration `002_agent_scan_tables.py`
@@ -134,7 +137,7 @@ Built by `build_all_tools(allow_writes=…)` in `tools/__init__.py`:
 |--------|-------|-------|
 | `plaky_tools.py` | list/get/create/update tasks, subtasks, comments | Writes require `allow_writes=true` |
 | `repo_tools.py` | `scan_local_repo`, `thoughts` | Reads README, docs/, `DIRECTION.md`, `AGENTS.md`, bounded tree |
-| `github_tools.py` | issue/file/commit reads | Read-mostly; no duplicate webhook logic |
+| `github_tools.py` | issue/file/commit/planning reads | Read-mostly; parallel bounded planning context with shared identity/tree cache |
 | `assignment_tools.py` | `assignment_preview` | QA picker preview |
 
 **Not separate files:** original design had `repo_scanner.py`, `plaky_tasks.py`, `plaky_board.py` — consolidated into `repo_tools.py` and `plaky_tools.py`.
@@ -208,6 +211,7 @@ GET    /api/v1/agent/jobs/{job_id}
 GET    /api/v1/agent/sessions/{id}/history
 DELETE /api/v1/agent/sessions/{id}
 POST   /api/v1/agent/scan
+-       queue=true sends expensive scans to boardman-worker
 POST   /api/v1/agent/init-direction
 ```
 
@@ -386,6 +390,7 @@ curl http://localhost:8090/api/v1/agent/sessions/{session_id}/history
 
 # Automated tests
 poetry run pytest tests/test_agent_guardrails.py tests/test_tools.py -q
+poetry run pytest tests/test_repo_resolution.py tests/test_agent_fast_path.py tests/test_repo_shared_fetches.py -q
 ```
 
 ---
@@ -398,3 +403,11 @@ poetry run pytest tests/test_agent_guardrails.py tests/test_tools.py -q
 - **Scheduled reviews**: "Hey, review your board every Monday"
 - **Multiple agents**: Different agents for different repos
 - **AI direction generation**: Ask AI to suggest direction based on repo scan
+## Bulk task creation (Aug 2026)
+
+`plaky_create_tasks` creates up to 20 tasks in ONE tool call (concurrent server-side,
+two lanes + stagger tuned to Plaky's burst shaping). It exists because "create me 5
+tasks" used to cost one full LLM round trip per task. The prompt's bulk-create contract
+mandates it for any 2+ task request; >20 tasks chunk into successive calls. QA is NOT
+assigned at creation (auto_assign_team defaults False — QA is a PR-time concern).
+Receipts come back as `receipt_markdown` the model echoes.

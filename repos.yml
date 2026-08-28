@@ -12,4 +12,15 @@
 #     plaky_board_id: "..."
 #     plaky_group_id: "..."
 
-repos: {}
+# deepiri-boardman routes to the "Bots" board, group "deepiri-boardman" (per Ali,
+# Aug 12: "use the deepiri-boardman in the bots box, not the deepiri-boardman box").
+# The old pin (269031 "deepiri-boardman" / 907471 "Open PRs") was the demo board.
+# Field keys differ per board (Assignee person-5, QA person-6, Status status-8 here) —
+# resolution is schema-driven, and sync_team_assignment_field_keys_from_board realigns
+# team_assignments keys on first write.
+repos:
+  Team-Deepiri/deepiri-boardman:
+    category: devtools
+    plaky_board_id: "269028"
+    plaky_group_id: "933385"
+    plaky_table: "deepiri-boardman"

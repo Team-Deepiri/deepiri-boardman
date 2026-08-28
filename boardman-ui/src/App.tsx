@@ -7,6 +7,7 @@ import {
   IconClose,
   IconRepo,
   IconSend,
+  IconStop,
   IconSession,
   IconSpark,
   IconUser,
@@ -35,6 +36,7 @@ const api = axios.create({
 type StreamSsePayload =
   | { type: "session"; session_id: string }
   | { type: "token"; text: string }
+  | { type: "status"; text: string }
   | { type: "done" }
   | { type: "error"; message: string };
 
@@ -51,12 +53,15 @@ async function sendChatStream(
     model?: string;
   },
   onSession: (sessionId: string) => void,
-  onToken: (delta: string) => void
+  onToken: (delta: string) => void,
+  signal?: AbortSignal,
+  onStatus?: (text: string) => void
 ): Promise<void> {
   const base = (import.meta.env.VITE_API_BASE || "").replace(/\/$/, "");
   const url = `${base}/api/v1/agent/chat/stream`;
   const res = await fetch(url, {
     method: "POST",
+    signal,
     headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
     body: JSON.stringify({
       message,
@@ -84,6 +89,13 @@ async function sendChatStream(
   }
   const reader = res.body?.getReader();
   if (!reader) throw new Error("No response body");
+  // Abort mid-stream: cancel the reader so the response body stops draining in the
+  // background. { once: true } auto-removes the listener after it fires; no manual
+  // removeEventListener needed, and no risk of dangling listeners on unmount because
+  // this function is awaited inside onSend (not a useEffect), and the AbortController
+  // is scoped to that single send — it is replaced on the next message (line 436).
+  const onAbort = () => void reader.cancel().catch(() => {});
+  signal?.addEventListener("abort", onAbort, { once: true });
   const dec = new TextDecoder();
   let buf = "";
   for (;;) {
@@ -104,6 +116,7 @@ async function sendChatStream(
       }
       if (j.type === "session") onSession(j.session_id);
       else if (j.type === "token") onToken(j.text);
+      else if (j.type === "status") onStatus?.(j.text);
       else if (j.type === "error") throw new Error(j.message || "stream error");
     }
   }
@@ -117,8 +130,9 @@ function EmptyState() {
       </div>
       <h3 className="empty-state__title">Start a conversation</h3>
       <p className="empty-state__text">
-        Ask about priorities, Plaky tasks, or repo context. Optional: set a GitHub repo in the panel so
-        replies stay scoped to that project — built for <strong>Deepiri</strong> delivery workflows.
+        Ask about priorities, Plaky tasks, or repo context. Mention a repo by name and Boardman scopes
+        to it automatically; pick one in the panel only if it can't tell, or to override — built for{" "}
+        <strong>Deepiri</strong> delivery workflows.
       </p>
     </div>
   );
@@ -134,6 +148,7 @@ export default function App() {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [statusText, setStatusText] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   const [boards, setBoards] = useState<PlakyBoardRow[]>([]);
@@ -165,6 +180,10 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const drawerScrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // Live stream handle, and a run counter so a stopped or superseded run cannot write
+  // tokens (or clear the spinner) for the run that replaced it.
+  const abortRef = useRef<AbortController | null>(null);
+  const runIdRef = useRef(0);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -408,12 +427,25 @@ export default function App() {
     qaPick,
   ]);
 
+  const onStop = useCallback(() => {
+    abortRef.current?.abort();
+  }, []);
+
   const onSend = useCallback(async () => {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text) return;
+    // Interrupt: a new message while the assistant is talking stops it and takes over,
+    // instead of being swallowed or queued behind a long tool-calling run.
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const runId = ++runIdRef.current;
+    const isCurrent = () => runIdRef.current === runId;
+
     setInput("");
     setMessages((m) => [...m, { role: "user", content: text }]);
     setLoading(true);
+    setStatusText(null);
     try {
       let acc = "";
       await sendChatStream(
@@ -427,10 +459,14 @@ export default function App() {
           plakyGroupId,
           model: selectedModel || undefined,
         },
-        (sid) => setSessionId(sid),
+        (sid) => {
+          if (isCurrent()) setSessionId(sid);
+        },
         (delta) => {
+          if (!isCurrent()) return;
           if (!acc) {
             // First token: add the assistant message to the list
+            setStatusText(null);
             setMessages((m) => [...m, { role: "assistant", content: delta }]);
           } else {
             // Subsequent tokens: update the last assistant message
@@ -444,9 +480,30 @@ export default function App() {
             });
           }
           acc += delta;
+        },
+        controller.signal,
+        (text) => {
+          if (isCurrent()) setStatusText(text);
         }
       );
     } catch (e: unknown) {
+      // A stop the user asked for is not a failure. Keep whatever was already said and
+      // mark it, so a half-finished answer is never mistaken for a complete one.
+      const stopped =
+        controller.signal.aborted || (e instanceof DOMException && e.name === "AbortError");
+      if (stopped) {
+        if (isCurrent()) {
+          setMessages((m) => {
+            const last = m[m.length - 1];
+            if (!last || last.role !== "assistant") return m;
+            const copy = [...m];
+            copy[copy.length - 1] = { ...last, content: `${last.content}\n\n_(stopped)_` };
+            return copy;
+          });
+        }
+        return;
+      }
+      if (!isCurrent()) return;
       let msg: string;
       if (axios.isAxiosError(e)) {
         const data = e.response?.data as { detail?: unknown; message?: string } | undefined;
@@ -472,12 +529,22 @@ export default function App() {
         return [...m, { role: "assistant", content: `Request failed: ${msg}` }];
       });
     } finally {
-      setLoading(false);
-      textareaRef.current?.focus();
+      // An interrupted run must not clear the spinner for the run that replaced it.
+      if (isCurrent()) {
+        setLoading(false);
+        setStatusText(null);
+        abortRef.current = null;
+        textareaRef.current?.focus();
+      }
     }
-  }, [input, loading, sessionId, selectedRepos, allowWrites, useTools, plakyBoardId, plakyGroupId, selectedModel]);
+  }, [input, sessionId, selectedRepos, allowWrites, useTools, plakyBoardId, plakyGroupId, selectedModel]);
 
   const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Escape" && loading) {
+      e.preventDefault();
+      onStop();
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       onSend();
@@ -765,6 +832,13 @@ export default function App() {
             <p className="main__subtitle">
               <strong>Deepiri</strong> Board Manager Agent
             </p>
+            <p className="main__status" role="status" aria-live="polite">
+              {loading
+                ? "Generating — press Esc or Stop to interrupt."
+                : selectedRepos[0]
+                  ? `Scoped to ${selectedRepos[0]}.`
+                  : "Repo scope follows your selection or the repository named in your message."}
+            </p>
           </div>
         </header>
 
@@ -810,11 +884,17 @@ export default function App() {
                     </div>
                     <div className="message__body">
                       <div className="message__meta">Assistant</div>
-                      <div className="typing" aria-label="Waiting for response">
-                        <span />
-                        <span />
-                        <span />
-                      </div>
+                      {statusText ? (
+                        <div className="typing typing--status" aria-label={statusText}>
+                          {statusText}
+                        </div>
+                      ) : (
+                        <div className="typing" aria-label="Waiting for response">
+                          <span />
+                          <span />
+                          <span />
+                        </div>
+                      )}
                     </div>
                   </li>
                 ) : null}
@@ -830,18 +910,29 @@ export default function App() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="Message the agent…"
-              disabled={loading}
+              placeholder={loading ? "Type to interrupt — Esc to stop…" : "Message the agent…"}
             />
-            <button
-              type="button"
-              className="composer__send"
-              disabled={loading || !input.trim()}
-              onClick={onSend}
-              aria-label="Send message"
-            >
-              <IconSend className="composer__send-icon" title="Send" />
-            </button>
+            {loading ? (
+              <button
+                type="button"
+                className="composer__send composer__send--stop"
+                onClick={onStop}
+                aria-label="Stop generating"
+                title="Stop generating (Esc)"
+              >
+                <IconStop className="composer__send-icon" title="Stop" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="composer__send"
+                disabled={!input.trim()}
+                onClick={onSend}
+                aria-label="Send message"
+              >
+                <IconSend className="composer__send-icon" title="Send" />
+              </button>
+            )}
           </div>
         </div>
       </main>
@@ -898,11 +989,17 @@ export default function App() {
                 {loading && messages[messages.length - 1]?.role !== "assistant" ? (
                   <li className="drawer__msg drawer__msg--assistant" aria-live="polite">
                     <span className="drawer__msg-role">Assistant</span>
-                    <div className="typing typing--sm">
-                      <span />
-                      <span />
-                      <span />
-                    </div>
+                    {statusText ? (
+                      <div className="typing typing--sm typing--status" aria-label={statusText}>
+                        {statusText}
+                      </div>
+                    ) : (
+                      <div className="typing typing--sm">
+                        <span />
+                        <span />
+                        <span />
+                      </div>
+                    )}
                   </li>
                 ) : null}
               </ul>
@@ -915,18 +1012,29 @@ export default function App() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder="Reply…"
-              disabled={loading}
+              placeholder={loading ? "Type to interrupt…" : "Reply…"}
             />
-            <button
-              type="button"
-              className="drawer__send"
-              disabled={loading || !input.trim()}
-              onClick={onSend}
-              aria-label="Send"
-            >
-              <IconSend className="drawer__send-icon" title="" />
-            </button>
+            {loading ? (
+              <button
+                type="button"
+                className="drawer__send drawer__send--stop"
+                onClick={onStop}
+                aria-label="Stop generating"
+                title="Stop generating (Esc)"
+              >
+                <IconStop className="drawer__send-icon" title="" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="drawer__send"
+                disabled={!input.trim()}
+                onClick={onSend}
+                aria-label="Send"
+              >
+                <IconSend className="drawer__send-icon" title="" />
+              </button>
+            )}
           </div>
         </div>
       ) : null}

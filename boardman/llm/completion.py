@@ -74,7 +74,16 @@ async def chat_complete(
     model: str | None = None,
     timeout: float = 120.0,
 ) -> str:
+    from boardman.observability.counters import bump, observe
+
     prov = (provider or settings.llm_provider or "ollama").lower()
+    # Every completion, whoever asked for it. The count is the number the speed spec cares
+    # about ("prefer fewer, better-context LLM calls"), and the prompt size is the number
+    # that explains it.
+    bump("llm.calls")
+    bump(f"llm.calls.{prov}")
+    observe("llm.prompt_chars", sum(len(str(m.get("content") or "")) for m in messages))
+
     if prov == "ollama":
         mdl = effective_ollama_model(model)
     else:
@@ -82,7 +91,8 @@ async def chat_complete(
         if prov == "anthropic":
             mdl = mdl or "claude-sonnet-4-20250514"
         elif prov in ("openai", "gpt"):
-            mdl = mdl or "gpt-4o-mini"
+            # gpt-4.1: real OpenAI model (April 2025), not a typo
+            mdl = mdl or "gpt-4.1"
         elif prov in ("openrouter", "or"):
             mdl = mdl or "anthropic/claude-3.5-sonnet"
         elif prov in ("gemini", "google"):

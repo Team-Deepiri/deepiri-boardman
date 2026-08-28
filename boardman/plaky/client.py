@@ -7,6 +7,8 @@ from typing import Any
 
 import httpx
 
+from boardman.github.http import shared_plaky_client
+from boardman.observability.degradation import log_degraded
 from boardman.plaky.placement import context_board_id, context_group_id
 from boardman.settings import settings
 
@@ -40,6 +42,8 @@ async def _request_with_rate_limit_retry(
     last_exc: Exception | None = None
     response: httpx.Response | None = None
     for attempt in range(retries + 1):
+        response = None
+        started = time.monotonic()
         try:
             response = await client.request(
                 method=method, url=url, headers=headers, json=json, params=params, timeout=20
@@ -58,6 +62,15 @@ async def _request_with_rate_limit_retry(
             )
             await asyncio.sleep(_transient_backoff(attempt))
             continue
+        finally:
+            _log.debug(
+                "Plaky %s %s attempt=%d took %.2fs status=%s",
+                method,
+                url,
+                attempt + 1,
+                time.monotonic() - started,
+                response.status_code if response is not None else "error",
+            )
 
         if response.status_code == 429:
             if attempt == retries:
@@ -234,6 +247,54 @@ def _public_api_root_from_base_url(base_url: str) -> str | None:
     return None
 
 
+# API roots where PATCH/PUT of item text is known to 405 for every body shape.
+_ITEM_TEXT_PATCH_UNSUPPORTED: dict[str, bool] = {}
+
+# (root, ladder-kind) -> index of the single-field PATCH body shape that last succeeded,
+# so each create does not rediscover it by collecting 400s. Keyed per ladder: the dict
+# and scalar candidate lists differ in length and meaning.
+_FIELD_PATCH_SHAPE_HINT: dict[tuple[str, str], int] = {}
+
+# Board -> space map shared by every PlakyClient in the process. See
+# resolve_space_for_board for why this cannot be per-instance.
+_SPACE_CACHE: dict[str, str] = {}
+_SPACE_CACHE_AT: float = 0.0
+_SPACE_CACHE_TTL_S = 900.0
+# One lock per event loop. A module-level asyncio.Lock is bound to whichever loop first
+# awaits it, so anything that runs a second loop in the same process (a CLI command, the
+# test suite's per-test loops) would wait on a lock owned by a dead one.
+_SPACE_CACHE_LOCKS: dict[Any, asyncio.Lock] = {}
+
+
+def _space_cache_lock() -> asyncio.Lock:
+    loop = asyncio.get_running_loop()
+    lock = _SPACE_CACHE_LOCKS.get(loop)
+    if lock is None:
+        lock = asyncio.Lock()
+        _SPACE_CACHE_LOCKS[loop] = lock
+    return lock
+
+
+def _space_cache_get(board_id: str) -> str | None:
+    if not _SPACE_CACHE or (time.monotonic() - _SPACE_CACHE_AT) > _SPACE_CACHE_TTL_S:
+        return None
+    return _SPACE_CACHE.get(board_id)
+
+
+def _space_cache_put(mapping: dict[str, str]) -> None:
+    global _SPACE_CACHE_AT
+    _SPACE_CACHE.update(mapping)
+    _SPACE_CACHE_AT = time.monotonic()
+
+
+def clear_space_cache() -> None:
+    """Drop the cache — for tests, and after a board is created or moved."""
+    global _SPACE_CACHE_AT
+    _SPACE_CACHE.clear()
+    _SPACE_CACHE_LOCKS.clear()
+    _SPACE_CACHE_AT = 0.0
+
+
 class PlakyClient:
     def __init__(self, api_key: str | None = None, base_url: str | None = None):
         self.api_key = api_key or settings.plaky_api_key
@@ -336,10 +397,34 @@ class PlakyClient:
         return accum
 
     async def resolve_space_for_board(self, board_id: str) -> str | None:
+        """Board -> space id, cached process-wide.
+
+        Almost every Plaky call needs this, and callers construct PlakyClient() fresh, so
+        with a per-instance cache each one re-listed every space and every board first:
+        seconds of latency per tool call, and one transient failure anywhere in that walk
+        surfaced to the user as "Could not resolve space for board" — i.e. "the assistant
+        cannot create tasks". The map changes only when a board is created or moved, so a
+        short TTL is safe, and the lock keeps concurrent tool calls to a single refresh.
+        """
         bid = board_id.strip()
+        if not bid:
+            return None
         if bid in self._board_to_space:
             return self._board_to_space[bid]
-        await self.list_boards()
+
+        cached = _space_cache_get(bid)
+        if cached:
+            self._board_to_space[bid] = cached
+            return cached
+
+        async with _space_cache_lock():
+            cached = _space_cache_get(bid)  # another task may have refreshed while we waited
+            if cached:
+                self._board_to_space[bid] = cached
+                return cached
+            await self.list_boards()
+            if self._board_to_space:
+                _space_cache_put(self._board_to_space)
         return self._board_to_space.get(bid)
 
     async def list_boards(self) -> dict[str, Any]:
@@ -354,7 +439,7 @@ class PlakyClient:
 
         root = self._public_root()
         if root:
-            async with httpx.AsyncClient() as client:
+            async with shared_plaky_client() as client:
                 spaces = await self._get_paginated(client, root, "/spaces")
                 boards_out: list[dict[str, Any]] = []
                 for sp in spaces:
@@ -381,7 +466,7 @@ class PlakyClient:
 
         base = self.base_url.rstrip("/")
         last_status = 0
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             for path in ("/boards", "/projects"):
                 url = f"{base}{path}"
                 response = await _request_with_rate_limit_retry(
@@ -427,7 +512,7 @@ class PlakyClient:
                 "users": [],
             }
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             rows = await self._get_paginated(client, root, "/users")
         users: list[dict[str, Any]] = []
         for x in rows:
@@ -531,7 +616,7 @@ class PlakyClient:
         bid = board_id.strip()
         base = self.base_url.rstrip("/")
         last_status = 404
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             candidates = [
                 f"{base}/boards/{bid}/groups",
                 f"{base}/boards/{bid}/sections",
@@ -591,7 +676,7 @@ class PlakyClient:
                     "board": None,
                 }
             url = f"{root.rstrip('/')}/spaces/{sid}/boards/{bid}"
-            async with httpx.AsyncClient() as client:
+            async with shared_plaky_client() as client:
                 response = await _request_with_rate_limit_retry(
                     client, "GET", url, headers=_headers(self.api_key)
                 )
@@ -612,7 +697,7 @@ class PlakyClient:
         base = self.base_url.rstrip("/")
         last_status = 404
         last_snip = ""
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             for path in (
                 f"/boards/{bid}",
                 f"/projects/{bid}",
@@ -663,7 +748,7 @@ class PlakyClient:
         if not sid:
             return {"ok": False, "items": [], "message": "Could not resolve space for board"}
         path = f"/spaces/{sid}/boards/{bid}/items"
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             page = 1
             accum: list[dict[str, Any]] = []
             base = root.rstrip("/")
@@ -694,9 +779,14 @@ class PlakyClient:
         *,
         board_id: str,
         item_id: str,
-        title: str,
-        description: str,
+        title: str | None = None,
+        description: str | None = None,
     ) -> dict[str, Any]:
+        if not self.api_key:
+            return {"ok": False, "status": 400, "message": "PLAKY_API_KEY is missing."}
+        if title is None and description is None:
+            return {"ok": False, "status": 400, "message": "No item text fields to update."}
+
         root = self._public_root()
         if not root:
             return {"ok": False, "message": "v1/public base URL required"}
@@ -706,26 +796,43 @@ class PlakyClient:
 
         base = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
         hdr = _headers(self.api_key)
+        flat: dict[str, Any] = {}
+        if title is not None:
+            flat["title"] = title
+        if description is not None:
+            flat["description"] = description
+        name_flat = dict(flat)
+        if "title" in name_flat:
+            name_flat["name"] = name_flat.pop("title")
         bodies: list[dict[str, Any]] = [
-            {"name": title, "description": description},
-            {"title": title, "description": description},
-            {"item": {"name": title, "description": description}},
-            {"item": {"title": title, "description": description}},
-            {"fields": {"name": title, "description": description}},
+            name_flat,
+            flat,
+            {"item": dict(name_flat)},
+            {"item": dict(flat)},
+            {"fields": dict(name_flat)},
         ]
 
-        async with httpx.AsyncClient() as client:
-            for method in ("PATCH", "PUT"):
-                for body in bodies:
-                    r = await _request_with_rate_limit_retry(
-                        client, method, base, headers=hdr, json=body
-                    )
-                    if r.status_code in (200, 201, 204):
-                        return {
-                            "ok": True,
-                            "status": r.status_code,
-                            "mode": f"{method} {list(body.keys())[0]}",
-                        }
+        if not _ITEM_TEXT_PATCH_UNSUPPORTED.get(root):
+            all_method_not_allowed = True
+            async with shared_plaky_client() as client:
+                for method in ("PATCH", "PUT"):
+                    for body in bodies:
+                        r = await _request_with_rate_limit_retry(
+                            client, method, base, headers=hdr, json=body
+                        )
+                        if r.status_code in (200, 201, 204):
+                            return {
+                                "ok": True,
+                                "status": r.status_code,
+                                "mode": f"{method} {list(body.keys())[0]}",
+                            }
+                        if r.status_code != 405:
+                            all_method_not_allowed = False
+            if all_method_not_allowed:
+                # This API version has no item text endpoint. Remember per process and
+                # stop paying 10 requests per create to rediscover it; the board-field
+                # fallback below still gets its chance.
+                _ITEM_TEXT_PATCH_UNSUPPORTED[root] = True
 
         # Some boards expose title/description as item fields with board-specific keys.
         title_fields: list[str] = []
@@ -748,14 +855,16 @@ class PlakyClient:
                         title_fields.append(key)
                     if any(tok in name for tok in ("description", "details", "desc", "summary")):
                         description_fields.append(key)
-        except Exception:
-            pass
+        except Exception:  # noqa: BLE001 - failure is silenced for resilience
+            log_degraded(_log, "PlakyClient._enforce_item_text: fetch_board_schema_bundle")
 
         patch_values: dict[str, Any] = {}
-        for k in title_fields:
-            patch_values[k] = title
-        for k in description_fields:
-            patch_values[k] = description
+        if title is not None:
+            for k in title_fields:
+                patch_values[k] = title
+        if description is not None:
+            for k in description_fields:
+                patch_values[k] = description
         if not patch_values:
             return {
                 "ok": False,
@@ -770,6 +879,22 @@ class PlakyClient:
         if field_patch.get("ok"):
             return {"ok": True, "mode": "field_patch", "field_patch": field_patch}
         return {"ok": False, "field_patch": field_patch}
+
+    async def update_item_text(
+        self,
+        board_id: str,
+        item_id: str,
+        *,
+        title: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Update the core title/description of a v1/public board item."""
+        return await self._enforce_item_text(
+            board_id=board_id,
+            item_id=item_id,
+            title=title,
+            description=description,
+        )
 
     async def _create_item_hierarchy(
         self,
@@ -813,8 +938,8 @@ class PlakyClient:
                             tok in name for tok in ("description", "details", "desc", "summary")
                         ):
                             description_fields.append(key)
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001 - failure is silenced for resilience
+                log_degraded(_log, "PlakyClient._create_item_hierarchy: fetch_board_schema_bundle")
             text_fields: list[dict[str, Any]] = []
             for k in title_fields:
                 text_fields.append({"itemFieldKey": k, "value": title})
@@ -854,7 +979,7 @@ class PlakyClient:
                     "fields": text_fields,
                 },
             ]
-            async with httpx.AsyncClient() as client:
+            async with shared_plaky_client() as client:
                 for body in bodies:
                     response = await _request_with_rate_limit_retry(
                         client, "POST", url, headers=_headers(self.api_key), json=body
@@ -939,7 +1064,7 @@ class PlakyClient:
             return {"ok": True, "skipped": True, "message": "empty comment"}
         url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}/comments"
         payload = {"text": body}
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             r = await _request_with_rate_limit_retry(
                 client, "POST", url, headers=_headers(self.api_key), json=payload
             )
@@ -993,7 +1118,7 @@ class PlakyClient:
         if not sid:
             return {"ok": False, "message": "Could not resolve space for board", "item": None}
         url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             r = await _request_with_rate_limit_retry(
                 client, "GET", url, headers=_headers(self.api_key)
             )
@@ -1020,7 +1145,7 @@ class PlakyClient:
         if not sid:
             return {"ok": False, "message": "Could not resolve space for board"}
         url = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             r = await _request_with_rate_limit_retry(
                 client, "DELETE", url, headers=_headers(self.api_key)
             )
@@ -1183,6 +1308,55 @@ class PlakyClient:
         base = f"{root.rstrip('/')}/spaces/{sid}/boards/{board_id.strip()}/items/{item_id.strip()}"
         hdr = _headers(self.api_key)
 
+        # Resolve option LABELS to option ids up front from the cached schema. The API
+        # only accepts ids for select fields; probing label variants against the wire
+        # cost up to 10 requests per field on every create (profiled live).
+        try:
+            from boardman.plaky.board_schema import fetch_board_schema_bundle
+
+            sch = await fetch_board_schema_bundle(board_id.strip())
+            norm = sch.get("normalized") if isinstance(sch, dict) else None
+            rows = {
+                str(f.get("key") or ""): f
+                for f in ((norm or {}).get("fields") or [])
+                if isinstance(f, dict)
+            }
+            resolved: dict[str, Any] = {}
+            for k, v in values.items():
+                row = rows.get(str(k).strip())
+                opts = row.get("options") if isinstance(row, dict) else None
+                out_v = v
+                # ints too: the schema ladder returns digit option ids as int, and an int
+                # value walks the PERSON-shaped candidate ladder first — 10 doomed
+                # requests per select field, plus 6 doomed bulk shapes from the person
+                # coercion. As a plain string id it succeeds on the first request.
+                if isinstance(opts, list) and opts and isinstance(v, str | int) and str(v).strip():
+                    vv = str(v).strip().casefold()
+                    for o in opts:
+                        if not isinstance(o, dict):
+                            continue
+                        oid = str(
+                            o.get("id")
+                            or o.get("key")
+                            or o.get("optionId")
+                            or o.get("value")
+                            or o.get("_id")
+                            or ""
+                        ).strip()
+                        lab = (
+                            str(o.get("name") or o.get("title") or o.get("label") or "")
+                            .strip()
+                            .casefold()
+                        )
+                        if oid and (vv == lab or vv == oid.casefold()):
+                            out_v = oid
+                            break
+                resolved[k] = out_v
+            values = resolved
+        except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
+            log_degraded(_log, "PlakyClient.patch_item_field_values: fetch_board_schema_bundle")
+            pass  # schema unavailable: the candidate ladder below still works, just slower
+
         def _bulk_bodies_for(mapping: dict[str, Any]) -> list[dict[str, Any]]:
             """Prefer the OpenAPI flat object shape first; older envelope keys are fallbacks only."""
             entries_kv = [{"key": str(k), "value": val} for k, val in mapping.items()]
@@ -1224,7 +1398,7 @@ class PlakyClient:
         bulk_last_status: int | None = None
         bulk_last_parsed: Any = None
         bulk_ok_body: dict[str, Any] | None = None
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             canonical_bulk = dict(bulk_coerced) if bulk_coerced != values else {}
             for body in bulk_bodies:
                 url = f"{base}/fields"
@@ -1257,9 +1431,10 @@ class PlakyClient:
                         trusted_bulk_keys.add(bk)
 
             per_ok.extend(sorted(trusted_bulk_keys))
-            for k, v in values.items():
-                if str(k).strip() in trusted_bulk_keys:
-                    continue
+
+            async def _patch_one_field(k: Any, v: Any) -> tuple[str, bool, int, str]:
+                """One field's candidate walk. Fields are independent columns — running
+                them concurrently cuts a 3-field create's patch phase to the slowest one."""
                 url_single = f"{base}/fields/{k}"
                 last_status = 0
                 last_snip = ""
@@ -1281,20 +1456,53 @@ class PlakyClient:
                             {"selectedOptionId": val},
                         ]
                         bodies.insert(2, {"text": str(val)})
+                    ladder = "dict" if isinstance(val, dict) else "scalar"
+                    canonical_shapes = list(bodies)
+                    hint = _FIELD_PATCH_SHAPE_HINT.get((root, ladder))
+                    if hint is not None and 0 < hint < len(bodies):
+                        bodies.insert(0, bodies.pop(hint))
                     for body in bodies:
                         r = await _request_with_rate_limit_retry(
                             client, "PATCH", url_single, headers=hdr, json=body
                         )
+                        # 409 means another writer holds the item, not that this body
+                        # shape is wrong. Retry the same shape briefly before judging.
+                        for _conflict_try in range(3):
+                            if r.status_code != 409:
+                                break
+                            await asyncio.sleep(0.3 * (_conflict_try + 1))
+                            r = await _request_with_rate_limit_retry(
+                                client, "PATCH", url_single, headers=hdr, json=body
+                            )
                         last_status = r.status_code
                         last_snip = r.text[:500]
                         if r.status_code in (200, 201, 204):
-                            per_ok.append(str(k))
+                            # Remember the CANONICAL position of the winning shape — but
+                            # never the bare root-object body: Plaky returns 200 for it
+                            # WITHOUT persisting (especially PERSON), and a poisoned hint
+                            # would lead every later patch with a silent no-op shape.
+                            if body is not val:
+                                _FIELD_PATCH_SHAPE_HINT[(root, ladder)] = canonical_shapes.index(
+                                    body
+                                )
                             hit = True
                             break
                     if hit:
                         break
-                if not hit:
-                    per_fail.append({"key": k, "status": last_status, "message": last_snip})
+                return (str(k), hit, last_status, last_snip)
+
+            pending = [(k, v) for k, v in values.items() if str(k).strip() not in trusted_bulk_keys]
+            # Sequential on purpose: Plaky holds an item-level lock, so concurrent field
+            # PATCHes on one item 409 and the candidate ladder misread that as a wrong
+            # body shape, walked to failure, and the field silently kept its board
+            # default (caught live: Priority stuck at VERY IMPORTANT). Three fields at
+            # ~0.17s each is cheap; a silently wrong field is not.
+            outcomes = [await _patch_one_field(k, v) for k, v in pending]
+            for key_s, hit, last_status, last_snip in outcomes:
+                if hit:
+                    per_ok.append(key_s)
+                else:
+                    per_fail.append({"key": key_s, "status": last_status, "message": last_snip})
             mode = "bulk_then_per_field" if bulk_last_status is not None else "per_field"
             out: dict[str, Any] = {
                 "ok": len(per_fail) == 0,
@@ -1326,6 +1534,42 @@ class PlakyClient:
 
         bid = (board_id or "").strip() or context_board_id()
         gid = (group_id or "").strip() or context_group_id()
+
+        # Without a board there is nowhere to put the item. The legacy fallback below
+        # POSTs to a bare /tasks path, which the public API does not have — the caller
+        # got a 404 about a missing static resource and no idea a board was the problem.
+        if not bid:
+            return {
+                "ok": False,
+                "status": 400,
+                "message": (
+                    "No Plaky board selected, so there is nowhere to create this task. "
+                    "Pass board_id (and group_id), or pick a board in the UI. "
+                    "Use plaky_list_boards / plaky_match_board to find the id."
+                ),
+                "needs_board": True,
+            }
+
+        # A board with no group named: items live in groups, so pick the board's first
+        # one rather than dropping to the legacy /tasks path (which the public API does
+        # not serve). Asking the user to name a section they did not mention is friction
+        # for the common case of "make me 5 tasks on this board".
+        if bid and not gid:
+            groups = await self.list_groups(bid)
+            rows = groups.get("groups") or []
+            if rows:
+                gid = str(rows[0].get("id") or "").strip()
+            if not gid:
+                return {
+                    "ok": False,
+                    "status": 404,
+                    "message": (
+                        f"Board {bid} has no group to create the item in "
+                        f"({groups.get('message') or 'no groups returned'}). "
+                        "Create a group in Plaky, or pass group_id."
+                    ),
+                    "needs_group": True,
+                }
 
         if bid and gid:
             res = await self._create_item_hierarchy(bid, gid, title, description, priority)
@@ -1375,7 +1619,7 @@ class PlakyClient:
         url = f"{self.base_url.rstrip('/')}/tasks"
         body = {"title": title, "description": description, "priority": priority}
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             response = await _request_with_rate_limit_retry(
                 client, "POST", url, headers=_headers(self.api_key), json=body
             )
@@ -1515,8 +1759,8 @@ class PlakyClient:
                                 ol = str(opt.get("title") or opt.get("name") or "").strip()
                                 if ov and ol:
                                     status_value_labels[ov] = ol
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001 - failure is silenced for resilience
+                log_degraded(_log, "PlakyClient.get_tasks: get_board")
             listed = await self.list_board_items(bid, max_pages=5)
             if not listed.get("ok"):
                 return {
@@ -1528,30 +1772,59 @@ class PlakyClient:
             original_count = len(rows)
             status_in = (status or "").strip().casefold()
             if status_in and status_in not in ("all", "*"):
+                # "open" is not a label on real boards (they use NEEDS ASSIGNED / In QA /
+                # Completed / ...). Treat it as "not finished" instead of literal equality,
+                # otherwise the default filter matches nothing and the board looks empty.
+                done_markers = [
+                    m.strip().casefold()
+                    for m in (settings.plaky_reorder_done_status_markers or "").split(",")
+                    if m.strip()
+                ] + ["qa verified", "qa approved"]
+                semantic_open = status_in in ("open", "active", "todo", "to do", "not done")
+
                 filtered: list[dict[str, Any]] = []
+                seen_labels: list[str] = []
                 numeric_only_statuses = True
                 for row in rows:
                     resolved = _status_text(row)
                     if resolved and not resolved.isdigit():
                         numeric_only_statuses = False
-                    if resolved and resolved.casefold() == status_in:
+                        if resolved not in seen_labels:
+                            seen_labels.append(resolved)
+                    low = (resolved or "").casefold()
+                    if semantic_open:
+                        match = bool(resolved) and not any(m in low for m in done_markers)
+                    else:
+                        match = bool(resolved) and low == status_in
+                    if match:
                         if not str(row.get("status") or "").strip():
                             row["status"] = resolved
                         filtered.append(row)
                 if filtered:
                     rows = filtered
-                elif original_count > 0 and numeric_only_statuses:
+                elif original_count > 0:
+                    # A filter that matches nothing must never be reported as an empty board —
+                    # that reads to the user (and to the agent) as "there is no work here".
+                    for row in rows:
+                        if not str(row.get("status") or "").strip():
+                            resolved = _status_text(row)
+                            if resolved:
+                                row["status"] = resolved
+                    reason = (
+                        "item statuses are numeric ids"
+                        if numeric_only_statuses
+                        else f"this board's statuses are: {', '.join(seen_labels[:12]) or 'unknown'}"
+                    )
                     return {
                         "ok": True,
                         "status": 200,
                         "tasks": rows,
                         "message": (
-                            f"Loaded from board items on board_id={bid}. "
-                            f"Status filter '{status}' could not be matched because item statuses are numeric ids."
+                            f"Loaded all {original_count} item(s) from board_id={bid}. "
+                            f"Status filter '{status}' matched none of them, so no filter was "
+                            f"applied ({reason})."
                         ),
                     }
-                else:
-                    rows = filtered
             else:
                 for row in rows:
                     if not str(row.get("status") or "").strip():
@@ -1568,7 +1841,7 @@ class PlakyClient:
         url = f"{self.base_url.rstrip('/')}/tasks"
         params = {"status": status}
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             response = await _request_with_rate_limit_retry(
                 client, "GET", url, headers=_headers(self.api_key), params=params
             )
@@ -1636,7 +1909,7 @@ class PlakyClient:
         url = f"{self.base_url.rstrip('/')}/tasks/{tid}/comments"
         payload = {"body": body or ""}
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             response = await _request_with_rate_limit_retry(
                 client, "POST", url, headers=_headers(self.api_key), json=payload
             )
@@ -1666,7 +1939,7 @@ class PlakyClient:
 
         url = f"{self.base_url.rstrip('/')}/tasks/{task_id}"
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             response = await _request_with_rate_limit_retry(
                 client, "GET", url, headers=_headers(self.api_key)
             )
@@ -1709,7 +1982,7 @@ class PlakyClient:
 
         url = f"{self.base_url.rstrip('/')}/tasks/{task_id}"
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             response = await _request_with_rate_limit_retry(
                 client, "PATCH", url, headers=_headers(self.api_key), json=body
             )
@@ -1753,7 +2026,7 @@ class PlakyClient:
         if (priority or "").strip():
             payload["priority"] = (priority or "").strip()
 
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             response = await _request_with_rate_limit_retry(
                 client, "POST", url, headers=_headers(self.api_key), json=payload
             )
@@ -1869,7 +2142,8 @@ class PlakyClient:
                         if isinstance(groups[0], dict)
                         else ""
                     )
-            except Exception:
+            except Exception:  # noqa: BLE001 - graceful degradation
+                log_degraded(_log, "PlakyClient._create_subtask_via_public_items: list_groups")
                 gid = ""
         if not gid:
             return {
@@ -1930,7 +2204,7 @@ class PlakyClient:
 
         last_status = 400
         last_snip = ""
-        async with httpx.AsyncClient() as client:
+        async with shared_plaky_client() as client:
             for body in bodies:
                 r = await _request_with_rate_limit_retry(
                     client, "POST", url, headers=_headers(self.api_key), json=body

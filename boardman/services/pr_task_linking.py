@@ -27,7 +27,6 @@ from boardman.database.models import IssueTaskMap, SyncLog
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.repos_config import get_routing_async
-from boardman.services.issue_handler import get_linked_issue_numbers
 from boardman.services.llm_pr_task_rerank import llm_rerank_pr_candidates
 from boardman.settings import settings
 
@@ -38,7 +37,43 @@ GITHUB_ISSUE_URL_RE = re.compile(
     re.I,
 )
 BODY_HASH_ISSUE_RE = re.compile(r"(?<!\w)#(\d+)\b")
-BRANCH_ISSUE_NUM_RE = re.compile(r"(?:^|[-_/])(\d{1,6})(?=[-_/.]|$)")
+# Branch numbers count as issue refs ONLY in issue-like contexts. A bare trailing number
+# ("upgrade-node-20", "migrate-py-311") is NOT an issue reference — treating any digit run
+# as one can auto-link a PR to an unrelated task. Accepted shapes:
+#   keyword-prefixed anywhere:          issue-42, fix/42-sync, bug_42, gh-42, task/42
+#   leading number of a path segment:   42-add-tests, feature/42-bugfix, feature/42
+BRANCH_ISSUE_KEYWORD_RE = re.compile(
+    r"(?:^|[-_/])(?:issue|iss|fix(?:es)?|bug|gh|task)[-_/]?(\d{1,6})(?=[-_/.]|$)", re.I
+)
+# Bare leading numbers skipped to prevent false-positive auto-linking (e.g. "feature/2-factor-auth").
+# A bare leading number is NOT read as an issue reference. `feature/2-factor-auth` and
+# `release/2024-q1` are indistinguishable from `94-add-retries`, and here the cost is
+# higher than a missed link: an issue-reference overlap is worth +100 in the scorer, which
+# clears the auto-link threshold on its own. The hard-link path dropped this shape for the
+# same reason -- see issue_handler.branch_issue_numbers, which this now defers to.
+
+
+def branch_issue_numbers(ref: str) -> set[int]:
+    """Issue numbers a branch name plausibly references.
+
+    One reading of a branch name for the whole codebase: the prefixed forms
+    (`issue-94`, `gh-94`, `issue/94`), minus the date shapes. Scoring a PR against a
+    number this cannot mean is worse here than in the hard-link path -- the overlap bonus
+    is +100, enough to auto-link on its own.
+    """
+    from boardman.services.issue_handler import branch_issue_numbers as prefixed
+    from boardman.services.issue_handler import is_date_shaped_reference
+
+    ref = (ref or "").replace("refs/heads/", "")
+    out = {int(n) for n in prefixed(ref)}
+    for m in BRANCH_ISSUE_KEYWORD_RE.finditer(ref):
+        # The same date test the prefixed matcher applies. Unioning an unguarded matcher
+        # with a guarded one just puts `release/gh-2024-q1` back: this one accepts more
+        # keywords (bug_42, task/42), so it needs the guard rather than skipping it.
+        if is_date_shaped_reference(ref, m.end()):
+            continue
+        out.add(int(m.group(1)))
+    return {n for n in out if 1 <= n < 1_000_000}
 
 
 def github_head_ref(head: Any) -> str:
@@ -69,12 +104,7 @@ def referenced_issue_numbers(
     for m in BODY_HASH_ISSUE_RE.finditer(text):
         out.add(int(m.group(1)))
 
-    ref = head_ref.replace("refs/heads/", "")
-    for part in ref.split("/"):
-        for m in BRANCH_ISSUE_NUM_RE.finditer(part):
-            n = int(m.group(1))
-            if 1 <= n < 1_000_000:
-                out.add(n)
+    out |= branch_issue_numbers(head_ref)
 
     return out
 
@@ -442,12 +472,27 @@ def score_candidate(
     ts = _blend_seq_cos(ts_seq, ts_cos, cosine_blend)
     b["title_cos"] = round(ts_cos, 4)
     if ts_seq >= 0.98:
-        # Near exact match gets a huge boost to clear auto_link threshold
-        b["title_exact_match"] = 80.0
-        score += 80.0
+        # Near-exact title match is as strong a signal as an explicit issue reference —
+        # on its own it must clear the auto-link threshold, so a task made with the same
+        # title as a PR links instead of leaving the PR to spawn a duplicate task.
+        b["title_exact_match"] = 95.0
+        score += 95.0
     else:
         b["title_sim"] = round(ts, 4)
         score += 25.0 * ts
+
+        # Keyword overlap on meaningful title words: catches "QA: happy path rap song" vs
+        # "QA-end-to-end Happy path" — different phrasing, same subject — which sequence/cosine
+        # similarity on the raw strings under-scores because word order and filler differ.
+        pr_kw = _tokenize_ref(pr_title)
+        cand_kw = _tokenize_ref(cand.title)
+        if pr_kw and cand_kw:
+            kw_overlap = pr_kw & cand_kw
+            if kw_overlap:
+                jaccard = len(kw_overlap) / len(pr_kw | cand_kw)
+                boost = min(20.0, jaccard * 40.0)
+                b["title_keyword_overlap"] = round(boost, 2)
+                score += boost
 
     # --- Branch Name Keyword/Token Matching ---
     if head_ref:
@@ -801,17 +846,32 @@ async def run_pr_task_pipeline(
     )
 
 
-def closing_issue_numbers(pr_body: str | None) -> list[int]:
-    """Sync wrapper path uses async get_linked_issue_numbers; sync helper for tests."""
-    import asyncio
+async def should_run_pipeline(
+    pr_body: str | None,
+    *,
+    repo_full_name: str = "",
+    pr_title: str | None = None,
+    head_ref: str | None = None,
+) -> bool:
+    """Run when there are no closing keywords linking an issue.
 
-    return asyncio.get_event_loop().run_until_complete(get_linked_issue_numbers(pr_body))
+    Reads exactly what the linker reads. While this saw only the body, a PR titled
+    "Fixes #12: add retries" with an empty body counted as unlinked and went to the fuzzy
+    pipeline, which can attach it to an unrelated task -- while the same keyword in the
+    body correctly went to orphan triage.
 
+    The repo matters too: a URL naming another repository is not a local link, so a PR
+    that only cites one still needs the pipeline.
 
-async def should_run_pipeline(pr_body: str | None) -> bool:
-    """Run when there are no closing keywords linking an issue."""
-    linked = await get_linked_issue_numbers(pr_body)
-    return not linked
+    `head_ref` is accepted and deliberately ignored. A branch called `issue-94` is a hint,
+    not a link, and treating it as one here skips the pipeline for a PR nobody linked: if
+    #94 has no Plaky task, the PR goes straight to orphan triage and gets a NEW card, when
+    the fuzzy match would have found the task that already exists for that work. The
+    written keyword is the only thing worth skipping the search over.
+    """
+    from boardman.services.issue_handler import explicit_issue_numbers
+
+    return not explicit_issue_numbers(pr_body, pr_title, repo_full_name=repo_full_name)
 
 
 def format_triage_comment(top: Sequence[ScoredCandidate], limit: int = 3) -> str:

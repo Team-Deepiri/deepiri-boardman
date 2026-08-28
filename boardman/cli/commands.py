@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import re
 from html import escape
 from pathlib import Path
@@ -14,6 +15,8 @@ from boardman.agent.service import run_agent_chat
 from boardman.assignment.qa_picker import ensure_github_owner_repo
 from boardman.database.models import AgentSession, ProjectContext, ScanRun
 from boardman.database.session import async_session
+from boardman.llm.ollama_autodetect import NoOllamaModelAvailable, effective_ollama_model
+from boardman.observability.degradation import log_degraded
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.inventory import collect_plaky_inventory
 from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
@@ -37,6 +40,8 @@ from boardman.services.task_mutations import (
 )
 from boardman.cli.plan_commands import plan_app
 from boardman.settings import settings
+
+_log = logging.getLogger(__name__)
 
 app = typer.Typer(help="deepiri-boardman CLI")
 agent_app = typer.Typer(help="AI agent and repo scan")
@@ -498,14 +503,16 @@ def doctor():
                         f"[green]Ollama[/green] {settings.ollama_base_url} — {len(names)} model(s)"
                     )
                     try:
-                        from boardman.llm.ollama_autodetect import effective_ollama_model
-
                         picked = effective_ollama_model(None)
                         src = "LLM_MODEL" if (settings.llm_model or "").strip() else "auto"
                         console.print(
                             f"[dim]Boardman will use[/dim] [cyan]{picked}[/cyan] [dim]({src})[/dim]"
                         )
-                    except Exception as e:
+                    except NoOllamaModelAvailable as e:
+                        # Exactly what doctor is for: report it, do not stack-trace it.
+                        console.print(f"[yellow]No model pulled yet:[/yellow] {e}")
+                    except Exception as e:  # noqa: BLE001 - doctor reports, never fails
+                        log_degraded(_log, "doctor.run: effective_ollama_model", e)
                         console.print(f"[yellow]Could not auto-pick model:[/yellow] {e}")
                     if settings.llm_model and not any(settings.llm_model in n for n in names):
                         console.print(
@@ -515,7 +522,8 @@ def doctor():
                     console.print(
                         f"[yellow]Ollama[/yellow] HTTP {r.status_code} at {settings.ollama_base_url}"
                     )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - doctor reports, never fails
+            log_degraded(_log, "doctor.run: AsyncClient")
             console.print(f"[yellow]Ollama[/yellow] unreachable: {e}")
         if settings.plaky_api_key:
             plaky = PlakyClient()

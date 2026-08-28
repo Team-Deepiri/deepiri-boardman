@@ -3,6 +3,16 @@ import pytest
 import boardman.repos_config as rc
 
 
+@pytest.fixture(autouse=True)
+def _restore_real_repos_config():
+    """These tests point repos_yml_path at a tmp_path file and call reload_repos_config()
+    to load it — but _load_raw() is module-level lru_cache'd with no args, so the loaded
+    tmp data survives past monkeypatch's teardown and poisons every later test in the
+    session that reads the real repos.yml (order-dependent failures elsewhere)."""
+    yield
+    rc.reload_repos_config()
+
+
 @pytest.mark.asyncio
 async def test_list_workspace_repos_merges_org_and_yaml(monkeypatch, tmp_path):
     yml = tmp_path / "repos.yml"

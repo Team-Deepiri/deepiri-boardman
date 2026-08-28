@@ -38,6 +38,9 @@ _TYPE_BY_TOKEN: dict[str, str] = {
     "spike": "Research",
     "story": "Story",
     "issue": "Issue",
+    # GitHub's stock label for feature work — repos that never define custom labels
+    # still use this one, and it inferring nothing left their tasks untyped.
+    "enhancement": "Feature",
 }
 
 # "pause" intent in a comment: pause / paused / pauses / pausing / on hold / on-hold.
@@ -87,6 +90,11 @@ def infer_task_type_from_pr(
                 if tail in _TYPE_BY_TOKEN:
                     return _TYPE_BY_TOKEN[tail]
         for tok, canon in _TYPE_BY_TOKEN.items():
+            # "issue" counts only as an exact label or a prefixed one, both handled
+            # above. Loose containment made "good first issue" — an onboarding label
+            # with no type meaning — resolve to Issue, and then to Bug on this board.
+            if tok == "issue":
+                continue
             if re.search(rf"\b{re.escape(tok)}\b", name):
                 return canon
     return ""

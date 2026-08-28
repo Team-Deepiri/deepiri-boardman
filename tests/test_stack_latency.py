@@ -110,14 +110,24 @@ async def test_ollama_and_chat_complete_latency(
 
 
 def test_boardman_health_if_listening():
-    """If Boardman runs locally, health should be fast (<2s)."""
+    """If Boardman runs locally, health should be fast (<2s).
+
+    The client is built and warmed OUTSIDE the timed region, and with trust_env=False.
+    `httpx.get()` constructs a fresh client per call, and on Windows that client's proxy
+    discovery took 2.5-5.8s against a server answering in 5ms -- so the old shape failed
+    this test on a perfectly healthy instance, and would have hidden a real regression
+    inside its own overhead. Time the request, not the client.
+    """
     url = (os.environ.get("BOARDMAN_API_URL") or "http://127.0.0.1:8090").rstrip("/")
-    try:
+    with httpx.Client(timeout=3.0, trust_env=False) as client:
+        try:
+            warm = client.get(f"{url}/api/v1/health")
+        except (httpx.ConnectError, httpx.TimeoutException):
+            pytest.skip(f"Boardman not reachable at {url}")
+        assert warm.status_code == 200, warm.text
         t0 = time.perf_counter()
-        r = httpx.get(f"{url}/api/v1/health", timeout=3.0)
+        r = client.get(f"{url}/api/v1/health")
         dt = time.perf_counter() - t0
-    except (httpx.ConnectError, httpx.TimeoutException):
-        pytest.skip(f"Boardman not reachable at {url}")
     assert r.status_code == 200, r.text
     print(f"\n[stack_latency] GET /health {dt*1000:.1f} ms @ {url}")
     assert dt < 2.0, f"health unexpectedly slow: {dt:.2f}s"

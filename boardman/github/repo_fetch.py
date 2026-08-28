@@ -3,28 +3,52 @@
 from __future__ import annotations
 
 import base64
+import logging
+import time
 
 import httpx
 
+from boardman.github.http import shared_github_client
 from boardman.settings import settings
 
+_log = logging.getLogger(__name__)
 
-async def github_request(client: httpx.AsyncClient, path: str) -> httpx.Response:
+
+async def github_request(
+    client: httpx.AsyncClient, path: str, *, timeout: float | None = None
+) -> httpx.Response:
+    # Stripped: a trailing newline or space from how GITHUB_PAT got into the environment
+    # would otherwise ride along into the header and turn every call into a 401, which
+    # reads exactly like a revoked token.
     headers = {
-        "Authorization": f"Bearer {settings.github_pat}",
+        "Authorization": f"Bearer {(settings.github_pat or '').strip()}",
         "Accept": "application/vnd.github+json",
     }
     # follow_redirects: renamed repos return 301 to the new owner/name; without this every
     # helper sees the bare 301 and reports the repo as inaccessible.
-    return await client.get(f"https://api.github.com{path}", headers=headers, follow_redirects=True)
+    # timeout: only overridden when the caller passes one -- an explicit `timeout=None`
+    # here would disable httpx's timeout entirely rather than falling back to the shared
+    # client's default, so the kwarg is omitted, not passed as None, when unset.
+    kwargs: dict[str, object] = {"headers": headers, "follow_redirects": True}
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    started = time.monotonic()
+    try:
+        return await client.get(f"https://api.github.com{path}", **kwargs)
+    finally:
+        _log.debug("GitHub GET %s took %.2fs", path, time.monotonic() - started)
 
 
 def github_request_sync(client: httpx.Client, path: str) -> httpx.Response:
     headers = {
-        "Authorization": f"Bearer {settings.github_pat}",
+        "Authorization": f"Bearer {(settings.github_pat or '').strip()}",
         "Accept": "application/vnd.github+json",
     }
-    return client.get(f"https://api.github.com{path}", headers=headers, follow_redirects=True)
+    started = time.monotonic()
+    try:
+        return client.get(f"https://api.github.com{path}", headers=headers, follow_redirects=True)
+    finally:
+        _log.debug("GitHub GET %s took %.2fs", path, time.monotonic() - started)
 
 
 def _parse_owner_repo(owner_repo: str) -> tuple[str, str] | None:
@@ -39,17 +63,124 @@ def _parse_owner_repo(owner_repo: str) -> tuple[str, str] | None:
 
 
 async def fetch_direction_md(client: httpx.AsyncClient, owner: str, repo: str) -> str:
-    r = await github_request(client, f"/repos/{owner}/{repo}/contents/DIRECTION.md?ref=main")
-    if r.status_code == 404:
-        r = await github_request(client, f"/repos/{owner}/{repo}/contents/DIRECTION.md?ref=master")
-    if r.status_code != 200:
-        return f"(No DIRECTION.md found or inaccessible: HTTP {r.status_code})"
+    # Default branch first (repos whose default is not main/master), then the legacy pair.
+    branches: list[str] = []
+    default = await fetch_default_branch(client, owner, repo)
+    for b in (default, "main", "master"):
+        if b and b not in branches:
+            branches.append(b)
+    r = None
+    for b in branches:
+        r = await github_request(client, f"/repos/{owner}/{repo}/contents/DIRECTION.md?ref={b}")
+        if r.status_code == 200:
+            break
+    if r is None or r.status_code != 200:
+        code = r.status_code if r is not None else "n/a"
+        return f"(No DIRECTION.md found or inaccessible: HTTP {code})"
     data = r.json()
     if isinstance(data, dict) and data.get("encoding") == "base64" and data.get("content"):
         return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
     if isinstance(data, dict) and data.get("message"):
         return f"(GitHub: {data.get('message')})"
     return "(Could not decode DIRECTION.md)"
+
+
+async def fetch_readme_md(client: httpx.AsyncClient, owner: str, repo: str) -> str:
+    """Repo README via GET /repos/{o}/{r}/readme (any filename, default branch)."""
+    r = await github_request(client, f"/repos/{owner}/{repo}/readme")
+    if r.status_code != 200:
+        return f"(No README found or inaccessible: HTTP {r.status_code})"
+    data = r.json()
+    if isinstance(data, dict) and data.get("encoding") == "base64" and data.get("content"):
+        return base64.b64decode(data["content"]).decode("utf-8", errors="replace")[:30000]
+    if isinstance(data, dict) and data.get("message"):
+        return f"(GitHub: {data.get('message')})"
+    return "(Could not decode README)"
+
+
+# Manifest/config files worth surfacing when a repo has no docs.
+MANIFEST_FILENAMES = (
+    "package.json",
+    "pyproject.toml",
+    "requirements.txt",
+    "setup.py",
+    "go.mod",
+    "cargo.toml",
+    "pom.xml",
+    "build.gradle",
+    "gemfile",
+    "composer.json",
+    "docker-compose.yml",
+    "docker-compose.yaml",
+    "dockerfile",
+    "makefile",
+)
+
+
+async def fetch_repo_overview(client: httpx.AsyncClient, owner: str, repo: str) -> dict:
+    """Doc-free structural context: metadata + languages + file-tree summary + manifest paths.
+
+    This is the fallback that lets the agent explain a repo with NO markdown files:
+    what it is (description/topics), what it is written in (languages), how it is
+    laid out (tree summary), and where to look next (manifests + entry points).
+    """
+    from boardman.github.repo_metadata import fetch_repo_identity, fetch_repo_tree
+
+    out: dict = {"full_name": f"{owner}/{repo}"}
+
+    data = await fetch_repo_identity(client, owner, repo)
+    if data:
+        out["description"] = data.get("description") or ""
+        out["topics"] = data.get("topics") or []
+        out["default_branch"] = data.get("default_branch") or "main"
+        out["pushed_at"] = data.get("pushed_at") or ""
+        out["archived"] = bool(data.get("archived"))
+    else:
+        out["error"] = "repo metadata unavailable"
+        return out
+
+    rl = await github_request(client, f"/repos/{owner}/{repo}/languages")
+    langs = rl.json() if rl.status_code == 200 else None
+    if isinstance(langs, dict):
+        total = sum(v for v in langs.values() if isinstance(v, int | float)) or 1
+        out["languages"] = {
+            k: round(100.0 * v / total, 1)
+            for k, v in sorted(langs.items(), key=lambda kv: -kv[1])[:8]
+        }
+
+    branch = out.get("default_branch", "main")
+    tree_payload = await fetch_repo_tree(client, owner, repo, branch)
+    if tree_payload:
+        tree = tree_payload.get("tree") or []
+        paths = [t.get("path", "") for t in tree if isinstance(t, dict) and t.get("type") == "blob"]
+        out["file_count"] = len(paths)
+        out["truncated_tree"] = bool(tree_payload.get("truncated"))
+
+        top_level: dict[str, int] = {}
+        manifests: list[str] = []
+        entry_points: list[str] = []
+        for p in paths:
+            head = p.split("/", 1)[0]
+            top_level[head] = top_level.get(head, 0) + 1
+            base = p.rsplit("/", 1)[-1].lower()
+            if base in MANIFEST_FILENAMES and len(manifests) < 15:
+                manifests.append(p)
+            if (
+                base
+                in ("main.py", "app.py", "index.ts", "index.js", "main.go", "main.rs", "server.py")
+                and len(entry_points) < 10
+            ):
+                entry_points.append(p)
+        out["top_level"] = dict(sorted(top_level.items(), key=lambda kv: -kv[1])[:25])
+        out["manifests"] = manifests
+        out["entry_points"] = entry_points
+        # A shallow path sample so the model sees real structure, not just counts.
+        shallow = [p for p in paths if p.count("/") <= 1]
+        out["path_sample"] = shallow[:80]
+    else:
+        out["tree_error"] = "tree unavailable"
+
+    return out
 
 
 async def fetch_recent_commits(
@@ -84,6 +215,25 @@ async def fetch_open_issues(client: httpx.AsyncClient, owner: str, repo: str) ->
     return "\n".join(lines) if lines else "(no open issues)"
 
 
+async def fetch_open_pull_requests(client: httpx.AsyncClient, owner: str, repo: str) -> str:
+    """Open PRs with draft/author. Work in flight is stronger PM signal than a filed issue —
+    a repo with 8 open PRs and 0 issues is busy, not idle, and the assistant must see that."""
+    r = await github_request(client, f"/repos/{owner}/{repo}/pulls?state=open&per_page=50")
+    if r.status_code != 200:
+        return f"(pull requests unavailable: {r.status_code})"
+    prs = r.json()
+    if not isinstance(prs, list):
+        return "(pull requests: unexpected response)"
+    lines: list[str] = []
+    for p in prs:
+        if not isinstance(p, dict):
+            continue
+        author = ((p.get("user") or {}) if isinstance(p.get("user"), dict) else {}).get("login", "")
+        draft = " [draft]" if p.get("draft") else ""
+        lines.append(f"- #{p.get('number')}: {p.get('title', '')} (by {author}){draft}")
+    return chr(10).join(lines) if lines else "(no open pull requests)"
+
+
 async def fetch_pr_assignees_and_reviewers_logins(full_name: str, pr_number: int) -> set[str]:
     """
     GitHub assignees + requested_reviewers for a PR (lowercased logins).
@@ -96,7 +246,7 @@ async def fetch_pr_assignees_and_reviewers_logins(full_name: str, pr_number: int
     from urllib.parse import quote
 
     path = f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/pulls/{int(pr_number)}"
-    async with httpx.AsyncClient(timeout=20) as client:
+    async with shared_github_client() as client:
         r = await github_request(client, path)
     if r.status_code != 200:
         return set()
@@ -120,34 +270,64 @@ async def fetch_repo_file_text(
     path: str,
     *,
     ref: str = "",
+    max_chars: int = 50_000,
 ) -> str:
-    """Fetch a single file from the repo (default branch if ref empty)."""
-    from urllib.parse import quote
+    """Fetch a single file from the repo (default branch if ref empty).
 
-    clean = (path or "").strip().lstrip("/")
-    enc = "/".join(quote(seg, safe="") for seg in clean.split("/") if seg)
-    q = f"/repos/{owner}/{repo}/contents/{enc}"
-    if ref.strip():
-        q += f"?ref={quote(ref.strip(), safe='')}"
-    r = await github_request(client, q)
-    if r.status_code != 200:
-        return f"(file unavailable: HTTP {r.status_code} for {path})"
-    data = r.json()
-    if isinstance(data, dict) and data.get("encoding") == "base64" and data.get("content"):
-        return base64.b64decode(data["content"]).decode("utf-8", errors="replace")[:50000]
-    if isinstance(data, list):
-        return f"(path {path} is a directory, not a file)"
-    if isinstance(data, dict) and data.get("message"):
-        return f"(GitHub: {data.get('message')})"
-    return "(Could not decode file)"
+    ``max_chars`` caps the returned text. The default keeps prompt payloads small; callers
+    that COUNT things in the file (defect scanning) must raise it, otherwise they silently
+    report an undercount for any file larger than the cap.
+    """
+    from boardman.github.read_cache import cached
+
+    async def _fetch_full() -> str:
+        """Fetch and decode WITHOUT truncating — the memo must store the full text.
+
+        Callers pass different max_chars (defect scan 120k, prompt reads 50k). Caching an
+        already-truncated string would serve 50k-cut text to the 120k counter and
+        silently undercount defects, so the cap is applied per caller AFTER the memo.
+        """
+        from urllib.parse import quote
+
+        clean = (path or "").strip().lstrip("/")
+        enc = "/".join(quote(seg, safe="") for seg in clean.split("/") if seg)
+        q = f"/repos/{owner}/{repo}/contents/{enc}"
+        if ref.strip():
+            q += f"?ref={quote(ref.strip(), safe='')}"
+        r = await github_request(client, q)
+        if r.status_code != 200:
+            return f"(file unavailable: HTTP {r.status_code} for {path})"
+        data = r.json()
+        if isinstance(data, dict) and data.get("encoding") == "base64" and data.get("content"):
+            return base64.b64decode(data["content"]).decode("utf-8", errors="replace")
+        if isinstance(data, list):
+            return f"(path {path} is a directory, not a file)"
+        if isinstance(data, dict) and data.get("message"):
+            return f"(GitHub: {data.get('message')})"
+        return "(Could not decode file)"
+
+    # Scan + search fetch the SAME top-N files back to back; without this every audit
+    # question re-downloaded ~16 files (up to ~2.5MB) per tool call. Error strings all
+    # start with "(" and are never cached, so a 403 blip is retried, not remembered.
+    full = await cached(
+        f"file:{owner}/{repo}@{ref.strip()}:{path}",
+        _fetch_full,
+        ok=lambda s: isinstance(s, str) and not s.startswith("("),
+    )
+    text = str(full)
+    if len(text) > max_chars:
+        _log.warning(
+            "fetch_repo_file_text truncated %s/%s:%s from %d to %d chars",
+            owner, repo, path, len(text), max_chars,
+        )
+    return text[:max_chars]
 
 
 async def fetch_default_branch(client: httpx.AsyncClient, owner: str, repo: str) -> str:
-    r = await github_request(client, f"/repos/{owner}/{repo}")
-    if r.status_code != 200:
-        return "main"
-    data = r.json()
-    if isinstance(data, dict):
+    from boardman.github.repo_metadata import fetch_repo_identity
+
+    data = await fetch_repo_identity(client, owner, repo)
+    if data:
         b = data.get("default_branch")
         if isinstance(b, str) and b.strip():
             return b.strip()

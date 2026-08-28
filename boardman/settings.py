@@ -1,5 +1,39 @@
+"""Pydantic-settings configuration (all env vars live here)."""
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# --- Analysis/context limits, defined once (Sorge review, PR #88) --------------------
+# These doubled as literals inside the modules that consume them ("or 16", "or 200"),
+# so a change here silently disagreed with the fallback there. They now live in exactly
+# one place: the Field default below *and* the module fallback both read these names.
+DEFAULT_LLM_CONTEXT_BUDGET_CHARS = 24_000
+DEFAULT_GITHUB_PR_MAX_FILES = 40
+DEFAULT_GITHUB_PR_MAX_BODY_CHARS = 4_000
+DEFAULT_GITHUB_CODE_SEARCH_MAX_FILES = 16
+DEFAULT_GITHUB_CODE_SEARCH_MAX_BYTES_PER_FILE = 120_000
+# Splitting open issues from open PRs costs one extra GitHub call per repo, so only the
+# head of the activity ranking pays it. 8 covers the repos anyone actually asks about.
+DEFAULT_GITHUB_ORG_ACTIVITY_SPLIT_TOP_N = 8
+# 200 repo names is ~1.7KB of system prompt. Large orgs truncate with a visible note.
+DEFAULT_AGENT_ORG_ROSTER_MAX_NAMES = 200
+# Above this many characters a reply is substantive even if it contains "let me check",
+# so the unfulfilled-preamble guard stops looking. See boardman/agent/runner.py.
+DEFAULT_AGENT_PREAMBLE_MAX_CHARS = 600
+
+
+def positive_or_default(raw: object, default: int) -> int:
+    """Read a limit that slices a list or a string.
+
+    Anything <= 0 (or unparseable) means "unset" and yields `default`. A negative would
+    otherwise reach the wrong end of the sequence -- `names[:-1]` silently drops a real
+    repo while the caller still reports the list as complete.
+    """
+    try:
+        n = int(raw)  # type: ignore[call-overload]  # any object; TypeError is handled
+    except (TypeError, ValueError):
+        return default
+    return n if n > 0 else default
 
 
 class Settings(BaseSettings):
@@ -53,6 +87,41 @@ class Settings(BaseSettings):
     plaky_team_assignment_field_sync_cooldown_seconds: float = 60.0
     # Seconds; 0 disables TTL cache for fetch_board_schema_bundle
     plaky_board_schema_cache_ttl_seconds: float = 90.0
+    # Read-only GitHub repo context reuse between questions. 0 disables the cache.
+    github_read_cache_ttl_seconds: float = 300.0
+    # Persistent planning-context snapshot TTL. The in-process GitHub cache is shorter;
+    # this survives API/worker restarts without turning ProjectContext into a raw repo dump.
+    agent_repo_context_cache_ttl_seconds: float = 900.0
+    # Keep a stale snapshot available as a graceful fallback when GitHub is unavailable.
+    agent_repo_context_stale_if_error_seconds: float = 86_400.0
+    # Periodic knowledge sweep (worker-owned). This is a RECONCILIATION net for what the
+    # webhooks missed, not a rescan: each cycle costs one cheap metadata call per repo and
+    # only refetches a repo whose `pushed_at` moved since its snapshot was built.
+    repo_knowledge_sweep_enabled: bool = True
+    repo_knowledge_sweep_interval_seconds: float = 600.0
+    # Bounded so one slow or broken repo cannot hold up the fleet.
+    repo_knowledge_sweep_concurrency: int = 3
+    repo_knowledge_sweep_max_repos: int = 25
+    # Tunable analysis limits (Sorge review, PR #81): context budget for the repo
+    # planning payload, PR review file cap, and code-search scope.
+    llm_context_budget_chars: int = DEFAULT_LLM_CONTEXT_BUDGET_CHARS
+    github_pr_max_files: int = DEFAULT_GITHUB_PR_MAX_FILES
+    github_pr_max_body_chars: int = DEFAULT_GITHUB_PR_MAX_BODY_CHARS
+    github_code_search_max_files: int = DEFAULT_GITHUB_CODE_SEARCH_MAX_FILES
+    github_code_search_max_bytes_per_file: int = DEFAULT_GITHUB_CODE_SEARCH_MAX_BYTES_PER_FILE
+    # How many of the busiest repos get their open issues split from their open PRs.
+    # 0 means "make no extra calls"; a negative value asks for the default.
+    github_org_activity_split_top_n: int = DEFAULT_GITHUB_ORG_ACTIVITY_SPLIT_TOP_N
+    # Extra committed-artifact detections for repo hotspots, beyond the built-in list in
+    # boardman/github/repo_hotspots.py. Format: "filename_suffix:why it matters",
+    # SEMICOLON-separated, because reasons are prose and prose contains commas. A marker
+    # is a filename ENDING of at least 3 characters (endswith, not substring). e.g.
+    # "id_ed25519:private SSH key tracked in git;.tfstate:terraform state, with secrets".
+    # Lets a deployment add a new sensitive file type without a code change.
+    github_extra_artifact_rules: str = ""
+    # QA GitHub-fit scoring knobs (see assignment/qa_picker.py for semantics).
+    qa_fit_weight_direct: float = 0.0  # 0 = use the module default
+    qa_fit_scoring_timeout_seconds: float = 0.0  # 0 = use the module default
 
     # --- Repo → Plaky placement auto-discovery (replaces repos.yml board/group IDs) ---
     # Catalog: all categorical boards + groups, cached on disk for webhook routing.
@@ -62,8 +131,34 @@ class Settings(BaseSettings):
     plaky_placement_min_score: int = 400  # rank_plaky_rows threshold; see name_match.py
     # Limit search to the five categorical boards (excludes legacy AI Task Board, etc.).
     plaky_catalog_categorical_only: bool = True
+    # Local "as-if-production" mode. When true, this instance polls GitHub for new activity
+    # (issues, PRs, reviews, comments, pushes) on `testing_live_plaky_repos` and routes each
+    # event through the same handlers as POST /api/v1/webhooks/github — so Plaky updates live
+    # ONLY while this process runs. History from before startup is never replayed. Set false
+    # in production, where real GitHub webhooks deliver events instead.
+    testing_live_plaky: bool = False
+    # Comma-separated owner/repo list, or "all"/"*" to watch every non-archived repo in
+    # github_org that resolves to a Plaky board (github_poller.resolve_poller_repos).
+    testing_live_plaky_repos: str = "Team-Deepiri/deepiri-boardman"
+    testing_live_plaky_poll_seconds: float = 60.0
+    # On startup the poller baselines existing events (no pre-start history replay). To avoid a
+    # blind spot across restarts while testing, it also processes events created within this many
+    # minutes of startup. 0 = strict baseline only. Duplicate issue tasks are still deduped by
+    # IssueTaskMap. Irrelevant in production (TESTING_LIVE_PLAKY=false; real webhooks deliver events).
+    testing_live_plaky_catchup_minutes: float = 45.0
 
     github_webhook_secret: str = ""
+    # Production webhooks should acknowledge quickly and let boardman-worker run the
+    # Plaky mutation.  Kept opt-in for local/dev callers that intentionally exercise
+    # handlers inline without a worker.
+    github_webhook_async_enabled: bool = False
+    github_webhook_job_retries: int = 2
+    github_reconcile_enabled: bool = False
+    # The reconciliation sweep is a safety net for deliveries the webhook missed, not a
+    # poller. Every cycle costs GitHub calls per registered repo, on the same rate limit
+    # the agent's own tools spend. Lower it in .env for a local test, not here.
+    github_reconcile_interval_seconds: float = 900.0
+    github_reconcile_max_items: int = 50
     github_pat: str | None = None
     github_org: str = "deepiri-org"
     # Prepended to bare repo slugs (no "owner/") for QA roster + create-task; e.g. Team-Deepiri/foo.
@@ -84,6 +179,10 @@ class Settings(BaseSettings):
     github_qa_activity_tier2_min_weighted_score: float = 2.5
     default_repo_category: str = ""
     default_plaky_table: str = ""
+    # QA pick ranking from GitHub contribution profiles (cosine similarity vs the target
+    # repo). False = legacy overlap-pool weighted-random pick only.
+    qa_github_fit_enabled: bool = True
+    qa_max_active_prs: int = 5
 
     database_url: str = "sqlite+aiosqlite:///./boardman.db"
 
@@ -108,6 +207,10 @@ class Settings(BaseSettings):
     ollama_keep_alive: str = "30m"
     # Optional cap on generated tokens (Ollama options.num_predict). Unset = server default (often slow for long replies).
     ollama_num_predict: int | None = None
+    # Provider-side retries for transient failures (429 TPM blips, 5xx). Without this a
+    # momentary rate limit surfaces to the user as "I could not get a reply from the
+    # language model" — i.e. a full outage from a 3-second hiccup.
+    llm_max_retries: int = 4
     openai_api_key: str = ""
     openrouter_api_key: str = ""
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
@@ -121,14 +224,25 @@ class Settings(BaseSettings):
     # routes (no conversational routing / chat in production; UI is deployed separately).
     boardman_enable_agent_api: bool = True
 
-    agent_max_history: int = 50
+    # PDF plan step 6: a tight recent window; 50 messages of prompt stuffing cost more
+    # tokens than they added context. Raise per-deployment if a flow truly needs more.
+    agent_max_history: int = 16
     agent_require_confirm_bulk: bool = True
     agent_langchain_tools: bool = True
     # LangGraph model↔tool steps cap (each step is often a full LLM call — keep low for latency)
-    agent_recursion_limit: int = 60
+    # 0 = mode-based ceiling (10 read / 16 write, PDF latency plan step 4); set to pin.
+    agent_recursion_limit: int = 0
     # When True, LangChain AgentExecutor prints step traces (noisy; dev only)
     agent_langchain_verbose: bool = False
-    prompt_version: str = "2026-04-09"
+    # Repo names injected into every system prompt (see boardman/agent/org_roster.py).
+    agent_org_roster_max_names: int = DEFAULT_AGENT_ORG_ROSTER_MAX_NAMES
+    # Length ceiling for the unfulfilled-preamble guard (boardman/agent/runner.py). Raise
+    # it if a model starts shipping longer bare promises; lower it if real short answers
+    # are being retried. 0 = use DEFAULT_AGENT_PREAMBLE_MAX_CHARS.
+    agent_preamble_max_chars: int = DEFAULT_AGENT_PREAMBLE_MAX_CHARS
+    # Bumped when the system prompt changes shape, so sessions are never compared across
+    # prompt generations. 2026-08-20: structured project state became the default context.
+    prompt_version: str = "2026-08-20"
 
     cors_origins: str = (
         "http://localhost:5176,http://127.0.0.1:5176,"

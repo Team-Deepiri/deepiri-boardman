@@ -154,8 +154,9 @@ async def _public_item_blob(plaky: PlakyClient, board_id: str, task_id: str) -> 
 
 
 def _routing_factory(board_id: str):
-    def _routing(*_a: Any, **_k: Any) -> RepoRouting:
-        return RepoRouting(plaky_board_id=board_id)
+    def _routing(*_a: Any, with_source: bool = False, **_k: Any) -> Any:
+        r = RepoRouting(plaky_board_id=board_id)
+        return (r, "explicit") if with_source else r
 
     return _routing
 

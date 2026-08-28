@@ -3,6 +3,18 @@ plaky_field_keys:
   qa: person-2
   repo: tag-2
   github_repos: tag-2
+# Leads/managers never auto-assigned to review PRs (matched on display name or GitHub login).
+qa_excluded:
+- Joe Black
+- Austin Heitzman
+- Devin Gamble
+- Sean San
+- Nathan Adams
+# Added per Joe's PR #81 review (leads/managers on the support team, never PR QA):
+- Asheen Hameeda
+- AndyN-star
+- David Poindexter
+
 member_defaults:
   roles:
   - engineer
@@ -10,15 +22,40 @@ member_defaults:
   qa_tier: 3
   tier: standard
   repo_globs:
+  # Team-Deepiri is the real org; deepiri-org is a legacy alias still used by some config.
+  - Team-Deepiri/*
   - deepiri-org/*
   weight: 1.0
 member_overrides:
-  your-github-login:
-    id: ''
+  # GitHub login -> explicit Plaky user id (used when the identity matcher can't
+  # bridge the accounts, e.g. login and Plaky email share nothing).
+  Blasted-ctrl:
+    id: '481106'   # Ali Ferris (aliferris2006@gmail.com)
     roles:
     - engineer
     - qa
     qa_tier: 3
+members_fallback_only: true   # members: below is a FALLBACK; live GitHub roster wins
+# FALLBACK roster only. The live Team-Deepiri/support-team GitHub team is the source of
+# truth; this list is used ONLY when that API call fails (PAT lacking org read, token
+# pending org approval, GitHub outage) so QA assignment never goes dark.
+# Plaky ids came from the identity matcher's own auto-match against the workspace.
+members:
+- {github_login: Blasted-ctrl, id: '481106', display: Ali Ferris}
+- {github_login: amy-seoyoung-ha, id: '487363', display: Amy Ha}
+- {github_login: AndyN-star, id: '451107', display: AndyN-star}
+- {github_login: asheenhameeda8-cpu, id: '432288', display: Asheen Hameeda}
+- {github_login: austinm2h35-sketch, id: '291192', display: Austin Heitzman}
+- {github_login: Yoloholoknow, id: '460725', display: Charles Huang}
+- {github_login: christiankrider1, id: '291443', display: Christian Krider}
+- {github_login: connor-schaum, id: '485189', display: Connor Schaum}
+- {github_login: Dpoin23, id: '291493', display: Dpoin23}
+- {github_login: devcodesfr, id: '474917', display: Devin Gamble}
+- {github_login: ericchen682, id: '427676', display: Eric Chen}
+- {github_login: navid-nafeie, id: '496853', display: Navid Nafeie}
+- {github_login: RiccoWrld, id: '476542', display: RiccoWrld}
+- {github_login: SeanSan06, id: '427333', display: Sean San}
+- {github_login: sergiovargas111, id: '476634', display: Sergio Vargas}
 hardware_tiers:
   light:
     weight_bias: 0.75
@@ -34,7 +71,7 @@ repo_requirements:
 selection:
   random_jitter: 0.12
 ambiguous_pr:
-  enabled: false
+  enabled: true   # orphan PRs become real, linked tasks on the repo's routed board
   triage_board_id: ''
   triage_group_id: ''
   assign_qa: true

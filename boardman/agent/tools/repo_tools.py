@@ -165,9 +165,17 @@ def _scan_local_repo(path: str, max_files: int = 40) -> str:
     return json.dumps(out, indent=2)[:18000]
 
 
+def _record_thought(thought: Any) -> str:
+    """The thoughts tool handler. Accepts any shape the model sends, because gpt-5.1
+    sometimes passes a structured dict here, and ``dict[:50]`` raises ``KeyError``
+    which killed the whole turn over a scratchpad acknowledgement."""
+    text = str(thought) if not isinstance(thought, str) else thought
+    return f"Thought recorded: {text[:50]}..."
+
+
 def thoughts_tool() -> StructuredTool:
     return StructuredTool.from_function(
-        lambda thought: f"Thought recorded: {thought[:50]}...",
+        _record_thought,
         name="thoughts",
         description=(
             "Record your internal plan, reasoning, or multi-step logic here. "

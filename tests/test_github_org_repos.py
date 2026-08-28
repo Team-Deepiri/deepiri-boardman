@@ -3,7 +3,15 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from boardman.github.org_repos import fetch_org_repository_full_names
+from boardman.github.org_repos import clear_org_repos_cache, fetch_org_repository_full_names
+
+
+@pytest.fixture(autouse=True)
+def _no_org_repo_cache():
+    """The listing has a 10-min TTL cache; these cases reuse one org name, so isolate them."""
+    clear_org_repos_cache()
+    yield
+    clear_org_repos_cache()
 
 
 @pytest.mark.asyncio
