@@ -289,6 +289,21 @@ def _merge_candidate(
         c.assignee_name = assignee_name
 
 
+def _item_group_id(item: dict[str, Any]) -> str:
+    """Extract the group id an item belongs to — API has returned this as `groupId`,
+    `group_id`, a `group` dict with an `id`, and (live-verified) a bare `group` int/str."""
+    for key in ("groupId", "group_id"):
+        val = item.get(key)
+        if val not in (None, ""):
+            return str(val)
+    group = item.get("group")
+    if isinstance(group, dict):
+        return str(group.get("id") or "")
+    if group not in (None, ""):
+        return str(group)
+    return ""
+
+
 async def gather_candidates(
     *,
     session: AsyncSession,
@@ -296,6 +311,7 @@ async def gather_candidates(
     repo_full: str,
     board_id: str,
     plaky: PlakyClient,
+    group_id: str = "",
 ) -> dict[str, TaskCandidate]:
     by_id: dict[str, TaskCandidate] = {}
 
@@ -386,7 +402,15 @@ async def gather_candidates(
             or rf_low in cl
             or (owner and f"{owner}/{repo_name}".lower() in cl)
         )
-        if mention_repo or nums:
+        # Boards use one Plaky group per repo (see plaky_catalog / placement_discovery).
+        # When the caller already knows this repo's group (routing resolved it), any item
+        # IN that group is this repo's own work — the text-mention/issue-number check
+        # below is the fallback for boards where that per-repo grouping doesn't hold, and
+        # it silently drops plain-titled tasks that name neither a repo tag nor an issue
+        # number (verified live: 4 real tasks in one repo's group, zero picked up before
+        # this check existed).
+        same_group = bool(group_id) and _item_group_id(item) == group_id
+        if same_group or mention_repo or nums:
             _merge_candidate(
                 by_id,
                 tid,
@@ -662,6 +686,8 @@ async def run_pr_task_pipeline(
     routing = await get_routing_async(repo_full, repo_name, org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
     board_id = board_id.strip()
+    group_id = (routing.plaky_group_id if routing and routing.plaky_group_id else "") or ""
+    group_id = group_id.strip()
 
     # Dynamic status detection from schema
     done_set: set[str] = set()
@@ -715,6 +741,7 @@ async def run_pr_task_pipeline(
         repo_full=repo_full,
         board_id=board_id,
         plaky=plaky,
+        group_id=group_id,
     )
 
     if not candidates:
