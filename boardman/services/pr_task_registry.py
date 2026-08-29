@@ -419,6 +419,45 @@ async def stamp_qa_on_pr_links(
     return len(rows)
 
 
+async def stamp_commits_at_last_review(
+    session: AsyncSession,
+    *,
+    github_repo: str,
+    github_pr_number: int,
+    commits: int,
+) -> int:
+    """Record the PR's commit count at the moment a QA review verdict landed —
+    the baseline handle_pr_synchronized compares later pushes against to tell one
+    follow-up commit (Revisions In Progress) from several (Needs QA Again)."""
+    q = select(PullRequestTaskLink).where(
+        PullRequestTaskLink.github_repo == github_repo,
+        PullRequestTaskLink.github_pr_number == github_pr_number,
+        _active_link_clause(),
+    )
+    rows = list((await session.execute(q)).scalars())
+    for row in rows:
+        row.commits_at_last_review = commits
+    return len(rows)
+
+
+async def commits_at_last_review_for_pr(
+    session: AsyncSession,
+    *,
+    github_repo: str,
+    github_pr_number: int,
+) -> int | None:
+    """The stamped baseline for this PR, or None if no review verdict has landed yet
+    (or the PR has no active link) — callers treat None as "nothing to escalate"."""
+    q = select(PullRequestTaskLink.commits_at_last_review).where(
+        PullRequestTaskLink.github_repo == github_repo,
+        PullRequestTaskLink.github_pr_number == github_pr_number,
+        _active_link_clause(),
+        PullRequestTaskLink.commits_at_last_review.is_not(None),
+    )
+    row = (await session.execute(q)).scalars().first()
+    return int(row) if row is not None else None
+
+
 async def distinct_task_ids_for_pr(
     session: AsyncSession,
     *,

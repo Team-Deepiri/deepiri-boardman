@@ -59,6 +59,12 @@ class PullRequestTaskLink(Base):
     # different clock than the timestamps it would be compared against.
     withdrawn_github_at: Mapped[str | None] = mapped_column(String(40), nullable=True)
     qa_plaky_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # PR's cumulative commit count at the moment of the last QA review verdict
+    # (approve/request-changes). Compared against the PR's current commit count on
+    # later pushes to tell "one follow-up push" (Revisions In Progress) from
+    # "developer kept pushing without re-requesting QA" (Needs QA Again). NULL until
+    # a review verdict has actually landed.
+    commits_at_last_review: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 

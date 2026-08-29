@@ -169,6 +169,26 @@ _WORKFLOW_COMPLETED_NEG: tuple[str, ...] = (
     "paused",
     "qa",
 )
+# CD actually shipped the merged code (distinct from "merged" alone — a board that
+# tracks deploys wants this to fire only on a real deployment_status success, not on
+# every merge). Only matched by name containing "deploy"/"live"/"production", never by
+# the generic "completed"/"shipped" hints above, so a board with no dedicated deployed
+# column correctly yields no match and the caller stays on "completed".
+_WORKFLOW_DEPLOYED_HINTS: tuple[str, ...] = (
+    "deployed",
+    "deploy",
+    "live",
+    "in production",
+    "released",
+    "shipped to prod",
+)
+_WORKFLOW_DEPLOYED_NEG: tuple[str, ...] = (
+    "not deployed",
+    "undeploy",
+    "rollback",
+    "rolled back",
+    "failed",
+)
 
 
 def _norm(s: str) -> str:
@@ -322,6 +342,8 @@ async def resolve_plaky_status_patch(
         hints, neg = _WORKFLOW_IN_PROGRESS_HINTS, _WORKFLOW_IN_PROGRESS_NEG
     elif intent == "workflow_completed":
         hints, neg = _WORKFLOW_COMPLETED_HINTS, _WORKFLOW_COMPLETED_NEG
+    elif intent == "workflow_deployed":
+        hints, neg = _WORKFLOW_DEPLOYED_HINTS, _WORKFLOW_DEPLOYED_NEG
     else:
         return None
 
