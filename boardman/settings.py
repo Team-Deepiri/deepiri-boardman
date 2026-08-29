@@ -78,6 +78,23 @@ class Settings(BaseSettings):
     plaky_pr_fill_assignee_from_author: bool = True
     plaky_pr_tracking_board_id: str = ""
     plaky_pr_tracking_group_id: str = ""
+    # A Plaky board with one item per teammate, holding LIVE-MEASURED hardware facts
+    # (see `boardman diagnostics capability-report`) instead of a hand-typed tier in
+    # team_assignments.yml. Empty by default: unset means "this board doesn't exist yet
+    # for this workspace", and qa_picker falls back to team_assignments.yml's `tier`
+    # field unchanged. The board itself has to be created by a human (the public Plaky
+    # API cannot create boards) — this only ever READS/WRITES an existing one.
+    plaky_capability_board_id: str = ""
+    plaky_capability_group_id: str = ""
+    # Field keys on that board's items — same "resolve from schema, don't hardcode ids"
+    # pattern as plaky_field_keys elsewhere; these are the human-readable field NAMES
+    # boardman looks for (case-insensitive substring match against the schema).
+    plaky_capability_login_field: str = "github_login"
+    plaky_capability_tier_field: str = "tier"
+    # How long a measured value is trusted before capability_report should be re-run;
+    # purely informational today (surfaced in the read, not enforced), since nothing
+    # else in this app has a "nag the user to re-run a CLI command" mechanism yet.
+    plaky_capability_stale_after_days: int = 90
     # When true, GitHub PR link comments use HTML <a href> (Plaky often does not linkify bare URLs).
     plaky_pr_comment_links_as_html: bool = True
     # On startup, fetch the default board schema and fill blank `plaky_field_keys` in team_assignments.yml.

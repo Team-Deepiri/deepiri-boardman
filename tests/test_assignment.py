@@ -85,6 +85,38 @@ async def test_tier2_excludes_emotion_repo_for_tier2_qa():
 
 
 @pytest.mark.asyncio
+async def test_live_capability_board_overrides_config_tier(monkeypatch):
+    """A QA configured as `tier: light` in team_assignments.yml, but reported as
+    `heavy` on the live capability board (a fresher machine, or the config was never
+    updated), must be treated as heavy for the hardware hard-filter — the live
+    measurement wins over the hand-typed config value."""
+    from boardman.assignment import qa_picker as qp
+
+    cfg = _sample_cfg()
+    # Only qa-light matches this repo's globs (qa-heavy is scoped to emotion-*), and
+    # only the legacy hardware-tier filter (not qa_tier/qa_repo_rules, which target
+    # "*emotion*") differentiates this repo — isolates the tier-override's effect.
+    cfg.heavy_repo_patterns = ["*boardman*"]
+    for m in cfg.members:
+        if m.id == "qa-light":
+            m.github_login = "qa-light-login"
+
+    # Without a live override: light hardware is dropped from a heavy repo.
+    monkeypatch.setattr(qp, "fetch_capability_tiers", lambda: _async({}))
+    qid, why = await pick_qa_for_repo("deepiri-org/boardman", cfg)
+    assert qid is None, why
+
+    # With a live override to heavy: now eligible.
+    monkeypatch.setattr(qp, "fetch_capability_tiers", lambda: _async({"qa-light-login": "heavy"}))
+    qid, why = await pick_qa_for_repo("deepiri-org/boardman", cfg)
+    assert qid == "qa-light", why
+
+
+async def _async(value):
+    return value
+
+
+@pytest.mark.asyncio
 async def test_non_heavy_repo_allows_light_qa_in_pool():
     cfg = _sample_cfg()
     random.seed(0)

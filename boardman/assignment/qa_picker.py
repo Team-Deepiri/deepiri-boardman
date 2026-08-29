@@ -19,12 +19,14 @@ Hard filters first, then a real ranking:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import random
 import re
 from fnmatch import fnmatchcase
 from typing import NamedTuple
 
+from boardman.assignment.capability_board import fetch_capability_tiers
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, load_team_assignments
 from boardman.assignment.repo_rules import qa_tier_allows_repo
 from boardman.assignment.tier_classifier import classify_repo_tier
@@ -485,6 +487,23 @@ async def pick_qa_for_repo(
             f"no QA after qa_repo_rules filter for {fn!r} "
             f"({len(rules_before)} candidate(s) passed the numeric tier filter)",
         )
+
+    # Live-measured hardware capability (boardman diagnostics capability-report) wins
+    # over the hand-typed team_assignments.yml `tier` when both exist for this login —
+    # see boardman/assignment/capability_board.py. Falls back to the config value
+    # untouched when the capability board isn't configured or has no row for someone.
+    try:
+        live_tiers = await fetch_capability_tiers()
+    except Exception:  # noqa: BLE001 - a live-data outage must not block QA assignment
+        log_unexpected(_log, "pick_qa_for_repo: fetch_capability_tiers")
+        live_tiers = {}
+    if live_tiers:
+        qas = [
+            dataclasses.replace(
+                m, tier=live_tiers.get((m.github_login or "").strip().lower(), m.tier)
+            )
+            for m in qas
+        ]
 
     if repo_is_heavy(fn, cfg.heavy_repo_patterns):
         qas = [m for m in qas if m.tier.lower() not in ("light", "minimal", "low")]
