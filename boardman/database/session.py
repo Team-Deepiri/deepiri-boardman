@@ -1,4 +1,5 @@
-"""SQLAlchemy async engine and session factory for SQLite."""
+"""SQLAlchemy async engine and session factory (SQLite for local/dev, Postgres for
+multi-writer deployments — see database_url in boardman.settings)."""
 
 from collections.abc import AsyncIterator
 

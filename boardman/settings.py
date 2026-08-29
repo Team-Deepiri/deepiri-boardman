@@ -184,6 +184,12 @@ class Settings(BaseSettings):
     qa_github_fit_enabled: bool = True
     qa_max_active_prs: int = 5
 
+    # sqlite+aiosqlite is a fine zero-config default for one person running Boardman
+    # locally, but it serializes every write onto a single connection — with the API
+    # process and the worker (or more than one Boardman instance) writing concurrently,
+    # that is real lock contention. For anything with more than one writer, set this to
+    # a postgresql+asyncpg:// URL (docker-compose.prod.yml does this for you) and run
+    # `alembic upgrade head` against it once before first boot.
     database_url: str = "sqlite+aiosqlite:///./boardman.db"
 
     service_host: str = "0.0.0.0"
