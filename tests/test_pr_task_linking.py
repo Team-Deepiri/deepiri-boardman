@@ -9,6 +9,7 @@ from boardman.database.models import Base, IssueTaskMap, SyncLog
 from boardman.services.pr_task_linking import (
     TaskCandidate,
     format_triage_comment,
+    gather_candidates,
     github_head_ref,
     referenced_issue_numbers,
     run_pr_task_pipeline,
@@ -326,6 +327,101 @@ async def test_pipeline_auto_link_db_and_branch(monkeypatch):
     assert r.decision == "auto_link"
     assert r.task_id == "plaky-42"
     assert r.score >= 90.0
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_gather_candidates_includes_same_group_items_with_plain_titles(monkeypatch):
+    """Verified live against a real board: a Plaky task with a plain human title (no
+    `[repo]` tag, no `#NN` issue reference) was silently invisible to the pipeline
+    because it's in the repo's own Plaky group but the old filter only recognized a
+    text-tag or issue-number mention. Devin's "fuzzy matching not picking up" and Ali's
+    4 unmatched Calliope PRs were both this: the tasks never became scoring candidates
+    at all, regardless of how good the title scoring was."""
+
+    class FakePlaky:
+        async def list_board_items(self, *a, **k):
+            return {
+                "ok": True,
+                "items": [
+                    # Same group as this repo, plain title — must be picked up.
+                    {"id": "same-group-1", "title": "Stability: live audio latency", "group": 907469},
+                    # Different group (another repo on the same categorical board), plain
+                    # title with no tag/issue-number — must NOT be picked up just because
+                    # it's on the same physical board.
+                    {"id": "other-group-1", "title": "Unrelated module cleanup", "group": 111111},
+                ],
+            }
+
+        async def list_workspace_users(self):
+            return {"ok": True, "users": []}
+
+    engine, factory = await _memory_session_factory()
+    async with factory() as session:
+        candidates = await gather_candidates(
+            session=session,
+            repo_name="deepiri-calliope",
+            repo_full="Team-Deepiri/deepiri-calliope",
+            board_id="269030",
+            plaky=FakePlaky(),
+            group_id="907469",
+        )
+    assert "same-group-1" in candidates
+    assert "other-group-1" not in candidates
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_pipeline_auto_links_plain_titled_task_in_repos_own_group(monkeypatch):
+    """End-to-end: run_pr_task_pipeline must pass routing's group_id through to
+    gather_candidates, not just board_id, or this whole class of task never surfaces."""
+    monkeypatch.setattr(settings, "pr_linking_pipeline_enabled", True)
+    monkeypatch.setattr(settings, "pr_linking_fetch_board_items", True)
+
+    class FakeRouting:
+        plaky_board_id = "269030"
+        plaky_group_id = "907469"
+
+    async def fake_routing(*a, **k):
+        return FakeRouting()
+
+    async def fake_schema(*a, **k):
+        return {"ok": False}
+
+    monkeypatch.setattr("boardman.services.pr_task_linking.get_routing_async", fake_routing)
+    monkeypatch.setattr("boardman.services.pr_task_linking.fetch_board_schema_bundle", fake_schema)
+
+    class FakePlaky:
+        async def list_board_items(self, *a, **k):
+            return {
+                "ok": True,
+                "items": [
+                    {
+                        "id": "task-1",
+                        "title": "Stability: live audio recording latency and dropout hardening in Calliope",
+                        "group": 907469,
+                    }
+                ],
+            }
+
+        async def list_workspace_users(self):
+            return {"ok": True, "users": []}
+
+    engine, factory = await _memory_session_factory()
+    async with factory() as session:
+        r = await run_pr_task_pipeline(
+            session=session,
+            plaky=FakePlaky(),
+            repo_full="Team-Deepiri/deepiri-calliope",
+            repo_name="deepiri-calliope",
+            org="deepiri-org",
+            pr_number=44,
+            pr_title="Stability: live audio recording latency and dropout hardening in Calliope",
+            pr_body="",
+            head={"ref": "pr-44"},
+        )
+    assert r.decision == "auto_link"
+    assert r.task_id == "task-1"
     await engine.dispose()
 
 

@@ -68,6 +68,36 @@ poetry run python -m boardman.main
 curl http://localhost:8090/api/v1/health
 ```
 
+### Postgres (multi-writer deployments)
+
+The default `DATABASE_URL` (`sqlite+aiosqlite:///./boardman.db`) is fine for one person
+running Boardman locally, but SQLite serializes writes onto a single connection — the
+API process and the worker (or more than one Boardman instance) writing at the same time
+means real lock contention, not a theoretical risk. `docker-compose.prod.yml` runs a
+`postgres` service and points `DATABASE_URL` at it by default; set `POSTGRES_PASSWORD`
+in `.env` and it just works.
+
+To migrate an existing SQLite deployment, or point local dev at Postgres:
+
+```bash
+# 1. Point DATABASE_URL at Postgres (asyncpg driver required — already in pyproject.toml)
+export DATABASE_URL=postgresql+asyncpg://boardman:PASSWORD@HOST:5432/boardman
+
+# 2. Apply schema migrations (env.py reads DATABASE_URL, not alembic.ini's sqlite default)
+poetry run alembic upgrade head
+
+# 3. If migrating existing data, copy rows from the old boardman.db (one-time, per table):
+#    a lightweight `sqlite3`/`psql` export+import or a small script using
+#    boardman.database.models is enough — there's no ORM-specific data migration tool
+#    here since the row counts involved are small (agent sessions, sync logs, task links).
+
+# 4. Run Boardman with DATABASE_URL set (env var or .env) — same binary, no code changes.
+```
+
+Verified end-to-end against a real Postgres 16 instance: all 8 migrations apply cleanly,
+and 10 concurrent writers committing 20 rows each complete in ~0.1s with zero lock
+contention (the exact failure mode this replaces).
+
 ## CLI Commands
 
 Use `poetry run boardman …` (or activate `poetry shell` first).

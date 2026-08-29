@@ -5,12 +5,33 @@
 # intentionally absent from this file; use a hosted LLM provider only if needed.
 
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: deepiri-boardman-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-boardman}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-boardman}
+    volumes:
+      - boardman-postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-boardman}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - deepiri-network
+
   boardman:
     build:
       context: .
       dockerfile: Dockerfile
     container_name: deepiri-boardman
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "8090:8090"
     env_file:
@@ -19,7 +40,11 @@ services:
       PYTHONUNBUFFERED: "1"
       SERVICE_HOST: "0.0.0.0"
       SERVICE_PORT: "8090"
-      DATABASE_URL: sqlite+aiosqlite:///./boardman.db
+      # SQLite serializes writes to one connection at a time — two Boardman processes
+      # (this API + the worker below) hitting it concurrently means one blocks the other
+      # on every write, and it gets worse under real multi-user load. Postgres handles
+      # concurrent writers properly; this is the default for the production stack.
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-boardman}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-boardman}
       PLAKY_API_BASE: ${PLAKY_API_BASE:-https://api.plaky.com/v1/public}
       PLAKY_PR_MERGE_STATUS: ${PLAKY_PR_MERGE_STATUS:-in_review}
       GITHUB_ORG: ${GITHUB_ORG:-deepiri-org}
@@ -30,8 +55,11 @@ services:
       AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
       AGENT_REDIS_URL: ${AGENT_REDIS_URL:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8088,http://127.0.0.1:8088}
+    # `alembic upgrade head` must run once against the target database before first
+    # boot (see README "Postgres migration") — init_db()'s create_all is a fresh-install
+    # fallback only, it does not run the column/index migrations older SQLite installs
+    # needed and never will on Postgres.
     volumes:
-      - ./boardman.db:/app/boardman.db
       - ./repos.yml:/app/repos.yml:ro
       - ./team_assignments.yml:/app/team_assignments.yml
     networks:
@@ -43,20 +71,22 @@ services:
       dockerfile: Dockerfile
     container_name: deepiri-boardman-worker
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     entrypoint: []
     command: ["python", "-m", "boardman.sqlite_worker"]
     env_file:
       - .env
     environment:
       PYTHONUNBUFFERED: "1"
-      DATABASE_URL: sqlite+aiosqlite:///./boardman.db
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-boardman}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-boardman}
       PLAKY_API_BASE: ${PLAKY_API_BASE:-https://api.plaky.com/v1/public}
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       OLLAMA_BASE_URL: ""
       AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
       AGENT_REDIS_URL: ""
     volumes:
-      - ./boardman.db:/app/boardman.db
       - ./repos.yml:/app/repos.yml:ro
       - ./team_assignments.yml:/app/team_assignments.yml:ro
     networks:
@@ -87,3 +117,6 @@ services:
 networks:
   deepiri-network:
     driver: bridge
+
+volumes:
+  boardman-postgres-data:

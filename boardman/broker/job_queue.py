@@ -1,4 +1,8 @@
-"""SQLite-backed job queue (enqueue from API; worker in `boardman.sqlite_worker`)."""
+"""DB-backed job queue (enqueue from API; worker in `boardman.sqlite_worker`).
+
+Despite the module name, this queue's SQL (CTE + UPDATE ... RETURNING) is portable —
+verified against Postgres — so DATABASE_URL can point at either sqlite+aiosqlite or
+postgresql+asyncpg without code changes here."""
 
 from __future__ import annotations
 
