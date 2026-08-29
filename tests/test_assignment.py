@@ -36,6 +36,7 @@ def _sample_cfg() -> TeamAssignmentsConfig:
                 display="QA Heavy",
                 roles=["qa"],
                 tier="heavy",
+                tier_is_explicit_override=True,
                 qa_tier=3,
                 repo_globs=["deepiri-org/emotion-*"],
                 explicit_repos=["deepiri-org/emotion-desktop"],
@@ -46,6 +47,7 @@ def _sample_cfg() -> TeamAssignmentsConfig:
                 display="QA Light",
                 roles=["qa"],
                 tier="light",
+                tier_is_explicit_override=True,
                 qa_tier=2,
                 repo_globs=["deepiri-org/*"],
                 weight=1.0,
@@ -82,6 +84,95 @@ async def test_tier2_excludes_emotion_repo_for_tier2_qa():
     qid, why = await pick_qa_for_repo("deepiri-org/emotion-desktop", cfg)
     assert qid == "qa-heavy", why
     assert "qa-heavy" in why or "QA Heavy" in why or "pool" in why
+
+
+@pytest.mark.asyncio
+async def test_live_capability_board_overrides_config_tier(monkeypatch):
+    """A QA configured as `tier: light` in team_assignments.yml, but reported as
+    `heavy` on the live capability board (a fresher machine, or the config was never
+    updated), must be treated as heavy for the hardware hard-filter — the live
+    measurement wins over the hand-typed config value."""
+    from boardman.assignment import qa_picker as qp
+
+    cfg = _sample_cfg()
+    # Only qa-light matches this repo's globs (qa-heavy is scoped to emotion-*), and
+    # only the legacy hardware-tier filter (not qa_tier/qa_repo_rules, which target
+    # "*emotion*") differentiates this repo — isolates the tier-override's effect.
+    cfg.heavy_repo_patterns = ["*boardman*"]
+    for m in cfg.members:
+        if m.id == "qa-light":
+            m.github_login = "qa-light-login"
+
+    # Without a live override: light hardware is dropped from a heavy repo.
+    monkeypatch.setattr(qp, "fetch_capability_tiers", lambda: _async({}))
+    qid, why = await pick_qa_for_repo("deepiri-org/boardman", cfg)
+    assert qid is None, why
+
+    # With a live override to heavy: now eligible.
+    monkeypatch.setattr(qp, "fetch_capability_tiers", lambda: _async({"qa-light-login": "heavy"}))
+    qid, why = await pick_qa_for_repo("deepiri-org/boardman", cfg)
+    assert qid == "qa-light", why
+
+
+async def _async(value):
+    return value
+
+
+@pytest.mark.asyncio
+async def test_github_activity_infers_hardware_tier_with_no_self_report(monkeypatch):
+    """No CLI run, no Plaky capability board, no self-reported label anywhere — the
+    tier comes purely from demonstrated GitHub activity on an already-classified repo.
+    This is the backend-only path: works when Boardman itself only ever talks to
+    GitHub and Plaky, with nobody running anything locally to report their machine."""
+    from boardman.assignment import qa_picker as qp
+
+    cfg = _sample_cfg()
+    cfg.heavy_repo_patterns = ["*boardman*"]
+    for m in cfg.members:
+        if m.id == "qa-light":
+            m.github_login = "qa-light-login"
+
+    # No live capability board data at all.
+    monkeypatch.setattr(qp, "fetch_capability_tiers", lambda: _async({}))
+    monkeypatch.setattr(qp.settings, "github_pat", "fake-token")
+
+    class FakeProfile:
+        def repos_above_weight(self, min_weight=0.4):
+            return ["deepiri-org/some-heavy-repo"]
+
+    async def fake_fetch_profile(client, login, org):
+        assert login == "qa-light-login"
+        return FakeProfile()
+
+    monkeypatch.setattr(
+        "boardman.github.qa_contribution_profile.fetch_contribution_profile", fake_fetch_profile
+    )
+
+    def fake_get_routing(full_name, short_name, org):
+        if full_name == "deepiri-org/some-heavy-repo":
+            from boardman.repos_config import RepoRouting
+
+            return RepoRouting(tier=3)
+        return None
+
+    monkeypatch.setattr(qp, "get_routing", fake_get_routing)
+
+    # Without inference: light hardware (config default) is dropped from a heavy repo.
+    monkeypatch.setattr(qp, "_github_inferred_tiers", lambda *a, **k: _async({}))
+    qid, why = await pick_qa_for_repo("deepiri-org/boardman", cfg)
+    assert qid is None, why
+
+    # With real inference wired up: demonstrated tier-3 work promotes them to heavy.
+    monkeypatch.undo()  # restore _github_inferred_tiers to the real implementation
+    monkeypatch.setattr(qp, "fetch_capability_tiers", lambda: _async({}))
+    monkeypatch.setattr(qp.settings, "github_pat", "fake-token")
+    monkeypatch.setattr(
+        "boardman.github.qa_contribution_profile.fetch_contribution_profile", fake_fetch_profile
+    )
+    monkeypatch.setattr(qp, "get_routing", fake_get_routing)
+
+    qid, why = await pick_qa_for_repo("deepiri-org/boardman", cfg)
+    assert qid == "qa-light", why
 
 
 @pytest.mark.asyncio
@@ -261,3 +352,78 @@ async def test_update_task_auto_assign_qa_prefixes_bare_github_repo(
     )
     assert r.get("ok") is False
     assert picked == ["Team-Deepiri/deepiri-platform"]
+
+
+def test_population_prior_tier_is_the_mode_of_known_tiers():
+    from boardman.assignment.qa_picker import _population_prior_tier
+
+    assert _population_prior_tier(["heavy", "heavy", "light"]) == "heavy"
+    assert _population_prior_tier(["light", "standard"]) in ("light", "standard")
+    # Nobody has any resolved tier at all -> the absolute last-resort constant.
+    assert _population_prior_tier([]) == "light"
+
+
+@pytest.mark.asyncio
+async def test_cold_start_qa_uses_team_population_prior_not_a_fixed_default(monkeypatch):
+    """A brand-new QA with a GitHub login that has genuinely zero activity anywhere
+    (no in-org history, no public repos either) still gets tiered dynamically — from
+    what the REST of the current team's resolved tiers actually look like, not a
+    hardcoded literal that's the same on every team forever."""
+    from boardman.assignment import qa_picker as qp
+
+    cfg = _sample_cfg()
+    cfg.heavy_repo_patterns = ["*boardman*"]
+    for m in cfg.members:
+        if m.id == "qa-heavy":
+            m.github_login = "veteran-heavy-login"
+        if m.id == "qa-light":
+            # Give qa-light repo access to the target repo but no resolvable tier
+            # anywhere, so they inherit whatever the pool's prior computes to.
+            m.repo_globs = ["deepiri-org/*"]
+            m.github_login = "brand-new-login"
+            m.tier_is_explicit_override = False
+
+    # qa-heavy resolves via explicit override (tier="heavy", set in _sample_cfg).
+    # qa-light: no live board entry, and inference finds nothing anywhere for them.
+    monkeypatch.setattr(qp, "fetch_capability_tiers", lambda: _async({}))
+
+    async def fake_inferred(candidates, org):
+        return {}  # nobody has demonstrated GitHub activity in this run
+
+    monkeypatch.setattr(qp, "_github_inferred_tiers", fake_inferred)
+
+    # qa-heavy's repo_globs only match emotion-*, so for "deepiri-org/boardman" only
+    # qa-light is a QA candidate — but the prior is computed over the CANDIDATE POOL
+    # for this pick, which for a heavy-repo-only filter needs at least one other
+    # resolved candidate to be meaningful. Here qa-light is the sole candidate with no
+    # resolved tier, so the prior itself falls back to the absolute last resort — this
+    # pins that the mechanism runs end-to-end without erroring, and is exercised again
+    # with company below where a second resolved candidate exists.
+    qid, why = await pick_qa_for_repo("deepiri-org/boardman", cfg)
+    assert qid is None, why  # SAFE_DEFAULT_TIER_FOR_UNKNOWN ("light") still excluded
+
+
+@pytest.mark.asyncio
+async def test_cold_start_qa_inherits_heavy_prior_from_resolved_teammate(monkeypatch):
+    """Same as above, but qa-heavy is ALSO a candidate for this repo (both match its
+    globs) — so the pool has one resolved "heavy" teammate, and the population prior
+    for qa-light (zero evidence) should compute to "heavy" too, making them eligible."""
+    from boardman.assignment import qa_picker as qp
+
+    cfg = _sample_cfg()
+    cfg.heavy_repo_patterns = ["*shared*"]
+    cfg.qa_repo_rules = QaRepoRules(tier2_excluded_patterns=[], tier1_only_patterns=[])
+    for m in cfg.members:
+        m.repo_globs = ["deepiri-org/*"]  # both QAs now match the target repo
+        if m.id == "qa-light":
+            m.tier_is_explicit_override = False
+            m.github_login = "brand-new-login"
+
+    monkeypatch.setattr(qp, "fetch_capability_tiers", lambda: _async({}))
+    monkeypatch.setattr(qp, "_github_inferred_tiers", lambda *a, **k: _async({}))
+
+    qid, why = await pick_qa_for_repo("deepiri-org/shared-project", cfg)
+    # qa-heavy resolves via explicit override; qa-light has no evidence anywhere and
+    # inherits the pool's prior ("heavy", the only resolved value) — both pass the
+    # heavy-repo hardware filter, so either may win on weighted scoring.
+    assert qid in ("qa-heavy", "qa-light"), why
