@@ -277,6 +277,60 @@ def _weighted_choice(members: list[TeamMember], cfg: TeamAssignmentsConfig) -> T
     return random.choices(members, weights=weights, k=1)[0]
 
 
+_REPO_TIER_TO_HARDWARE = {1: "light", 2: "standard", 3: "heavy"}
+_MIN_CONTRIBUTION_WEIGHT_FOR_TIER_INFERENCE = 0.4
+
+
+async def _github_inferred_tiers(
+    candidates: list[TeamMember], org: str
+) -> dict[str, str]:
+    """member.id -> hardware tier inferred from demonstrated GitHub activity, not a
+    self-reported label anywhere.
+
+    Backend-only, needs nothing from the person: their EXISTING contribution profile
+    (already fetched for fit-scoring, TTL-cached — this does not re-hit GitHub) is
+    checked against each contributed repo's already-classified tier (repos.yml, from
+    `classify_repo_tier` — also cached, no network call here). Real, sustained work on
+    a tier-3 repo is itself the evidence someone's hardware handles tier-3 work; no
+    survey, no CLI, no UI. A member with no classified repos in their history is
+    absent from the returned dict — the caller falls back to config for them, same as
+    a brand-new QA with no data at all.
+    """
+    if not (settings.github_pat or "").strip():
+        return {}
+
+    from boardman.github.qa_contribution_profile import fetch_contribution_profile
+
+    import httpx
+
+    out: dict[str, str] = {}
+    async with httpx.AsyncClient(timeout=30.0) as client:
+
+        async def _one(m: TeamMember) -> None:
+            login = (m.github_login or "").strip()
+            if not login:
+                return
+            try:
+                profile = await asyncio.wait_for(
+                    fetch_contribution_profile(client, login, org), timeout=20.0
+                )
+            except Exception:  # noqa: BLE001 - one login's outage must not block picking
+                return
+            if profile is None:
+                return
+            best_tier = 0
+            for repo in profile.repos_above_weight(_MIN_CONTRIBUTION_WEIGHT_FOR_TIER_INFERENCE):
+                short = repo.split("/", 1)[-1]
+                routing = get_routing(repo, short, org)
+                if routing and routing.tier > 0:
+                    best_tier = max(best_tier, routing.tier)
+            if best_tier in _REPO_TIER_TO_HARDWARE:
+                out[m.id] = _REPO_TIER_TO_HARDWARE[best_tier]
+
+        await asyncio.gather(*(_one(m) for m in candidates), return_exceptions=True)
+    return out
+
+
 async def _github_fit_scores(
     candidates: list[TeamMember], full_name: str
 ) -> dict[str, tuple[float, FitDetail]] | None:
@@ -488,19 +542,28 @@ async def pick_qa_for_repo(
             f"({len(rules_before)} candidate(s) passed the numeric tier filter)",
         )
 
-    # Live-measured hardware capability (boardman diagnostics capability-report) wins
-    # over the hand-typed team_assignments.yml `tier` when both exist for this login —
-    # see boardman/assignment/capability_board.py. Falls back to the config value
-    # untouched when the capability board isn't configured or has no row for someone.
+    # Effective hardware tier, in priority order — never the config value first:
+    #   1. Plaky capability board (explicit human-confirmed measurement, if set up)
+    #   2. GitHub-activity inference (demonstrated work on already-classified repos —
+    #      pure backend, no self-report, no UI: see _github_inferred_tiers)
+    #   3. team_assignments.yml `tier` — the fallback for someone with no live data yet
     try:
         live_tiers = await fetch_capability_tiers()
     except Exception:  # noqa: BLE001 - a live-data outage must not block QA assignment
         log_unexpected(_log, "pick_qa_for_repo: fetch_capability_tiers")
         live_tiers = {}
-    if live_tiers:
+    try:
+        inferred_tiers = await _github_inferred_tiers(qas, settings.github_org)
+    except Exception:  # noqa: BLE001 - inference is a bonus signal, never a hard dependency
+        log_unexpected(_log, "pick_qa_for_repo: _github_inferred_tiers")
+        inferred_tiers = {}
+    if live_tiers or inferred_tiers:
         qas = [
             dataclasses.replace(
-                m, tier=live_tiers.get((m.github_login or "").strip().lower(), m.tier)
+                m,
+                tier=live_tiers.get(
+                    (m.github_login or "").strip().lower(), inferred_tiers.get(m.id, m.tier)
+                ),
             )
             for m in qas
         ]

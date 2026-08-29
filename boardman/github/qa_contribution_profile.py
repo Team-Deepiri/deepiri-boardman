@@ -73,6 +73,12 @@ class QaContributionProfile:
     def top_repos(self, n: int = 3) -> list[str]:
         return [fn for fn, _ in sorted(self.repo_weights.items(), key=lambda kv: -kv[1])[:n]]
 
+    def repos_above_weight(self, min_weight: float = 0.4) -> list[str]:
+        """Repos with meaningful (not drive-by) contribution — the evidence base for
+        inferring hardware capability from demonstrated GitHub activity instead of a
+        self-reported tier. See boardman.assignment.qa_picker._github_inferred_tiers."""
+        return [fn for fn, w in self.repo_weights.items() if w >= min_weight]
+
 
 _repo_info_cache: dict[str, tuple[float, RepoInfo]] = {}
 _profile_cache: dict[str, tuple[float, QaContributionProfile]] = {}

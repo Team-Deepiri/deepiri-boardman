@@ -117,6 +117,63 @@ async def _async(value):
 
 
 @pytest.mark.asyncio
+async def test_github_activity_infers_hardware_tier_with_no_self_report(monkeypatch):
+    """No CLI run, no Plaky capability board, no self-reported label anywhere — the
+    tier comes purely from demonstrated GitHub activity on an already-classified repo.
+    This is the backend-only path: works when Boardman itself only ever talks to
+    GitHub and Plaky, with nobody running anything locally to report their machine."""
+    from boardman.assignment import qa_picker as qp
+
+    cfg = _sample_cfg()
+    cfg.heavy_repo_patterns = ["*boardman*"]
+    for m in cfg.members:
+        if m.id == "qa-light":
+            m.github_login = "qa-light-login"
+
+    # No live capability board data at all.
+    monkeypatch.setattr(qp, "fetch_capability_tiers", lambda: _async({}))
+    monkeypatch.setattr(qp.settings, "github_pat", "fake-token")
+
+    class FakeProfile:
+        def repos_above_weight(self, min_weight=0.4):
+            return ["deepiri-org/some-heavy-repo"]
+
+    async def fake_fetch_profile(client, login, org):
+        assert login == "qa-light-login"
+        return FakeProfile()
+
+    monkeypatch.setattr(
+        "boardman.github.qa_contribution_profile.fetch_contribution_profile", fake_fetch_profile
+    )
+
+    def fake_get_routing(full_name, short_name, org):
+        if full_name == "deepiri-org/some-heavy-repo":
+            from boardman.repos_config import RepoRouting
+
+            return RepoRouting(tier=3)
+        return None
+
+    monkeypatch.setattr(qp, "get_routing", fake_get_routing)
+
+    # Without inference: light hardware (config default) is dropped from a heavy repo.
+    monkeypatch.setattr(qp, "_github_inferred_tiers", lambda *a, **k: _async({}))
+    qid, why = await pick_qa_for_repo("deepiri-org/boardman", cfg)
+    assert qid is None, why
+
+    # With real inference wired up: demonstrated tier-3 work promotes them to heavy.
+    monkeypatch.undo()  # restore _github_inferred_tiers to the real implementation
+    monkeypatch.setattr(qp, "fetch_capability_tiers", lambda: _async({}))
+    monkeypatch.setattr(qp.settings, "github_pat", "fake-token")
+    monkeypatch.setattr(
+        "boardman.github.qa_contribution_profile.fetch_contribution_profile", fake_fetch_profile
+    )
+    monkeypatch.setattr(qp, "get_routing", fake_get_routing)
+
+    qid, why = await pick_qa_for_repo("deepiri-org/boardman", cfg)
+    assert qid == "qa-light", why
+
+
+@pytest.mark.asyncio
 async def test_non_heavy_repo_allows_light_qa_in_pool():
     cfg = _sample_cfg()
     random.seed(0)
