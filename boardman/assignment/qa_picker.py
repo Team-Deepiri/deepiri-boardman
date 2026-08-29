@@ -277,8 +277,34 @@ def _weighted_choice(members: list[TeamMember], cfg: TeamAssignmentsConfig) -> T
     return random.choices(members, weights=weights, k=1)[0]
 
 
+# A brand-new QA with no live measurement, no demonstrated GitHub activity on a
+# classified repo, and no explicit per-person override starts here — conservative on
+# purpose (never assume unproven capacity for a heavy repo), and identical for every
+# such person, never a value someone had to type in for them specifically.
+SAFE_DEFAULT_TIER_FOR_UNKNOWN = "light"
+
 _REPO_TIER_TO_HARDWARE = {1: "light", 2: "standard", 3: "heavy"}
 _MIN_CONTRIBUTION_WEIGHT_FOR_TIER_INFERENCE = 0.4
+
+
+async def _best_classified_tier(profile: Any, org: str, *, use_live_classifier: bool) -> int:
+    """Highest already-classified repo tier across a profile's meaningfully-weighted
+    repos. `use_live_classifier` runs the same generic metadata-based classifier
+    (`classify_repo_tier`) live for repos with no repos.yml entry — needed for the
+    cold-start pass, where the repos in question are outside this org entirely and
+    were never going to be in repos.yml."""
+    best = 0
+    for repo in profile.repos_above_weight(_MIN_CONTRIBUTION_WEIGHT_FOR_TIER_INFERENCE):
+        short = repo.split("/", 1)[-1]
+        routing = get_routing(repo, short, org)
+        if routing and routing.tier > 0:
+            best = max(best, routing.tier)
+        elif use_live_classifier:
+            try:
+                best = max(best, await _auto_classify_repo_tier(repo))
+            except Exception:  # noqa: BLE001 - one repo's metadata failure isn't fatal
+                continue
+    return best
 
 
 async def _github_inferred_tiers(
@@ -287,14 +313,18 @@ async def _github_inferred_tiers(
     """member.id -> hardware tier inferred from demonstrated GitHub activity, not a
     self-reported label anywhere.
 
-    Backend-only, needs nothing from the person: their EXISTING contribution profile
-    (already fetched for fit-scoring, TTL-cached — this does not re-hit GitHub) is
-    checked against each contributed repo's already-classified tier (repos.yml, from
-    `classify_repo_tier` — also cached, no network call here). Real, sustained work on
-    a tier-3 repo is itself the evidence someone's hardware handles tier-3 work; no
-    survey, no CLI, no UI. A member with no classified repos in their history is
-    absent from the returned dict — the caller falls back to config for them, same as
-    a brand-new QA with no data at all.
+    Two passes, in order:
+      1. In-org contribution profile (already fetched for fit-scoring, TTL-cached —
+         this does not re-hit GitHub) against already-classified repos.yml tiers.
+      2. Cold start: for anyone pass 1 found nothing for (most likely a brand-new
+         teammate with zero activity in this org yet), search their PUBLIC GitHub
+         activity org-unscoped — open-source contributions and personal projects are
+         real evidence too, classified live via the same generic metadata heuristic
+         (`classify_repo_tier`) used for this org's own repos. Still zero self-report:
+         it's the same GitHub API this app already calls, just not scoped to one org.
+
+    A member absent from the returned dict has demonstrated nothing anywhere the
+    backend can see — the caller's population-level prior picks up from there.
     """
     if not (settings.github_pat or "").strip():
         return {}
@@ -316,19 +346,44 @@ async def _github_inferred_tiers(
                 )
             except Exception:  # noqa: BLE001 - one login's outage must not block picking
                 return
-            if profile is None:
-                return
             best_tier = 0
-            for repo in profile.repos_above_weight(_MIN_CONTRIBUTION_WEIGHT_FOR_TIER_INFERENCE):
-                short = repo.split("/", 1)[-1]
-                routing = get_routing(repo, short, org)
-                if routing and routing.tier > 0:
-                    best_tier = max(best_tier, routing.tier)
+            if profile is not None:
+                best_tier = await _best_classified_tier(profile, org, use_live_classifier=False)
+            if best_tier == 0:
+                # Cold start: nothing in-org. Try their public GitHub footprint.
+                try:
+                    global_profile = await asyncio.wait_for(
+                        fetch_contribution_profile(client, login, ""), timeout=20.0
+                    )
+                except Exception:  # noqa: BLE001 - same as above
+                    global_profile = None
+                if global_profile is not None:
+                    best_tier = await _best_classified_tier(
+                        global_profile, org, use_live_classifier=True
+                    )
             if best_tier in _REPO_TIER_TO_HARDWARE:
                 out[m.id] = _REPO_TIER_TO_HARDWARE[best_tier]
 
         await asyncio.gather(*(_one(m) for m in candidates), return_exceptions=True)
     return out
+
+
+def _population_prior_tier(known_tiers: list[str]) -> str:
+    """The mode of every ALREADY-RESOLVED tier among the current candidate pool —
+    computed fresh from this pick, never a fixed literal — used only for a candidate
+    with genuinely zero evidence anywhere (no live measurement, no in-org or public
+    GitHub history, no explicit override). This is an empirical-Bayes cold-start
+    prior: "what does hardware capability actually look like on THIS team right now"
+    is a better uninformed guess than one constant true for every team forever.
+    Falls back to SAFE_DEFAULT_TIER_FOR_UNKNOWN only when literally nobody on the
+    current candidate pool has any resolved evidence either (bootstrap of bootstrap).
+    """
+    if not known_tiers:
+        return SAFE_DEFAULT_TIER_FOR_UNKNOWN
+    counts: dict[str, int] = {}
+    for t in known_tiers:
+        counts[t] = counts.get(t, 0) + 1
+    return max(counts.items(), key=lambda kv: kv[1])[0]
 
 
 async def _github_fit_scores(
@@ -542,11 +597,18 @@ async def pick_qa_for_repo(
             f"({len(rules_before)} candidate(s) passed the numeric tier filter)",
         )
 
-    # Effective hardware tier, in priority order — never the config value first:
+    # Effective hardware tier, in priority order — a brand-new QA with none of the
+    # first three never falls through to a blanket config guess:
     #   1. Plaky capability board (explicit human-confirmed measurement, if set up)
-    #   2. GitHub-activity inference (demonstrated work on already-classified repos —
-    #      pure backend, no self-report, no UI: see _github_inferred_tiers)
-    #   3. team_assignments.yml `tier` — the fallback for someone with no live data yet
+    #   2. GitHub-activity inference — in-org, then cold-start public-GitHub fallback
+    #      (demonstrated work anywhere, classified live: see _github_inferred_tiers)
+    #   3. An EXPLICIT per-person override in team_assignments.yml (a lead who
+    #      actually typed `tier:` for this specific login — not member_defaults,
+    #      and not this field's own "standard" literal default)
+    #   4. Population prior — the mode of every OTHER candidate's already-resolved
+    #      tier on THIS pick, computed fresh every time (see _population_prior_tier),
+    #      not a fixed literal. Only when truly nobody in the pool has any resolved
+    #      tier either does this bottom out at SAFE_DEFAULT_TIER_FOR_UNKNOWN.
     try:
         live_tiers = await fetch_capability_tiers()
     except Exception:  # noqa: BLE001 - a live-data outage must not block QA assignment
@@ -557,16 +619,23 @@ async def pick_qa_for_repo(
     except Exception:  # noqa: BLE001 - inference is a bonus signal, never a hard dependency
         log_unexpected(_log, "pick_qa_for_repo: _github_inferred_tiers")
         inferred_tiers = {}
-    if live_tiers or inferred_tiers:
-        qas = [
-            dataclasses.replace(
-                m,
-                tier=live_tiers.get(
-                    (m.github_login or "").strip().lower(), inferred_tiers.get(m.id, m.tier)
-                ),
-            )
-            for m in qas
-        ]
+
+    def _known_tier(m: TeamMember) -> str | None:
+        login = (m.github_login or "").strip().lower()
+        if login in live_tiers:
+            return live_tiers[login]
+        if m.id in inferred_tiers:
+            return inferred_tiers[m.id]
+        if m.tier_is_explicit_override:
+            return m.tier
+        return None
+
+    resolved = {m.id: _known_tier(m) for m in qas}
+    prior = _population_prior_tier([t for t in resolved.values() if t is not None])
+    qas = [
+        dataclasses.replace(m, tier=resolved[m.id] if resolved[m.id] is not None else prior)
+        for m in qas
+    ]
 
     if repo_is_heavy(fn, cfg.heavy_repo_patterns):
         qas = [m for m in qas if m.tier.lower() not in ("light", "minimal", "low")]

@@ -66,6 +66,12 @@ class TeamMember:
     github_login: str = ""  # GitHub login from org team roster (cross-reference)
     roles: list[str] = field(default_factory=list)
     tier: str = "standard"  # light|standard|heavy — hardware weight bias, not QA repo tier
+    # True only when a human explicitly wrote `tier:` for THIS person (member_overrides
+    # or a members: row), not when it came from member_defaults or this field's own
+    # "standard" literal. qa_picker uses this to tell "someone decided this" apart from
+    # "nobody has any evidence" — a brand-new QA with neither a live/inferred tier NOR
+    # an explicit override gets the safe universal default, not a blanket config guess.
+    tier_is_explicit_override: bool = False
     qa_tier: int = 3  # 1 = web/core only, 2 = all except AI/heavy repos, 3 = all repos
     repo_globs: list[str] = field(default_factory=list)
     explicit_repos: list[str] = field(default_factory=list)
@@ -550,6 +556,7 @@ def _members_from_github_roster(data: dict[str, Any]) -> list[TeamMember]:
                 github_login=login,
                 roles=roles,
                 tier=tier,
+                tier_is_explicit_override="tier" in ov,
                 qa_tier=qt,
                 repo_globs=globs,
                 explicit_repos=explicit,
@@ -618,6 +625,7 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
                     github_login=gh_login,
                     roles=[str(r).lower() for r in roles if r],
                     tier=str(m.get("tier") or defaults.get("tier") or "standard").lower(),
+                    tier_is_explicit_override="tier" in m,
                     qa_tier=qa_tier,
                     repo_globs=[str(g).strip() for g in globs if str(g).strip()],
                     explicit_repos=[str(r).strip().lower() for r in explicit if str(r).strip()],

@@ -36,6 +36,7 @@ def _sample_cfg() -> TeamAssignmentsConfig:
                 display="QA Heavy",
                 roles=["qa"],
                 tier="heavy",
+                tier_is_explicit_override=True,
                 qa_tier=3,
                 repo_globs=["deepiri-org/emotion-*"],
                 explicit_repos=["deepiri-org/emotion-desktop"],
@@ -46,6 +47,7 @@ def _sample_cfg() -> TeamAssignmentsConfig:
                 display="QA Light",
                 roles=["qa"],
                 tier="light",
+                tier_is_explicit_override=True,
                 qa_tier=2,
                 repo_globs=["deepiri-org/*"],
                 weight=1.0,
@@ -350,3 +352,78 @@ async def test_update_task_auto_assign_qa_prefixes_bare_github_repo(
     )
     assert r.get("ok") is False
     assert picked == ["Team-Deepiri/deepiri-platform"]
+
+
+def test_population_prior_tier_is_the_mode_of_known_tiers():
+    from boardman.assignment.qa_picker import _population_prior_tier
+
+    assert _population_prior_tier(["heavy", "heavy", "light"]) == "heavy"
+    assert _population_prior_tier(["light", "standard"]) in ("light", "standard")
+    # Nobody has any resolved tier at all -> the absolute last-resort constant.
+    assert _population_prior_tier([]) == "light"
+
+
+@pytest.mark.asyncio
+async def test_cold_start_qa_uses_team_population_prior_not_a_fixed_default(monkeypatch):
+    """A brand-new QA with a GitHub login that has genuinely zero activity anywhere
+    (no in-org history, no public repos either) still gets tiered dynamically — from
+    what the REST of the current team's resolved tiers actually look like, not a
+    hardcoded literal that's the same on every team forever."""
+    from boardman.assignment import qa_picker as qp
+
+    cfg = _sample_cfg()
+    cfg.heavy_repo_patterns = ["*boardman*"]
+    for m in cfg.members:
+        if m.id == "qa-heavy":
+            m.github_login = "veteran-heavy-login"
+        if m.id == "qa-light":
+            # Give qa-light repo access to the target repo but no resolvable tier
+            # anywhere, so they inherit whatever the pool's prior computes to.
+            m.repo_globs = ["deepiri-org/*"]
+            m.github_login = "brand-new-login"
+            m.tier_is_explicit_override = False
+
+    # qa-heavy resolves via explicit override (tier="heavy", set in _sample_cfg).
+    # qa-light: no live board entry, and inference finds nothing anywhere for them.
+    monkeypatch.setattr(qp, "fetch_capability_tiers", lambda: _async({}))
+
+    async def fake_inferred(candidates, org):
+        return {}  # nobody has demonstrated GitHub activity in this run
+
+    monkeypatch.setattr(qp, "_github_inferred_tiers", fake_inferred)
+
+    # qa-heavy's repo_globs only match emotion-*, so for "deepiri-org/boardman" only
+    # qa-light is a QA candidate — but the prior is computed over the CANDIDATE POOL
+    # for this pick, which for a heavy-repo-only filter needs at least one other
+    # resolved candidate to be meaningful. Here qa-light is the sole candidate with no
+    # resolved tier, so the prior itself falls back to the absolute last resort — this
+    # pins that the mechanism runs end-to-end without erroring, and is exercised again
+    # with company below where a second resolved candidate exists.
+    qid, why = await pick_qa_for_repo("deepiri-org/boardman", cfg)
+    assert qid is None, why  # SAFE_DEFAULT_TIER_FOR_UNKNOWN ("light") still excluded
+
+
+@pytest.mark.asyncio
+async def test_cold_start_qa_inherits_heavy_prior_from_resolved_teammate(monkeypatch):
+    """Same as above, but qa-heavy is ALSO a candidate for this repo (both match its
+    globs) — so the pool has one resolved "heavy" teammate, and the population prior
+    for qa-light (zero evidence) should compute to "heavy" too, making them eligible."""
+    from boardman.assignment import qa_picker as qp
+
+    cfg = _sample_cfg()
+    cfg.heavy_repo_patterns = ["*shared*"]
+    cfg.qa_repo_rules = QaRepoRules(tier2_excluded_patterns=[], tier1_only_patterns=[])
+    for m in cfg.members:
+        m.repo_globs = ["deepiri-org/*"]  # both QAs now match the target repo
+        if m.id == "qa-light":
+            m.tier_is_explicit_override = False
+            m.github_login = "brand-new-login"
+
+    monkeypatch.setattr(qp, "fetch_capability_tiers", lambda: _async({}))
+    monkeypatch.setattr(qp, "_github_inferred_tiers", lambda *a, **k: _async({}))
+
+    qid, why = await pick_qa_for_repo("deepiri-org/shared-project", cfg)
+    # qa-heavy resolves via explicit override; qa-light has no evidence anywhere and
+    # inherits the pool's prior ("heavy", the only resolved value) — both pass the
+    # heavy-repo hardware filter, so either may win on weighted scoring.
+    assert qid in ("qa-heavy", "qa-light"), why

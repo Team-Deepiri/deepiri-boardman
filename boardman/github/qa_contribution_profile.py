@@ -247,8 +247,13 @@ async def fetch_contribution_profile(
 ) -> QaContributionProfile | None:
     """Search PRs authored/reviewed by ``login`` in ``search_org``; aggregate into a profile.
 
+    ``search_org`` empty/falsy searches ALL of public GitHub instead of one org — the
+    cold-start path (a brand-new teammate with zero activity in this org yet) reuses
+    this same function unscoped, so their public open-source/personal-project history
+    can still classify their likely hardware tier before they've done a single PR here.
+
     Returns None when GitHub is unreachable or unauthorized (callers fall back to
-    config-weight picking). Cached 6h per login.
+    config-weight picking). Cached 6h per (org, login).
     """
     if not (settings.github_pat or "").strip():
         return None
@@ -268,9 +273,10 @@ async def fetch_contribution_profile(
     any_response = False
 
     # Reviews weigh more than authorship: this profile ranks QA (review) fitness.
+    org_qualifier = f"org:{search_org} " if search_org else ""
     queries = (
-        (f"is:pr org:{search_org} author:{login}", 1.0),
-        (f"is:pr org:{search_org} reviewed-by:{login}", 1.25),
+        (f"is:pr {org_qualifier}author:{login}", 1.0),
+        (f"is:pr {org_qualifier}reviewed-by:{login}", 1.25),
     )
     for q, qw in queries:
         for page in range(1, PROFILE_MAX_SEARCH_PAGES + 1):
