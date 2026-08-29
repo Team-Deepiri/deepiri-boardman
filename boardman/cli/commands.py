@@ -541,6 +541,81 @@ def doctor():
     asyncio.run(run())
 
 
+@app.command("capability-report")
+def capability_report(
+    github_login: str = typer.Option(
+        "", "--github-login", help="Override auto-detected GitHub login (from `gh api user`)."
+    ),
+):
+    """Measure THIS machine's hardware (cores/RAM/GPU) and report it to the Plaky
+    capability board (PLAKY_CAPABILITY_BOARD_ID) as this person's QA hardware tier —
+    replaces hand-typing `tier:` in team_assignments.yml with a live measurement.
+
+    Run this once per machine per teammate; qa_picker prefers this over the config
+    value automatically once it exists.
+    """
+
+    async def run():
+        from boardman.assignment.capability_board import report_hardware_capability
+        from boardman.diagnostics.hardware_probe import capability_tier, measure_hardware
+
+        if not settings.plaky_capability_board_id:
+            console.print(
+                "[red]PLAKY_CAPABILITY_BOARD_ID[/red] is not set — nothing to report to. "
+                "Create a Plaky board with one item per teammate (login + tier columns) "
+                "and set that board's id in .env first."
+            )
+            raise typer.Exit(code=1)
+
+        login = github_login.strip()
+        if not login:
+            proc = await asyncio.create_subprocess_exec(
+                "gh",
+                "api",
+                "user",
+                "--jq",
+                ".login",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await proc.communicate()
+            if proc.returncode == 0 and out.strip():
+                login = out.decode().strip()
+            else:
+                console.print(
+                    "[red]Could not auto-detect your GitHub login via `gh api user`[/red] "
+                    f"({err.decode().strip() or 'gh not authenticated'}). "
+                    "Pass --github-login explicitly."
+                )
+                raise typer.Exit(code=1)
+
+        snap = measure_hardware()
+        tier = capability_tier(snap)
+        gpu_note = f", GPU: {snap.gpu_name or 'yes'}" if snap.has_gpu else ", no GPU"
+        console.print(
+            f"Measured: {snap.cores} cores, {snap.ram_gb} GB RAM{gpu_note} "
+            f"-> tier [cyan]{tier}[/cyan]"
+        )
+
+        result = await report_hardware_capability(
+            github_login=login,
+            tier=tier,
+            cores=snap.cores,
+            ram_gb=snap.ram_gb,
+            has_gpu=snap.has_gpu,
+        )
+        if result.get("ok"):
+            console.print(
+                f"[green]Reported[/green] {login} -> {tier} ({result.get('action')}, "
+                f"item {result.get('item_id') or result.get('task', {}).get('id')})"
+            )
+        else:
+            console.print(f"[red]Failed to report:[/red] {result.get('message', result)}")
+            raise typer.Exit(code=1)
+
+    asyncio.run(run())
+
+
 @app.command("readiness")
 def readiness_cmd(
     env_file: Path = typer.Option(
