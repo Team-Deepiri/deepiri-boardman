@@ -2,8 +2,14 @@
 
 Supersedes the earlier speculative version of this doc. This one is based on actually
 SSH-ing into the real target VPS (read-only checks only — no changes made) and on
-decisions made and tested this session: **no chat UI on this box, OpenRouter free-tier
-for inference, reuse the nginx already running there.**
+decisions made and tested this session: **UI deployed alongside the API, OpenRouter
+free-tier for inference, reuse the nginx already running there.**
+
+**Update:** the earlier "no chat UI on this box" call was reversed — `boardman-ui` now
+ships with the API/worker in this plan (see "What actually gets deployed" below).
+
+**Deploy is currently BLOCKED**: a teammate is concurrently deploying `deepiri-platform` /
+`deepiri-web-frontend` to this same VPS. Do not touch the box until that's confirmed done.
 
 ---
 
@@ -29,11 +35,11 @@ for inference, reuse the nginx already running there.**
 
 ## Decisions made this session
 
-1. **No UI on this box.** `boardman-ui` (the chat frontend) is not deployed here — Boardman on this VPS is backend-only: webhook receiver + REST API + sync engine.
+1. **UI deployed too.** `boardman-ui` ships alongside the API/worker on this box (reversing an earlier "backend-only" call) — nginx serves the built static UI and proxies `/api/` to `boardman:8090`.
 2. **No local inference.** No GPU on this box (confirmed: the only display device is a virtual/QEMU stub, no `nvidia-smi`). Running even a small local model here would be slow (CPU-only) and would compete with the platform stack's RAM. This also matches the platform's own documented policy of keeping heavy AI off this class of VPS.
 3. **Inference = OpenRouter, free tier, by default.** `LLM_PROVIDER=openrouter`, and the codebase's own default model (when `LLM_MODEL` is unset) is now `minimax/minimax-m3:free` — **live-verified this session**: it correctly drove Boardman's tool-calling agent to create a real Plaky task and read a real GitHub repo. If someone needs a stronger model temporarily, they don't need a deploy change — see **bring-your-own-key** below.
 4. **Bring-your-own-key (BYOK).** A chat session can supply its own provider API key instead of the shared free-tier one. Encrypted at rest (Fernet, server-side secret `BYOK_ENCRYPTION_KEY`), time-limited (24h default), never echoed back in any response. Off entirely unless `BYOK_ENCRYPTION_KEY` is set. See `boardman/security/byok.py`.
-5. **Route through the existing nginx**, not a second one. `deploy/nginx/boardman.deepiri.com.conf` is a server block to add to the nginx container already running on this box — proxies `/api/` only, no UI route, to `boardman:8090`.
+5. **Route through the existing nginx**, not a second one. `deploy/nginx/boardman.deepiri.com.conf` is a server block to add to the nginx container already running on this box — serves the built `boardman-ui` static assets and proxies `/api/` to `boardman:8090`.
 6. **Own Postgres instance**, separate from the platform's `postgres-platform` (unchanged from the earlier version of this plan — trivial resource cost, keeps failure domains independent).
 
 ---
@@ -45,7 +51,7 @@ for inference, reuse the nginx already running there.**
 | `boardman` (API) | Webhook receiver + REST — the only piece that must be internet-reachable | ~110 MB RAM (measured) |
 | `boardman-worker` | Background/deferred job processing | ~80-110 MB RAM (same import weight, no HTTP layer) |
 | Postgres (own instance) | `DATABASE_URL` for Boardman only | ~30-50 MB RAM |
-| ~~boardman-ui / nginx~~ | **Not deployed** — no chat UI on this box | — |
+| `boardman-ui` (static build) | Chat frontend, served via existing nginx | negligible (static files, no separate process) |
 | ~~Ollama~~ | **Not deployed** — no GPU, OpenRouter instead | — |
 
 Total: **~250-300 MB**, against 6.3 GB currently free.
@@ -98,5 +104,16 @@ A "Boardman" tile on the platform's Tools page (linking to `https://boardman.dee
 ## What's NOT verified end-to-end yet
 
 - The nginx wiring above is a config file, not something applied to the live box — I did not touch the running nginx (read-only checks only, per what was actually authorized this session).
-- The `deepiri-web-frontend` Tools page entry — not started, different repo.
+- The `deepiri-web-frontend` Tools page entry — a `boardman` tile was added in a separate PR against that repo (open, points to `https://boardman.deepiri.com`).
 - Live proof used the *sandbox's* credentials/board, not a real deployment on `159.195.234.19` — the box fits and the code works, but nobody has actually run `docker compose up` there yet.
+
+---
+
+## Immediate next steps (in order)
+
+1. **Wait for teammate's concurrent deploy to finish** on `159.195.234.19` (platform + web-frontend). Confirm with them before touching the box.
+2. **Merge the routing-placement fix** (`boardman/services/scan_handler.py`) — a real bug where `run_repo_scan` discarded a correctly-resolved board/group for any repo whose Plaky routing came from live discovery (`discovered:*`) rather than explicit `repos.yml`, silently failing every create. Fixed and regression-tested (`tests/test_scan_placement.py`); verified live against `Team-Deepiri/deepiri-axiom`.
+3. **Org-wide Plaky task generation** (in progress this session): dry-run pass across all 46 repos with resolvable Plaky routing completed (370 tasks proposed, quality verified); live pass re-running now with the placement fix applied. 17 of the 66 active repos have no matching Plaky group and cannot be auto-created (Plaky's public API has no board/group-create endpoint) — a human needs to add a group named after each repo slug on the correct categorical board first; the list is logged as `plaky placement: no Plaky group matches repo slug '<slug>'` warnings during any scan run.
+4. **Once the teammate's deploy is clear**: `git clone` + `docker compose -f docker-compose.prod.yml up -d --build` per the Steps section above, including the UI, then wire nginx + Cloudflare DNS + the GitHub webhook.
+5. **Smoke test** PR↔Plaky linking and QA assignment against real open PRs org-wide once deployed.
+6. **Boardman UI account creation** — passcode-gated signup was raised (passcode value tracked outside this doc); recommendation is to reuse `deepiri-auth-service` rather than build separate auth, with the passcode as an invite-gate at registration. Not yet built — needs explicit go-ahead.
