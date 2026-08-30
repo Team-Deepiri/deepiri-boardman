@@ -104,6 +104,11 @@ services:
       - boardman
     networks:
       - deepiri-network
+      # Lets the deepiri-platform nginx container reach this one by container name
+      # (see ops/nginx/cloud-prod.conf's `boardman` upstream in that repo) without
+      # exposing Boardman's UI/API on a public host port of its own. Boardman stays
+      # its own compose project — this is the one deliberate seam between the two.
+      - platform-shared
 
   # Optional local agent cache: `docker compose -f docker-compose.prod.yml --profile agent-cache up -d`
   redis:
@@ -117,6 +122,14 @@ services:
 networks:
   deepiri-network:
     driver: bridge
+  # The real docker network deepiri-platform's own compose file creates for its
+  # "deepiri-network" — Compose prefixes network names with the project name
+  # (`name: deepiri-platform` at the top of that file), so this is NOT the same
+  # network as the one above despite the identical short name. External because
+  # Boardman must never manage the platform's network lifecycle, only join it.
+  platform-shared:
+    external: true
+    name: deepiri-platform_deepiri-network
 
 volumes:
   boardman-postgres-data:
