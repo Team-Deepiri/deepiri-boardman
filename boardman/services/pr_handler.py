@@ -15,7 +15,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import load_team_assignments
 from boardman.database.models import IssueTaskMap, PullRequestTaskLink, SyncLog
-from boardman.github.webhooks import PullRequestEventPayload, PullRequestReviewCommentEventPayload
+from boardman.github.webhooks import (
+    DeploymentStatusEventPayload,
+    PullRequestEventPayload,
+    PullRequestReviewCommentEventPayload,
+)
 from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status_id
 from boardman.plaky.client import PlakyClient
 from boardman.services.comment_dedupe import (
@@ -1903,17 +1907,27 @@ async def handle_pr_review_requested(
     }
 
 
+# More than this many commits pushed since the last QA verdict escalates past
+# "Revisions In Progress" straight to "Needs QA Again" — the developer clearly isn't
+# just fixing the one thing QA flagged anymore.
+_COMMITS_SINCE_REVIEW_ESCALATION_THRESHOLD = 5
+
+
 async def handle_pr_synchronized(
     payload: PullRequestEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
-    """New commits pushed (pull_request.synchronize): if a linked task is currently
-    QA-rejected, the developer has addressed the review → the work is RESUBMITTED, not
-    merely resumed. Employer: "developer made these changes so it needs QA again."
+    """New commits pushed (pull_request.synchronize), after a QA verdict already
+    landed on this PR (see stamp_commits_at_last_review in pr_review_handler.py):
 
-    Needing QA again just means going back to Needs QA (Ali, 2026-08-19) — that is the
-    intended destination, not a fallback. A board that happens to define a dedicated
-    "…Again" column gets it; the Bots board does not, and Needs QA is correct there.
+      - 1-5 commits since that verdict → Revisions In Progress (dev is actively
+        addressing it — normal, expected activity, not yet worth pulling QA back in).
+      - More than 5 → Needs QA Again (this has gone past "one follow-up fix"; QA
+        should look again, which just means back to Needs QA per Ali 2026-08-19 —
+        a dedicated "...Again" column is used only if the board actually has one).
+
+    No baseline (no review verdict has happened for this PR yet) → nothing to
+    escalate; ordinary pre-review pushes are not this handler's concern.
     """
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
@@ -1925,6 +1939,18 @@ async def handle_pr_synchronized(
     if not task_ids:
         return {"ok": True, "skipped": True, "message": "no linked Plaky tasks for this PR"}
 
+    from boardman.services.pr_task_registry import commits_at_last_review_for_pr
+
+    baseline = await commits_at_last_review_for_pr(
+        session, github_repo=repo_name, github_pr_number=pr_number
+    )
+    if baseline is None:
+        return {"ok": True, "skipped": True, "message": "no QA verdict yet for this PR"}
+
+    delta = payload.pull_request.commits - baseline
+    if delta <= 0:
+        return {"ok": True, "skipped": True, "message": "no new commits since last QA verdict"}
+
     from boardman.repos_config import get_routing_async
 
     routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
@@ -1935,26 +1961,41 @@ async def handle_pr_synchronized(
 
     from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
-    rejected = await resolve_plaky_status_patch(bid, intent="github_pr_review_changes_requested")
-    approved = await resolve_plaky_status_patch(bid, intent="github_pr_review_approved")
-    target = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa_again")
+    escalate = delta > _COMMITS_SINCE_REVIEW_ESCALATION_THRESHOLD
+    if escalate:
+        target = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa_again")
+        if not target:
+            target = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
+        event = "resubmitted_needs_qa_again"
+        action = "pr_resubmitted_needs_qa_again"
+    else:
+        target = await resolve_plaky_status_patch(bid, intent="workflow_in_progress")
+        event = "revisions_in_progress"
+        action = "pr_revisions_in_progress"
     if not target:
-        target = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
-    if not rejected or not target:
         return {
             "ok": True,
             "skipped": True,
-            "message": "qa-rejected / needs-qa status not resolvable from board",
+            "message": f"{event}: target status not resolvable from board",
         }
-    rej_key, rej_id = rejected
-    ip_key, ip_id = target
-    # Each verdict is checked under ITS OWN field key. On every current board both
-    # verdicts live in the one Status column, but if a board ever splits them, reading
-    # only the rejected key would miss a QA Verified task (or falsely match an id
-    # collision). Keys are deduped so the common case stays a single read.
-    stale_checks: dict[str, set[str]] = {rej_key: {str(rej_id)}}
-    if approved:
-        stale_checks.setdefault(approved[0], set()).add(str(approved[1]))
+    tgt_key, tgt_id = target
+
+    rejected = await resolve_plaky_status_patch(bid, intent="github_pr_review_changes_requested")
+    approved = await resolve_plaky_status_patch(bid, intent="github_pr_review_approved")
+    in_progress = await resolve_plaky_status_patch(bid, intent="workflow_in_progress")
+    # Only escalate FROM a state that means "QA has weighed in" or "already mid-revision"
+    # — a task sitting in an unrelated status (paused, needs-assigned) must not be
+    # dragged here just because the PR got a new commit.
+    stale_checks: dict[str, set[str]] = {}
+    for resolved in (rejected, approved, in_progress):
+        if resolved:
+            stale_checks.setdefault(resolved[0], set()).add(str(resolved[1]))
+    if not stale_checks:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "no reviewed/in-progress status resolvable to check against",
+        }
 
     plaky = PlakyClient()
     resumed: list[dict[str, Any]] = []
@@ -1967,14 +2008,16 @@ async def handle_pr_synchronized(
                 break
         if not stale_hit:
             continue
-        res = await _update_plaky_task_status(tid, ip_id, bid, status_field_key=ip_key)
+        res = await _update_plaky_task_status(tid, tgt_id, bid, status_field_key=tgt_key)
         session.add(
             SyncLog(
-                action="pr_resubmitted_needs_qa_again",
+                action=action,
                 github_repo=repo_name,
                 github_ref=str(pr_number),
                 plaky_task_id=tid,
-                detail=json.dumps({"from": "qa_rejected", "to_status": ip_id}, default=str),
+                detail=json.dumps(
+                    {"commits_since_review": delta, "to_status": tgt_id}, default=str
+                ),
             )
         )
         resumed.append({"task_id": tid, "plaky": res})
@@ -1982,7 +2025,7 @@ async def handle_pr_synchronized(
     await session.commit()
     if resumed:
         await maybe_enqueue_plaky_reorder_after_task(plaky, resumed[0]["task_id"])
-    return {"ok": True, "updated": resumed, "event": "resubmitted_needs_qa_again"}
+    return {"ok": True, "updated": resumed, "event": event}
 
 
 async def handle_pr_closed_without_merge(
@@ -2046,6 +2089,103 @@ async def handle_pr_closed_without_merge(
     session.add(log)
     await session.commit()
     return {"ok": True, "withdrawn_links": len(rows), "reverted": reverted}
+
+
+async def _prs_for_commit_sha(repo_full: str, sha: str) -> list[int]:
+    """GitHub's own "which PRs contain this commit" lookup — used to map a
+    deployment's sha back to the PR(s) it shipped without guessing from the ref."""
+    if not sha:
+        return []
+    from boardman.github.http import shared_github_client
+    from boardman.github.repo_fetch import github_request
+
+    async with shared_github_client() as client:
+        r = await github_request(client, f"/repos/{repo_full}/commits/{sha}/pulls")
+    if r.status_code != 200:
+        return []
+    try:
+        data = r.json()
+    except Exception:  # noqa: BLE001 - a malformed response yields "no PRs found", not a crash
+        return []
+    if not isinstance(data, list):
+        return []
+    out: list[int] = []
+    for item in data:
+        if isinstance(item, dict) and isinstance(item.get("number"), int):
+            out.append(item["number"])
+    return out
+
+
+async def handle_deployment_status(
+    payload: DeploymentStatusEventPayload, session: AsyncSession
+) -> dict[str, Any]:
+    """CD actually shipped the code (GitHub Deployments API `deployment_status`,
+    state=success) → the merged task moves from Completed to Deployed, when the board
+    has a dedicated column for it (see workflow_deployed in dynamic_qa_status.py).
+
+    Ignored for anything other than a successful deployment: a pending/in_progress
+    status means the deploy hasn't happened yet, and failure/error mean it didn't —
+    neither should touch the board.
+    """
+    if (payload.deployment_status.state or "").strip().casefold() != "success":
+        return {"ok": True, "skipped": True, "message": "deployment not successful (yet)"}
+
+    repo_full = payload.repository.full_name
+    repo_name = payload.repository.name
+    sha = (payload.deployment.sha or "").strip()
+    pr_numbers = await _prs_for_commit_sha(repo_full, sha)
+    if not pr_numbers:
+        return {"ok": True, "skipped": True, "message": f"no PR found for commit {sha[:12]}"}
+
+    from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
+    from boardman.repos_config import get_routing_async
+
+    routing = await get_routing_async(repo_full, repo_name, settings.github_org)
+    board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
+    bid = board_id.strip()
+    if not bid:
+        return {"ok": True, "skipped": True, "message": "no board id for repo"}
+
+    deployed = await resolve_plaky_status_patch(bid, intent="workflow_deployed")
+    if not deployed:
+        # No dedicated "Deployed" column on this board — Completed (set at merge time)
+        # already represents "done" here; nothing more to do.
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "no deployed-style status column on this board",
+        }
+    dep_key, dep_id = deployed
+
+    plaky = PlakyClient()
+    updated: list[dict[str, Any]] = []
+    seen_tasks: set[str] = set()
+    for pr_number in pr_numbers:
+        task_ids = await distinct_task_ids_for_pr(
+            session, github_repo=repo_name, github_pr_number=pr_number
+        )
+        for tid in task_ids:
+            if tid in seen_tasks:
+                continue
+            seen_tasks.add(tid)
+            res = await _update_plaky_task_status(tid, dep_id, bid, status_field_key=dep_key)
+            session.add(
+                SyncLog(
+                    action="pr_deployed",
+                    github_repo=repo_name,
+                    github_ref=str(pr_number),
+                    plaky_task_id=tid,
+                    detail=json.dumps(
+                        {"sha": sha, "environment": payload.deployment.environment}, default=str
+                    ),
+                )
+            )
+            updated.append({"task_id": tid, "pr_number": pr_number, "plaky": res})
+
+    await session.commit()
+    if updated:
+        await maybe_enqueue_plaky_reorder_after_task(plaky, updated[0]["task_id"])
+    return {"ok": True, "updated": updated, "event": "deployed"}
 
 
 async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSession) -> dict:

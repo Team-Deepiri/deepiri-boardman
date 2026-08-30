@@ -85,21 +85,23 @@ def _wire(monkeypatch: pytest.MonkeyPatch, fake: _SyncPlaky) -> None:
     monkeypatch.setattr("boardman.repos_config.get_routing_async", _routing)
 
 
-def _payload() -> PullRequestEventPayload:
+def _payload(commits: int = 1) -> PullRequestEventPayload:
     return PullRequestEventPayload(
         action="synchronize",
         pull_request=GitHubPullRequest(
-            number=55, title="t", html_url="http://pr/55", state="open", body=""
+            number=55, title="t", html_url="http://pr/55", state="open", body="", commits=commits
         ),
         repository=GitHubRepository(full_name="Team-Deepiri/diri-cyrex", name="diri-cyrex"),
     )
 
 
 @pytest.mark.asyncio
-async def test_synchronize_after_rejection_goes_to_needs_qa_again(monkeypatch: pytest.MonkeyPatch):
-    """A push after QA rejection is a RESUBMISSION (employer: "developer made these
-    changes so it needs QA again"), not a return to In Progress. This board has no
-    'Needs QA Again' option, so it degrades to plain Needs QA (id "4")."""
+async def test_synchronize_first_push_after_rejection_goes_to_revisions_in_progress(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The FIRST push after a QA verdict is the developer addressing feedback —
+    Revisions In Progress, not an immediate resubmission. Only pushing well past that
+    (more than 5 commits since the verdict) escalates to Needs QA Again."""
     fake = _SyncPlaky(current_status_value="7")  # currently QA Rejected
     _wire(monkeypatch, fake)
     engine, factory = await _memory_session_factory()
@@ -111,11 +113,41 @@ async def test_synchronize_after_rejection_goes_to_needs_qa_again(monkeypatch: p
                 plaky_task_id="task-r",
                 github_issue_number=0,
                 link_source="auto_link",
+                commits_at_last_review=3,
             )
         )
         await session.commit()
     async with factory() as session:
-        out = await handle_pr_synchronized(_payload(), session)
+        out = await handle_pr_synchronized(_payload(commits=4), session)  # delta = 1
+    assert out.get("event") == "revisions_in_progress"
+    assert fake.patches and fake.patches[0][1].get("status-6") == "2"  # In Progress
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_synchronize_escalates_to_needs_qa_again_past_threshold(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """A push after QA rejection is a RESUBMISSION (employer: "developer made these
+    changes so it needs QA again") once it's clearly past "one follow-up fix" — this
+    board has no 'Needs QA Again' option, so it degrades to plain Needs QA (id "4")."""
+    fake = _SyncPlaky(current_status_value="7")  # currently QA Rejected
+    _wire(monkeypatch, fake)
+    engine, factory = await _memory_session_factory()
+    async with factory() as session:
+        session.add(
+            PullRequestTaskLink(
+                github_repo="diri-cyrex",
+                github_pr_number=55,
+                plaky_task_id="task-r",
+                github_issue_number=0,
+                link_source="auto_link",
+                commits_at_last_review=3,
+            )
+        )
+        await session.commit()
+    async with factory() as session:
+        out = await handle_pr_synchronized(_payload(commits=10), session)  # delta = 7 > 5
     assert out.get("event") == "resubmitted_needs_qa_again"
     assert fake.patches and fake.patches[0][1].get("status-6") == "4"
     await engine.dispose()
@@ -123,7 +155,33 @@ async def test_synchronize_after_rejection_goes_to_needs_qa_again(monkeypatch: p
 
 @pytest.mark.asyncio
 async def test_synchronize_noop_when_not_rejected(monkeypatch: pytest.MonkeyPatch):
-    fake = _SyncPlaky(current_status_value="5")  # In QA, not rejected
+    fake = _SyncPlaky(current_status_value="5")  # In QA, not rejected/approved/in-progress
+    _wire(monkeypatch, fake)
+    engine, factory = await _memory_session_factory()
+    async with factory() as session:
+        session.add(
+            PullRequestTaskLink(
+                github_repo="diri-cyrex",
+                github_pr_number=55,
+                plaky_task_id="task-r",
+                github_issue_number=0,
+                link_source="auto_link",
+                commits_at_last_review=3,
+            )
+        )
+        await session.commit()
+    async with factory() as session:
+        out = await handle_pr_synchronized(_payload(commits=4), session)
+    assert out.get("updated") == []
+    assert fake.patches == []
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_synchronize_noop_without_a_review_baseline(monkeypatch: pytest.MonkeyPatch):
+    """No QA verdict has landed for this PR yet (commits_at_last_review is NULL) —
+    an ordinary pre-review push is not this handler's concern."""
+    fake = _SyncPlaky(current_status_value="7")
     _wire(monkeypatch, fake)
     engine, factory = await _memory_session_factory()
     async with factory() as session:
@@ -138,8 +196,8 @@ async def test_synchronize_noop_when_not_rejected(monkeypatch: pytest.MonkeyPatc
         )
         await session.commit()
     async with factory() as session:
-        out = await handle_pr_synchronized(_payload(), session)
-    assert out.get("updated") == []
+        out = await handle_pr_synchronized(_payload(commits=4), session)
+    assert out.get("skipped") is True
     assert fake.patches == []
     await engine.dispose()
 
@@ -162,12 +220,12 @@ def test_agent_routes_gated_by_flag(monkeypatch: pytest.MonkeyPatch):
 
 
 @pytest.mark.asyncio
-async def test_new_commit_after_approval_invalidates_verification(
+async def test_new_commit_after_approval_moves_to_revisions_in_progress(
     monkeypatch: pytest.MonkeyPatch,
 ):
     """An approval describes the commits that existed when it was given. A new push
-    means the verdict no longer covers what will merge, so QA Verified goes back to
-    Needs QA (Again) for a fresh look."""
+    means the verdict no longer covers what will merge — the first such push is
+    Revisions In Progress; only several more escalate to Needs QA Again."""
     fake = _SyncPlaky(current_status_value="6")  # currently QA Verified
     _wire(monkeypatch, fake)
     engine, factory = await _memory_session_factory()
@@ -179,11 +237,12 @@ async def test_new_commit_after_approval_invalidates_verification(
                 plaky_task_id="task-r",
                 github_issue_number=0,
                 link_source="auto_link",
+                commits_at_last_review=3,
             )
         )
         await session.commit()
     async with factory() as session:
-        out = await handle_pr_synchronized(_payload(), session)
-    assert out.get("event") == "resubmitted_needs_qa_again"
-    assert fake.patches and fake.patches[0][1].get("status-6") == "4"
+        out = await handle_pr_synchronized(_payload(commits=4), session)  # delta = 1
+    assert out.get("event") == "revisions_in_progress"
+    assert fake.patches and fake.patches[0][1].get("status-6") == "2"
     await engine.dispose()

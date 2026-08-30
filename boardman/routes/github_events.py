@@ -13,6 +13,7 @@ from boardman.database.models import GitHubWebhookDelivery
 from boardman.database.session import get_db
 from boardman.github.change_signal import note_repo_changed, repo_full_name_from_payload
 from boardman.github.webhooks import (
+    DeploymentStatusEventPayload,
     IssueCommentEventPayload,
     IssueEventPayload,
     PullRequestEventPayload,
@@ -30,6 +31,7 @@ from boardman.services.issue_handler import (
     handle_issue_reopened,
 )
 from boardman.services.pr_handler import (
+    handle_deployment_status,
     handle_pr_closed_without_merge,
     handle_pr_converted_to_draft,
     handle_pr_edited,
@@ -126,6 +128,9 @@ async def dispatch_github_event(
 
     elif isinstance(payload, PullRequestReviewEventPayload):
         result = await handle_pull_request_review(payload, session)
+
+    elif isinstance(payload, DeploymentStatusEventPayload):
+        result = await handle_deployment_status(payload, session)
 
     elif isinstance(payload, PullRequestReviewCommentEventPayload):
         if payload.action in ("created", "edited"):
