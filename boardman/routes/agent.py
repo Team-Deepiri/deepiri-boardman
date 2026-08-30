@@ -221,6 +221,45 @@ async def agent_session_delete(session_id: str, session: AsyncSession = Depends(
     return {"ok": True, "deleted": gone}
 
 
+class SetByokKeyRequest(BaseModel):
+    provider: str = Field(..., description="openai | anthropic | openrouter | gemini")
+    api_key: str = Field(..., min_length=1)
+
+
+@router.post("/agent/sessions/{session_id}/byok")
+async def agent_session_set_byok(
+    session_id: str, body: SetByokKeyRequest, session: AsyncSession = Depends(get_db)
+) -> dict:
+    """Bring-your-own-key for this session only: the key is Fernet-encrypted at rest,
+    time-limited, and never echoed back — see boardman/security/byok.py."""
+    from boardman.agent.service import set_session_byok_key
+
+    return await set_session_byok_key(
+        session, session_id, provider=body.provider, api_key=body.api_key
+    )
+
+
+@router.delete("/agent/sessions/{session_id}/byok")
+async def agent_session_clear_byok(
+    session_id: str, session: AsyncSession = Depends(get_db)
+) -> dict:
+    from boardman.agent.service import clear_session_byok_key
+
+    cleared = await clear_session_byok_key(session, session_id)
+    return {"ok": True, "cleared": cleared}
+
+
+@router.get("/agent/sessions/{session_id}/byok")
+async def agent_session_byok_status(
+    session_id: str, session: AsyncSession = Depends(get_db)
+) -> dict:
+    """Never returns the key — provider + expiry only, so the UI can show
+    "using your key (expires in Xh)" without ever handling the secret again."""
+    from boardman.agent.service import get_session_byok_status
+
+    return await get_session_byok_status(session, session_id)
+
+
 @router.post("/agent/scan")
 async def agent_scan(
     body: ScanRequest,

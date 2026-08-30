@@ -116,6 +116,12 @@ class AgentSession(Base):
     task_draft_json: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     last_active: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+    # Bring-your-own-key (see boardman/security/byok.py): the raw key is NEVER stored —
+    # only Fernet ciphertext, decrypted just-in-time per LLM call. Expires on its own
+    # schedule (byok_key_expires_at), independent of the session's own lifetime.
+    byok_provider: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    byok_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    byok_key_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     messages: Mapped[list["AgentMessage"]] = relationship(
         "AgentMessage", back_populates="session", cascade="all, delete-orphan"

@@ -45,8 +45,9 @@ def get_chat_model() -> Any:
             "claude": "claude-sonnet-4-20250514",
             "openai": "gpt-4.1",  # real OpenAI model (released April 2025)
             "gpt": "gpt-4.1",
-            "openrouter": "anthropic/claude-3.5-sonnet",
-            "or": "anthropic/claude-3.5-sonnet",
+            # Free-tier, tool-calling-capable — must never default to a paid model.
+            "openrouter": "minimax/minimax-m3:free",
+            "or": "minimax/minimax-m3:free",
             "gemini": "gemini-2.0-flash",
             "google": "gemini-2.0-flash",
         }
@@ -118,7 +119,7 @@ def _build_chat_model() -> Any:
             default_headers["X-Title"] = app_title
 
         return ChatOpenAI(
-            model=(settings.llm_model or "").strip() or "anthropic/claude-3.5-sonnet",
+            model=(settings.llm_model or "").strip() or "minimax/minimax-m3:free",
             api_key=settings.openrouter_api_key or None,
             base_url=settings.openrouter_base_url.rstrip("/"),
             temperature=0.2,
