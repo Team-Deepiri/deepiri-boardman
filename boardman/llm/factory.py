@@ -25,15 +25,24 @@ def clear_chat_model_cache() -> None:
     _model_cache.clear()
 
 
-def get_chat_model() -> Any:
-    """Return a LangChain BaseChatModel for the configured provider (cached per resolved model).
+def get_chat_model(
+    *, provider_override: str | None = None, api_key_override: str | None = None
+) -> Any:
+    """Return a LangChain BaseChatModel for the configured provider (cached per resolved
+    model) — UNLESS ``api_key_override`` is set (bring-your-own-key, see
+    boardman/security/byok.py), in which case a fresh, uncached instance is built with
+    that key. BYOK is per-session and short-lived; caching it globally would leak one
+    session's key into every other session's model instance sharing the same
+    (provider, model) cache key.
 
     The cache key is ``(provider, resolved_model_id)`` — never ``(provider, None)`` — so a
     setting change at runtime (or Ollama autodetecting a different model after a pull)
     produces a new instance rather than serving a stale one. In practice settings are
     env-loaded once per process, so this is a correctness guard, not a hot path.
     """
-    prov = (settings.llm_provider or "ollama").lower()
+    prov = (provider_override or settings.llm_provider or "ollama").lower()
+    if api_key_override:
+        return _build_chat_model(provider=prov, api_key_override=api_key_override)
     model_id = (settings.llm_model or "").strip()
     if prov == "ollama" and not model_id:
         model_id = effective_ollama_model(None)
@@ -61,8 +70,10 @@ def get_chat_model() -> Any:
     return model
 
 
-def _build_chat_model() -> Any:
-    p = (settings.llm_provider or "ollama").lower()
+def _build_chat_model(
+    *, provider: str | None = None, api_key_override: str | None = None
+) -> Any:
+    p = (provider or settings.llm_provider or "ollama").lower()
     if p in ("claude",):
         p = "anthropic"
 
@@ -87,7 +98,7 @@ def _build_chat_model() -> Any:
 
         return ChatAnthropic(
             model=(settings.llm_model or "").strip() or "claude-sonnet-4-20250514",
-            api_key=settings.anthropic_api_key or None,
+            api_key=(api_key_override or settings.anthropic_api_key or None),
             temperature=0.2,
             max_retries=max(0, int(settings.llm_max_retries)),
         )
@@ -99,7 +110,7 @@ def _build_chat_model() -> Any:
         model = (settings.llm_model or "").strip() or "gpt-4.1"
         kw = {
             "model": model,
-            "api_key": settings.openai_api_key or None,
+            "api_key": (api_key_override or settings.openai_api_key or None),
             "max_retries": max(0, int(settings.llm_max_retries)),
         }
         # gpt-5* and o-series reasoning models reject non-default temperature.
@@ -120,7 +131,7 @@ def _build_chat_model() -> Any:
 
         return ChatOpenAI(
             model=(settings.llm_model or "").strip() or "minimax/minimax-m3:free",
-            api_key=settings.openrouter_api_key or None,
+            api_key=(api_key_override or settings.openrouter_api_key or None),
             base_url=settings.openrouter_base_url.rstrip("/"),
             temperature=0.2,
             default_headers=default_headers or None,
@@ -132,7 +143,7 @@ def _build_chat_model() -> Any:
 
         return ChatGoogleGenerativeAI(
             model=(settings.llm_model or "").strip() or "gemini-2.0-flash",
-            google_api_key=settings.gemini_api_key or None,
+            google_api_key=(api_key_override or settings.gemini_api_key or None),
             temperature=0.2,
             max_retries=max(0, int(settings.llm_max_retries)),
         )

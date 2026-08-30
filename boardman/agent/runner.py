@@ -230,10 +230,12 @@ async def run_tool_agent(
     allow_writes: bool,
     system_extra: str = "",
     return_trace: bool = False,
+    provider_override: str | None = None,
+    api_key_override: str | None = None,
 ) -> str | tuple[str, list[dict[str, Any]]]:
     from langchain.agents import create_agent
 
-    llm = get_chat_model()
+    llm = get_chat_model(provider_override=provider_override, api_key_override=api_key_override)
     start_turn()
     tools = _timed_tools(allow_writes)
     verbose = settings.agent_langchain_verbose or logger.isEnabledFor(logging.DEBUG)
@@ -333,6 +335,8 @@ async def iter_tool_agent(
     allow_writes: bool,
     system_extra: str = "",
     trace_out: list[dict[str, Any]] | None = None,
+    provider_override: str | None = None,
+    api_key_override: str | None = None,
 ) -> AsyncIterator[str | dict[str, Any]]:
     """Stream assistant tokens (str) and status updates (dict) from the tool-calling agent.
 
@@ -345,7 +349,7 @@ async def iter_tool_agent(
     """
     from langchain.agents import create_agent
 
-    llm = get_chat_model()
+    llm = get_chat_model(provider_override=provider_override, api_key_override=api_key_override)
     start_turn()
     tools = _timed_tools(allow_writes)
     verbose = settings.agent_langchain_verbose or logger.isEnabledFor(logging.DEBUG)
