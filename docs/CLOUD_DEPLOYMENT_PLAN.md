@@ -1,172 +1,102 @@
-# Boardman on the cloud-portal VPS — fit analysis + deployment plan
+# Boardman cloud deployment plan (final)
 
-Companion to [deepiri-platform PR #304](https://github.com/Team-Deepiri/deepiri-platform/pull/304)
-and its docs (`CHEAP_ONE_BOX_VPS.md`, `NETCUP_VPS_1000_G12_DEPLOYMENT_PLAN.md`). This asks the
-next question: can **deepiri-boardman** share that same box, and what does hosting it there
-actually take.
-
-**Short answer: yes, easily, on resources — the open questions are about ports, secrets, and
-routing, not whether it fits.**
+Supersedes the earlier speculative version of this doc. This one is based on actually
+SSH-ing into the real target VPS (read-only checks only — no changes made) and on
+decisions made and tested this session: **no chat UI on this box, OpenRouter free-tier
+for inference, reuse the nginx already running there.**
 
 ---
 
-## The box (from PR #304)
+## The actual box (measured live, not estimated)
 
-**Netcup VPS 1000 G12** — 4 vCore / 8 GB DDR5 ECC / 256 GB NVMe, ~€11.56/mo (hourly SKU).
+`159.195.234.19` — already running the `deepiri-platform` stack.
 
-Measured with the 11-service `deepiri-platform` cloud-portal stack already running on it:
+| | |
+|---|---|
+| CPU | 4 vCore, AMD EPYC-Genoa |
+| RAM | 7.8 GB total, **6.3 GB available** right now |
+| Disk | 251 GB, 9.2 GB used — **232 GB free** |
+| OS | Debian 13 (trixie) |
+| Docker | 29.7.2 + Compose v5.5.0, already installed |
 
-| State | Memory | CPU |
+**Already running** (13 containers, measured combined RAM: **~215 MB** — about 3% of the box): nginx, platform-frontend, api-gateway, auth-service, jobs, external-bridge-service, registry, postgres-platform, redis, certbot, pg-backup-offsite, lyback, a proxy container on `:8888`.
+
+**Ports 80/443/22/8888 are taken** (by the above). **8090/8091/5433 are free.** `/opt/deepiri/deepiri-platform` already exists; Boardman goes in as a sibling: `/opt/deepiri/deepiri-boardman`.
+
+**Conclusion: fits easily.** Boardman's own measured footprint (~110 MB API process) plus a small Postgres instance is well under 1 GB against 6.3 GB free.
+
+---
+
+## Decisions made this session
+
+1. **No UI on this box.** `boardman-ui` (the chat frontend) is not deployed here — Boardman on this VPS is backend-only: webhook receiver + REST API + sync engine.
+2. **No local inference.** No GPU on this box (confirmed: the only display device is a virtual/QEMU stub, no `nvidia-smi`). Running even a small local model here would be slow (CPU-only) and would compete with the platform stack's RAM. This also matches the platform's own documented policy of keeping heavy AI off this class of VPS.
+3. **Inference = OpenRouter, free tier, by default.** `LLM_PROVIDER=openrouter`, and the codebase's own default model (when `LLM_MODEL` is unset) is now `minimax/minimax-m3:free` — **live-verified this session**: it correctly drove Boardman's tool-calling agent to create a real Plaky task and read a real GitHub repo. If someone needs a stronger model temporarily, they don't need a deploy change — see **bring-your-own-key** below.
+4. **Bring-your-own-key (BYOK).** A chat session can supply its own provider API key instead of the shared free-tier one. Encrypted at rest (Fernet, server-side secret `BYOK_ENCRYPTION_KEY`), time-limited (24h default), never echoed back in any response. Off entirely unless `BYOK_ENCRYPTION_KEY` is set. See `boardman/security/byok.py`.
+5. **Route through the existing nginx**, not a second one. `deploy/nginx/boardman.deepiri.com.conf` is a server block to add to the nginx container already running on this box — proxies `/api/` only, no UI route, to `boardman:8090`.
+6. **Own Postgres instance**, separate from the platform's `postgres-platform` (unchanged from the earlier version of this plan — trivial resource cost, keeps failure domains independent).
+
+---
+
+## What actually gets deployed
+
+| Component | Why | Resource cost |
 |---|---|---|
-| Idle | ~316 MiB | ~2.0% |
-| Under gateway-routed load (the path real traffic takes) | ~440 MiB | ~1.66 core-eq |
-| Synthetic worst case (4 backend services saturated directly) | ~590 MiB | ~4.46 core-eq |
+| `boardman` (API) | Webhook receiver + REST — the only piece that must be internet-reachable | ~110 MB RAM (measured) |
+| `boardman-worker` | Background/deferred job processing | ~80-110 MB RAM (same import weight, no HTTP layer) |
+| Postgres (own instance) | `DATABASE_URL` for Boardman only | ~30-50 MB RAM |
+| ~~boardman-ui / nginx~~ | **Not deployed** — no chat UI on this box | — |
+| ~~Ollama~~ | **Not deployed** — no GPU, OpenRouter instead | — |
 
-Even the synthetic worst case is ~7% of 8 GB. **Memory was never the constraint on this box —
-CPU is**, and only under a load pattern (multiple services saturated simultaneously,
-bypassing the gateway) that real traffic doesn't produce.
-
-**Hard rule already established for this box** (per `CHEAP_ONE_BOX_VPS.md`): no Cyrex, LIS,
-speech, Ollama, MLflow, Milvus, Kafka, or messaging here — those stay on
-`deepiri-control-plane`. This matters for Boardman too, see below.
+Total: **~250-300 MB**, against 6.3 GB currently free.
 
 ---
 
-## Boardman's own footprint
-
-Measured directly (this session, `uvicorn boardman.main:app`, single worker, idle, before any
-request): **~107 MB RSS** for the API process alone. The background worker
-(`boardman.sqlite_worker` / a Postgres-backed equivalent — see the Postgres migration PR) does
-comparable heavy imports (LangChain, the tool registry) without the FastAPI/uvicorn layer, so
-budget the same order of magnitude, not less.
-
-Estimated full-stack footprint if Boardman runs here:
-
-| Component | Estimated idle RSS | Notes |
-|---|---|---|
-| `boardman` (API) | ~110 MB | Measured directly this session |
-| `boardman-worker` | ~80-110 MB | Same import weight, no HTTP layer |
-| `boardman-nginx` (UI + proxy) | ~5-10 MB | Static file server + reverse proxy |
-| Postgres (own instance, small dataset) | ~30-50 MB | See "shared vs. separate Postgres" below |
-| **Total** | **~250-300 MB** | Same order of magnitude as the entire 11-service platform stack |
-
-Against a box that had **~7.5 GB free** even under the platform's own load testing, adding
-Boardman is not a capacity question. **Boardman never needs Ollama in this deployment** —
-`docker-compose.prod.yml` already omits it and expects a hosted LLM provider
-(`LLM_PROVIDER=openai` or similar), which is exactly consistent with this box's own
-no-heavy-AI rule.
-
-CPU: Boardman's workload is webhook-driven and I/O-bound (calls out to GitHub, Plaky, and a
-hosted LLM API) rather than CPU-bound — it does not compete with the platform stack's CPU
-ceiling the way a local model or a CPU-heavy service would. Not measured under simultaneous
-load with the platform stack; worth a real `docker stats` pass once both are actually running
-together, same caveat the platform docs give themselves.
-
----
-
-## What has to be decided before deploying (not resource questions — architecture ones)
-
-### 1. Domain / routing
-
-The platform's `ops/nginx/cloud-prod.conf` is a single-domain, catch-all (`server_name _`)
-config with one Let's Encrypt cert. Boardman ships its **own** nginx+UI container
-(`boardman-nginx`, port 8088) and API (port 8090) in `docker-compose.prod.yml`. Two ways to
-combine them on one box, pick one:
-
-- **Subdomain (recommended)** — e.g. `boardman.<domain>`. Add a second `server{}` block
-  (or a second nginx instance + a second Let's Encrypt cert via `certbot certonly -d
-  boardman.<domain>`) that proxies to Boardman's containers over the shared Docker network.
-  Cleanest separation; GitHub's webhook URL (`https://boardman.<domain>/api/v1/webhooks/github`)
-  reads unambiguously as Boardman's, not the platform's.
-- **Path-based** (`<domain>/boardman/...`) — works, but Boardman's own UI build and API
-  routes assume root-relative paths; would need `VITE_API_BASE`/router-base changes on the
-  frontend and is more fragile for the webhook path specifically (GitHub retries a fixed URL
-  forever if it 404s after a routing change).
-
-Either way: **bind Boardman's containers to `127.0.0.1` only** (not `0.0.0.0`), same pattern
-the platform stack uses — the shared nginx is the only public-facing edge on this box.
-
-### 2. Shared vs. separate Postgres
-
-The Postgres migration (this repo, merged) makes `DATABASE_URL` a `postgresql+asyncpg://` URL
-with no other requirement. Two options:
-
-- **Separate Postgres container for Boardman** — matches the resource budget above (~30-50
-  MB), keeps failure domains and backup/restore independent from the platform's
-  `postgres-platform`, and avoids any cross-service credential/permission entanglement. This
-  is the safer default and what I'd recommend given the trivial resource cost.
-- **A second database inside the platform's existing `postgres-platform` instance** — saves
-  one container's worth of idle memory (~30-50 MB, not meaningful at this box's headroom) but
-  means Boardman's schema changes, connection pool, and any Postgres-level lockup or backup
-  event now share fate with the platform's own database. **Not recommended** unless there's a
-  specific ops reason (e.g. wanting exactly one thing to back up) to prefer it.
-
-### 3. Secrets on the box
-
-Boardman needs its own env, separate from the platform's `ops/k8s/secrets/.env`:
-
-- `PLAKY_API_KEY`, `GITHUB_PAT`, `GITHUB_WEBHOOK_SECRET`
-- `DATABASE_URL` (Postgres DSN — see above), `POSTGRES_PASSWORD` if running its own instance
-- `LLM_PROVIDER` + the matching API key (`OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / etc.) —
-  **no Ollama key needed, none should be configured on this box**
-- `CORS_ORIGINS` set to whatever domain/subdomain is chosen above
-- `ROUTE_SECRET` (worker↔API internal auth, if applicable — check current `.env.example`)
-
-None of these should live in the platform's `cloud-portal-secrets.7z` bundle — Boardman's
-secrets are a separate file (`ops/k8s/secrets/.env` under `/opt/deepiri/deepiri-boardman`, not
-shared with `/opt/deepiri/deepiri-platform`), same isolation principle the platform docs
-already apply to control-plane vs. cloud-portal secrets.
-
-### 4. GitHub webhook reachability
-
-Once a domain/subdomain and TLS are live, register the webhook URL
-(`https://boardman.<domain>/api/v1/webhooks/github`) in the GitHub org/repo webhook settings
-with the `GITHUB_WEBHOOK_SECRET` above. Until DNS + TLS are actually pointed at this box,
-Boardman can still run in `TESTING_LIVE_PLAKY` polling mode (already supported, see README) as
-a bridge — no public endpoint required, at the cost of near-real-time sync becoming
-poll-interval-delayed instead of webhook-instant.
-
----
-
-## Deployment steps (mirrors PR #304's phase structure)
+## Steps
 
 ```bash
-# On the VPS, alongside the existing /opt/deepiri/deepiri-platform checkout
-mkdir -p /opt/deepiri && cd /opt/deepiri
+# On the VPS, alongside the existing /opt/deepiri/deepiri-platform
+cd /opt/deepiri
 git clone git@github.com:Team-Deepiri/deepiri-boardman.git
 cd deepiri-boardman
 
-# Secrets (separate from the platform's bundle — see "Secrets on the box" above)
 cp .env.production.example .env
-nano .env   # fill PLAKY_API_KEY, GITHUB_PAT, GITHUB_WEBHOOK_SECRET, DATABASE_URL, LLM_PROVIDER + key
+# Fill in: PLAKY_API_KEY, GITHUB_PAT, GITHUB_WEBHOOK_SECRET, DATABASE_URL (own postgres),
+# LLM_PROVIDER=openrouter, OPENROUTER_API_KEY (free-tier key),
+# BYOK_ENCRYPTION_KEY (generate one: `openssl rand -hex 32`)
 chmod 600 .env
 
-# Bring up Boardman's own stack (postgres + boardman + worker + nginx)
+# Bring up boardman + boardman-worker + its own postgres (docker-compose.prod.yml
+# already runs a postgres service — see the Postgres migration section below)
 docker compose -f docker-compose.prod.yml up -d --build
 
-# Apply migrations against the Postgres this compose file just started
 docker compose -f docker-compose.prod.yml exec boardman alembic upgrade head
 
-# Health check (internal — no public route configured yet at this step)
+# Health check (internal, no public route yet)
 curl -sS http://127.0.0.1:8090/api/v1/health
 ```
 
-Then: add the subdomain server block to the shared nginx (or stand up a second nginx
-container bound to a different host port and front it with the platform's nginx as a
-reverse-proxy target), issue the Let's Encrypt cert for the chosen subdomain, and register
-the GitHub webhook URL.
+Then:
+1. **Cloudflare**: add a DNS record for `boardman.deepiri.com` → this VPS's IP.
+2. **nginx**: add `deploy/nginx/boardman.deepiri.com.conf`'s server block to the nginx config already running on the box (see the comments in that file for the exact wiring — shared docker network + a dedicated Let's Encrypt cert for the new hostname).
+3. **GitHub**: register the webhook at `https://boardman.deepiri.com/api/v1/webhooks/github` with the `GITHUB_WEBHOOK_SECRET` from step above.
 
 ---
 
-## Bottom line
+## Postgres migration (already built and tested)
 
-- **Fits comfortably.** Combined footprint (~250-300 MB for Boardman + ~316-440 MB for the
-  platform stack) is well under 1 GB against an 8 GB box with ~7.5 GB of headroom already
-  demonstrated under the platform's own load testing.
-- **CPU, not memory, is the box's real ceiling** — Boardman's I/O-bound webhook/API workload
-  doesn't add meaningful CPU pressure, but it hasn't been measured running *simultaneously*
-  with the platform stack under load; worth one real `docker stats` pass after both are live.
-- **The actual work is routing/secrets/ops, not capacity**: pick subdomain vs. path routing,
-  pick separate vs. shared Postgres (separate recommended), keep Boardman's secrets in their
-  own file, and decide whether the webhook goes live immediately or Boardman bridges on
-  `TESTING_LIVE_PLAKY` polling until DNS/TLS are ready.
+`DATABASE_URL=postgresql+asyncpg://...` — SQLite serializes writes to one connection, which is real contention once the API and worker both write concurrently. The Postgres path is fully migrated and verified (see the Postgres migration PR): all migrations apply cleanly, 10 concurrent writers × 20 rows commit in ~0.1s.
+
+---
+
+## Deepiri-web-frontend Tools page entry
+
+A "Boardman" tile on the platform's Tools page (linking to `https://boardman.deepiri.com`) was requested — that's a change to a **different repo** (`deepiri-web-frontend`), out of scope for this repo/plan. Flagging it here so it isn't lost; needs a separate pass once someone opens that repo.
+
+---
+
+## What's NOT verified end-to-end yet
+
+- The nginx wiring above is a config file, not something applied to the live box — I did not touch the running nginx (read-only checks only, per what was actually authorized this session).
+- The `deepiri-web-frontend` Tools page entry — not started, different repo.
+- Live proof used the *sandbox's* credentials/board, not a real deployment on `159.195.234.19` — the box fits and the code works, but nobody has actually run `docker compose up` there yet.
