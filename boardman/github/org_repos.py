@@ -83,6 +83,10 @@ async def fetch_org_repository_full_names(
                 if skip_archived and repo.get("archived"):
                     continue
                 fn = repo.get("full_name")
+                # .github is a GitHub org-metadata repo (issue templates, org profile),
+                # never a real project — it has no Plaky board/group and never will.
+                if fn and str(fn).rsplit("/", 1)[-1] == ".github":
+                    continue
                 if fn:
                     out.append(str(fn))
                     rows.append(
