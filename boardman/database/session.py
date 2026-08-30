@@ -63,6 +63,20 @@ async def init_db() -> None:
                     sync_conn.execute(
                         text("ALTER TABLE agent_sessions ADD COLUMN task_draft_json TEXT")
                     )
+                if "byok_provider" not in cols:
+                    sync_conn.execute(
+                        text("ALTER TABLE agent_sessions ADD COLUMN byok_provider VARCHAR(32)")
+                    )
+                if "byok_key_encrypted" not in cols:
+                    sync_conn.execute(
+                        text("ALTER TABLE agent_sessions ADD COLUMN byok_key_encrypted TEXT")
+                    )
+                if "byok_key_expires_at" not in cols:
+                    sync_conn.execute(
+                        text(
+                            "ALTER TABLE agent_sessions ADD COLUMN byok_key_expires_at DATETIME"
+                        )
+                    )
 
                 r = sync_conn.execute(text("PRAGMA table_info(project_contexts)"))
                 context_cols = [row[1] for row in r.fetchall()]

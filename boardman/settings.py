@@ -209,6 +209,12 @@ class Settings(BaseSettings):
     # `alembic upgrade head` against it once before first boot.
     database_url: str = "sqlite+aiosqlite:///./boardman.db"
 
+    # Bring-your-own-key: lets one chat session temporarily use its own LLM provider
+    # API key instead of the shared default. Empty = feature OFF everywhere (see
+    # boardman/security/byok.py — never falls back to a weaker "store it anyway").
+    byok_encryption_key: str = ""
+    byok_key_ttl_hours: float = 24.0
+
     service_host: str = "0.0.0.0"
     service_port: int = 8090
 

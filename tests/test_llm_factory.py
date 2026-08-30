@@ -31,7 +31,8 @@ def test_factory_openrouter_returns_chatopenai_with_expected_config(monkeypatch,
     llm = get_chat_model()
 
     assert isinstance(llm, _DummyChatOpenAI)
-    assert llm.kwargs["model"] == "anthropic/claude-3.5-sonnet"
+    # Free-tier default so nobody who forgets LLM_MODEL gets silently billed.
+    assert llm.kwargs["model"] == "minimax/minimax-m3:free"
     assert llm.kwargs["api_key"] == "openrouter-key"
     assert llm.kwargs["base_url"] == "https://openrouter.ai/api/v1"
     assert llm.kwargs["default_headers"] == {

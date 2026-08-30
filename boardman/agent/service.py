@@ -112,7 +112,11 @@ def _default_model_for_provider(provider: str) -> str:
     if provider == "openai":
         return "gpt-4.1"  # real OpenAI model (released April 2025)
     if provider == "openrouter":
-        return "anthropic/claude-3.5-sonnet"
+        # Free-tier, tool-calling-capable — live-verified against Plaky (real task
+        # created) and GitHub (real repo read) tool calls this session. Paid models
+        # remain one LLM_MODEL env var away; this default must never silently bill
+        # someone who forgot to set it.
+        return "minimax/minimax-m3:free"
     if provider == "gemini":
         return "gemini-2.0-flash"
     if provider == "ollama":
@@ -412,6 +416,7 @@ async def _safe_plain_chat(
     resolved_model: str,
     extra_system_suffix: str = "",
     tools_unavailable: bool = False,
+    api_key_override: str | None = None,
 ) -> str:
     if tools_unavailable:
         extra_system_suffix = (extra_system_suffix or "") + _TOOLS_DOWN_CONSTRAINT
@@ -423,7 +428,9 @@ async def _safe_plain_chat(
             plaky_suffix,
             extra_system_suffix=extra_system_suffix,
         )
-        return await chat_complete(llm_messages, provider=provider, model=model)
+        return await chat_complete(
+            llm_messages, provider=provider, model=model, api_key_override=api_key_override
+        )
     except Exception as e:  # noqa: BLE001 - logged and handled
         logger.exception("Plain chat (Ollama/direct LLM) failed")
         return _format_llm_failure(e, provider=resolved_provider, model=resolved_model)
@@ -742,17 +749,19 @@ async def run_agent_chat(
         except Exception as e:  # noqa: BLE001 — tool agent failure falls back to plain chat
             logger.warning("LangChain tool agent failed, using plain chat: %s", e, exc_info=True)
             assistant_tool_calls_json = _runtime_error_trace(e)
+            byok_provider, byok_key = await _resolve_session_llm_override(ag)
             reply = await _safe_plain_chat(
                 tools_unavailable=True,
                 message=message,
                 repo=active_repo,
                 history_msgs=history_msgs,
                 plaky_suffix=plaky_suffix,
-                provider=provider,
+                provider=byok_provider or provider,
                 model=model,
                 resolved_provider=resolved_provider,
                 resolved_model=resolved_model,
                 extra_system_suffix=repo_context_prompt + draft_md + intake_extra,
+                api_key_override=byok_key,
             )
     else:
         logger.info(
@@ -760,16 +769,18 @@ async def run_agent_chat(
             sid,
             use_tools,
         )
+        byok_provider, byok_key = await _resolve_session_llm_override(ag)
         reply = await _safe_plain_chat(
             message=message,
             repo=active_repo,
             history_msgs=history_msgs,
             plaky_suffix=plaky_suffix,
-            provider=provider,
+            provider=byok_provider or provider,
             model=model,
             resolved_provider=resolved_provider,
             resolved_model=resolved_model,
             extra_system_suffix=repo_context_prompt + draft_md + intake_extra,
+            api_key_override=byok_key,
         )
 
     session.add(
@@ -999,7 +1010,13 @@ async def iter_agent_chat_sse(
                 plaky_suffix,
                 extra_system_suffix=repo_context_prompt + draft_md + intake_extra,
             )
-            async for chunk in chat_complete_stream(llm_messages, provider=provider, model=model):
+            byok_provider, byok_key = await _resolve_session_llm_override(ag)
+            async for chunk in chat_complete_stream(
+                llm_messages,
+                provider=byok_provider or provider,
+                model=model,
+                api_key_override=byok_key,
+            ):
                 if not chunk:
                     continue
                 parts.append(chunk)
@@ -1112,3 +1129,93 @@ async def delete_agent_session(session: AsyncSession, session_id: str) -> bool:
         return False
     await session.delete(ag)
     return True
+
+
+async def set_session_byok_key(
+    session: AsyncSession, session_id: str, *, provider: str, api_key: str
+) -> dict[str, Any]:
+    """Store an encrypted, time-limited provider key for this session only. Creates
+    the session row if it doesn't exist yet (the same "first message creates it"
+    behavior chat itself has). Never returns the key — only what's safe to show back:
+    provider name and expiry."""
+    from boardman.security import byok
+
+    if not byok.is_configured():
+        return {"ok": False, "message": "BYOK is not enabled on this server"}
+    norm_provider = byok.normalize_provider(provider)
+    if not norm_provider:
+        return {"ok": False, "message": f"unsupported provider {provider!r}"}
+    key = (api_key or "").strip()
+    if not key:
+        return {"ok": False, "message": "api_key is required"}
+
+    q = select(AgentSession).where(AgentSession.session_id == session_id)
+    ag = (await session.execute(q)).scalar_one_or_none()
+    if ag is None:
+        ag = AgentSession(
+            session_id=session_id,
+            prompt_version=settings.prompt_version,
+            created_at=datetime.utcnow(),
+            last_active=datetime.utcnow(),
+        )
+        session.add(ag)
+        await session.flush()
+
+    ag.byok_provider = norm_provider
+    ag.byok_key_encrypted = byok.encrypt_key(norm_provider, key)
+    expires_at = byok.default_expiry()
+    ag.byok_key_expires_at = expires_at.replace(tzinfo=None)
+    await session.commit()
+    return {
+        "ok": True,
+        "provider": norm_provider,
+        "expires_at": expires_at.isoformat(),
+    }
+
+
+async def clear_session_byok_key(session: AsyncSession, session_id: str) -> bool:
+    q = select(AgentSession).where(AgentSession.session_id == session_id)
+    ag = (await session.execute(q)).scalar_one_or_none()
+    if ag is None:
+        return False
+    ag.byok_provider = None
+    ag.byok_key_encrypted = None
+    ag.byok_key_expires_at = None
+    await session.commit()
+    return True
+
+
+async def get_session_byok_status(session: AsyncSession, session_id: str) -> dict[str, Any]:
+    """Whether this session has a live BYOK key, and which provider — never the key
+    itself. A session with an expired key reports as not configured (lazy expiry;
+    nothing purges the row until it's next read or overwritten)."""
+    from boardman.security import byok
+
+    q = select(AgentSession).where(AgentSession.session_id == session_id)
+    ag = (await session.execute(q)).scalar_one_or_none()
+    if ag is None or not ag.byok_key_encrypted:
+        return {"configured": False}
+    if byok.is_expired(ag.byok_key_expires_at):
+        return {"configured": False, "expired": True}
+    return {
+        "configured": True,
+        "provider": ag.byok_provider,
+        "expires_at": ag.byok_key_expires_at.isoformat() if ag.byok_key_expires_at else None,
+    }
+
+
+async def _resolve_session_llm_override(
+    ag: AgentSession | None,
+) -> tuple[str | None, str | None]:
+    """(provider, api_key) to use INSTEAD of the shared default for this turn, or
+    (None, None) when no live BYOK key exists — the normal, default-key path."""
+    if ag is None or not ag.byok_key_encrypted:
+        return None, None
+    from boardman.security import byok
+
+    if byok.is_expired(ag.byok_key_expires_at):
+        return None, None
+    plaintext = byok.decrypt_key(ag.byok_key_encrypted)
+    if not plaintext:
+        return None, None
+    return ag.byok_provider, plaintext

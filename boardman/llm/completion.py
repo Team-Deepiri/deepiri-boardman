@@ -73,7 +73,11 @@ async def chat_complete(
     provider: str | None = None,
     model: str | None = None,
     timeout: float = 120.0,
+    api_key_override: str | None = None,
 ) -> str:
+    """``api_key_override``: bring-your-own-key (boardman/security/byok.py) — when set,
+    used INSTEAD of the shared settings.<provider>_api_key for this one call only.
+    Never logged, never persisted here."""
     from boardman.observability.counters import bump, observe
 
     prov = (provider or settings.llm_provider or "ollama").lower()
@@ -94,7 +98,9 @@ async def chat_complete(
             # gpt-4.1: real OpenAI model (April 2025), not a typo
             mdl = mdl or "gpt-4.1"
         elif prov in ("openrouter", "or"):
-            mdl = mdl or "anthropic/claude-3.5-sonnet"
+            # Free-tier, tool-calling-capable — see boardman/agent/service.py
+            # _default_model_for_provider for why this must never default to paid.
+            mdl = mdl or "minimax/minimax-m3:free"
         elif prov in ("gemini", "google"):
             mdl = mdl or "gemini-2.0-flash"
 
@@ -103,13 +109,13 @@ async def chat_complete(
 
     async with httpx.AsyncClient(timeout=timeout) as client:
         if prov == "anthropic":
-            return await _anthropic_messages(client, mdl, messages)
+            return await _anthropic_messages(client, mdl, messages, api_key_override)
         if prov in ("openai", "gpt"):
-            return await _openai_chat(client, mdl, messages)
+            return await _openai_chat(client, mdl, messages, api_key_override)
         if prov in ("openrouter", "or"):
-            return await _openrouter_chat(client, mdl, messages)
+            return await _openrouter_chat(client, mdl, messages, api_key_override)
         if prov in ("gemini", "google"):
-            return await _gemini_generate(client, mdl, messages)
+            return await _gemini_generate(client, mdl, messages, api_key_override)
         raise ValueError(f"Unknown LLM_PROVIDER: {prov}")
 
 
@@ -166,6 +172,7 @@ async def chat_complete_stream(
     *,
     provider: str | None = None,
     model: str | None = None,
+    api_key_override: str | None = None,
 ) -> AsyncIterator[str]:
     """
     Stream completion chunks. Ollama uses native streaming; other providers emit one chunk (full text).
@@ -177,20 +184,26 @@ async def chat_complete_stream(
             yield part
         return
 
-    text = await chat_complete(messages, provider=provider, model=model)
+    text = await chat_complete(
+        messages, provider=provider, model=model, api_key_override=api_key_override
+    )
     if text:
         yield text
 
 
 async def _anthropic_messages(
-    client: httpx.AsyncClient, model: str, messages: list[dict[str, str]]
+    client: httpx.AsyncClient,
+    model: str,
+    messages: list[dict[str, str]],
+    api_key_override: str | None = None,
 ) -> str:
-    if not settings.anthropic_api_key:
+    api_key = (api_key_override or settings.anthropic_api_key or "").strip()
+    if not api_key:
         raise ValueError("ANTHROPIC_API_KEY is not set")
     system, rest = _extract_system(messages)
     url = "https://api.anthropic.com/v1/messages"
     headers = {
-        "x-api-key": settings.anthropic_api_key,
+        "x-api-key": api_key,
         "anthropic-version": "2023-06-01",
         "content-type": "application/json",
     }
@@ -215,23 +228,31 @@ async def _anthropic_messages(
 
 
 async def _openai_chat(
-    client: httpx.AsyncClient, model: str, messages: list[dict[str, str]]
+    client: httpx.AsyncClient,
+    model: str,
+    messages: list[dict[str, str]],
+    api_key_override: str | None = None,
 ) -> str:
-    if not settings.openai_api_key:
+    api_key = (api_key_override or settings.openai_api_key or "").strip()
+    if not api_key:
         raise ValueError("OPENAI_API_KEY is not set")
     return await _openai_compat_chat(
         client,
         base_url="https://api.openai.com/v1",
-        api_key=settings.openai_api_key,
+        api_key=api_key,
         model=model,
         messages=messages,
     )
 
 
 async def _openrouter_chat(
-    client: httpx.AsyncClient, model: str, messages: list[dict[str, str]]
+    client: httpx.AsyncClient,
+    model: str,
+    messages: list[dict[str, str]],
+    api_key_override: str | None = None,
 ) -> str:
-    if not settings.openrouter_api_key:
+    api_key = (api_key_override or settings.openrouter_api_key or "").strip()
+    if not api_key:
         raise ValueError("OPENROUTER_API_KEY is not set")
     extra_headers: dict[str, str] = {}
     referer = (settings.openrouter_referer or "").strip()
@@ -243,7 +264,7 @@ async def _openrouter_chat(
     return await _openai_compat_chat(
         client,
         base_url=settings.openrouter_base_url,
-        api_key=settings.openrouter_api_key,
+        api_key=api_key,
         model=model,
         messages=messages,
         extra_headers=extra_headers,
@@ -273,9 +294,13 @@ async def _openai_compat_chat(
 
 
 async def _gemini_generate(
-    client: httpx.AsyncClient, model: str, messages: list[dict[str, str]]
+    client: httpx.AsyncClient,
+    model: str,
+    messages: list[dict[str, str]],
+    api_key_override: str | None = None,
 ) -> str:
-    if not settings.gemini_api_key:
+    api_key = (api_key_override or settings.gemini_api_key or "").strip()
+    if not api_key:
         raise ValueError("GEMINI_API_KEY is not set")
     system, rest = _extract_system(messages)
     parts: list[str] = []
@@ -287,10 +312,7 @@ async def _gemini_generate(
     mid = model if "/" in model or model.startswith("gemini") else f"models/{model}"
     if not mid.startswith("models/"):
         mid = f"models/{mid}"
-    url = (
-        f"https://generativelanguage.googleapis.com/v1beta/{mid}:generateContent"
-        f"?key={settings.gemini_api_key}"
-    )
+    url = f"https://generativelanguage.googleapis.com/v1beta/{mid}:generateContent?key={api_key}"
     body = {"contents": [{"role": "user", "parts": [{"text": prompt}]}]}
     r = await client.post(url, json=body)
     r.raise_for_status()
