@@ -67,6 +67,11 @@ class GitHubPullRequest(BaseModel):
     labels: list[Any] = Field(default_factory=list)
     assignees: list[Any] = Field(default_factory=list)
     requested_reviewers: list[Any] = Field(default_factory=list)
+    # Cumulative commit count on the PR at the time of this delivery. GitHub stamps this
+    # on every pull_request.* payload; used to count commits pushed SINCE the last QA
+    # review verdict (see PullRequestTaskLink.commits_at_last_review) without needing a
+    # separate commit-listing API call.
+    commits: int = 0
 
 
 class GitHubRepository(BaseModel):
@@ -146,6 +151,29 @@ class PingEventPayload(BaseModel):
     repository: GitHubRepository | None = None
 
 
+class GitHubDeployment(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    sha: str = ""
+    ref: str = ""
+    environment: str = ""
+
+
+class GitHubDeploymentStatus(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    state: str = ""  # success | failure | error | pending | in_progress | queued
+
+
+class DeploymentStatusEventPayload(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    action: str = ""
+    deployment: GitHubDeployment
+    deployment_status: GitHubDeploymentStatus
+    repository: GitHubRepository
+
+
 def parse_webhook_payload(event_type: str, payload_dict: dict) -> Any:
     if event_type == "issues":
         return IssueEventPayload(**payload_dict)
@@ -159,4 +187,6 @@ def parse_webhook_payload(event_type: str, payload_dict: dict) -> Any:
         return IssueCommentEventPayload(**payload_dict)
     if event_type == "ping":
         return PingEventPayload(**payload_dict)
+    if event_type == "deployment_status":
+        return DeploymentStatusEventPayload(**payload_dict)
     return None

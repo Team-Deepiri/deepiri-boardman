@@ -30,7 +30,10 @@ from boardman.services.comment_dedupe import (
     mirror_github_activity,
 )
 from boardman.services.pr_handler import _update_plaky_task_status
-from boardman.services.pr_task_registry import distinct_task_ids_for_pr
+from boardman.services.pr_task_registry import (
+    distinct_task_ids_for_pr,
+    stamp_commits_at_last_review,
+)
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
 from boardman.settings import settings
 
@@ -424,10 +427,48 @@ async def handle_pull_request_review(
             "updated": [],
         }
 
+    if updated and state in ("approved", "changes_requested"):
+        # Baseline for handle_pr_synchronized: commits pushed AFTER this verdict are
+        # what distinguish Revisions In Progress from Needs QA Again. The review
+        # payload embeds a slim `pull_request` (see GitHubPullRequest docstring) that
+        # may not carry a live commit count, so fetch it fresh rather than trust it.
+        commits_now = await _current_commit_count(payload.repository.full_name, pr_number)
+        if commits_now is not None:
+            await stamp_commits_at_last_review(
+                session,
+                github_repo=repo_name,
+                github_pr_number=pr_number,
+                commits=commits_now,
+            )
+
     await session.commit()
     if updated and task_ids:
         await maybe_enqueue_plaky_reorder_after_task(plaky, task_ids[0])
     return {"ok": True, "updated": updated, "status": target_status}
+
+
+async def _current_commit_count(full_name: str, pr_number: int) -> int | None:
+    """Live commit count on the PR right now — None when unknowable (no PAT, API
+    trouble), so callers skip stamping rather than recording a wrong baseline."""
+    if not (settings.github_pat or "").strip():
+        return None
+    try:
+        from boardman.github.http import github_http_client
+
+        client = github_http_client()
+        hdr = {
+            "Authorization": f"Bearer {settings.github_pat}",
+            "Accept": "application/vnd.github+json",
+        }
+        r = await client.get(
+            f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}", headers=hdr
+        )
+        if r.status_code != 200:
+            return None
+        commits = r.json().get("commits")
+        return int(commits) if isinstance(commits, int) else None
+    except Exception:  # noqa: BLE001 - a missing baseline degrades to "can't escalate yet"
+        return None
 
 
 async def _sync_plain_issue_comment(
@@ -729,14 +770,22 @@ async def handle_issue_comment_on_pr(
                 is_assigned_qa = True
                 break
 
-    # --- Dev resuming after a QA rejection: a non-QA comment while the task is QA-rejected
-    # moves it back to In Progress (instead of In QA). Only when the status field is known
-    # from the board schema (rej_key set) so we can read & compare the current value. ---
+    # --- Dev resuming after an actual QA verdict (approve OR request-changes): a
+    # non-QA comment while the task is in either post-review state moves it to
+    # Revisions In Progress (instead of In QA) — this is the PR author or another dev
+    # actively addressing feedback, not QA re-engaging. Only when the status field(s)
+    # are known from the board schema so current values can be read & compared. ---
     if not is_assigned_qa:
         rej_key, rej_val = await _resolve_status(
             bid, _qa_rejected_status(), "github_pr_review_changes_requested"
         )
+        appr_key, appr_val = await _resolve_status(bid, _qa_approved_status(), "github_pr_review_approved")
+        verdict_checks: dict[str, set[str]] = {}
         if rej_key and rej_val:
+            verdict_checks.setdefault(rej_key, set()).add(str(rej_val))
+        if appr_key and appr_val:
+            verdict_checks.setdefault(appr_key, set()).add(str(appr_val))
+        if verdict_checks:
             ip_key, ip_val = await _resolve_status(
                 bid, _in_progress_status(), "workflow_in_progress"
             )
@@ -746,8 +795,12 @@ async def handle_issue_comment_on_pr(
                     info = await plaky.get_board_item_public(board_id or "", tid)
                     if not info.get("ok") or not info.get("item"):
                         continue
-                    cur_id = plaky_item_status_id(info["item"], rej_key)
-                    if cur_id and cur_id == str(rej_val):
+                    hit = any(
+                        plaky_item_status_id(info["item"], key) == vid
+                        for key, ids in verdict_checks.items()
+                        for vid in ids
+                    )
+                    if hit:
                         res = await _update_plaky_task_status(
                             tid, ip_val, board_id or "", status_field_key=ip_key
                         )
@@ -770,7 +823,7 @@ async def handle_issue_comment_on_pr(
                         "ok": True,
                         "updated": resumed,
                         "status": ip_val,
-                        "event": "resumed_after_rejection",
+                        "event": "revisions_in_progress",
                     }
 
     if not is_participant and not is_assigned_qa:
