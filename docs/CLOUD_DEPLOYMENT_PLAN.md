@@ -8,8 +8,39 @@ free-tier for inference, reuse the nginx already running there.**
 **Update:** the earlier "no chat UI on this box" call was reversed — `boardman-ui` now
 ships with the API/worker in this plan (see "What actually gets deployed" below).
 
-**Deploy is currently BLOCKED**: a teammate is concurrently deploying `deepiri-platform` /
-`deepiri-web-frontend` to this same VPS. Do not touch the box until that's confirmed done.
+**Deploy is UNBLOCKED as of 2026-08-30 (confirmed by two independent sessions working on
+that box — `deepiri-norozo-5a` and `deepiri-65`).** Two hard constraints came out of that
+check that change how this plan is executed — read them before running the Steps below.
+
+### Hazard 1 — never put Boardman files inside `/opt/deepiri/deepiri-platform`
+
+That directory is rsynced with `--delete` on every platform deploy:
+
+```
+rsync -az --delete --exclude '.git/' --exclude 'node_modules/' --exclude 'dist/' \
+  --exclude 'DEPLOYED.txt' ./ user@host:/opt/deepiri/deepiri-platform/
+```
+
+Anything not tracked in the `deepiri-platform` git repo gets silently deleted on the next
+deploy — this plan already puts Boardman at the sibling path `/opt/deepiri/deepiri-boardman`
+with its own `docker-compose.prod.yml`, which is correct and must stay that way. Do not
+fold Boardman's compose file into the platform's.
+
+### Hazard 2 — a merge to `deepiri-platform` main force-recreates everything on that box, any time
+
+CD was switched from `dev` to `main` recently, and the remote deploy step ends with
+`docker compose -f docker-compose.yml up -d --force-recreate` — every service in that
+compose file restarts (~30-60s outage, Cloudflare 521 during the window) on **any** merge
+to platform `main`, not just ones that touch config. There is no way to assume the box
+stays quiet.
+
+**This directly affects the nginx step below.** nginx for `boardman.deepiri.com` runs
+inside the platform's nginx container, and its config lives in `ops/nginx/` — a
+git-managed, rsynced path in `deepiri-platform`. A hand-edit on the box would be wiped at
+the next platform deploy. **The nginx vhost for Boardman must land via a PR to
+`deepiri-platform`, not a manual edit**, and merging that PR itself triggers a
+force-recreate — pick a low-traffic window and confirm with whoever's active on the box
+first (there were open platform PRs and live SSH sessions during this check).
 
 ---
 
@@ -84,7 +115,7 @@ curl -sS http://127.0.0.1:8090/api/v1/health
 
 Then:
 1. **Cloudflare**: add a DNS record for `boardman.deepiri.com` → this VPS's IP.
-2. **nginx**: add `deploy/nginx/boardman.deepiri.com.conf`'s server block to the nginx config already running on the box (see the comments in that file for the exact wiring — shared docker network + a dedicated Let's Encrypt cert for the new hostname).
+2. **nginx (via PR, not a manual edit — see Hazard 2 above)**: open a PR against `deepiri-platform` adding `deploy/nginx/boardman.deepiri.com.conf`'s server block into `ops/nginx/`. Merging it force-recreates the whole platform stack, so time it deliberately and confirm the box is quiet first.
 3. **GitHub**: register the webhook at `https://boardman.deepiri.com/api/v1/webhooks/github` with the `GITHUB_WEBHOOK_SECRET` from step above.
 
 ---
@@ -111,9 +142,10 @@ A "Boardman" tile on the platform's Tools page (linking to `https://boardman.dee
 
 ## Immediate next steps (in order)
 
-1. **Wait for teammate's concurrent deploy to finish** on `159.195.234.19` (platform + web-frontend). Confirm with them before touching the box.
-2. **Merge the routing-placement fix** (`boardman/services/scan_handler.py`) — a real bug where `run_repo_scan` discarded a correctly-resolved board/group for any repo whose Plaky routing came from live discovery (`discovered:*`) rather than explicit `repos.yml`, silently failing every create. Fixed and regression-tested (`tests/test_scan_placement.py`); verified live against `Team-Deepiri/deepiri-axiom`.
-3. **Org-wide Plaky task generation** (in progress this session): dry-run pass across all 46 repos with resolvable Plaky routing completed (370 tasks proposed, quality verified); live pass re-running now with the placement fix applied. 17 of the 66 active repos have no matching Plaky group and cannot be auto-created (Plaky's public API has no board/group-create endpoint) — a human needs to add a group named after each repo slug on the correct categorical board first; the list is logged as `plaky placement: no Plaky group matches repo slug '<slug>'` warnings during any scan run.
-4. **Once the teammate's deploy is clear**: `git clone` + `docker compose -f docker-compose.prod.yml up -d --build` per the Steps section above, including the UI, then wire nginx + Cloudflare DNS + the GitHub webhook.
-5. **Smoke test** PR↔Plaky linking and QA assignment against real open PRs org-wide once deployed.
-6. **Boardman UI account creation** — passcode-gated signup was raised (passcode value tracked outside this doc); recommendation is to reuse `deepiri-auth-service` rather than build separate auth, with the passcode as an invite-gate at registration. Not yet built — needs explicit go-ahead.
+1. ~~Wait for teammate's concurrent deploy to finish~~ — **done.** `deepiri-norozo-5a` and `deepiri-65` both confirmed the box is clear (`deepiri-65`: "Last deploy completed successfully at 2026-08-30T06:03:24Z. No workflow runs in flight. All 13 containers Up 9 hours, 0 failed."). Someone was on the box via SSH during that check (76.35.135.156) — confirm they're clear before force-recreating anything.
+2. ~~Merge the routing-placement fix~~ — **done** (`boardman/services/scan_handler.py`, PR #115, merged to `main`). Fixed a bug where `run_repo_scan` discarded a correctly-resolved board/group for any repo whose Plaky routing came from live discovery (`discovered:*`) rather than explicit `repos.yml`.
+3. ~~Skip `.github` in org repo listing~~ — **done** (PR #116, merged to `main`).
+4. **Org-wide Plaky task generation** — **done.** 43/44 resolvable repos succeeded, 400 real tasks created live. 14 of the 66 active repos still need a human to add a Plaky group first (Plaky's public API has no board/group-create endpoint) — see the IT setup guide; 2 of the original 17 (`deepiri-pkg-version-manager`, `deepiri-research`) are being skipped intentionally, and `.github` no longer needs one at all.
+5. **Deploy Boardman to `159.195.234.19`** — clear to proceed. Follow the Steps section above, respecting Hazard 1 (own directory, own compose file) and Hazard 2 (nginx via PR to `deepiri-platform`, timed deliberately since merging it force-recreates the whole platform stack).
+6. **Smoke test** PR↔Plaky linking and QA assignment against real open PRs org-wide once deployed.
+7. **Boardman UI account creation** — passcode-gated signup was raised (passcode value tracked outside this doc); recommendation is to reuse `deepiri-auth-service` rather than build separate auth, with the passcode as an invite-gate at registration. Not yet built — needs explicit go-ahead.
