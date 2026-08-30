@@ -729,6 +729,7 @@ async def run_agent_chat(
             extra += plaky_suffix
             extra += draft_md + intake_extra
             _record_context_size(extra)
+            byok_provider, byok_key = await _resolve_session_llm_override(ag)
             async with agent_tool_context(
                 session, agent_session_pk, plaky_board_id, plaky_group_id
             ):
@@ -738,6 +739,8 @@ async def run_agent_chat(
                     allow_writes=effective_allow_writes,
                     system_extra=extra,
                     return_trace=True,
+                    provider_override=byok_provider,
+                    api_key_override=byok_key,
                 )
                 if isinstance(tool_out, tuple):
                     reply, traces = tool_out
@@ -987,6 +990,7 @@ async def iter_agent_chat_sse(
             extra += plaky_suffix
             extra += draft_md + intake_extra
             _record_context_size(extra)
+            byok_provider, byok_key = await _resolve_session_llm_override(ag)
             async with agent_tool_context(
                 session, agent_session_pk, plaky_board_id, plaky_group_id
             ):
@@ -996,6 +1000,8 @@ async def iter_agent_chat_sse(
                     allow_writes=effective_allow_writes,
                     system_extra=extra,
                     trace_out=trace_buf,
+                    provider_override=byok_provider,
+                    api_key_override=byok_key,
                 ):
                     if not chunk:
                         continue
