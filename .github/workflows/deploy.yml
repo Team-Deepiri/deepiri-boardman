@@ -148,22 +148,24 @@ jobs:
           docker compose -f docker-compose.prod.yml up -d --build
 
           # `up -d` returns as soon as containers are CREATED, not when Postgres is
-          # actually accepting connections — on a cold box (first deploy, no cached
-          # image layers, fresh empty Postgres data dir) alembic can easily lose that
-          # race. Poll until the boardman container can run a command at all, which
-          # only succeeds once its own startup (including its DB connection check)
-          # hasn't crashed it, before asking it to migrate.
+          # actually accepting connections. Poll postgres directly (pg_isready) —
+          # NOT the boardman app container — because alembic only needs a reachable
+          # database, nothing more. Polling the app container instead would be a
+          # deadlock on a first deploy: an empty database can make the app crash-loop
+          # at its own startup, which would mean `exec` into it never succeeds, which
+          # would mean the migration that fixes the empty database never runs.
           ready=""
           for i in $(seq 1 30); do
-            if docker compose -f docker-compose.prod.yml exec -T boardman true 2>/dev/null; then
+            if docker compose -f docker-compose.prod.yml exec -T postgres \
+                pg_isready -U boardman -d boardman >/dev/null 2>&1; then
               ready=1
               break
             fi
             sleep 2
           done
           if [ -z "$ready" ]; then
-            echo "boardman container did not become ready in time" >&2
-            docker compose -f docker-compose.prod.yml logs --tail=100 boardman postgres
+            echo "postgres did not become ready in time" >&2
+            docker compose -f docker-compose.prod.yml logs --tail=100 postgres boardman
             exit 1
           fi
 
