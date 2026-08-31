@@ -24,7 +24,7 @@ import logging
 import random
 import re
 from fnmatch import fnmatchcase
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from boardman.assignment.capability_board import fetch_capability_tiers
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, load_team_assignments
@@ -329,9 +329,9 @@ async def _github_inferred_tiers(
     if not (settings.github_pat or "").strip():
         return {}
 
-    from boardman.github.qa_contribution_profile import fetch_contribution_profile
-
     import httpx
+
+    from boardman.github.qa_contribution_profile import fetch_contribution_profile
 
     out: dict[str, str] = {}
     async with httpx.AsyncClient(timeout=30.0) as client:

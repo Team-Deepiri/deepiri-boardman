@@ -86,9 +86,7 @@ def _first_names_plausibly_same(a: str, b: str) -> bool:
     if len(a) >= 3 and len(b) >= 3:
         if a.startswith(b[: min(4, len(b))]) or b.startswith(a[: min(4, len(a))]):
             return True
-    if len(a) >= 3 and len(b) >= 3 and a[0] == b[0] and _similar(a, b) >= 0.52:
-        return True
-    return False
+    return bool(len(a) >= 3 and len(b) >= 3 and a[0] == b[0] and _similar(a, b) >= 0.52)
 
 
 def _norm_token(token: str) -> str:

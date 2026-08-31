@@ -19,13 +19,14 @@ from boardman.database.models import (
 from boardman.planning.context_aggregator import ContextAggregator
 from boardman.planning.huddle.context_direction import DirectionPlanningContext
 from boardman.planning.huddle.context_github import GitHubPlanningContext, _to_summary
-from boardman.planning.huddle.context_plaky import PlakyPlanningContext, _to_summary as plaky_to_summary
+from boardman.planning.huddle.context_plaky import PlakyPlanningContext
+from boardman.planning.huddle.context_plaky import _to_summary as plaky_to_summary
 from boardman.planning.huddle.context_sync import SyncPlanningContext
 from boardman.planning.huddle.models import MeetingRequest
 from boardman.planning.huddle.plan_output import validate_meeting_plan_markdown
 from boardman.planning.huddle.planner import MeetingPlanner
-from boardman.planning.service import generate_plan
 from boardman.planning.huddle.team_repos import repos_for_team
+from boardman.planning.service import generate_plan
 
 FIXTURES = Path(__file__).parent / "fixtures" / "planning"
 TEAM_REPOS = {"qa": ["deepiri-platform"]}

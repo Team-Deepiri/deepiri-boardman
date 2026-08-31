@@ -1059,9 +1059,13 @@ async def test_editing_a_pr_does_not_rewrite_a_card_somebody_else_wrote(
     async def task_ids(_session, *, github_repo, github_pr_number):
         return ["task-mine"] if github_pr_number == 88 else ["task-theirs"]
 
+    async def no_qa_backfill(*_a, **_k):
+        return {"skipped": "no eligible QA"}
+
     monkeypatch.setattr("boardman.repos_config.get_routing_async", fake_routing)
     monkeypatch.setattr(ph, "update_task_internal", fake_update)
     monkeypatch.setattr(ph, "distinct_task_ids_for_pr", task_ids)
+    monkeypatch.setattr(ph, "_assign_qa_for_pr", no_qa_backfill)
 
     db_session.add_all(
         [

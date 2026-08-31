@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 
 from boardman.agent.service import run_agent_chat
 from boardman.assignment.qa_picker import ensure_github_owner_repo
+from boardman.cli.plan_commands import plan_app
 from boardman.database.models import AgentSession, ProjectContext, ScanRun
 from boardman.database.session import async_session
 from boardman.llm.ollama_autodetect import NoOllamaModelAvailable, effective_ollama_model
@@ -38,7 +39,6 @@ from boardman.services.task_mutations import (
     create_task_internal,
     update_task_internal,
 )
-from boardman.cli.plan_commands import plan_app
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)

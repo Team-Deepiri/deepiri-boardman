@@ -1611,6 +1611,7 @@ async def handle_pr_edited(
         # times, with a cache-lock acquisition each time.
         _eng_key = await _engineer_field_key(board_id) if engineer_id and board_id else ""
         _people_plaky = PlakyClient() if _eng_key else None
+        plaky_for_qa = PlakyClient()
         for task_id in task_ids:
             # Per task, because "how far along is it" is a property of the task, not of
             # the PR. A draft PR resolves to Assigned, and writing that over a task QA is
@@ -1677,6 +1678,34 @@ async def handle_pr_edited(
                     ),
                 )
             )
+            # Backfill for a PR that was linked to this task by a path other than
+            # a fresh handle_pr_opened -- e.g. reconciliation fuzzy-matching onto an
+            # existing task, or a link row that predates a bug fix. QA assignment is
+            # otherwise a one-time event at PR-open (see `_assign_qa_for_pr`'s own
+            # docstring), so a PR that got linked any other way could sit with no QA
+            # forever: every later reconcile pass only re-syncs metadata here, never
+            # revisits QA. `_assign_qa_for_pr` already no-ops when a QA is already
+            # set (`qa_already_assigned`), so this is safe to call unconditionally.
+            if board_id and not state.draft:
+                try:
+                    qa_res = await _assign_qa_for_pr(
+                        plaky_for_qa,
+                        task_id=task_id,
+                        board_id=board_id,
+                        repo_full=state.repo_full_name,
+                        pr_number=pr_number,
+                        pr_author_login=state.author_login or "",
+                        task_url=state.url,
+                        session=session,
+                    )
+                    if qa_res.get("skipped") not in ("qa_already_assigned", None) or qa_res.get(
+                        "plaky_qa"
+                    ):
+                        _log.info(
+                            "PR #%s: QA backfill on task %s -> %s", pr_number, task_id, qa_res
+                        )
+                except Exception as exc:  # noqa: BLE001 - a QA backfill miss must not break the sync
+                    _log.warning("QA backfill failed for PR #%s task %s: %s", pr_number, task_id, exc)
         await session.commit()
 
         # `item_text_immutable` is Plaky saying it has no verb for renaming an item, not a

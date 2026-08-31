@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
-
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from boardman.assignment.qa_picker import ensure_github_owner_repo
 from boardman.repos_config import list_registered_repos

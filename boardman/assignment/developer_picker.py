@@ -40,9 +40,7 @@ def _developer_eligible(m: TeamMember, cfg: TeamAssignmentsConfig) -> bool:
     if display in excluded_norm or (login and login in excluded_norm):
         return False
     roles = {r.lower() for r in m.roles}
-    if roles == {"qa"}:
-        return False
-    return True
+    return roles != {"qa"}
 
 
 async def pick_developer_for_repo(

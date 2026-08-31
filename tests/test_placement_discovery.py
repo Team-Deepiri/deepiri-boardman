@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from boardman.plaky.placement_discovery import discover_placement_from_catalog
 from boardman.plaky.plaky_catalog import (
     PlakyBoardEntry,
     PlakyCatalogCache,
@@ -12,7 +13,6 @@ from boardman.plaky.plaky_catalog import (
     is_categorical_board,
     looks_like_repo_group,
 )
-from boardman.plaky.placement_discovery import discover_placement_from_catalog
 
 
 def _catalog() -> PlakyCatalogCache:

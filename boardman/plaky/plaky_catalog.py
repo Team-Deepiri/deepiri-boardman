@@ -149,12 +149,12 @@ def is_categorical_board(board: PlakyBoardEntry) -> bool:
     return prefixed_repo >= 1 or repo_like >= 2
 
 
-def filter_categorical_boards(boards: List[PlakyBoardEntry]) -> List[PlakyBoardEntry]:
+def filter_categorical_boards(boards: list[PlakyBoardEntry]) -> list[PlakyBoardEntry]:
     """Keep repo-catalog boards; drop legacy sprint/test boards when categorical-only is on."""
     if not settings.plaky_catalog_categorical_only:
         return boards
-    kept: List[PlakyBoardEntry] = []
-    dropped_names: List[str] = []
+    kept: list[PlakyBoardEntry] = []
+    dropped_names: list[str] = []
     for board in boards:
         if is_categorical_board(board):
             kept.append(board)
