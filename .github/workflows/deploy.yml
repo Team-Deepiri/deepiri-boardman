@@ -145,15 +145,18 @@ jobs:
             'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
           set -euo pipefail
           cd /opt/deepiri/deepiri-boardman
-          docker compose -f docker-compose.prod.yml up -d --build
 
-          # `up -d` returns as soon as containers are CREATED, not when Postgres is
-          # actually accepting connections. Poll postgres directly (pg_isready) —
-          # NOT the boardman app container — because alembic only needs a reachable
-          # database, nothing more. Polling the app container instead would be a
-          # deadlock on a first deploy: an empty database can make the app crash-loop
-          # at its own startup, which would mean `exec` into it never succeeds, which
-          # would mean the migration that fixes the empty database never runs.
+          # Bring up ONLY postgres first. Boardman's own app startup (init_db, a
+          # fresh-install fallback) calls SQLAlchemy's create_all, which would race
+          # ahead of alembic if the app container started at the same time as
+          # postgres becoming healthy -- create_all creates the tables first, then
+          # alembic's 001_initial migration tries to CREATE TABLE the same ones and
+          # fails with DuplicateTableError. Migrating BEFORE the app ever starts
+          # avoids that race entirely rather than trying to referee it.
+          docker compose -f docker-compose.prod.yml up -d --build postgres
+
+          # `up -d` returns as soon as the container is CREATED, not when Postgres is
+          # actually accepting connections. Poll pg_isready directly.
           ready=""
           for i in $(seq 1 30); do
             if docker compose -f docker-compose.prod.yml exec -T postgres \
@@ -165,13 +168,19 @@ jobs:
           done
           if [ -z "$ready" ]; then
             echo "postgres did not become ready in time" >&2
-            docker compose -f docker-compose.prod.yml logs --tail=100 postgres boardman
+            docker compose -f docker-compose.prod.yml logs --tail=100 postgres
             exit 1
           fi
 
-          # run --rm, not exec, so this doesn't depend on the long-lived app process
-          # already being fully up — it only needs the image and the network.
+          # run --rm, not exec, so this doesn't depend on any long-lived app process
+          # already being up — it only needs the image and the network, and it runs
+          # before boardman/boardman-worker ever start.
           docker compose -f docker-compose.prod.yml run --rm boardman alembic upgrade head
+
+          # NOW bring up the rest of the stack. init_db()'s create_all runs again on
+          # every app startup, but create_all is checkfirst-by-default (SQLAlchemy),
+          # so it's a no-op against tables alembic just created.
+          docker compose -f docker-compose.prod.yml up -d --build
           EOSSH
 
       - name: Health check
