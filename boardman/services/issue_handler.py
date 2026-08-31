@@ -603,14 +603,17 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
             ),
         )
 
-    reservation.plaky_task_id = task_id or reservation.plaky_task_id
+    # Plaky's API returns `id` as a JSON number; plaky_task_id is a String column
+    # (SQLite coerces the mismatch silently, Postgres's asyncpg driver does not —
+    # this surfaced as a live DataError on reconcile against the Postgres deploy).
+    reservation.plaky_task_id = str(task_id) if task_id else reservation.plaky_task_id
     reservation.plaky_task_url = task_url
 
     log = SyncLog(
         action="issue_created",
         github_repo=repo_name,
         github_ref=str(issue_number),
-        plaky_task_id=task_id,
+        plaky_task_id=str(task_id) if task_id else None,
         detail=json.dumps(
             {
                 "title": title,
