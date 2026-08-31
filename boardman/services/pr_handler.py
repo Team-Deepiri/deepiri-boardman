@@ -1714,6 +1714,16 @@ async def handle_pr_edited(
             # forever: every later reconcile pass only re-syncs metadata here, never
             # revisits QA. `_assign_qa_for_pr` already no-ops when a QA is already
             # set (`qa_already_assigned`), so this is safe to call unconditionally.
+            # Unconditional so "never reached this PR at all" (e.g. reconcile only
+            # calls this for OPEN PRs -- a closed/merged one produces no log line
+            # anywhere) is distinguishable from "reached it and decided not to act"
+            # (draft, or no board resolved) from the logs alone.
+            _log.info(
+                "PR #%s: QA backfill considered (board_id=%r, draft=%s)",
+                pr_number,
+                board_id,
+                state.draft,
+            )
             if board_id and not state.draft:
                 try:
                     qa_res = await _assign_qa_for_pr(
