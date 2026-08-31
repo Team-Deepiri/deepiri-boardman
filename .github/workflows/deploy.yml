@@ -1,0 +1,152 @@
+name: Deploy to VPS
+
+# Manual-trigger deploy for now (workflow_dispatch) rather than on push to main —
+# Boardman's first production deploy should be a deliberate action, not automatic on
+# every merge. Switch to `push: branches: [main]` once the deploy has been proven a
+# few times, matching deepiri-platform's model at that point.
+on:
+  workflow_dispatch: {}
+
+# Prevent two deploys racing each other on the same box. Never cancel-in-progress —
+# a half-finished deploy is worse than a queued one (lesson from deepiri-platform's
+# CD tonight).
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Boardman to VPS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assemble .env and validate required secrets are present
+        env:
+          PLAKY_API_KEY: ${{ secrets.PLAKY_API_KEY }}
+          GITHUB_PAT: ${{ secrets.BOARDMAN_GITHUB_PAT }}
+          GITHUB_WEBHOOK_SECRET: ${{ secrets.BOARDMAN_WEBHOOK_SECRET }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          BYOK_ENCRYPTION_KEY: ${{ secrets.BYOK_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+
+          # Quoted heredoc ('EOF') is required — an unquoted one lets bash expand any
+          # $ or backtick INSIDE a secret value before it ever reaches the file. A PAT
+          # or the BYOK key containing $ would be silently corrupted otherwise.
+          cat > .env.deploy <<'EOF'
+          PLAKY_API_KEY=${PLAKY_API_KEY}
+          PLAKY_API_BASE=https://api.plaky.com/v1/public
+          PLAKY_PR_MERGE_STATUS=in_review
+          GITHUB_PAT=${GITHUB_PAT}
+          GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+          GITHUB_ORG=Team-Deepiri
+          GITHUB_SUPPORT_TEAM=Team-Deepiri/support-team
+          POSTGRES_USER=boardman
+          POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+          POSTGRES_DB=boardman
+          LLM_PROVIDER=openrouter
+          OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+          BYOK_ENCRYPTION_KEY=${BYOK_ENCRYPTION_KEY}
+          CORS_ORIGINS=https://boardman.deepiri.com
+          LOG_LEVEL=INFO
+          EOF
+          # ^ Using a quoted heredoc means ${VAR} above is literal, not expanded — so
+          # expand it ourselves explicitly with envsubst, which only touches the names
+          # we pass it (never a bare $ that happens to be inside a secret's own value).
+          envsubst '${PLAKY_API_KEY} ${GITHUB_PAT} ${GITHUB_WEBHOOK_SECRET} ${POSTGRES_PASSWORD} ${OPENROUTER_API_KEY} ${BYOK_ENCRYPTION_KEY}' \
+            < .env.deploy > .env.deploy.resolved
+          mv .env.deploy.resolved .env.deploy
+
+          # Fail the build here, before anything touches the box, if a secret is
+          # missing or empty. A missing GitHub secret renders as an empty string
+          # silently — this turns that into a red build with a clear message.
+          missing=""
+          for key in PLAKY_API_KEY GITHUB_PAT GITHUB_WEBHOOK_SECRET POSTGRES_PASSWORD OPENROUTER_API_KEY BYOK_ENCRYPTION_KEY; do
+            line=$(grep "^${key}=" .env.deploy || true)
+            value="${line#*=}"
+            if [ -z "$value" ]; then
+              missing="${missing} ${key}"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Required secret(s) empty or missing:${missing}"
+            exit 1
+          fi
+          echo "All required secrets present and non-empty."
+
+      - name: Set up SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Copy .env to the box
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'mkdir -p /opt/deepiri/deepiri-boardman'
+          scp -i ~/.ssh/vps_key .env.deploy "${VPS_USER}@${VPS_HOST}:/opt/deepiri/deepiri-boardman/.env"
+          rm -f .env.deploy
+
+      - name: Clone/update and deploy on the box
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          # Slurp the remote script to a file, then execute it, rather than piping
+          # straight into `ssh ... bash -s`. `docker compose run`/`exec` reads stdin
+          # by default — piped directly, it would swallow the REST of this script,
+          # and the ssh step would still exit 0 while nothing after that line ran.
+          ssh -T -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
+          set -euo pipefail
+          cd /opt/deepiri
+          if [ -d deepiri-boardman/.git ]; then
+            cd deepiri-boardman
+            git fetch origin main
+            git reset --hard origin/main
+          else
+            # HTTPS, not SSH — this box has no GitHub private key, and the repo is
+            # public, so an unauthenticated clone is all that's needed.
+            git clone https://github.com/Team-Deepiri/deepiri-boardman.git
+            cd deepiri-boardman
+          fi
+          chmod 600 .env
+          docker compose -f docker-compose.prod.yml up -d --build
+          docker compose -f docker-compose.prod.yml exec -T boardman alembic upgrade head
+          EOSSH
+
+      - name: Health check
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'curl -sSf http://127.0.0.1:8090/api/v1/health'
+
+      - name: Write deploy manifest
+        if: success()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            "cd /opt/deepiri/deepiri-boardman && printf 'commit=%s\nref=%s\ndeployed_at=%s\nrun_url=%s\n' \
+              \"\$(git rev-parse HEAD)\" \"${{ github.ref }}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\" \
+              > DEPLOYED.txt"
