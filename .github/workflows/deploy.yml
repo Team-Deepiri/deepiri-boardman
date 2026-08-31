@@ -46,6 +46,18 @@ jobs:
           GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
           GITHUB_ORG=Team-Deepiri
           GITHUB_SUPPORT_TEAM=Team-Deepiri/support-team
+          # Defaults to false. A real webhook does fuzzy-match scoring + Plaky API
+          # calls inline -- without this, GitHub's own delivery timeout (~10s) can
+          # fire before that finishes, producing a 504 on a delivery Boardman
+          # actually processed fine a moment later. Async: ack fast, do the real
+          # work via boardman-worker off the SQLite/Postgres job queue.
+          GITHUB_WEBHOOK_ASYNC_ENABLED=true
+          GITHUB_WEBHOOK_JOB_RETRIES=2
+          # Bounded repair path for any webhook delivery that still fails --
+          # matches the manual `reconcile` endpoint this session used to link PRs
+          # retroactively, just running itself on a schedule instead of by hand.
+          GITHUB_RECONCILE_ENABLED=true
+          GITHUB_RECONCILE_INTERVAL_SECONDS=900
           POSTGRES_USER=boardman
           POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
           POSTGRES_DB=boardman
