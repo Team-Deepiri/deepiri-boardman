@@ -192,18 +192,52 @@ jobs:
           # Retried: the app may still be finishing startup (DB pool warmup, LLM
           # provider probe) right after alembic returns. An immediate curl here
           # would red-build a deploy that actually succeeded a few seconds later.
+          #
+          # A passing curl only proves the API container is up -- it says nothing
+          # about boardman-worker or boardman-nginx. The first live deploy went
+          # green here while the worker was crash-looping in the background (it
+          # hit a genuinely missing table on startup, unrelated to the API's own
+          # health). So after the curl succeeds, also wait for the crash-loop
+          # window to pass and confirm every container compose knows about is
+          # actually in a running state, not restarting.
           ssh -T -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
             'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
           set -euo pipefail
+          cd /opt/deepiri/deepiri-boardman
+
           for i in $(seq 1 20); do
             if curl -sSf http://127.0.0.1:8090/api/v1/health >/dev/null; then
-              echo "Health check passed."
-              exit 0
+              echo "API health check passed."
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              echo "API health check did not pass in time" >&2
+              exit 1
             fi
             sleep 3
           done
-          echo "Health check did not pass in time" >&2
-          exit 1
+
+          # Give a crash-looping container a real chance to reveal itself before
+          # declaring victory -- a container that just started reads as "running"
+          # for a few seconds even if it's about to exit and restart.
+          sleep 15
+
+          bad=""
+          while IFS= read -r line; do
+            name=$(echo "$line" | cut -d'|' -f1)
+            state=$(echo "$line" | cut -d'|' -f2)
+            if [ "$state" != "running" ]; then
+              bad="${bad} ${name}(${state})"
+            fi
+          done < <(docker compose -f docker-compose.prod.yml ps --format '{{.Name}}|{{.State}}')
+
+          if [ -n "$bad" ]; then
+            echo "::error::Container(s) not in running state:${bad}"
+            docker compose -f docker-compose.prod.yml ps
+            docker compose -f docker-compose.prod.yml logs --tail=50
+            exit 1
+          fi
+          echo "All containers running."
           EOSSH
 
       - name: Write deploy manifest
