@@ -33,6 +33,7 @@ jobs:
         run: |
           set -euo pipefail
           umask 077
+          sudo apt-get install -y gettext-base >/dev/null
 
           # Quoted heredoc ('EOF') is required — an unquoted one lets bash expand any
           # $ or backtick INSIDE a secret value before it ever reaches the file. A PAT
@@ -57,6 +58,8 @@ jobs:
           # ^ Using a quoted heredoc means ${VAR} above is literal, not expanded — so
           # expand it ourselves explicitly with envsubst, which only touches the names
           # we pass it (never a bare $ that happens to be inside a secret's own value).
+          # envsubst substitutes an unset var as an empty string silently, which is
+          # exactly why the validation below runs AFTER expansion, not before.
           envsubst '${PLAKY_API_KEY} ${GITHUB_PAT} ${GITHUB_WEBHOOK_SECRET} ${POSTGRES_PASSWORD} ${OPENROUTER_API_KEY} ${BYOK_ENCRYPTION_KEY}' \
             < .env.deploy > .env.deploy.resolved
           mv .env.deploy.resolved .env.deploy
@@ -88,7 +91,38 @@ jobs:
           mkdir -p ~/.ssh
           printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
           chmod 600 ~/.ssh/vps_key
-          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          ssh-keyscan -p "${VPS_PORT:-22}" -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Clone or update the repo on the box
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          # Slurp the remote script to a file, then execute it, rather than piping
+          # straight into `ssh ... bash -s`. A remote command that reads stdin
+          # (docker compose exec/run does) would otherwise swallow the REST of this
+          # script, and the ssh step would still exit 0 while nothing after that
+          # line ran — this is exactly what silently truncated deploys elsewhere.
+          ssh -T -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
+          set -euo pipefail
+          mkdir -p /opt/deepiri
+          cd /opt/deepiri
+          if [ -d deepiri-boardman/.git ]; then
+            cd deepiri-boardman
+            git fetch origin main
+            # Untracked files (.env) survive --hard reset; it only touches tracked
+            # files. Never add `git clean -fd` here or it deletes .env on every run.
+            git reset --hard origin/main
+          else
+            # HTTPS, not SSH — this box has no GitHub private key, and the repo is
+            # public, so an unauthenticated clone is all that's needed. Cloning
+            # BEFORE .env is copied matters: git clone refuses a non-empty target
+            # directory, so .env must land after the clone, not before it.
+            git clone https://github.com/Team-Deepiri/deepiri-boardman.git
+          fi
+          EOSSH
 
       - name: Copy .env to the box
         env:
@@ -96,38 +130,46 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
-            'mkdir -p /opt/deepiri/deepiri-boardman'
           scp -i ~/.ssh/vps_key .env.deploy "${VPS_USER}@${VPS_HOST}:/opt/deepiri/deepiri-boardman/.env"
           rm -f .env.deploy
+          ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'chmod 600 /opt/deepiri/deepiri-boardman/.env'
 
-      - name: Clone/update and deploy on the box
+      - name: Bring up the stack and run migrations
         env:
           VPS_HOST: ${{ secrets.VPS_HOST }}
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-          # Slurp the remote script to a file, then execute it, rather than piping
-          # straight into `ssh ... bash -s`. `docker compose run`/`exec` reads stdin
-          # by default — piped directly, it would swallow the REST of this script,
-          # and the ssh step would still exit 0 while nothing after that line ran.
           ssh -T -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
             'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
           set -euo pipefail
-          cd /opt/deepiri
-          if [ -d deepiri-boardman/.git ]; then
-            cd deepiri-boardman
-            git fetch origin main
-            git reset --hard origin/main
-          else
-            # HTTPS, not SSH — this box has no GitHub private key, and the repo is
-            # public, so an unauthenticated clone is all that's needed.
-            git clone https://github.com/Team-Deepiri/deepiri-boardman.git
-            cd deepiri-boardman
-          fi
-          chmod 600 .env
+          cd /opt/deepiri/deepiri-boardman
           docker compose -f docker-compose.prod.yml up -d --build
-          docker compose -f docker-compose.prod.yml exec -T boardman alembic upgrade head
+
+          # `up -d` returns as soon as containers are CREATED, not when Postgres is
+          # actually accepting connections — on a cold box (first deploy, no cached
+          # image layers, fresh empty Postgres data dir) alembic can easily lose that
+          # race. Poll until the boardman container can run a command at all, which
+          # only succeeds once its own startup (including its DB connection check)
+          # hasn't crashed it, before asking it to migrate.
+          ready=""
+          for i in $(seq 1 30); do
+            if docker compose -f docker-compose.prod.yml exec -T boardman true 2>/dev/null; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$ready" ]; then
+            echo "boardman container did not become ready in time" >&2
+            docker compose -f docker-compose.prod.yml logs --tail=100 boardman postgres
+            exit 1
+          fi
+
+          # run --rm, not exec, so this doesn't depend on the long-lived app process
+          # already being fully up — it only needs the image and the network.
+          docker compose -f docker-compose.prod.yml run --rm boardman alembic upgrade head
           EOSSH
 
       - name: Health check
@@ -136,8 +178,22 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
-          ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
-            'curl -sSf http://127.0.0.1:8090/api/v1/health'
+          # Retried: the app may still be finishing startup (DB pool warmup, LLM
+          # provider probe) right after alembic returns. An immediate curl here
+          # would red-build a deploy that actually succeeded a few seconds later.
+          ssh -T -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
+          set -euo pipefail
+          for i in $(seq 1 20); do
+            if curl -sSf http://127.0.0.1:8090/api/v1/health >/dev/null; then
+              echo "Health check passed."
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Health check did not pass in time" >&2
+          exit 1
+          EOSSH
 
       - name: Write deploy manifest
         if: success()
@@ -146,7 +202,17 @@ jobs:
           VPS_USER: ${{ secrets.VPS_USER }}
         run: |
           set -euo pipefail
+          # DEPLOY_REF/DEPLOY_RUN_URL come from GitHub's own context (never
+          # user-controllable input), so interpolating them straight into this
+          # double-quoted remote command is safe — do not extend this pattern to
+          # anything that could contain attacker-controlled content.
+          DEPLOY_REF="${{ github.ref }}"
+          DEPLOY_RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
           ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
             "cd /opt/deepiri/deepiri-boardman && printf 'commit=%s\nref=%s\ndeployed_at=%s\nrun_url=%s\n' \
-              \"\$(git rev-parse HEAD)\" \"${{ github.ref }}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\" \
+              \"\$(git rev-parse HEAD)\" \"${DEPLOY_REF}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"${DEPLOY_RUN_URL}\" \
               > DEPLOYED.txt"
+
+      - name: Clean up local SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key
