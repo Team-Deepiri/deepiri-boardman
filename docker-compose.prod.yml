@@ -6,6 +6,8 @@
 
 services:
   postgres:
+    # peak 87 MiB. Most headroom of the four: a hard OOM on the database is the most disruptive failure here, and Postgres grows with connections and vacuum activity.
+    mem_limit: 768m
     image: postgres:16-alpine
     container_name: deepiri-boardman-postgres
     restart: unless-stopped
@@ -24,6 +26,8 @@ services:
       - deepiri-network
 
   boardman:
+    # peak 154 MiB — ~3.3x headroom.
+    mem_limit: 512m
     build:
       context: .
       dockerfile: Dockerfile
@@ -66,6 +70,8 @@ services:
       - deepiri-network
 
   boardman-worker:
+    # peak 156 MiB — ~3.3x headroom.
+    mem_limit: 512m
     build:
       context: .
       dockerfile: Dockerfile
@@ -93,6 +99,8 @@ services:
       - deepiri-network
 
   boardman-nginx:
+    # peak 12 MiB. Static file serving; 5x headroom is ample.
+    mem_limit: 64m
     build:
       context: .
       dockerfile: deploy/nginx/Dockerfile
@@ -104,9 +112,16 @@ services:
       - boardman
     networks:
       - deepiri-network
+      # Lets the deepiri-platform nginx container reach this one by container name
+      # (see ops/nginx/cloud-prod.conf's `boardman` upstream in that repo) without
+      # exposing Boardman's UI/API on a public host port of its own. Boardman stays
+      # its own compose project — this is the one deliberate seam between the two.
+      - platform-shared
 
   # Optional local agent cache: `docker compose -f docker-compose.prod.yml --profile agent-cache up -d`
   redis:
+    # not currently running, so no observed peak. Conservative default; matches the platform stack, which caps redis at 384m.
+    mem_limit: 256m
     profiles: ["agent-cache"]
     image: redis:7-alpine
     container_name: deepiri-boardman-redis-cache
@@ -117,6 +132,14 @@ services:
 networks:
   deepiri-network:
     driver: bridge
+  # The real docker network deepiri-platform's own compose file creates for its
+  # "deepiri-network" — Compose prefixes network names with the project name
+  # (`name: deepiri-platform` at the top of that file), so this is NOT the same
+  # network as the one above despite the identical short name. External because
+  # Boardman must never manage the platform's network lifecycle, only join it.
+  platform-shared:
+    external: true
+    name: deepiri-platform_deepiri-network
 
 volumes:
   boardman-postgres-data:

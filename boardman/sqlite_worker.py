@@ -120,8 +120,13 @@ async def run_worker_forever() -> None:
     if n:
         _log.warning("Marked %d stale running jobs as incomplete", n)
     poll = settings.queue_worker_poll_seconds
+    # Module/file name is historical (this queue was SQLite-only originally); the
+    # log line names the ACTUAL backend so a 3am reader debugging a job issue on a
+    # Postgres deployment isn't sent looking for a SQLite file that isn't in use.
+    backend = "SQLite" if settings.database_url.startswith("sqlite") else "Postgres"
     _log.info(
-        "SQLite job worker started (poll=%ss, stale_running=%ss)",
+        "%s-backed job worker started (poll=%ss, stale_running=%ss)",
+        backend,
         poll,
         settings.queue_worker_stale_running_seconds,
     )

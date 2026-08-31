@@ -1,0 +1,294 @@
+name: Deploy to VPS
+
+# Manual-trigger deploy for now (workflow_dispatch) rather than on push to main —
+# Boardman's first production deploy should be a deliberate action, not automatic on
+# every merge. Switch to `push: branches: [main]` once the deploy has been proven a
+# few times, matching deepiri-platform's model at that point.
+on:
+  workflow_dispatch: {}
+
+# Prevent two deploys racing each other on the same box. Never cancel-in-progress —
+# a half-finished deploy is worse than a queued one (lesson from deepiri-platform's
+# CD tonight).
+concurrency:
+  group: deploy-vps
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy Boardman to VPS
+    runs-on: ubuntu-latest
+    steps:
+      - name: Assemble .env and validate required secrets are present
+        env:
+          PLAKY_API_KEY: ${{ secrets.PLAKY_API_KEY }}
+          GITHUB_PAT: ${{ secrets.BOARDMAN_GITHUB_PAT }}
+          GITHUB_WEBHOOK_SECRET: ${{ secrets.BOARDMAN_WEBHOOK_SECRET }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          BYOK_ENCRYPTION_KEY: ${{ secrets.BYOK_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          sudo apt-get install -y gettext-base >/dev/null
+
+          # Quoted heredoc ('EOF') is required — an unquoted one lets bash expand any
+          # $ or backtick INSIDE a secret value before it ever reaches the file. A PAT
+          # or the BYOK key containing $ would be silently corrupted otherwise.
+          cat > .env.deploy <<'EOF'
+          PLAKY_API_KEY=${PLAKY_API_KEY}
+          PLAKY_API_BASE=https://api.plaky.com/v1/public
+          PLAKY_PR_MERGE_STATUS=in_review
+          GITHUB_PAT=${GITHUB_PAT}
+          GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
+          GITHUB_ORG=Team-Deepiri
+          GITHUB_SUPPORT_TEAM=Team-Deepiri/support-team
+          # Defaults to false. A real webhook does fuzzy-match scoring + Plaky API
+          # calls inline -- without this, GitHub's own delivery timeout (~10s) can
+          # fire before that finishes, producing a 504 on a delivery Boardman
+          # actually processed fine a moment later. Async: ack fast, do the real
+          # work via boardman-worker off the SQLite/Postgres job queue.
+          GITHUB_WEBHOOK_ASYNC_ENABLED=true
+          GITHUB_WEBHOOK_JOB_RETRIES=2
+          # Bounded repair path for any webhook delivery that still fails --
+          # matches the manual `reconcile` endpoint this session used to link PRs
+          # retroactively, just running itself on a schedule instead of by hand.
+          GITHUB_RECONCILE_ENABLED=true
+          GITHUB_RECONCILE_INTERVAL_SECONDS=900
+          POSTGRES_USER=boardman
+          POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+          POSTGRES_DB=boardman
+          LLM_PROVIDER=openrouter
+          OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+          BYOK_ENCRYPTION_KEY=${BYOK_ENCRYPTION_KEY}
+          CORS_ORIGINS=https://boardman.deepiri.com
+          LOG_LEVEL=INFO
+          EOF
+          # ^ Using a quoted heredoc means ${VAR} above is literal, not expanded — so
+          # expand it ourselves explicitly with envsubst, which only touches the names
+          # we pass it (never a bare $ that happens to be inside a secret's own value).
+          # envsubst substitutes an unset var as an empty string silently, which is
+          # exactly why the validation below runs AFTER expansion, not before.
+          envsubst '${PLAKY_API_KEY} ${GITHUB_PAT} ${GITHUB_WEBHOOK_SECRET} ${POSTGRES_PASSWORD} ${OPENROUTER_API_KEY} ${BYOK_ENCRYPTION_KEY}' \
+            < .env.deploy > .env.deploy.resolved
+          mv .env.deploy.resolved .env.deploy
+
+          # Fail the build here, before anything touches the box, if a secret is
+          # missing or empty. A missing GitHub secret renders as an empty string
+          # silently — this turns that into a red build with a clear message.
+          missing=""
+          for key in PLAKY_API_KEY GITHUB_PAT GITHUB_WEBHOOK_SECRET POSTGRES_PASSWORD OPENROUTER_API_KEY BYOK_ENCRYPTION_KEY; do
+            line=$(grep "^${key}=" .env.deploy || true)
+            value="${line#*=}"
+            if [ -z "$value" ]; then
+              missing="${missing} ${key}"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Required secret(s) empty or missing:${missing}"
+            exit 1
+          fi
+          echo "All required secrets present and non-empty."
+
+      - name: Set up SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -p "${VPS_PORT:-22}" -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Clone or update the repo on the box
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          # Slurp the remote script to a file, then execute it, rather than piping
+          # straight into `ssh ... bash -s`. A remote command that reads stdin
+          # (docker compose exec/run does) would otherwise swallow the REST of this
+          # script, and the ssh step would still exit 0 while nothing after that
+          # line ran — this is exactly what silently truncated deploys elsewhere.
+          ssh -T -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
+          set -euo pipefail
+          mkdir -p /opt/deepiri
+          cd /opt/deepiri
+          if [ -d deepiri-boardman/.git ]; then
+            cd deepiri-boardman
+            git fetch origin main
+            # Untracked files (.env) survive --hard reset; it only touches tracked
+            # files. Never add `git clean -fd` here or it deletes .env on every run.
+            git reset --hard origin/main
+          else
+            # HTTPS, not SSH — this box has no GitHub private key, and the repo is
+            # public, so an unauthenticated clone is all that's needed. Cloning
+            # BEFORE .env is copied matters: git clone refuses a non-empty target
+            # directory, so .env must land after the clone, not before it.
+            git clone https://github.com/Team-Deepiri/deepiri-boardman.git
+          fi
+          EOSSH
+
+      - name: Copy .env to the box
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          scp -i ~/.ssh/vps_key .env.deploy "${VPS_USER}@${VPS_HOST}:/opt/deepiri/deepiri-boardman/.env"
+          rm -f .env.deploy
+          ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'chmod 600 /opt/deepiri/deepiri-boardman/.env'
+
+      - name: Bring up the stack and run migrations
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -T -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
+          set -euo pipefail
+          cd /opt/deepiri/deepiri-boardman
+
+          # Bring up ONLY postgres first. Boardman's own app startup (init_db, a
+          # fresh-install fallback) calls SQLAlchemy's create_all, which would race
+          # ahead of alembic if the app container started at the same time as
+          # postgres becoming healthy -- create_all creates the tables first, then
+          # alembic's 001_initial migration tries to CREATE TABLE the same ones and
+          # fails with DuplicateTableError. Migrating BEFORE the app ever starts
+          # avoids that race entirely rather than trying to referee it.
+          docker compose -f docker-compose.prod.yml up -d --build postgres
+
+          # `up -d` returns as soon as the container is CREATED, not when Postgres is
+          # actually accepting connections. Poll pg_isready directly.
+          ready=""
+          for i in $(seq 1 30); do
+            if docker compose -f docker-compose.prod.yml exec -T postgres \
+                pg_isready -U boardman -d boardman >/dev/null 2>&1; then
+              ready=1
+              break
+            fi
+            sleep 2
+          done
+          if [ -z "$ready" ]; then
+            echo "postgres did not become ready in time" >&2
+            docker compose -f docker-compose.prod.yml logs --tail=100 postgres
+            exit 1
+          fi
+
+          # --build here is not optional: `docker compose run` reuses an existing
+          # image with a matching tag instead of rebuilding by default, and the box
+          # keeps images between deploys. Without --build this ran alembic against
+          # whatever boardman image a PREVIOUS deploy had already built and tagged
+          # on the box -- silently ignoring source changes (including new migration
+          # files) from the commit that was just pulled. This is the exact "cached
+          # mutable tag" class of bug that hid a base-image update on the platform
+          # side; here it meant a brand new migration simply never ran, alembic saw
+          # nothing to do, and the app crashed on the table alembic never created.
+          #
+          # run --rm, not exec, so this doesn't depend on any long-lived app process
+          # already being up — it only needs the image and the network, and it runs
+          # before boardman/boardman-worker ever start.
+          docker compose -f docker-compose.prod.yml run --rm --build boardman alembic upgrade head
+
+          # NOW bring up the rest of the stack. init_db()'s create_all runs again on
+          # every app startup, but create_all is checkfirst-by-default (SQLAlchemy),
+          # so it's a no-op against tables alembic just created.
+          docker compose -f docker-compose.prod.yml up -d --build
+
+          # Recreating the boardman API container above gives it a new docker-
+          # internal IP. OUR OWN boardman-nginx (deploy/nginx/default.conf) now
+          # forces per-request DNS re-resolution via a resolver + proxy_pass
+          # variable, so this reload is a defensive backstop, not the primary fix --
+          # but the platform's nginx, which proxies to boardman-nginx by name, would
+          # still go stale if boardman-nginx itself were ever recreated. Only reload
+          # OUR container; never reach into the platform's stack for this.
+          docker compose -f docker-compose.prod.yml exec -T boardman-nginx nginx -s reload || echo "::warning::Could not reload boardman-nginx"
+          EOSSH
+
+      - name: Health check
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          # Retried: the app may still be finishing startup (DB pool warmup, LLM
+          # provider probe) right after alembic returns. An immediate curl here
+          # would red-build a deploy that actually succeeded a few seconds later.
+          #
+          # A passing curl only proves the API container is up -- it says nothing
+          # about boardman-worker or boardman-nginx. The first live deploy went
+          # green here while the worker was crash-looping in the background (it
+          # hit a genuinely missing table on startup, unrelated to the API's own
+          # health). So after the curl succeeds, also wait for the crash-loop
+          # window to pass and confirm every container compose knows about is
+          # actually in a running state, not restarting.
+          ssh -T -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
+          set -euo pipefail
+          cd /opt/deepiri/deepiri-boardman
+
+          for i in $(seq 1 20); do
+            if curl -sSf http://127.0.0.1:8090/api/v1/health >/dev/null; then
+              echo "API health check passed."
+              break
+            fi
+            if [ "$i" -eq 20 ]; then
+              echo "API health check did not pass in time" >&2
+              exit 1
+            fi
+            sleep 3
+          done
+
+          # Give a crash-looping container a real chance to reveal itself before
+          # declaring victory -- a container that just started reads as "running"
+          # for a few seconds even if it's about to exit and restart.
+          sleep 15
+
+          bad=""
+          while IFS= read -r line; do
+            name=$(echo "$line" | cut -d'|' -f1)
+            state=$(echo "$line" | cut -d'|' -f2)
+            if [ "$state" != "running" ]; then
+              bad="${bad} ${name}(${state})"
+            fi
+          done < <(docker compose -f docker-compose.prod.yml ps --format '{{.Name}}|{{.State}}')
+
+          if [ -n "$bad" ]; then
+            echo "::error::Container(s) not in running state:${bad}"
+            docker compose -f docker-compose.prod.yml ps
+            docker compose -f docker-compose.prod.yml logs --tail=50
+            exit 1
+          fi
+          echo "All containers running."
+          EOSSH
+
+      - name: Write deploy manifest
+        if: success()
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          # DEPLOY_REF/DEPLOY_RUN_URL come from GitHub's own context (never
+          # user-controllable input), so interpolating them straight into this
+          # double-quoted remote command is safe — do not extend this pattern to
+          # anything that could contain attacker-controlled content.
+          DEPLOY_REF="${{ github.ref }}"
+          DEPLOY_RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          ssh -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            "cd /opt/deepiri/deepiri-boardman && printf 'commit=%s\nref=%s\ndeployed_at=%s\nrun_url=%s\n' \
+              \"\$(git rev-parse HEAD)\" \"${DEPLOY_REF}\" \"\$(date -u +%Y-%m-%dT%H:%M:%SZ)\" \"${DEPLOY_RUN_URL}\" \
+              > DEPLOYED.txt"
+
+      - name: Clean up local SSH key
+        if: always()
+        run: rm -f ~/.ssh/vps_key

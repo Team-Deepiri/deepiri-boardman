@@ -58,9 +58,7 @@ def _titles_overlap(a: str, b: str) -> bool:
     if a == b:
         return True
     shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
-    if shorter and shorter in longer:
-        return True
-    return False
+    return bool(shorter and shorter in longer)
 
 
 def rank_candidates(

@@ -265,7 +265,12 @@ async def run_repo_scan(
             if cat
             else f"\n\n**Repo:** {repo_full}\n"
         )
-        bid, gid = effective_plaky_placement(routing if routing_source == "explicit" else None)
+        # "explicit" (repos.yml) and "discovered:<match-kind>" (a live Plaky group whose
+        # name actually matched the repo slug) are both non-ambiguous placements — only
+        # "org_default" (falls back to a shared default, could be wrong) and "none"/
+        # "discovered:none" (no match at all) are too uncertain to auto-place into.
+        placement_is_ambiguous = routing_source in ("org_default", "none", "discovered:none")
+        bid, gid = effective_plaky_placement(routing if not placement_is_ambiguous else None)
         qa_key_override: str | None = None
         if bid:
             from boardman.plaky.board_aware import board_person_field_keys, resolve_group_for_repo
@@ -280,7 +285,7 @@ async def run_repo_scan(
                 "Repo has no explicit repos.yml routing; org default exists but placement was not auto-applied. "
                 "Register repo-specific plaky_board_id/plaky_group_id to avoid ambiguous placement."
             )
-        elif routing_source == "none":
+        elif routing_source in ("none", "discovered:none"):
             routing_warnings.append(
                 "No routing found for repo; create used fallback behavior without explicit board/group placement."
             )

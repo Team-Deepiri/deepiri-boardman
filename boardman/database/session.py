@@ -52,9 +52,17 @@ async def init_db() -> None:
     from boardman.database.models import Base
 
     async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
-
+        # create_all is a fresh-install convenience for local/dev SQLite only. On
+        # Postgres it must never run: every Postgres deployment is expected to run
+        # `alembic upgrade head` explicitly (see docs/DEPLOYMENT.md), and if the app
+        # container starts concurrently with that migration — the ordinary case in a
+        # docker-compose stack where both depend_on the same postgres healthcheck —
+        # create_all wins the race, creates every table itself, and alembic's own
+        # 001_initial migration then fails with DuplicateTableError trying to create
+        # tables that already exist. Skipping it here removes the race outright
+        # rather than trying to order around it.
         if settings.database_url.startswith("sqlite"):
+            await conn.run_sync(Base.metadata.create_all)
 
             def _add_optional_columns(sync_conn):  # rolling-deploy shim; remove once all instances run alembic upgrade head
                 r = sync_conn.execute(text("PRAGMA table_info(agent_sessions)"))

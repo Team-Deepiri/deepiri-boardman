@@ -16,7 +16,17 @@ from boardman.llm.ollama_autodetect import NoOllamaModelAvailable, effective_oll
 from boardman.logging_config import setup_logging
 from boardman.observability.degradation import log_unexpected
 from boardman.ratelimit.leaky_bucket import get_agent_leaky_limiter
-from boardman.routes import agent, assignment, health, github_events, github_team, plaky, plans, tasks, repos
+from boardman.routes import (
+    agent,
+    assignment,
+    github_events,
+    github_team,
+    health,
+    plaky,
+    plans,
+    repos,
+    tasks,
+)
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)

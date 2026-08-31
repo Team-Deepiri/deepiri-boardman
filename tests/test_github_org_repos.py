@@ -42,6 +42,32 @@ async def test_fetch_org_repos_falls_back_to_users_on_404(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_fetch_org_repos_always_skips_dot_github(monkeypatch):
+    """.github is a GitHub org-metadata repo (issue templates, org profile), never a real
+    project — it has no Plaky board/group and never will, so it must never surface to
+    callers (repo scoping, tiering, scan)."""
+    import boardman.settings as bs
+
+    monkeypatch.setattr(bs.settings, "github_pat", "token")
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            request=request,
+            json=[
+                {"full_name": "deepiri-org/.github", "archived": False},
+                {"full_name": "deepiri-org/deepiri-boardman", "archived": False},
+            ],
+        )
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(transport=transport) as client:
+        repos = await fetch_org_repository_full_names(client, "deepiri-org", skip_archived=True)
+
+    assert repos == ["deepiri-org/deepiri-boardman"]
+
+
+@pytest.mark.asyncio
 async def test_fetch_org_repos_raises_non_404_errors(monkeypatch):
     import boardman.settings as bs
 

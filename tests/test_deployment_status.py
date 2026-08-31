@@ -5,8 +5,6 @@ See boardman.services.pr_handler.handle_deployment_status.
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
