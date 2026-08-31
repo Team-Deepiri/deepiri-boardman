@@ -191,6 +191,15 @@ jobs:
           # every app startup, but create_all is checkfirst-by-default (SQLAlchemy),
           # so it's a no-op against tables alembic just created.
           docker compose -f docker-compose.prod.yml up -d --build
+
+          # Recreating the boardman API container above gives it a new docker-
+          # internal IP. OUR OWN boardman-nginx (deploy/nginx/default.conf) now
+          # forces per-request DNS re-resolution via a resolver + proxy_pass
+          # variable, so this reload is a defensive backstop, not the primary fix --
+          # but the platform's nginx, which proxies to boardman-nginx by name, would
+          # still go stale if boardman-nginx itself were ever recreated. Only reload
+          # OUR container; never reach into the platform's stack for this.
+          docker compose -f docker-compose.prod.yml exec -T boardman-nginx nginx -s reload || echo "::warning::Could not reload boardman-nginx"
           EOSSH
 
       - name: Health check
