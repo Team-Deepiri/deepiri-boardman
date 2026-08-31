@@ -6,6 +6,8 @@
 
 services:
   postgres:
+    # peak 87 MiB. Most headroom of the four: a hard OOM on the database is the most disruptive failure here, and Postgres grows with connections and vacuum activity.
+    mem_limit: 768m
     image: postgres:16-alpine
     container_name: deepiri-boardman-postgres
     restart: unless-stopped
@@ -24,6 +26,8 @@ services:
       - deepiri-network
 
   boardman:
+    # peak 154 MiB — ~3.3x headroom.
+    mem_limit: 512m
     build:
       context: .
       dockerfile: Dockerfile
@@ -66,6 +70,8 @@ services:
       - deepiri-network
 
   boardman-worker:
+    # peak 156 MiB — ~3.3x headroom.
+    mem_limit: 512m
     build:
       context: .
       dockerfile: Dockerfile
@@ -93,6 +99,8 @@ services:
       - deepiri-network
 
   boardman-nginx:
+    # peak 12 MiB. Static file serving; 5x headroom is ample.
+    mem_limit: 64m
     build:
       context: .
       dockerfile: deploy/nginx/Dockerfile
@@ -112,6 +120,8 @@ services:
 
   # Optional local agent cache: `docker compose -f docker-compose.prod.yml --profile agent-cache up -d`
   redis:
+    # not currently running, so no observed peak. Conservative default; matches the platform stack, which caps redis at 384m.
+    mem_limit: 256m
     profiles: ["agent-cache"]
     image: redis:7-alpine
     container_name: deepiri-boardman-redis-cache
