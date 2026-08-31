@@ -172,10 +172,20 @@ jobs:
             exit 1
           fi
 
+          # --build here is not optional: `docker compose run` reuses an existing
+          # image with a matching tag instead of rebuilding by default, and the box
+          # keeps images between deploys. Without --build this ran alembic against
+          # whatever boardman image a PREVIOUS deploy had already built and tagged
+          # on the box -- silently ignoring source changes (including new migration
+          # files) from the commit that was just pulled. This is the exact "cached
+          # mutable tag" class of bug that hid a base-image update on the platform
+          # side; here it meant a brand new migration simply never ran, alembic saw
+          # nothing to do, and the app crashed on the table alembic never created.
+          #
           # run --rm, not exec, so this doesn't depend on any long-lived app process
           # already being up — it only needs the image and the network, and it runs
           # before boardman/boardman-worker ever start.
-          docker compose -f docker-compose.prod.yml run --rm boardman alembic upgrade head
+          docker compose -f docker-compose.prod.yml run --rm --build boardman alembic upgrade head
 
           # NOW bring up the rest of the stack. init_db()'s create_all runs again on
           # every app startup, but create_all is checkfirst-by-default (SQLAlchemy),
