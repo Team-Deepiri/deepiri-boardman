@@ -340,20 +340,76 @@ async def test_assign_qa_for_pr_full_path(monkeypatch: pytest.MonkeyPatch) -> No
 async def test_assign_qa_for_pr_skips_when_already_assigned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """An already-assigned QA is never re-picked or re-written to Plaky.
+
+    It DOES still retry the GitHub notification (comment + reviewer request) --
+    found live that a task could have the correct QA in Plaky while the GitHub
+    comment failed independently (a PAT temporarily lacking write scope). The
+    retry itself is idempotent: `has_qa_assignment_comment` returning True here
+    is what stands in for "already commented, nothing left to do."
+    """
+
     async def fake_key(bid: str, fallback: str) -> str:
         return "person-4"
 
     async def fake_current(plaky: Any, bid: str, tid: str, key: str) -> str:
         return "existing-qa"
 
+    async def fake_already_commented(*_a, **_k) -> bool:
+        return True
+
     monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_qa_assignee_field_key", fake_key)
     monkeypatch.setattr(ph, "_current_person_field_value", fake_current)
     monkeypatch.setattr(ph, "load_team_assignments", lambda: _cfg([]))
+    monkeypatch.setattr(
+        "boardman.github.pr_actions.has_qa_assignment_comment", fake_already_commented
+    )
 
     out = await ph._assign_qa_for_pr(
         object(), task_id="t-1", board_id="b1", repo_full="o/r", pr_number=9
     )
-    assert out["skipped"] == "qa_already_assigned"
+    assert out["plaky_qa"]["skipped"] == "qa_already_assigned"
+    assert out["github_comment"]["skipped"] == "already_commented"
+
+
+async def test_assign_qa_for_pr_retries_the_github_comment_if_it_never_landed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Plaky already has the QA; the GitHub comment previously failed (e.g. a PAT
+    that temporarily lacked write scope). A later call must still post it."""
+
+    async def fake_key(bid: str, fallback: str) -> str:
+        return "person-4"
+
+    async def fake_current(plaky: Any, bid: str, tid: str, key: str) -> str:
+        return "existing-qa"
+
+    async def fake_not_commented(*_a, **_k) -> bool:
+        return False
+
+    posted: dict[str, Any] = {}
+
+    async def fake_comment_on_pr(full_name, pr_number, body):
+        posted["full_name"] = full_name
+        posted["pr_number"] = pr_number
+        posted["body"] = body
+        return {"ok": True, "status": 201}
+
+    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_qa_assignee_field_key", fake_key)
+    monkeypatch.setattr(ph, "_current_person_field_value", fake_current)
+    monkeypatch.setattr(ph, "load_team_assignments", lambda: _cfg([]))
+    monkeypatch.setattr(
+        "boardman.github.pr_actions.has_qa_assignment_comment", fake_not_commented
+    )
+    monkeypatch.setattr("boardman.github.pr_actions.comment_on_pr", fake_comment_on_pr)
+
+    out = await ph._assign_qa_for_pr(
+        object(), task_id="t-1", board_id="b1", repo_full="o/r", pr_number=9
+    )
+    assert out["plaky_qa"]["skipped"] == "qa_already_assigned"
+    assert out["github_comment"]["ok"] is True
+    assert posted["pr_number"] == 9
+    assert "QA reviewer" in posted["body"]
 
 
 # --- Type fallbacks so no board is left with Type unset ---------------------------

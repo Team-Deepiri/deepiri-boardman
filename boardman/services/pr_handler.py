@@ -388,31 +388,35 @@ async def _assign_qa_for_pr(
     if not qa_key:
         return {"skipped": "no QA field key resolvable for this board"}
 
+    qid: str | None = None
+    why = ""
+    already_assigned = False
     if bid:
         current_qa = await _current_person_field_value(plaky, bid, task_id, qa_key)
         if current_qa:
-            return {"skipped": "qa_already_assigned", "qa_plaky_id": current_qa}
+            qid = str(current_qa)
+            why = "already assigned"
+            already_assigned = True
 
-    # Bug-typed tasks always go to the QA bug specialist (employer: "bug - assign to
-    # Hameeda") - unless she authored the PR (self-review) or the role is unset/unresolvable,
-    # in which case the ranked pick applies as usual.
-    qid: str | None = None
-    why = ""
-    specialist_name = (getattr(cfg, "qa_bug_specialist", "") or "").strip()
-    if specialist_name and await _task_type_is_bug(plaky, bid, task_id):
-        sm = _member_by_name(cfg, specialist_name)
-        if sm is None:
-            _log.warning(
-                "qa_bug_specialist %r not in roster or fallback - using ranked pick",
-                specialist_name,
-            )
-        elif (getattr(sm, "github_login", "") or "").casefold() == (
-            pr_author_login or ""
-        ).casefold() and pr_author_login:
-            _log.info("qa_bug_specialist authored PR #%s - using ranked pick", pr_number)
-        else:
-            qid = str(sm.id)
-            why = f"bug task -> QA bug specialist {getattr(sm, 'display', specialist_name)}"
+    if not qid:
+        # Bug-typed tasks always go to the QA bug specialist (employer: "bug - assign to
+        # Hameeda") - unless she authored the PR (self-review) or the role is
+        # unset/unresolvable, in which case the ranked pick applies as usual.
+        specialist_name = (getattr(cfg, "qa_bug_specialist", "") or "").strip()
+        if specialist_name and await _task_type_is_bug(plaky, bid, task_id):
+            sm = _member_by_name(cfg, specialist_name)
+            if sm is None:
+                _log.warning(
+                    "qa_bug_specialist %r not in roster or fallback - using ranked pick",
+                    specialist_name,
+                )
+            elif (getattr(sm, "github_login", "") or "").casefold() == (
+                pr_author_login or ""
+            ).casefold() and pr_author_login:
+                _log.info("qa_bug_specialist authored PR #%s - using ranked pick", pr_number)
+            else:
+                qid = str(sm.id)
+                why = f"bug task -> QA bug specialist {getattr(sm, 'display', specialist_name)}"
 
     if not qid:
         # The author is never a candidate (self-review). GitHub refuses a review from
@@ -434,27 +438,51 @@ async def _assign_qa_for_pr(
     qa_login = (getattr(member, "github_login", "") or "").strip() if member else ""
     qa_display = (getattr(member, "display", "") or "").strip() if member else ""
 
-    res = await update_task_internal(
-        task_id,
-        UpdateTaskInput(qa_plaky_id=str(qid), plaky_board_id=bid or None),
-    )
-    out["plaky_qa"] = {
-        "id": str(qid),
-        "display": qa_display,
-        "ok": res.get("ok"),
-        "reason": why[:220],
-    }
+    if already_assigned:
+        # Plaky already has this QA -- don't re-pick or re-write it, but a PREVIOUS
+        # attempt's GitHub comment/reviewer-request may have failed independently
+        # (e.g. the PAT lacked Issues/PR write access at the time) while the Plaky
+        # write succeeded. Falling straight through to the notify step below lets
+        # that retry on every later reconcile, instead of this function treating
+        # "Plaky is correct" as "there is nothing left to do."
+        out["plaky_qa"] = {"id": str(qid), "display": qa_display, "skipped": "qa_already_assigned"}
+    else:
+        res = await update_task_internal(
+            task_id,
+            UpdateTaskInput(qa_plaky_id=str(qid), plaky_board_id=bid or None),
+        )
+        out["plaky_qa"] = {
+            "id": str(qid),
+            "display": qa_display,
+            "ok": res.get("ok"),
+            "reason": why[:220],
+        }
 
-    if session is not None:
-        try:
-            from boardman.services.pr_task_registry import stamp_qa_on_pr_links
+        if session is not None:
+            try:
+                from boardman.services.pr_task_registry import stamp_qa_on_pr_links
 
-            repo_short = repo_full.rsplit("/", 1)[-1] if "/" in repo_full else repo_full
-            await stamp_qa_on_pr_links(
-                session, github_repo=repo_short, github_pr_number=pr_number, qa_plaky_id=str(qid)
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("stamp_qa_on_pr_links failed for PR #%s: %s", pr_number, exc)
+                repo_short = repo_full.rsplit("/", 1)[-1] if "/" in repo_full else repo_full
+                await stamp_qa_on_pr_links(
+                    session,
+                    github_repo=repo_short,
+                    github_pr_number=pr_number,
+                    qa_plaky_id=str(qid),
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("stamp_qa_on_pr_links failed for PR #%s: %s", pr_number, exc)
+
+    if already_assigned:
+        # Idempotency check: without it, a task that already has its QA correctly
+        # written to Plaky would get a fresh "you've been assigned" comment on EVERY
+        # reconcile pass forever, since this branch exists specifically to retry a
+        # GitHub notification that failed independently of the (already-successful)
+        # Plaky write.
+        from boardman.github.pr_actions import has_qa_assignment_comment
+
+        if await has_qa_assignment_comment(repo_full, pr_number):
+            out["github_comment"] = {"ok": True, "skipped": "already_commented"}
+            return out
 
     mention = f"@{qa_login}" if qa_login else (qa_display or "QA")
     task_ref = task_url or f"Plaky task `{task_id}`"

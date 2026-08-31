@@ -52,6 +52,32 @@ def is_boardman_comment(body: str) -> bool:
     return BOARDMAN_COMMENT_MARKER in (body or "")
 
 
+async def has_qa_assignment_comment(full_name: str, pr_number: int) -> bool:
+    """Has Boardman already posted the QA-assignment comment on this PR?
+
+    Used to make a QA-notification retry idempotent: a task can already carry the
+    correct QA in Plaky (write succeeded) while the GitHub comment failed independently
+    (e.g. the PAT lacked write scope at the time) -- a later retry must post the comment
+    exactly once when the scope is fixed, not re-post it on every reconcile pass after.
+    """
+    if not (settings.github_pat or "").strip():
+        return False
+    url = f"https://api.github.com/repos/{full_name}/issues/{pr_number}/comments?per_page=100"
+    try:
+        async with shared_github_client() as client:
+            r = await client.get(url, headers=_headers())
+    except Exception as e:  # noqa: BLE001 — a failed check must not block a retry
+        _log.warning("qa-comment lookup on %s#%s failed: %s", full_name, pr_number, e)
+        return False
+    if r.status_code != 200:
+        return False
+    for c in r.json() or []:
+        body = str((c or {}).get("body") or "")
+        if is_boardman_comment(body) and "QA reviewer" in body:
+            return True
+    return False
+
+
 async def comment_on_pr(full_name: str, pr_number: int, body: str) -> dict[str, Any]:
     """POST an issue comment on the PR (PRs share the issues comment API)."""
     if not (settings.github_pat or "").strip():
