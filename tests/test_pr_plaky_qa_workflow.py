@@ -564,3 +564,70 @@ async def test_issue_comment_skips_when_not_participant_and_not_plaky_qa(
     assert out.get("skipped") is True
     assert fake.status_calls == []
     await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_comment_on_an_already_merged_pr_does_not_bounce_a_completed_task_to_in_progress(
+    monkeypatch: pytest.MonkeyPatch, qa_settings: None
+):
+    """A comment can be processed after (or race) the PR's own merge webhook. Without a
+    live merged check, a stale pre-merge "approved" status read would still match and
+    unconditionally overwrite a just-applied Completed status with In Progress — the
+    reported symptom of "I merged it and Plaky flipped to In Progress"."""
+    fake = RecordingPlaky()
+    fake_item = {"fields": [{"key": "status-2", "value": {"id": "qa_approved"}}]}
+
+    async def _get_board_item_public(_bid: str, _iid: str) -> dict[str, Any]:
+        return {"ok": True, "item": fake_item}
+
+    fake.get_board_item_public = _get_board_item_public  # type: ignore[method-assign]
+    _patch_task_mutations_plaky(monkeypatch, fake)
+    monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
+    monkeypatch.setattr(settings, "plaky_status_in_progress", "in_progress")
+
+    async def _resolve_status_stub(_board_id: str, env_value: str, *intents: str):
+        if env_value:
+            return "status-2", env_value
+        return None, ""
+
+    monkeypatch.setattr("boardman.services.pr_review_handler._resolve_status", _resolve_status_stub)
+
+    async def _merged_true(*_a, **_k) -> bool:
+        return True
+
+    monkeypatch.setattr("boardman.services.pr_review_handler._pr_is_merged", _merged_true)
+
+    async def _no_participants(*_a, **_k):
+        return set()
+
+    monkeypatch.setattr(
+        "boardman.services.pr_review_handler.fetch_pr_assignees_and_reviewers_logins",
+        _no_participants,
+    )
+
+    engine, factory = await _memory_session_factory()
+    async with factory() as session:
+        session.add(
+            PullRequestTaskLink(
+                github_repo="svc",
+                github_pr_number=126,
+                plaky_task_id="task-merged",
+                github_issue_number=0,
+                link_source="auto_link",
+            )
+        )
+        await session.commit()
+
+    payload = IssueCommentEventPayload(
+        action="created",
+        issue=IssueCommentIssuePayload(number=126, pull_request={"url": "http://api/github.com"}),
+        comment={"user": {"login": "random-dev"}, "body": "thanks, merging!"},
+        repository=GitHubRepository(full_name="deepiri-org/svc", name="svc"),
+    )
+
+    async with factory() as session:
+        out = await handle_issue_comment_on_pr(payload, session)
+
+    assert out.get("event") != "revisions_in_progress"
+    assert ("task-merged", "in_progress") not in fake.status_calls
+    await engine.dispose()

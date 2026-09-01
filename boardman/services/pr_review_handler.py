@@ -466,6 +466,36 @@ async def _current_commit_count(full_name: str, pr_number: int) -> int | None:
         return None
 
 
+async def _pr_is_merged(full_name: str, pr_number: int) -> bool:
+    """Live merged state on the PR right now — False (not "unknown") on any API trouble.
+
+    "Resume work" comment handling reads the task's post-review status and, if it
+    matches an approved/changes-requested verdict, moves the task to In Progress. That
+    read can race a `pull_request.closed(merged=true)` webhook delivered around the same
+    time: if this comment webhook is processed first (or the Plaky write from the merge
+    handler hasn't landed yet), the stale pre-merge status still matches and the task
+    gets bounced back to In Progress right after (or just before) it was set Completed,
+    with nothing downstream ever correcting it. Checking the PR's live merged state
+    directly — not the comment payload, which does not carry it — closes that race.
+    """
+    if not github_auth_available():
+        return False
+    try:
+        from boardman.github.http import github_http_client
+
+        client = github_http_client()
+        hdr = await github_auth_header()
+        r = await client.get(
+            f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}", headers=hdr
+        )
+        if r.status_code != 200:
+            return False
+        return bool(r.json().get("merged"))
+    except Exception:  # noqa: BLE001 - unknowable degrades to "not merged" (safe default:
+        # the branch still runs, matching today's behavior when this check can't run)
+        return False
+
+
 async def _sync_plain_issue_comment(
     payload: IssueCommentEventPayload,
     session: AsyncSession,
@@ -782,15 +812,40 @@ async def handle_issue_comment_on_pr(
             verdict_checks.setdefault(rej_key, set()).add(str(rej_val))
         if appr_key and appr_val:
             verdict_checks.setdefault(appr_key, set()).add(str(appr_val))
+        if verdict_checks and await _pr_is_merged(payload.repository.full_name, pr_number):
+            # A comment can land on (or its webhook can be processed after) a PR that
+            # has since merged — GitHub gives no ordering guarantee between the
+            # `issue_comment` and `pull_request.closed` deliveries. Reading the task's
+            # status here would still see the pre-merge "approved"/"changes requested"
+            # value if the merge handler's Completed write hasn't landed yet (or already
+            # has), and unconditionally bouncing it to In Progress either races or
+            # clobbers that write with nothing downstream to correct it. A merged PR has
+            # nothing left to "resume".
+            verdict_checks = {}
         if verdict_checks:
             ip_key, ip_val = await _resolve_status(
                 bid, _in_progress_status(), "workflow_in_progress"
+            )
+            # Same STATUS field the verdict/in-progress checks read — schema boards keep
+            # every workflow position (Completed included) on one field, so no separate
+            # resolution is needed to know where "Completed" lives.
+            completed_field_key = ip_key or next(iter(verdict_checks), None)
+            _, completed_val = await _resolve_status(
+                bid, (settings.plaky_status_completed or "").strip(), "workflow_completed"
             )
             if ip_val:
                 resumed: list[dict[str, Any]] = []
                 for tid in task_ids:
                     info = await plaky.get_board_item_public(board_id or "", tid)
                     if not info.get("ok") or not info.get("item"):
+                        continue
+                    if (
+                        completed_val
+                        and completed_field_key
+                        and plaky_item_status_id(info["item"], completed_field_key) == completed_val
+                    ):
+                        # Already Completed — writing In Progress here would be a pure
+                        # regression, whatever put it there (a merge, a person, a sweep).
                         continue
                     hit = any(
                         plaky_item_status_id(info["item"], key) == vid
