@@ -24,6 +24,7 @@ from boardman.plaky.name_match import rank_plaky_rows
 from boardman.plaky.task_tag_vocab import (
     canonical_task_priority,
 )
+from boardman.plaky.urls import plaky_task_web_url
 from boardman.services.task_mutations import (
     CreateSubtaskInput,
     CreateTaskInput,
@@ -1013,7 +1014,7 @@ async def _plaky_create_tasks_deferred(
                     "title": str(row["title"]).strip(),
                     "existing_title": str(hit.get("name") or hit.get("title") or ""),
                     "task_id": ex_id,
-                    "task_url": f"https://app.plaky.com/task/{ex_id}" if ex_id else "",
+                    "task_url": plaky_task_web_url(ex_id) if ex_id else "",
                 }
             )
 
@@ -1377,7 +1378,7 @@ async def _plaky_create_tasks(
                     "title": row["title"],
                     "existing_title": ex_title,
                     "task_id": ex_id,
-                    "task_url": f"https://app.plaky.com/task/{ex_id}" if ex_id else "",
+                    "task_url": plaky_task_web_url(ex_id) if ex_id else "",
                     "message": "",
                 }
         fv = row.get("field_values")

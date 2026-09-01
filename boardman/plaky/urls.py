@@ -14,16 +14,23 @@ from __future__ import annotations
 def plaky_task_web_url(task_id: str, task_url_hint: str | None = None) -> str:
     """Return the best web URL for a Plaky item.
 
-    - If ``task_url_hint`` is an http(s) URL, trust it verbatim (it came from
-      the API or from ``IssueTaskMap.plaky_task_url``).
+    - If ``task_url_hint`` is an http(s) URL *and* it actually points at
+      ``task_id`` (the id appears in the URL path), trust it verbatim (it
+      came from the API or from ``IssueTaskMap.plaky_task_url``).
     - Otherwise synthesize the universal deep-link ``https://app.plaky.com/task/{id}``
       which Plaky resolves to the concrete board/item page. ``pending:*`` ids are
       not real items and return the hint (usually empty).
+
+    A stored hint for a stale/relinked task can point at a *different* item
+    than ``task_id`` now refers to (e.g. after a task got reassigned or the
+    mapping row was relinked). Rendering that hint verbatim produces a link
+    whose visible id doesn't match where it actually goes — this check
+    catches that mismatch and falls back to the id-derived link instead.
     """
     hint = (task_url_hint or "").strip()
-    if hint.startswith("http://") or hint.startswith("https://"):
-        return hint
     tid = (task_id or "").strip()
+    if (hint.startswith("http://") or hint.startswith("https://")) and (not tid or tid in hint):
+        return hint
     if not tid or tid.startswith("pending:"):
         return hint
     # ``app.plaky.com/task/{id}`` is the documented fallback already used in

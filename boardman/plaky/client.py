@@ -10,6 +10,7 @@ import httpx
 from boardman.github.http import shared_plaky_client
 from boardman.observability.degradation import log_degraded
 from boardman.plaky.placement import context_board_id, context_group_id
+from boardman.plaky.urls import plaky_task_web_url
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -1640,9 +1641,11 @@ class PlakyClient:
             payload = response.json()
             task_id = payload.get("id") or payload.get("taskId")
             task_url = (
-                payload.get("url")
-                or payload.get("taskUrl")
-                or (f"https://app.plaky.com/task/{task_id}" if task_id else None)
+                plaky_task_web_url(
+                    str(task_id) if task_id else "",
+                    payload.get("url") or payload.get("taskUrl"),
+                )
+                or None
             )
             return {
                 "ok": True,
