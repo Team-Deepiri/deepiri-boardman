@@ -322,9 +322,14 @@ async def test_pr_merged_sets_completed_on_plaky(
 
 
 @pytest.mark.asyncio
-async def test_pr_review_requested_moves_to_in_qa(
+async def test_pr_review_requested_does_not_move_to_in_qa(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
+    """Boardman's own QA-assignment step calls GitHub's request-reviewers API, which
+    fires this exact event — so writing In QA here moved the task before the assigned
+    QA had looked at anything (reported: PR shows In QA when the QA "didn't say they
+    were reviewing it"). Asking for a review is not QA engaging; only an actual
+    comment/commit from the assigned QA or a support-team member may move it there."""
     fake = RecordingPlaky()
     _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_handler.PlakyClient", lambda: fake)
@@ -360,7 +365,8 @@ async def test_pr_review_requested_moves_to_in_qa(
         out = await handle_pr_review_requested(payload, session)
 
     assert out.get("ok") is True
-    assert fake.status_calls == [("task-rev", "in_qa")]
+    assert out.get("skipped") is True
+    assert fake.status_calls == []
     await engine.dispose()
 
 
@@ -418,20 +424,14 @@ async def test_pr_review_comment_assigned_qa_moves_in_qa_fuzzy_link(
 
 
 @pytest.mark.asyncio
-async def test_issue_comment_assignee_moves_in_qa(
+async def test_issue_comment_by_plain_assignee_does_not_move_to_in_qa(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
+    """A GitHub assignee/requested-reviewer who is not the assigned QA or a support-team
+    member is not QA — their comment must not read as "QA started reviewing"."""
     fake = RecordingPlaky()
     _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
-
-    async def _participants(*_a, **_k):
-        return {"alice"}
-
-    monkeypatch.setattr(
-        "boardman.services.pr_review_handler.fetch_pr_assignees_and_reviewers_logins",
-        _participants,
-    )
 
     engine, factory = await _memory_session_factory()
     async with factory() as session:
@@ -457,7 +457,8 @@ async def test_issue_comment_assignee_moves_in_qa(
         out = await handle_issue_comment_on_pr(payload, session)
 
     assert out.get("ok") is True
-    assert fake.status_calls == [("task-ic", "in_qa")]
+    assert out.get("skipped") is True
+    assert fake.status_calls == []
     await engine.dispose()
 
 
@@ -469,14 +470,6 @@ async def test_issue_comment_plaky_assigned_qa_moves_in_qa_without_github_partic
     fake = RecordingPlaky(qa_field="fld_qa", qa_plaky_id="qa-plaky-77")
     _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
-
-    async def _no_participants(*_a, **_k):
-        return set()
-
-    monkeypatch.setattr(
-        "boardman.services.pr_review_handler.fetch_pr_assignees_and_reviewers_logins",
-        _no_participants,
-    )
 
     cfg = TeamAssignmentsConfig(
         plaky_field_qa="fld_qa",
@@ -521,14 +514,6 @@ async def test_issue_comment_skips_when_not_participant_and_not_plaky_qa(
     fake = RecordingPlaky(qa_field="fld_qa", qa_plaky_id="qa-plaky-77")
     _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
-
-    async def _participants(*_a, **_k):
-        return {"alice"}
-
-    monkeypatch.setattr(
-        "boardman.services.pr_review_handler.fetch_pr_assignees_and_reviewers_logins",
-        _participants,
-    )
 
     cfg = TeamAssignmentsConfig(
         plaky_field_qa="fld_qa",
@@ -596,14 +581,6 @@ async def test_comment_on_an_already_merged_pr_does_not_bounce_a_completed_task_
         return True
 
     monkeypatch.setattr("boardman.services.pr_review_handler._pr_is_merged", _merged_true)
-
-    async def _no_participants(*_a, **_k):
-        return set()
-
-    monkeypatch.setattr(
-        "boardman.services.pr_review_handler.fetch_pr_assignees_and_reviewers_logins",
-        _no_participants,
-    )
 
     engine, factory = await _memory_session_factory()
     async with factory() as session:
