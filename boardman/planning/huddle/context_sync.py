@@ -108,9 +108,7 @@ class SyncPlanningContext:
         open_tracks = await self._fetch_open_pr_tracks(team_repo_names)
         activity = await self._fetch_sync_activity(team_repo_names, lookback)
         if not pr_links and not issue_maps and not open_tracks and not activity:
-            return (
-                f"No boardman sync history for this team's repos in the last {lookback} days."
-            )
+            return f"No boardman sync history for this team's repos in the last {lookback} days."
         return self._format_markdown(
             team_focus=team_focus,
             lookback_days=lookback,
@@ -194,10 +192,10 @@ class SyncPlanningContext:
         repo_filtered: dict[str, int] = defaultdict(int)
         async with self._session_factory() as session:
             recent = (
-                await session.execute(
-                    select(SyncLog).where(SyncLog.created_at >= cutoff)
-                )
-            ).scalars().all()
+                (await session.execute(select(SyncLog).where(SyncLog.created_at >= cutoff)))
+                .scalars()
+                .all()
+            )
         for entry in recent:
             if entry.github_repo and repo_matches_team(entry.github_repo, team_repo_names):
                 repo_filtered[entry.action] += 1
@@ -258,9 +256,7 @@ def _format_issue_maps(maps: list[IssueMapSummary]) -> list[str]:
     lines = ["### Issue ↔ Plaky mappings"]
     for row in maps[:30]:
         url = f" — {row.plaky_task_url}" if row.plaky_task_url else ""
-        lines.append(
-            f"- {row.repo}#{row.issue_number} → Plaky `{row.plaky_task_id}`{url}"
-        )
+        lines.append(f"- {row.repo}#{row.issue_number} → Plaky `{row.plaky_task_id}`{url}")
     if len(maps) > 30:
         lines.append(f"- … and {len(maps) - 30} more")
     lines.append("")

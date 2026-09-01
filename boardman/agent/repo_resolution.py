@@ -58,7 +58,9 @@ def resolve_repo(
     if explicit:
         return RepoResolution(explicit, "explicit")
 
-    registered = list(known_repo_keys) if known_repo_keys is not None else list(list_registered_repos())
+    registered = (
+        list(known_repo_keys) if known_repo_keys is not None else list(list_registered_repos())
+    )
 
     # A repo explicitly named in the new message outranks the previous session repo.
     # This prevents a user switching from Boardman to another configured repo from

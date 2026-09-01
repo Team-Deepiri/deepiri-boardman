@@ -1744,8 +1744,12 @@ async def handle_pr_edited(
                         _log.info(
                             "PR #%s: QA backfill on task %s -> %s", pr_number, task_id, qa_res
                         )
-                except Exception as exc:  # noqa: BLE001 - a QA backfill miss must not break the sync
-                    _log.warning("QA backfill failed for PR #%s task %s: %s", pr_number, task_id, exc)
+                except (
+                    Exception
+                ) as exc:  # noqa: BLE001 - a QA backfill miss must not break the sync
+                    _log.warning(
+                        "QA backfill failed for PR #%s task %s: %s", pr_number, task_id, exc
+                    )
         await session.commit()
 
         # `item_text_immutable` is Plaky saying it has no verb for renaming an item, not a

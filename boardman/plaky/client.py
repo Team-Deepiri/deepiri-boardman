@@ -996,9 +996,12 @@ class PlakyClient:
                         # Public API rarely returns a web URL; synthesize the universal
                         # deep-link so callers (QA comment, IssueTaskMap) always have a
                         # clickable URL instead of just a bare id.
-                        task_url = plaky_task_web_url(
-                            task_id_s, raw_url if isinstance(raw_url, str) else None
-                        ) or raw_url
+                        task_url = (
+                            plaky_task_web_url(
+                                task_id_s, raw_url if isinstance(raw_url, str) else None
+                            )
+                            or raw_url
+                        )
                         out = {
                             "ok": True,
                             "status": response.status_code,

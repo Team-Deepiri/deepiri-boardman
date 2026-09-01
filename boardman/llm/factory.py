@@ -70,9 +70,7 @@ def get_chat_model(
     return model
 
 
-def _build_chat_model(
-    *, provider: str | None = None, api_key_override: str | None = None
-) -> Any:
+def _build_chat_model(*, provider: str | None = None, api_key_override: str | None = None) -> Any:
     p = (provider or settings.llm_provider or "ollama").lower()
     if p in ("claude",):
         p = "anthropic"

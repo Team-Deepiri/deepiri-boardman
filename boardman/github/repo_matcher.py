@@ -60,9 +60,7 @@ def _score_repo(short_name: str, text_low: str, text_tokens: set[str]) -> float 
     return coverage * 0.7 + fuzz * 0.3
 
 
-async def resolve_repo_from_text(
-    client: httpx.AsyncClient, text: str
-) -> RepoMatchResult:
+async def resolve_repo_from_text(client: httpx.AsyncClient, text: str) -> RepoMatchResult:
     """Match `text` against the live org repo list. Never guesses past the threshold —
     returns candidates instead so the caller can ask the user which repo they meant."""
     if not settings.github_pat or not (text or "").strip():

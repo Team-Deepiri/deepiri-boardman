@@ -733,9 +733,7 @@ def _check_planning(root: Path, env: dict[str, str]) -> list[ReadinessCheck]:
             )
         )
     else:
-        checks.append(
-            ReadinessCheck("planning", "Plaky API key", PASS, "PLAKY_API_KEY is set")
-        )
+        checks.append(ReadinessCheck("planning", "Plaky API key", PASS, "PLAKY_API_KEY is set"))
 
     github = env.get("GITHUB_PAT", "")
     if _is_placeholder(github):
@@ -749,9 +747,7 @@ def _check_planning(root: Path, env: dict[str, str]) -> list[ReadinessCheck]:
             )
         )
     else:
-        checks.append(
-            ReadinessCheck("planning", "GitHub PAT", PASS, "GITHUB_PAT is set")
-        )
+        checks.append(ReadinessCheck("planning", "GitHub PAT", PASS, "GITHUB_PAT is set"))
 
     team_repos_path = _resolve(root, env.get("PLANNING_TEAM_REPOS_FILE", "team_repos.json"))
     checks.append(_check_planning_json_file("team repos", team_repos_path))
