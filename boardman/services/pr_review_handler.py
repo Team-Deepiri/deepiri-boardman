@@ -12,7 +12,6 @@ from boardman.assignment.config import TeamAssignmentsConfig, load_team_assignme
 from boardman.database.models import SyncLog
 from boardman.github.auth import github_auth_available, github_auth_header
 from boardman.github.pr_actions import is_boardman_comment
-from boardman.github.repo_fetch import fetch_pr_assignees_and_reviewers_logins
 from boardman.github.support_qa import support_team_logins_casefold
 from boardman.github.webhooks import IssueCommentEventPayload, PullRequestReviewEventPayload
 from boardman.observability.degradation import log_degraded
@@ -767,14 +766,20 @@ async def handle_issue_comment_on_pr(
             "message": "in_qa status not configured or discoverable",
         }
 
-    participants = await fetch_pr_assignees_and_reviewers_logins(
-        payload.repository.full_name,
-        pr_number,
-    )
-    participants_cf = {str(p).casefold() for p in participants} if participants else set()
-    is_participant = bool(participants_cf) and commenter.casefold() in participants_cf
-
     cfg = load_team_assignments()
+    # A comment moves the task to In QA only when the commenter IS QA — the assigned
+    # QA, or another support-team member covering for them. A plain PR assignee or
+    # requested reviewer who is not on QA's side (which can include the PR author
+    # themselves, once self-assigned) commenting must not read as "QA started
+    # reviewing" — that was moving tasks to In QA before any QA had looked at anything.
+    support = support_team_logins_casefold()
+    roster_logins = {
+        (getattr(m, "github_login", "") or "").strip().casefold()
+        for pool in (cfg.members, getattr(cfg, "fallback_members", []) or [])
+        for m in pool
+        if (getattr(m, "github_login", "") or "").strip()
+    }
+    is_qa_side_commenter = bool(commenter) and commenter.casefold() in (support | roster_logins)
     qa_field = await resolve_qa_assignee_field_key(bid, cfg.plaky_field_qa)
     member_plaky_id: str | None = None
     if commenter:
@@ -878,11 +883,11 @@ async def handle_issue_comment_on_pr(
                         "event": "revisions_in_progress",
                     }
 
-    if not is_participant and not is_assigned_qa:
+    if not is_qa_side_commenter and not is_assigned_qa:
         return {
             "ok": True,
             "skipped": True,
-            "message": "commenter is not an assignee, requested reviewer, or Plaky-assigned QA",
+            "message": "commenter is not the assigned QA or a support-team member",
             "commenter": commenter,
         }
 

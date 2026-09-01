@@ -1907,6 +1907,26 @@ async def handle_pr_review_requested(
     payload: PullRequestEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
+    """``review_requested`` fires the instant a reviewer is asked for — including when
+    Boardman's own QA-assignment step calls ``request_reviewers`` right after posting
+    the "you've been assigned as QA reviewer" comment. That is Boardman ASKING, not the
+    QA engaging: the task must stay at Needs QA (already set on PR open) until the
+    assigned QA (or another support-team QA) actually comments or pushes a commit — see
+    the participant/assigned-QA gate in ``pr_review_handler.handle_issue_comment_on_pr``.
+    Writing In QA here moved the task before anyone on QA had done anything, which is
+    exactly the "why does this say In QA when Amy hasn't even looked at it" symptom.
+
+    ``review_request_removed`` is unaffected: un-asking for a review is still handled,
+    reverting an in-progress request back to Needs QA (never onto a verdict already in).
+    """
+    if payload.action != "review_request_removed":
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "asking for a review is not QA engaging; task stays at Needs QA",
+            "event": "review_requested",
+        }
+
     await _ensure_links_live(payload, session)
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
@@ -1921,21 +1941,16 @@ async def handle_pr_review_requested(
     routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
-    request_removed = payload.action == "review_request_removed"
+    request_removed = True
     target_status = (
-        (settings.plaky_pr_needs_qa_status or settings.plaky_status_needs_qa or "").strip()
-        if request_removed
-        else (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
-    )
+        settings.plaky_pr_needs_qa_status or settings.plaky_status_needs_qa or ""
+    ).strip()
     target_field_key: str | None = None
     bid = (board_id or "").strip()
     if not target_status and bid:
         from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
-        rp = await resolve_plaky_status_patch(
-            bid,
-            intent="workflow_needs_qa" if request_removed else "workflow_in_qa",
-        )
+        rp = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
         if rp:
             target_field_key, target_status = rp[0], rp[1]
     if not target_status:
