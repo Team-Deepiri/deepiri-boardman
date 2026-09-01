@@ -86,7 +86,9 @@ async def test_non_ambiguous_routing_sources_place_the_created_task(monkeypatch,
     monkeypatch.setattr(scan_handler.settings, "llm_provider", "openrouter")
     monkeypatch.setattr(scan_handler.settings, "llm_model", "some/model")
 
-    result = await scan_handler.run_repo_scan(_FakeSession(), "Team-Deepiri/deepiri-axiom", dry_run=False)
+    result = await scan_handler.run_repo_scan(
+        _FakeSession(), "Team-Deepiri/deepiri-axiom", dry_run=False
+    )
 
     assert result["ok"] is True
     assert result["tasks_created"] == 1
@@ -128,7 +130,9 @@ async def test_ambiguous_routing_sources_do_not_auto_place(monkeypatch, routing_
     monkeypatch.setattr(scan_handler.settings, "llm_provider", "openrouter")
     monkeypatch.setattr(scan_handler.settings, "llm_model", "some/model")
 
-    result = await scan_handler.run_repo_scan(_FakeSession(), "Team-Deepiri/deepiri-axiom", dry_run=False)
+    result = await scan_handler.run_repo_scan(
+        _FakeSession(), "Team-Deepiri/deepiri-axiom", dry_run=False
+    )
 
     assert result["ok"] is True
     assert captured["board_id"] is None

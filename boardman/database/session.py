@@ -64,7 +64,9 @@ async def init_db() -> None:
         if settings.database_url.startswith("sqlite"):
             await conn.run_sync(Base.metadata.create_all)
 
-            def _add_optional_columns(sync_conn):  # rolling-deploy shim; remove once all instances run alembic upgrade head
+            def _add_optional_columns(
+                sync_conn,
+            ):  # rolling-deploy shim; remove once all instances run alembic upgrade head
                 r = sync_conn.execute(text("PRAGMA table_info(agent_sessions)"))
                 cols = [row[1] for row in r.fetchall()]
                 if "task_draft_json" not in cols:
@@ -81,9 +83,7 @@ async def init_db() -> None:
                     )
                 if "byok_key_expires_at" not in cols:
                     sync_conn.execute(
-                        text(
-                            "ALTER TABLE agent_sessions ADD COLUMN byok_key_expires_at DATETIME"
-                        )
+                        text("ALTER TABLE agent_sessions ADD COLUMN byok_key_expires_at DATETIME")
                     )
 
                 r = sync_conn.execute(text("PRAGMA table_info(project_contexts)"))
@@ -121,9 +121,7 @@ async def init_db() -> None:
                     )
                 if link_cols and "commits_at_last_review" not in link_cols:
                     sync_conn.execute(
-                        text(
-                            "ALTER TABLE pr_task_links ADD COLUMN commits_at_last_review INTEGER"
-                        )
+                        text("ALTER TABLE pr_task_links ADD COLUMN commits_at_last_review INTEGER")
                     )
 
                 # `create_all` skips an existing table, so the unique constraint that stops

@@ -139,12 +139,16 @@ class DirectionPlanningContext:
         cutoff = datetime.utcnow() - lookback
         async with self._session_factory() as session:
             rows = (
-                await session.execute(
-                    select(ScanRun)
-                    .where(ScanRun.created_at >= cutoff)
-                    .order_by(ScanRun.created_at.desc())
+                (
+                    await session.execute(
+                        select(ScanRun)
+                        .where(ScanRun.created_at >= cutoff)
+                        .order_by(ScanRun.created_at.desc())
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         summaries: list[ScanRunSummary] = []
         seen: set[str] = set()
         for row in rows:

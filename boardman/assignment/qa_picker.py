@@ -99,19 +99,13 @@ def humanize_fit_reason(
     elif detail.direct > 0:
         strengths.append("they have some familiarity with this repository")
     if detail.lang >= 0.6:
-        strengths.append(
-            "they work extensively with the same languages this project uses"
-        )
+        strengths.append("they work extensively with the same languages this project uses")
     elif detail.lang >= 0.25:
         strengths.append("they have experience with the languages used here")
     if detail.tokens >= 0.4:
-        strengths.append(
-            "they've worked on closely related projects in the organization"
-        )
+        strengths.append("they've worked on closely related projects in the organization")
     elif detail.tokens >= 0.15:
-        strengths.append(
-            "they've worked on similar projects in the organization"
-        )
+        strengths.append("they've worked on similar projects in the organization")
     if not strengths:
         strengths.append("they're the best available match on the team right now")
 
@@ -307,9 +301,7 @@ async def _best_classified_tier(profile: Any, org: str, *, use_live_classifier: 
     return best
 
 
-async def _github_inferred_tiers(
-    candidates: list[TeamMember], org: str
-) -> dict[str, str]:
+async def _github_inferred_tiers(candidates: list[TeamMember], org: str) -> dict[str, str]:
     """member.id -> hardware tier inferred from demonstrated GitHub activity, not a
     self-reported label anywhere.
 
@@ -687,7 +679,9 @@ async def pick_qa_for_repo(
         if chosen:
             _log.info(
                 "pick_qa: %s repo_tier=%d candidates=%d",
-                chosen.display, repo_tier, len(qas),
+                chosen.display,
+                repo_tier,
+                len(qas),
             )
             return chosen.id, reason
 

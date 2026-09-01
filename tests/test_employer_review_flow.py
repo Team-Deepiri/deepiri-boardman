@@ -87,7 +87,10 @@ async def test_excluded_leads_are_never_picked(monkeypatch: pytest.MonkeyPatch) 
 
     async def fake_fits(candidates: Any, full_name: str):
         # Give the EXCLUDED lead the best fit — the filter must still win.
-        return {m.id: (0.99 if m.id == "qa-austin" else 0.2, qp.FitDetail(0.3, 0.3, 0.3, [])) for m in candidates}
+        return {
+            m.id: (0.99 if m.id == "qa-austin" else 0.2, qp.FitDetail(0.3, 0.3, 0.3, []))
+            for m in candidates
+        }
 
     async def fake_tier(fn: str) -> int:
         return 2
@@ -292,7 +295,10 @@ async def test_assign_qa_for_pr_full_path(monkeypatch: pytest.MonkeyPatch) -> No
         repo_full: str, cfg: Any = None, *, exclude_login: str = "", qa_workload: Any = None
     ):
         picked_with.append(exclude_login)
-        return "plaky-42", "We picked Regular QA as QA reviewer because they're the best available match. Confidence: 20%"
+        return (
+            "plaky-42",
+            "We picked Regular QA as QA reviewer because they're the best available match. Confidence: 20%",
+        )
 
     async def fake_key(bid: str, fallback: str) -> str:
         return "person-4"
@@ -398,9 +404,7 @@ async def test_assign_qa_for_pr_retries_the_github_comment_if_it_never_landed(
     monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_qa_assignee_field_key", fake_key)
     monkeypatch.setattr(ph, "_current_person_field_value", fake_current)
     monkeypatch.setattr(ph, "load_team_assignments", lambda: _cfg([]))
-    monkeypatch.setattr(
-        "boardman.github.pr_actions.has_qa_assignment_comment", fake_not_commented
-    )
+    monkeypatch.setattr("boardman.github.pr_actions.has_qa_assignment_comment", fake_not_commented)
     monkeypatch.setattr("boardman.github.pr_actions.comment_on_pr", fake_comment_on_pr)
 
     out = await ph._assign_qa_for_pr(
@@ -520,7 +524,10 @@ async def test_pr_author_is_never_their_own_qa(monkeypatch: pytest.MonkeyPatch) 
 
     async def fake_fits(candidates: Any, full_name: str):
         # Give the AUTHOR the best fit; the exclusion must still win.
-        return {m.id: (0.99 if m.id == "qa-ali" else 0.1, qp.FitDetail(0.3, 0.3, 0.3, [])) for m in candidates}
+        return {
+            m.id: (0.99 if m.id == "qa-ali" else 0.1, qp.FitDetail(0.3, 0.3, 0.3, []))
+            for m in candidates
+        }
 
     async def fake_tier(fn: str) -> int:
         return 2

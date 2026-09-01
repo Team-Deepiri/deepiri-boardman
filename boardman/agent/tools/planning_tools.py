@@ -47,7 +47,11 @@ async def _generate_meeting_plan(
         target_date_iso=target.isoformat(),
         notes=notes.strip() or None,
     )
-    output_path = default_plan_output_path(normalized_team, meeting_type, normalized_week) if write_to_disk else None
+    output_path = (
+        default_plan_output_path(normalized_team, meeting_type, normalized_week)
+        if write_to_disk
+        else None
+    )
     plan = await asyncio.to_thread(
         generate_plan,
         request,

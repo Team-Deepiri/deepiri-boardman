@@ -779,7 +779,9 @@ async def handle_issue_comment_on_pr(
         rej_key, rej_val = await _resolve_status(
             bid, _qa_rejected_status(), "github_pr_review_changes_requested"
         )
-        appr_key, appr_val = await _resolve_status(bid, _qa_approved_status(), "github_pr_review_approved")
+        appr_key, appr_val = await _resolve_status(
+            bid, _qa_approved_status(), "github_pr_review_approved"
+        )
         verdict_checks: dict[str, set[str]] = {}
         if rej_key and rej_val:
             verdict_checks.setdefault(rej_key, set()).add(str(rej_val))

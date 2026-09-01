@@ -345,7 +345,11 @@ async def test_gather_candidates_includes_same_group_items_with_plain_titles(mon
                 "ok": True,
                 "items": [
                     # Same group as this repo, plain title — must be picked up.
-                    {"id": "same-group-1", "title": "Stability: live audio latency", "group": 907469},
+                    {
+                        "id": "same-group-1",
+                        "title": "Stability: live audio latency",
+                        "group": 907469,
+                    },
                     # Different group (another repo on the same categorical board), plain
                     # title with no tag/issue-number — must NOT be picked up just because
                     # it's on the same physical board.

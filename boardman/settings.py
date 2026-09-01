@@ -331,9 +331,7 @@ class Settings(BaseSettings):
     planning_team_plaky_boards_file: str = "team_plaky_boards.json"
     planning_github_lookback_days: int = 14
     planning_plaky_lookback_days: int = 14
-    planning_plaky_highlight_statuses: str = (
-        "in progress,needs qa,in qa,blocked,ready for review"
-    )
+    planning_plaky_highlight_statuses: str = "in progress,needs qa,in qa,blocked,ready for review"
     planning_github_skip_bots: bool = True
     planning_llm_timeout_seconds: float = 120.0
     planning_output_dir: str = "plans"

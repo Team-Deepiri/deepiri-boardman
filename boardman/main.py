@@ -72,7 +72,9 @@ async def lifespan(app: FastAPI):
                 pk,
             )
         else:
-            _log.info("Plaky: API key present (length=%d), base=%s", len(pk), settings.plaky_api_base)
+            _log.info(
+                "Plaky: API key present (length=%d), base=%s", len(pk), settings.plaky_api_base
+            )
     else:
         _log.warning(
             "Plaky: PLAKY_API_KEY is empty — set it in `.env` (docker: env_file) or the environment. "

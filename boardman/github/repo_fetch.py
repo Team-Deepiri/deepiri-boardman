@@ -318,7 +318,11 @@ async def fetch_repo_file_text(
     if len(text) > max_chars:
         _log.warning(
             "fetch_repo_file_text truncated %s/%s:%s from %d to %d chars",
-            owner, repo, path, len(text), max_chars,
+            owner,
+            repo,
+            path,
+            len(text),
+            max_chars,
         )
     return text[:max_chars]
 

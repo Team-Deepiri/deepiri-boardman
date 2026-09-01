@@ -80,9 +80,9 @@ async def test_set_get_clear_session_byok_key(monkeypatch):
     async with factory() as session:
         row = (
             await session.execute(
-                __import__("sqlalchemy").select(AgentSession).where(
-                    AgentSession.session_id == "sess-1"
-                )
+                __import__("sqlalchemy")
+                .select(AgentSession)
+                .where(AgentSession.session_id == "sess-1")
             )
         ).scalar_one()
         from boardman.agent.service import _resolve_session_llm_override
