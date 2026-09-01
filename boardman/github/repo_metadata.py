@@ -21,10 +21,10 @@ from dataclasses import dataclass, field
 
 import httpx
 
+from boardman.github.auth import github_auth_available
 from boardman.github.read_cache import cached
 from boardman.github.repo_fetch import github_request
 from boardman.observability.degradation import log_degraded
-from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
@@ -194,8 +194,7 @@ async def fetch_repo_metadata(
     repo: str,
 ) -> RepoMetadata | None:
     """Fetch language + size from GitHub API. Derive raw signals from file tree + repo name."""
-    token = settings.github_pat
-    if not token:
+    if not github_auth_available():
         return None
 
     try:

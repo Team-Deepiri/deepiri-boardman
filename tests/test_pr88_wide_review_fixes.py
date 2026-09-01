@@ -170,7 +170,7 @@ async def test_a_merged_pr_is_not_reconciled_as_closed_without_merge(monkeypatch
     monkeypatch.setattr(rc, "distinct_task_ids_for_pr", linked)
     monkeypatch.setattr(rc, "handle_pr_merged", fake_merged)
     monkeypatch.setattr(rc, "handle_pr_closed_without_merge", fake_closed)
-    monkeypatch.setattr(rc.settings, "github_pat", "test-token")
+    monkeypatch.setattr("boardman.settings.settings.github_pat", "test-token")
 
     await rc.reconcile_repo("Team-Deepiri/deepiri-boardman", None)
 

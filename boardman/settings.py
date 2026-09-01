@@ -177,6 +177,22 @@ class Settings(BaseSettings):
     github_reconcile_interval_seconds: float = 900.0
     github_reconcile_max_items: int = 50
     github_pat: str | None = None
+    # How Boardman authenticates to the GitHub API: "pat" (personal access token, the
+    # historical path), "github_app" (mint short-lived installation tokens so comments
+    # post as boardman[bot]), or "both" (prefer the App token, fall back to the PAT if
+    # minting it fails — a cutover safety net, not a permanent mode). See
+    # docs/GITHUB_APP_MIGRATION.md. readiness.py validates the value.
+    github_auth_mode: str = "pat"
+    # GitHub App credentials, only read when github_auth_mode is "github_app" or "both".
+    # github_app_private_key holds the PEM *contents* (not a file path), matching how
+    # byok_encryption_key is passed in.
+    github_app_id: str = ""
+    github_app_installation_id: str = ""
+    github_app_private_key: str = ""
+    # The GitHub App delivers webhooks signed with its own secret, separate from the
+    # org-level webhook's github_webhook_secret. Both are accepted while the org webhook
+    # still exists; see boardman/routes/github_events.py.
+    github_app_webhook_secret: str = ""
     github_org: str = "deepiri-org"
     # Prepended to bare repo slugs (no "owner/") for QA roster + create-task; e.g. Team-Deepiri/foo.
     # When empty, falls back to github_org. github_org is still used for API org listing and routing.

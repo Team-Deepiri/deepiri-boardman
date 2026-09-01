@@ -17,6 +17,21 @@ def verify_signature(raw_body: bytes, signature_header: str, secret: str) -> boo
     return hmac.compare_digest(provided, expected)
 
 
+def verify_signature_any(raw_body: bytes, signature_header: str, secrets: list[str]) -> bool:
+    """True if the signature matches ANY configured secret.
+
+    During the GitHub App cutover two delivery paths coexist: the org-level webhook
+    (signed with GITHUB_WEBHOOK_SECRET) and the App's own webhook (signed with
+    GITHUB_APP_WEBHOOK_SECRET). A delivery is authentic if it verifies against either.
+    An empty secret list, or a list whose only entries are empty, disables verification
+    exactly as a single empty secret does today.
+    """
+    candidates = [s for s in secrets if s]
+    if not candidates:
+        return True
+    return any(verify_signature(raw_body, signature_header, s) for s in candidates)
+
+
 class GitHubIssue(BaseModel):
     number: int
     title: str

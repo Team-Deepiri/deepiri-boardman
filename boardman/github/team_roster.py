@@ -9,6 +9,7 @@ from urllib.parse import quote
 
 import httpx
 
+from boardman.github.auth import github_auth_available
 from boardman.github.repo_fetch import github_request, github_request_sync
 from boardman.observability.degradation import log_unexpected
 from boardman.settings import settings
@@ -102,7 +103,7 @@ async def fetch_support_team_members(
             "members": [],
         }
 
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return {
             "ok": False,
             "message": "GITHUB_PAT is not set — cannot list GitHub team members.",
@@ -214,7 +215,7 @@ def fetch_support_team_members_sync(
             "members": [],
         }
 
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return {
             "ok": False,
             "message": "GITHUB_PAT is not set — cannot list GitHub team members.",

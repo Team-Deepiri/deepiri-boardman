@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
 from boardman.assignment.tier_classifier import classify_repo_tier, classify_repos_tier
+from boardman.github.auth import github_auth_available
 from boardman.github.repo_metadata import fetch_repo_metadata, fetch_repos_metadata
 from boardman.observability.degradation import log_degraded
 from boardman.repos_config import _load_raw, routing_yaml_candidate_map_keys, update_repo_tiers
@@ -29,7 +30,7 @@ class ClassifyReposResponse(BaseModel):
 @router.post("/classify", response_model=ClassifyReposResponse)
 async def classify_all_repos() -> ClassifyReposResponse:
     """Fetch metadata for all org repos and classify into tiers."""
-    if not settings.github_pat:
+    if not github_auth_available():
         raise HTTPException(status_code=400, detail="GITHUB_PAT not configured")
 
     from boardman.github.org_repos import fetch_org_repository_full_names
@@ -83,7 +84,7 @@ async def get_repo_tier(full_name: str) -> SingleRepoResponse:
         tier = int(entry["tier"])
     else:
         # Compute on-the-fly
-        if not settings.github_pat:
+        if not github_auth_available():
             return SingleRepoResponse(full_name=full_name, tier=2)
 
         client = httpx.AsyncClient(timeout=30.0)
@@ -127,7 +128,7 @@ class OrgReposResponse(BaseModel):
 @router.get("/org", response_model=OrgReposResponse)
 async def list_org_repositories() -> OrgReposResponse:
     """List full names (owner/repo) for repositories in the configured GitHub org."""
-    if not settings.github_pat:
+    if not github_auth_available():
         return OrgReposResponse(ok=False, repos=[], message="GITHUB_PAT not configured")
 
     from boardman.github.org_repos import fetch_org_repository_full_names

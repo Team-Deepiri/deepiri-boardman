@@ -132,7 +132,7 @@ async def test_reconcile_skips_unlinked_closed_prs(db_session, monkeypatch) -> N
     monkeypatch.setattr(rc, "github_http_client", lambda: _FakeGitHub(pulls))
     monkeypatch.setattr(rc, "distinct_task_ids_for_pr", no_links)
     monkeypatch.setattr(rc, "handle_pr_opened", fake_opened)
-    monkeypatch.setattr(rc.settings, "github_pat", "test-token")
+    monkeypatch.setattr("boardman.settings.settings.github_pat", "test-token")
 
     out = await rc.reconcile_repo("o/r", db_session)
     assert opened == [88]  # only the live PR
@@ -162,7 +162,7 @@ async def test_reconcile_skips_untracked_closed_issues(db_session, monkeypatch) 
     monkeypatch.setattr(rc, "github_http_client", lambda: _FakeGitHub([], issues))
     monkeypatch.setattr(rc, "find_plaky_task_by_issue", no_mapping)
     monkeypatch.setattr(rc, "handle_issue_opened", fake_open)
-    monkeypatch.setattr(rc.settings, "github_pat", "test-token")
+    monkeypatch.setattr("boardman.settings.settings.github_pat", "test-token")
 
     out = await rc.reconcile_repo("o/r", db_session)
     assert created == [11]

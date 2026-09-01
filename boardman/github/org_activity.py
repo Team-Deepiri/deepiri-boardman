@@ -87,6 +87,7 @@ async def org_activity_ranking(*, limit: int = 8, split_top: int | None = None) 
     ``split_top`` is capped at ``limit``, because a row past the limit is discarded before
     it is returned and its extra GitHub call would buy nothing.
     """
+    from boardman.github.auth import github_auth_available, github_auth_header
     from boardman.github.http import github_http_client
     from boardman.github.org_repos import (
         cached_org_repo_rows,
@@ -95,9 +96,8 @@ async def org_activity_ranking(*, limit: int = 8, split_top: int | None = None) 
     from boardman.settings import settings
 
     org = (settings.github_org or "").strip()
-    token = (settings.github_pat or "").strip()
-    if not org or not token:
-        return {"ok": False, "message": "GITHUB_ORG and GITHUB_PAT are required"}
+    if not org or not github_auth_available():
+        return {"ok": False, "message": "GITHUB_ORG and a GitHub credential are required"}
 
     client = github_http_client()
     rows = cached_org_repo_rows(org, skip_archived=settings.github_skip_archived)
@@ -123,7 +123,7 @@ async def org_activity_ranking(*, limit: int = 8, split_top: int | None = None) 
     effective_split_top = min(effective_split_top, max(0, int(limit)))
     head = ranked[: max(0, min(effective_split_top, len(ranked)))]
 
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json"}
+    headers = await github_auth_header()
     sem = asyncio.Semaphore(4)
 
     async def split(row: dict[str, Any]) -> dict[str, Any]:

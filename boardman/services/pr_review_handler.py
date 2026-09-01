@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import TeamAssignmentsConfig, load_team_assignments
 from boardman.database.models import SyncLog
+from boardman.github.auth import github_auth_available, github_auth_header
 from boardman.github.pr_actions import is_boardman_comment
 from boardman.github.repo_fetch import fetch_pr_assignees_and_reviewers_logins
 from boardman.github.support_qa import support_team_logins_casefold
@@ -111,16 +112,13 @@ async def _failing_required_checks(full_name: str, pr_number: int) -> list[str]:
     marking the task QA Verified would present broken work as done. API trouble returns
     [] on purpose: absence of the signal is not evidence of failure.
     """
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return []
     try:
         from boardman.github.http import github_http_client
 
         client = github_http_client()
-        hdr = {
-            "Authorization": f"Bearer {settings.github_pat}",
-            "Accept": "application/vnd.github+json",
-        }
+        hdr = await github_auth_header()
         r = await client.get(
             f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}", headers=hdr
         )
@@ -450,16 +448,13 @@ async def handle_pull_request_review(
 async def _current_commit_count(full_name: str, pr_number: int) -> int | None:
     """Live commit count on the PR right now — None when unknowable (no PAT, API
     trouble), so callers skip stamping rather than recording a wrong baseline."""
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return None
     try:
         from boardman.github.http import github_http_client
 
         client = github_http_client()
-        hdr = {
-            "Authorization": f"Bearer {settings.github_pat}",
-            "Accept": "application/vnd.github+json",
-        }
+        hdr = await github_auth_header()
         r = await client.get(
             f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}", headers=hdr
         )

@@ -11,6 +11,7 @@ from langchain_core.tools import StructuredTool
 
 from boardman.agent.repo_context import load_planning_snapshot, save_planning_snapshot
 from boardman.agent.tool_context import get_tool_db_session
+from boardman.github.auth import github_auth_available, github_auth_header
 from boardman.github.code_search import scan_repo_defects, search_repo_code
 from boardman.github.http import shared_github_client
 from boardman.github.read_cache import cached, json_ok
@@ -108,8 +109,8 @@ def _repo_not_found_payload(owner: str, repo: str, suggestions: list[str]) -> st
 
 async def _github_list_workspace_repos() -> str:
     """List all GitHub repositories in the configured org merged with repos.yml config."""
-    if not settings.github_pat:
-        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    if not github_auth_available():
+        return json.dumps({"ok": False, "message": "GitHub auth not configured"})
     async with shared_github_client() as client:
         repos = await list_workspace_repos(client)
     # Convert RepoRouting objects to dicts for JSON
@@ -154,8 +155,8 @@ _NOT_ON_GITHUB_NEXT_STEP = (
 
 
 async def _github_list_pull_requests(owner_repo: str, state: str = "open") -> str:
-    if not settings.github_pat:
-        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    if not github_auth_available():
+        return json.dumps({"ok": False, "message": "GitHub auth not configured"})
     parsed = parse_owner_repo(owner_repo)
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
@@ -166,10 +167,7 @@ async def _github_list_pull_requests(owner_repo: str, state: str = "open") -> st
     async with shared_github_client() as client:
         r = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}/pulls?state={want}&per_page=30",
-            headers={
-                "Authorization": f"Bearer {settings.github_pat}",
-                "Accept": "application/vnd.github+json",
-            },
+            headers=await github_auth_header(),
             follow_redirects=True,
         )
     if r.status_code != 200:
@@ -207,17 +205,14 @@ async def _github_list_pull_requests(owner_repo: str, state: str = "open") -> st
 
 
 async def _github_list_open_issues(owner_repo: str) -> str:
-    if not settings.github_pat:
-        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    if not github_auth_available():
+        return json.dumps({"ok": False, "message": "GitHub auth not configured"})
     parsed = parse_owner_repo(owner_repo)
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
     owner, repo = parsed
     async with shared_github_client() as client:
-        headers = {
-            "Authorization": f"Bearer {settings.github_pat}",
-            "Accept": "application/vnd.github+json",
-        }
+        headers = await github_auth_header()
         r = await client.get(
             f"https://api.github.com/repos/{owner}/{repo}/issues?state=open&per_page=30",
             headers=headers,
@@ -245,8 +240,8 @@ async def _github_list_open_issues(owner_repo: str) -> str:
 
 async def _github_fetch_direction(owner_repo: str) -> str:
     """Load DIRECTION.md from default branch (main/master fallback inside fetch_direction_md)."""
-    if not settings.github_pat:
-        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    if not github_auth_available():
+        return json.dumps({"ok": False, "message": "GitHub auth not configured"})
     parsed = parse_owner_repo(owner_repo)
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
@@ -260,8 +255,8 @@ async def _github_fetch_direction(owner_repo: str) -> str:
 
 async def _github_fetch_file(owner_repo: str, path: str, ref: str = "") -> str:
     """Read a single text file from the repo (e.g. README.md, docs/spec.md)."""
-    if not settings.github_pat:
-        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    if not github_auth_available():
+        return json.dumps({"ok": False, "message": "GitHub auth not configured"})
     parsed = parse_owner_repo(owner_repo)
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
@@ -291,8 +286,8 @@ async def _github_repo_structure_uncached(owner_repo: str) -> str:
     Returns language, top-level dirs, notable config/doc files, file count, and depth.
     Use as fallback when DIRECTION.md and README are absent.
     """
-    if not settings.github_pat:
-        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    if not github_auth_available():
+        return json.dumps({"ok": False, "message": "GitHub auth not configured"})
     parsed = parse_owner_repo(owner_repo)
     if not parsed:
         return json.dumps({"ok": False, "message": "owner_repo must be owner/name"})
@@ -433,8 +428,8 @@ def _canonical_owner_repo(owner_repo: str) -> str:
 
 
 async def _github_repo_planning_context_uncached(owner_repo: str, commits_limit: int = 20) -> str:
-    if not settings.github_pat:
-        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    if not github_auth_available():
+        return json.dumps({"ok": False, "message": "GitHub auth not configured"})
     raw_name = (owner_repo or "").strip()
     parsed = parse_owner_repo(raw_name)
     if not parsed and raw_name and "/" not in raw_name:
@@ -566,8 +561,8 @@ def _repo_routing_summary(full_name: str) -> dict[str, str]:
 
 async def _github_search_code(owner_repo: str, query: str) -> str:
     """Grep a GitHub repo for a literal string / symbol and return matching lines."""
-    if not settings.github_pat:
-        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    if not github_auth_available():
+        return json.dumps({"ok": False, "message": "GitHub auth not configured"})
     raw = (owner_repo or "").strip()
     parsed = parse_owner_repo(raw)
     if not parsed and raw and "/" not in raw:
@@ -596,8 +591,8 @@ async def _github_scan_defects(owner_repo: str) -> str:
 
 async def _github_scan_defects_uncached(owner_repo: str) -> str:
     """Read the repo's largest source files and report real defect lines."""
-    if not settings.github_pat:
-        return json.dumps({"ok": False, "message": "GITHUB_PAT not configured"})
+    if not github_auth_available():
+        return json.dumps({"ok": False, "message": "GitHub auth not configured"})
     raw = (owner_repo or "").strip()
     parsed = parse_owner_repo(raw)
     if not parsed and raw and "/" not in raw:

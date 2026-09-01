@@ -344,7 +344,7 @@ async def test_reconciliation_needs_a_token_and_says_so(db_session, monkeypatch)
     out = await rc.reconcile_repo(FULL, db_session)
 
     assert out["ok"] is False
-    assert "GITHUB_PAT" in out["message"]
+    assert "GitHub auth" in out["message"]
 
 
 @pytest.mark.asyncio
