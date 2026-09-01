@@ -487,7 +487,15 @@ async def _assign_qa_for_pr(
     mention = f"@{qa_login}" if qa_login else (qa_display or "QA")
     from boardman.plaky.urls import plaky_task_markdown_link
 
-    task_ref = plaky_task_markdown_link(task_id, task_url)
+    resolved_space_id = None
+    if bid:
+        try:
+            resolved_space_id = await plaky.resolve_space_for_board(bid)
+        except Exception:  # noqa: BLE001 - link stays best-effort without it
+            _log.warning("resolve_space_for_board failed for board_id=%s", bid)
+    task_ref = plaky_task_markdown_link(
+        task_id, task_url, board_id=bid or None, space_id=resolved_space_id
+    )
     body = (
         f"{mention} you've been assigned as **QA reviewer** for this PR by Boardman.\n\n"
         f"Linked task: {task_ref}\n\n"

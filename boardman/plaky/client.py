@@ -994,12 +994,16 @@ class PlakyClient:
                         from boardman.plaky.urls import plaky_task_web_url
 
                         task_id_s = str(task_id or "").strip()
-                        # Public API rarely returns a web URL; synthesize the universal
-                        # deep-link so callers (QA comment, IssueTaskMap) always have a
-                        # clickable URL instead of just a bare id.
+                        # Public API rarely returns a web URL; synthesize the real
+                        # spaces/boards/.../items deep-link so callers (QA comment,
+                        # IssueTaskMap) always have a clickable URL instead of just a
+                        # bare id.
                         task_url = (
                             plaky_task_web_url(
-                                task_id_s, raw_url if isinstance(raw_url, str) else None
+                                task_id_s,
+                                raw_url if isinstance(raw_url, str) else None,
+                                board_id=board_id,
+                                space_id=sid,
                             )
                             or raw_url
                         )
