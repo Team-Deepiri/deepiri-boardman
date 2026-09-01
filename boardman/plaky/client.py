@@ -10,6 +10,7 @@ import httpx
 from boardman.github.http import shared_plaky_client
 from boardman.observability.degradation import log_degraded
 from boardman.plaky.placement import context_board_id, context_group_id
+from boardman.plaky.urls import plaky_task_web_url
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -993,12 +994,16 @@ class PlakyClient:
                         from boardman.plaky.urls import plaky_task_web_url
 
                         task_id_s = str(task_id or "").strip()
-                        # Public API rarely returns a web URL; synthesize the universal
-                        # deep-link so callers (QA comment, IssueTaskMap) always have a
-                        # clickable URL instead of just a bare id.
+                        # Public API rarely returns a web URL; synthesize the real
+                        # spaces/boards/.../items deep-link so callers (QA comment,
+                        # IssueTaskMap) always have a clickable URL instead of just a
+                        # bare id.
                         task_url = (
                             plaky_task_web_url(
-                                task_id_s, raw_url if isinstance(raw_url, str) else None
+                                task_id_s,
+                                raw_url if isinstance(raw_url, str) else None,
+                                board_id=board_id,
+                                space_id=sid,
                             )
                             or raw_url
                         )
@@ -1640,9 +1645,11 @@ class PlakyClient:
             payload = response.json()
             task_id = payload.get("id") or payload.get("taskId")
             task_url = (
-                payload.get("url")
-                or payload.get("taskUrl")
-                or (f"https://app.plaky.com/task/{task_id}" if task_id else None)
+                plaky_task_web_url(
+                    str(task_id) if task_id else "",
+                    payload.get("url") or payload.get("taskUrl"),
+                )
+                or None
             )
             return {
                 "ok": True,
