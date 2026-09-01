@@ -20,7 +20,7 @@ from boardman.github.webhooks import (
     PullRequestReviewCommentEventPayload,
     PullRequestReviewEventPayload,
     parse_webhook_payload,
-    verify_signature,
+    verify_signature_any,
 )
 from boardman.observability.degradation import log_degraded
 from boardman.services.issue_handler import (
@@ -184,7 +184,13 @@ async def github_webhook(
     delivery_id = request.headers.get("X-GitHub-Delivery", "").strip()
 
     signature = request.headers.get("X-Hub-Signature-256", "")
-    if not verify_signature(raw_body, signature, settings.github_webhook_secret):
+    # Accept either the org-level webhook secret or the GitHub App's own webhook secret —
+    # both delivery paths are live during the App cutover (docs/GITHUB_APP_MIGRATION.md).
+    if not verify_signature_any(
+        raw_body,
+        signature,
+        [settings.github_webhook_secret, settings.github_app_webhook_secret],
+    ):
         body = json.dumps({"ok": False, "message": "Invalid signature"})
         return Response(content=body, status_code=401)
 

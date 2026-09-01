@@ -14,6 +14,7 @@ from difflib import SequenceMatcher
 
 import httpx
 
+from boardman.github.auth import github_auth_available
 from boardman.github.org_repos import fetch_org_repository_full_names
 from boardman.settings import settings
 
@@ -63,7 +64,7 @@ def _score_repo(short_name: str, text_low: str, text_tokens: set[str]) -> float 
 async def resolve_repo_from_text(client: httpx.AsyncClient, text: str) -> RepoMatchResult:
     """Match `text` against the live org repo list. Never guesses past the threshold —
     returns candidates instead so the caller can ask the user which repo they meant."""
-    if not settings.github_pat or not (text or "").strip():
+    if not github_auth_available() or not (text or "").strip():
         return RepoMatchResult()
 
     try:

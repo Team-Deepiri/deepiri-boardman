@@ -17,6 +17,7 @@ import logging
 
 import httpx
 
+from boardman.github.auth import github_auth_available
 from boardman.observability.degradation import log_degraded
 from boardman.settings import (
     DEFAULT_AGENT_ORG_ROSTER_MAX_NAMES,
@@ -44,7 +45,7 @@ def _max_names() -> int:
 async def org_repo_roster_markdown() -> str:
     """Markdown naming every repo in the org, or '' when it cannot be fetched."""
     org = (settings.github_org or "").strip()
-    if not org or not (settings.github_pat or "").strip():
+    if not org or not github_auth_available():
         return ""
     try:
         from boardman.github.http import github_http_client

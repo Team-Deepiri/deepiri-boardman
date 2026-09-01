@@ -23,6 +23,7 @@ from urllib.parse import quote
 
 import httpx
 
+from boardman.github.auth import github_auth_available, github_auth_header
 from boardman.github.qa_activity_inference import _decay_weight
 from boardman.observability.degradation import log_unexpected
 from boardman.settings import settings
@@ -203,11 +204,8 @@ def clear_contribution_caches() -> None:
     _last_disk_save = float("-inf")
 
 
-def _gh_headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {settings.github_pat}",
-        "Accept": "application/vnd.github+json",
-    }
+async def _gh_headers() -> dict[str, str]:
+    return await github_auth_header()
 
 
 async def fetch_repo_info(client: httpx.AsyncClient, full_name: str) -> RepoInfo | None:
@@ -218,7 +216,9 @@ async def fetch_repo_info(client: httpx.AsyncClient, full_name: str) -> RepoInfo
     if hit and hit[0] > now:
         return hit[1]
     try:
-        r = await client.get(f"https://api.github.com/repos/{full_name}", headers=_gh_headers())
+        r = await client.get(
+            f"https://api.github.com/repos/{full_name}", headers=await _gh_headers()
+        )
     except Exception as e:  # noqa: BLE001 - observability failure must not affect the request
         _log.debug("repo info %s: %s", full_name, e)
         log_unexpected(_log, f"fetch_repo_info: GET /repos/{full_name}", e)
@@ -255,7 +255,7 @@ async def fetch_contribution_profile(
     Returns None when GitHub is unreachable or unauthorized (callers fall back to
     config-weight picking). Cached 6h per (org, login).
     """
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return None
     _maybe_load_disk_cache()
     key = f"{search_org}:{login}".lower()
@@ -282,13 +282,13 @@ async def fetch_contribution_profile(
         for page in range(1, PROFILE_MAX_SEARCH_PAGES + 1):
             url = f"https://api.github.com/search/issues?q={quote(q, safe='')}&per_page=100&page={page}"
             try:
-                r = await client.get(url, headers=_gh_headers())
+                r = await client.get(url, headers=await _gh_headers())
                 if r.status_code in (403, 429):
                     # Search rate limit — honor Retry-After (capped) once, then retry.
                     wait = min(float(r.headers.get("Retry-After") or 8), 15.0)
                     _log.debug("profile search %s throttled; retrying in %.0fs", q, wait)
                     await asyncio.sleep(wait)
-                    r = await client.get(url, headers=_gh_headers())
+                    r = await client.get(url, headers=await _gh_headers())
             except (
                 Exception
             ) as e:  # noqa: BLE001 - observability failure must not affect the request

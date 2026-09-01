@@ -9,18 +9,20 @@ from __future__ import annotations
 import logging
 from typing import Any
 
+from boardman.github.auth import github_auth_available, github_auth_header
 from boardman.github.http import shared_github_client
-from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
 _SCOPE_HINT = (
-    "GITHUB_PAT lacks write access (needs Issues: write + Pull requests: write on the repo/org) — "
-    "QA was still assigned in Plaky, but the GitHub @mention/reviewer request was skipped."
+    "the GitHub credential lacks write access (needs Issues: write + Pull requests: write on "
+    "the repo/org) — QA was still assigned in Plaky, but the GitHub @mention/reviewer request "
+    "was skipped."
 )
 _NOT_FOUND_HINT = (
     "target not found on GitHub (the PR/issue number does not exist in this repo). "
-    "If it does exist, check that the PAT has read access. QA was still assigned in Plaky."
+    "If it does exist, check that the GitHub credential has read access. QA was still "
+    "assigned in Plaky."
 )
 
 
@@ -30,17 +32,11 @@ def _failure_hint(status: int) -> str:
     return _NOT_FOUND_HINT if status == 404 else _SCOPE_HINT
 
 
-def _headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {settings.github_pat}",
-        "Accept": "application/vnd.github+json",
-    }
-
-
-# Boardman comments on GitHub as the PAT owner — a real teammate account, not a "[bot]"
-# login. Without a marker it reads its own QA-assignment comment back through the event
-# feed, sees a support-team member commenting on a PR, and moves the task to In QA before
-# QA has looked at anything. An HTML comment is invisible in rendered markdown.
+# Under GITHUB_AUTH_MODE=pat Boardman comments as the token owner (a real teammate
+# account); under github_app it comments as boardman[bot]. Either way, without a marker it
+# reads its own QA-assignment comment back through the event feed, sees a commenter on a
+# PR, and moves the task to In QA before QA has looked at anything. An HTML comment is
+# invisible in rendered markdown.
 BOARDMAN_COMMENT_MARKER = "<!-- boardman:automation -->"
 
 
@@ -60,12 +56,12 @@ async def has_qa_assignment_comment(full_name: str, pr_number: int) -> bool:
     (e.g. the PAT lacked write scope at the time) -- a later retry must post the comment
     exactly once when the scope is fixed, not re-post it on every reconcile pass after.
     """
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return False
     url = f"https://api.github.com/repos/{full_name}/issues/{pr_number}/comments?per_page=100"
     try:
         async with shared_github_client() as client:
-            r = await client.get(url, headers=_headers())
+            r = await client.get(url, headers=await github_auth_header())
     except Exception as e:  # noqa: BLE001 — a failed check must not block a retry
         _log.warning("qa-comment lookup on %s#%s failed: %s", full_name, pr_number, e)
         return False
@@ -80,7 +76,7 @@ async def has_qa_assignment_comment(full_name: str, pr_number: int) -> bool:
 
 async def comment_on_pr(full_name: str, pr_number: int, body: str) -> dict[str, Any]:
     """POST an issue comment on the PR (PRs share the issues comment API)."""
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return {"ok": False, "skipped": True, "message": "GITHUB_PAT not configured"}
     url = f"https://api.github.com/repos/{full_name}/issues/{pr_number}/comments"
     try:
@@ -90,7 +86,7 @@ async def comment_on_pr(full_name: str, pr_number: int, body: str) -> dict[str, 
             # fetched the comment list, got 200, and reported a comment it never posted.
             r = await client.post(
                 url,
-                headers=_headers(),
+                headers=await github_auth_header(),
                 json={"body": with_marker(body)},
                 follow_redirects=False,
             )
@@ -111,14 +107,17 @@ async def request_reviewers(full_name: str, pr_number: int, logins: list[str]) -
     logins = [str(x).strip() for x in logins if str(x).strip()]
     if not logins:
         return {"ok": False, "skipped": True, "message": "no reviewer logins"}
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return {"ok": False, "skipped": True, "message": "GITHUB_PAT not configured"}
     url = f"https://api.github.com/repos/{full_name}/pulls/{pr_number}/requested_reviewers"
     try:
         async with shared_github_client() as client:
             # See `comment_on_pr`: a redirected POST silently becomes a GET.
             r = await client.post(
-                url, headers=_headers(), json={"reviewers": logins}, follow_redirects=False
+                url,
+                headers=await github_auth_header(),
+                json={"reviewers": logins},
+                follow_redirects=False,
             )
     except Exception as e:  # noqa: BLE001 — network failure must not break the webhook
         _log.warning("reviewer request on %s#%s failed: %s", full_name, pr_number, e, exc_info=True)

@@ -30,6 +30,7 @@ from boardman.assignment.capability_board import fetch_capability_tiers
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, load_team_assignments
 from boardman.assignment.repo_rules import qa_tier_allows_repo
 from boardman.assignment.tier_classifier import classify_repo_tier
+from boardman.github.auth import github_auth_available
 from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.observability.degradation import log_unexpected
 from boardman.repos_config import get_routing
@@ -318,7 +319,7 @@ async def _github_inferred_tiers(candidates: list[TeamMember], org: str) -> dict
     A member absent from the returned dict has demonstrated nothing anywhere the
     backend can see — the caller's population-level prior picks up from there.
     """
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return {}
 
     import httpx
@@ -393,7 +394,7 @@ async def _github_fit_scores(
         fetch_repo_info,
     )
 
-    if not settings.qa_github_fit_enabled or not (settings.github_pat or "").strip():
+    if not settings.qa_github_fit_enabled or not github_auth_available():
         return None
 
     import httpx

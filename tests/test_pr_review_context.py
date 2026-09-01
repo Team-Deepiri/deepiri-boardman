@@ -148,4 +148,4 @@ async def test_no_pat_is_an_error_not_an_empty_pr(monkeypatch) -> None:
 
     monkeypatch.setattr(bs.settings, "github_pat", "")
     ctx = await prc.fetch_pull_request_context("o/r", 77)
-    assert ctx["ok"] is False and "GITHUB_PAT" in ctx["error"]
+    assert ctx["ok"] is False and "GitHub auth" in ctx["error"]

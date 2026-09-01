@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 
+from boardman.github.auth import github_auth_available
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -347,8 +348,7 @@ async def _fetch_repo_hotspots_uncached(
     branch: str = "",
     top_n: int = 15,
 ) -> dict[str, Any] | None:
-    token = (settings.github_pat or "").strip()
-    if not token:
+    if not github_auth_available():
         return None
     ref = (branch or "").strip()
     from boardman.github.repo_metadata import fetch_repo_identity, fetch_repo_tree

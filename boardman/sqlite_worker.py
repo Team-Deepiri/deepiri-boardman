@@ -11,6 +11,7 @@ import sys
 
 from boardman.broker.job_queue import claim_next_job_row, fail_stale_running_jobs, mark_job_finished
 from boardman.database.session import async_session, init_db
+from boardman.github.auth import github_auth_available
 from boardman.jobs.handlers import JOB_HANDLERS
 from boardman.logging_config import setup_logging
 from boardman.observability.counters import background_work
@@ -32,7 +33,7 @@ async def _repo_knowledge_loop() -> None:
     interval = max(60.0, float(settings.repo_knowledge_sweep_interval_seconds or 600.0))
     while True:
         await asyncio.sleep(interval)
-        if not (settings.github_pat or "").strip():
+        if not github_auth_available():
             continue
         try:
             async with background_work():
@@ -52,7 +53,7 @@ async def _reconciliation_loop() -> None:
 
     while True:
         await asyncio.sleep(max(30.0, float(settings.github_reconcile_interval_seconds)))
-        if not (settings.github_pat or "").strip():
+        if not github_auth_available():
             continue
         owner = (settings.github_bare_repo_owner or settings.github_org or "").strip()
         repos = []

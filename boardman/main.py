@@ -10,6 +10,7 @@ from boardman.assignment.config import sync_team_assignment_field_keys_from_boar
 from boardman.broker.job_queue import close_job_queue
 from boardman.cache.agent_redis import aclose_agent_redis
 from boardman.database.session import init_db
+from boardman.github.auth import github_auth_available
 from boardman.github.http import aclose_shared_http_clients
 from boardman.llm.completion import aclose_ollama_http_client
 from boardman.llm.ollama_autodetect import NoOllamaModelAvailable, effective_ollama_model
@@ -139,7 +140,7 @@ async def lifespan(app: FastAPI):
 
     start_github_poller_if_enabled()
     warmer_task = None
-    if settings.qa_github_fit_enabled and (settings.github_pat or "").strip():
+    if settings.qa_github_fit_enabled and github_auth_available():
         import asyncio
 
         from boardman.github.qa_contribution_profile import warm_qa_profiles_loop

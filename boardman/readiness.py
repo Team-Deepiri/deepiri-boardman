@@ -259,8 +259,13 @@ def _check_env(env_path: Path, env: dict[str, str]) -> list[ReadinessCheck]:
     if not env_path.is_file():
         return checks
 
+    # GITHUB_PAT stops being required once GITHUB_AUTH_MODE=github_app (the App's
+    # installation token replaces it). It stays required for "pat" and "both".
+    auth_mode = (env.get("GITHUB_AUTH_MODE") or "pat").strip().lower()
+    pat_optional = auth_mode == "github_app"
     for key in REQUIRED_ENV_KEYS:
-        checks.append(_env_key_check("env", key, env.get(key), required=True))
+        required = not (key == "GITHUB_PAT" and pat_optional)
+        checks.append(_env_key_check("env", key, env.get(key), required=required))
     for key in SECURITY_ENV_KEYS:
         checks.append(_env_key_check("security", key, env.get(key), required=False))
 
@@ -405,15 +410,52 @@ def _check_deployment_decisions(env: dict[str, str]) -> list[ReadinessCheck]:
             )
         )
     elif auth_mode in {"github_app", "both"}:
-        checks.append(
-            ReadinessCheck(
-                "github",
-                "auth mode implementation",
-                WARN,
-                "current runtime path is PAT-first; GitHub App mode needs explicit "
-                "implementation confirmation",
+        # github_app mode is implemented (boardman/github/auth.py + app_auth.py). It needs
+        # the App id, installation id and private key; "both" additionally keeps the PAT
+        # as a mint-failure fallback.
+        app_keys = ("GITHUB_APP_ID", "GITHUB_APP_INSTALLATION_ID", "GITHUB_APP_PRIVATE_KEY")
+        missing_app = [k for k in app_keys if _is_placeholder(env.get(k))]
+        if missing_app:
+            checks.append(
+                ReadinessCheck(
+                    "github",
+                    "GitHub App credentials",
+                    FAIL,
+                    f"GITHUB_AUTH_MODE={auth_mode} but {', '.join(missing_app)} missing",
+                    "Create/install the GitHub App and set the three values "
+                    "(docs/GITHUB_APP_MIGRATION.md), or set GITHUB_AUTH_MODE=pat.",
+                )
             )
-        )
+        else:
+            checks.append(
+                ReadinessCheck(
+                    "github",
+                    "GitHub App credentials",
+                    PASS,
+                    f"GITHUB_AUTH_MODE={auth_mode}; App id/installation/private key all set",
+                )
+            )
+        if auth_mode == "both" and _is_placeholder(env.get("GITHUB_PAT")):
+            checks.append(
+                ReadinessCheck(
+                    "github",
+                    "auth mode fallback",
+                    WARN,
+                    "GITHUB_AUTH_MODE=both but GITHUB_PAT is unset — there is no fallback "
+                    "if the App token cannot be minted",
+                )
+            )
+        if _is_placeholder(env.get("GITHUB_APP_WEBHOOK_SECRET")):
+            checks.append(
+                ReadinessCheck(
+                    "github",
+                    "GitHub App webhook secret",
+                    PENDING,
+                    "GITHUB_APP_WEBHOOK_SECRET not set — the App's own webhook deliveries "
+                    "will fail signature verification until it is",
+                    "Set it to the secret configured on the GitHub App's webhook.",
+                )
+            )
     elif auth_mode == "pat":
         checks.append(
             ReadinessCheck(

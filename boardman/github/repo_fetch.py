@@ -8,8 +8,12 @@ import time
 
 import httpx
 
+from boardman.github.auth import (
+    github_auth_available,
+    github_auth_header,
+    github_auth_header_sync,
+)
 from boardman.github.http import shared_github_client
-from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
@@ -20,10 +24,7 @@ async def github_request(
     # Stripped: a trailing newline or space from how GITHUB_PAT got into the environment
     # would otherwise ride along into the header and turn every call into a 401, which
     # reads exactly like a revoked token.
-    headers = {
-        "Authorization": f"Bearer {(settings.github_pat or '').strip()}",
-        "Accept": "application/vnd.github+json",
-    }
+    headers = await github_auth_header()
     # follow_redirects: renamed repos return 301 to the new owner/name; without this every
     # helper sees the bare 301 and reports the repo as inaccessible.
     # timeout: only overridden when the caller passes one -- an explicit `timeout=None`
@@ -40,10 +41,7 @@ async def github_request(
 
 
 def github_request_sync(client: httpx.Client, path: str) -> httpx.Response:
-    headers = {
-        "Authorization": f"Bearer {(settings.github_pat or '').strip()}",
-        "Accept": "application/vnd.github+json",
-    }
+    headers = github_auth_header_sync()
     started = time.monotonic()
     try:
         return client.get(f"https://api.github.com{path}", headers=headers, follow_redirects=True)
@@ -240,7 +238,7 @@ async def fetch_pr_assignees_and_reviewers_logins(full_name: str, pr_number: int
     Used when `issue_comment` payloads omit full PR metadata.
     """
     parsed = _parse_owner_repo(full_name)
-    if not parsed or not (settings.github_pat or "").strip():
+    if not parsed or not github_auth_available():
         return set()
     owner, repo = parsed
     from urllib.parse import quote

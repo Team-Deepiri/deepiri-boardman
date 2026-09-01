@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 
 import httpx
 
+from boardman.github.auth import github_auth_available, github_auth_header_sync
 from boardman.planning.datetime_utils import parse_iso_datetime
 from boardman.planning.huddle.team_repos import load_team_repos, repos_for_team
 from boardman.settings import settings
@@ -52,7 +53,7 @@ class GitHubPlanningContext:
         self._team_repos = load_team_repos()
 
     def enabled(self) -> bool:
-        return bool(settings.github_pat)
+        return github_auth_available()
 
     def fetch_recent_prs(self, team_focus: str) -> list[PullRequestSummary]:
         if not self.enabled():
@@ -100,11 +101,7 @@ class GitHubPlanningContext:
             return nullcontext(self._client)
         return httpx.Client(
             timeout=settings.planning_llm_timeout_seconds,
-            headers={
-                "Authorization": f"Bearer {settings.github_pat}",
-                "Accept": "application/vnd.github+json",
-                "X-GitHub-Api-Version": "2022-11-28",
-            },
+            headers=github_auth_header_sync(),
         )
 
     def _fetch_repo_prs(
