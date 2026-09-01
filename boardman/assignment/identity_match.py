@@ -27,6 +27,9 @@ from boardman.assignment.identity_common import (
 from boardman.assignment.identity_common import (
     plaky_email_addresses as _all_plaky_emails,
 )
+from boardman.assignment.identity_common import (
+    plaky_username as _plaky_username,
+)
 from boardman.settings import settings
 
 
@@ -180,6 +183,26 @@ def _login_vs_local_score(gh_login: str, plaky_local: str) -> int:
         if min(len(gh_login), len(loc)) >= 3:
             return 7600
     lr = _similar(gh_login, loc)
+    if lr >= 0.92:
+        return int(6800 + lr * 200)
+    if lr >= 0.88:
+        return int(6000 + lr * 200)
+    return 0
+
+
+def _login_vs_username_score(gh_login: str, plaky_username: str) -> int:
+    """Direct structural signal that was missing: GitHub login vs Plaky's own
+    username/handle field (when the API exposes one), independent of email.
+    Mirrors _login_vs_local_score's tiers so it corroborates the same way."""
+    if not gh_login or not plaky_username:
+        return 0
+    if gh_login == plaky_username:
+        return 9000
+    variants = _login_token_variants(gh_login)
+    if plaky_username in variants or gh_login in plaky_username or plaky_username in gh_login:
+        if min(len(gh_login), len(plaky_username)) >= 3:
+            return 7600
+    lr = _similar(gh_login, plaky_username)
     if lr >= 0.92:
         return int(6800 + lr * 200)
     if lr >= 0.88:
@@ -359,33 +382,44 @@ def score_github_vs_plaky(gh: dict[str, Any], plaky: dict[str, Any]) -> int:
                     login_name_boost = 4800
                     break
 
+    # Direct GitHub-login <-> Plaky-username signal, independent of email entirely —
+    # only fires when Plaky's API actually exposes a username/handle field.
+    username_score = 0
+    pl_username = _plaky_username(plaky)
+    if gh_login and pl_username:
+        username_score = _login_vs_username_score(gh_login, pl_username)
+
     email_best = max(email_scores) if email_scores else 0
     login_best = max(login_scores) if login_scores else 0
-    peaks = [email_best, login_best, name_score, login_name_boost, initial_last]
+    peaks = [email_best, login_best, name_score, login_name_boost, initial_last, username_score]
     base = max(peaks)
 
-    # Corroboration: two channels agree → small bonus (capped)
+    # Corroboration: two channels agree → small bonus (capped). username_score folds
+    # into the "login" channel (both are GitHub-login-derived evidence, just against
+    # different Plaky fields) rather than counting as a third independent channel —
+    # that would let login+username double-count as two agreements from one signal.
+    login_channel_best = max(login_best, username_score)
     bonus = 0
     channels = 0
     if email_best >= 6500:
         channels += 1
-    if login_best >= 6500:
+    if login_channel_best >= 6500:
         channels += 1
     if name_score >= 6500 or name_high_sim:
         channels += 1
     if channels >= 2:
         bonus = 350
-    elif channels >= 1 and name_score >= 5600 and (email_best >= 5000 or login_best >= 6000):
+    elif channels >= 1 and name_score >= 5600 and (email_best >= 5000 or login_channel_best >= 6000):
         bonus = 250
 
     raw = base + bonus
 
     # Last-name-heavy hit without email/login anchor stays weak
-    if name_last_only and base <= 5000 and not any_strong_email and login_best < 6000:
+    if name_last_only and base <= 5000 and not any_strong_email and login_channel_best < 6000:
         raw = min(raw, 580)
 
-    # Name-only weak fuzzy: cap unless login↔email-local or initial+lastname matched strongly
-    anchor_non_name = max(login_best, initial_last, login_name_boost)
+    # Name-only weak fuzzy: cap unless login↔email-local/username or initial+lastname matched strongly
+    anchor_non_name = max(login_channel_best, initial_last, login_name_boost)
     if (
         not any_strong_email
         and anchor_non_name < 6000
