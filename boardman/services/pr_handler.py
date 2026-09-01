@@ -485,7 +485,9 @@ async def _assign_qa_for_pr(
             return out
 
     mention = f"@{qa_login}" if qa_login else (qa_display or "QA")
-    task_ref = task_url or f"Plaky task `{task_id}`"
+    from boardman.plaky.urls import plaky_task_markdown_link
+
+    task_ref = plaky_task_markdown_link(task_id, task_url)
     body = (
         f"{mention} you've been assigned as **QA reviewer** for this PR by Boardman.\n\n"
         f"Linked task: {task_ref}\n\n"
