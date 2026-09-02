@@ -6,11 +6,13 @@ import json
 import logging
 from typing import Any
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import TeamAssignmentsConfig, load_team_assignments
 from boardman.database.models import SyncLog
 from boardman.github.auth import github_auth_available, github_auth_header
+from boardman.github.http import github_http_client
 from boardman.github.pr_actions import is_boardman_comment
 from boardman.github.support_qa import support_team_logins_casefold
 from boardman.github.webhooks import IssueCommentEventPayload, PullRequestReviewEventPayload
@@ -50,6 +52,36 @@ def _qa_rejected_status() -> str:
 
 def _in_qa_status() -> str:
     return (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
+
+
+async def _pr_author_login(full_name: str, pr_number: int) -> str:
+    """The PR's author GitHub login, fetched from the API.
+
+    The `issue_comment` webhook payload does not embed the PR author, but knowing it is
+    required to keep the PR author's own comments from reading as "QA started" — they are
+    on the support roster more often than not, and their comment must not move a task to
+    In QA. One lightweight `/pulls/{n}` call is cheaper than the state corruption it
+    prevents. Returns "" if the PR cannot be read (fail-closed: never guess).
+    """
+    try:
+        owner_repo = (full_name or "").strip().strip("/")
+        if not owner_repo or "/" not in owner_repo:
+            return ""
+        from urllib.parse import quote
+
+        owner, repo = owner_repo.split("/", 1)
+        url = (
+            "https://api.github.com/repos/"
+            f"{quote(owner, safe='')}/{quote(repo, safe='')}/pulls/{int(pr_number)}"
+        )
+        r = await github_http_client().get(url, headers=await github_auth_header())
+        if r.status_code != 200:
+            return ""
+        data = r.json()
+        user = data.get("user") if isinstance(data, dict) else None
+        return str((user or {}).get("login") or "").strip() if isinstance(user, dict) else ""
+    except (httpx.HTTPError, ValueError, TypeError):
+        return ""
 
 
 def _paused_status() -> str:
@@ -780,6 +812,22 @@ async def handle_issue_comment_on_pr(
         if (getattr(m, "github_login", "") or "").strip()
     }
     is_qa_side_commenter = bool(commenter) and commenter.casefold() in (support | roster_logins)
+    # The PR author's own comment must NEVER read as "QA started", even when they are on
+    # the support roster (the author self-assigned a PR and commented without any QA having
+    # looked at it). Knowing the author also lets the gate below enforce "support member
+    # EXCEPT the author". Fail-closed: if the author cannot be read, roster+support alone no
+    # longer authorizes In QA — only an explicit Plaky QA assignment does. The author fetch
+    # is a deliberate, one-off GitHub API call that only runs when a roster/support member
+    # commented (the only case where the outcome would otherwise have been In QA) — plain
+    # devs and assignees never pay for it.
+    pr_author = ""
+    is_pr_author = False
+    authorizes_in_qa_from_side = False
+    if is_qa_side_commenter:
+        pr_author = (await _pr_author_login(payload.repository.full_name, pr_number)).casefold()
+        commenter_cf = (commenter or "").casefold()
+        is_pr_author = bool(commenter_cf) and commenter_cf == pr_author
+        authorizes_in_qa_from_side = not is_pr_author and bool(pr_author)
     qa_field = await resolve_qa_assignee_field_key(bid, cfg.plaky_field_qa)
     member_plaky_id: str | None = None
     if commenter:
@@ -883,12 +931,16 @@ async def handle_issue_comment_on_pr(
                         "event": "revisions_in_progress",
                     }
 
-    if not is_qa_side_commenter and not is_assigned_qa:
+    # In QA is only justified when the commenter IS QA: the assigned QA on the task, or a
+    # support/roster member covering for them. The PR author (self-assigned or on the
+    # roster) commenting must never count — they are engaged as the author, not QA.
+    if not is_assigned_qa and not authorizes_in_qa_from_side:
         return {
             "ok": True,
             "skipped": True,
-            "message": "commenter is not the assigned QA or a support-team member",
+            "message": "commenter is not the assigned QA or (support member who is not the PR author)",
             "commenter": commenter,
+            "pr_author_matches_commenter": is_pr_author,
         }
 
     updated: list[dict[str, Any]] = []

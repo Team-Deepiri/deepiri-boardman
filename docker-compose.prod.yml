@@ -94,7 +94,9 @@ services:
       LLM_PROVIDER: ${LLM_PROVIDER:-openai}
       OLLAMA_BASE_URL: ""
       AGENT_LANGCHAIN_TOOLS: ${AGENT_LANGCHAIN_TOOLS:-true}
-      AGENT_REDIS_URL: ${AGENT_REDIS_URL:-redis://redis:6379/1}
+      # The SQLite worker must NOT use the agent Redis (per boardman.cache.agent_redis):
+      # keep this empty. The API process holds the only agent cache client.
+      AGENT_REDIS_URL: ""
     volumes:
       - ./repos.yml:/app/repos.yml:ro
       - ./team_assignments.yml:/app/team_assignments.yml:ro

@@ -1012,6 +1012,11 @@ async def iter_agent_chat_sse(
                         status = chunk.get("status")
                         if status:
                             yield _sse_event({"type": "status", "text": str(status)})
+                        else:
+                            logger.warning(
+                                "Agent chat stream: dropping unknown dict chunk: %r",
+                                chunk,
+                            )
         else:
             logger.info("Agent chat stream: plain LLM path (session_id=%s)", sid)
             llm_messages = _build_plain_llm_messages(
