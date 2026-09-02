@@ -77,6 +77,74 @@ async def test_agent_chat_stream_with_tools_mocked(monkeypatch, memory_db):
 
 
 @pytest.mark.asyncio
+async def test_agent_chat_stream_mixed_status_and_tokens_stay_separate(monkeypatch, memory_db):
+    """Regression: a status dict leaked into the token stream used to render as
+    ``[object Object]`` and crashed ``"".join(parts)`` (TypeError). Status dicts must
+    arrive via a dedicated ``status`` event and never corrupt assistant text."""
+    import boardman.agent.service as agent_svc
+    import boardman.settings as bs
+
+    monkeypatch.setattr(bs.settings, "agent_langchain_tools", True)
+
+    captured: list[list] = []
+
+    async def fake_iter_tool_agent(*args, **kwargs):
+        out = [
+            {"status": "Running github_list_open_issues..."},
+            "Here is",
+            {"status": "Running plaky_list_tasks..."},
+            " your answer.",
+        ]
+        captured.append(out)
+        for chunk in out:
+            yield chunk
+
+    monkeypatch.setattr(agent_svc, "iter_tool_agent", fake_iter_tool_agent)
+
+    async def override_get_db() -> AsyncIterator[AsyncSession]:
+        async with memory_db() as session:
+            try:
+                yield session
+                await session.commit()
+            except Exception:
+                await session.rollback()
+                raise
+
+    app = create_app()
+    app.dependency_overrides[get_db] = override_get_db
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.post(
+            "/api/v1/agent/chat/stream",
+            json={"message": "tools with status", "use_tools": True, "allow_writes": False},
+        )
+        assert response.status_code == 200
+
+        events = []
+        async for line in response.aiter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+
+        token_events = [e for e in events if e["type"] == "token"]
+        status_events = [e for e in events if e["type"] == "status"]
+
+        # Status dicts must go to dedicated status events, never token events.
+        assert status_events
+        assert [e["text"] for e in status_events] == [
+            "Running github_list_open_issues...",
+            "Running plaky_list_tasks...",
+        ]
+        # Every token frame's text must be a plain string (no nested object / [object Object]).
+        for e in token_events:
+            assert isinstance(e["text"], str)
+            assert "[object Object]" not in e["text"]
+        joined = "".join(e["text"] for e in token_events)
+        assert joined == "Here is your answer."
+        assert any(e["type"] == "done" for e in events)
+
+
+@pytest.mark.asyncio
 async def test_agent_chat_stream_bulk_preview_downgrades_writes(monkeypatch, memory_db):
     import boardman.agent.service as agent_svc
     import boardman.settings as bs
