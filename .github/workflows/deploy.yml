@@ -10,7 +10,10 @@ on:
       github_auth_mode:
         description: "How Boardman authenticates to GitHub (see docs/GITHUB_APP_MIGRATION.md)"
         required: false
-        default: "pat"
+        # Cutover to the GitHub App is complete and verified (PR #127). github_app is
+        # now the sticky default so a routine deploy does NOT silently revert Boardman
+        # to posting as the PAT owner. Pick "pat"/"both" only to roll back.
+        default: "github_app"
         type: choice
         options:
           - pat
@@ -40,9 +43,10 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           BYOK_ENCRYPTION_KEY: ${{ secrets.BYOK_ENCRYPTION_KEY }}
-          # GitHub App auth (docs/GITHUB_APP_MIGRATION.md). Empty until the org owner has
-          # created + installed the App; only consulted when GITHUB_AUTH_MODE != pat.
-          GITHUB_AUTH_MODE: ${{ inputs.github_auth_mode || 'pat' }}
+          # GitHub App auth (docs/GITHUB_APP_MIGRATION.md). App secrets are set; the
+          # cutover is live. Falls back to github_app when the workflow is triggered
+          # without the input (e.g. via the API) so a deploy never reverts to the PAT.
+          GITHUB_AUTH_MODE: ${{ inputs.github_auth_mode || 'github_app' }}
           GITHUB_APP_ID: ${{ secrets.BOARDMAN_APP_ID }}
           GITHUB_APP_INSTALLATION_ID: ${{ secrets.BOARDMAN_APP_INSTALLATION_ID }}
           GITHUB_APP_PRIVATE_KEY: ${{ secrets.BOARDMAN_APP_PRIVATE_KEY }}
@@ -63,10 +67,10 @@ jobs:
           GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
           GITHUB_ORG=Team-Deepiri
           GITHUB_SUPPORT_TEAM=Team-Deepiri/support-team
-          # GitHub App auth. GITHUB_AUTH_MODE comes from the workflow_dispatch input
-          # (default "pat" = no change). The App secrets stay empty until the org owner
-          # has created + installed the App; see docs/GITHUB_APP_MIGRATION.md. The
-          # private key is stored single-line with literal \n; app_auth restores newlines.
+          # GitHub App auth. GITHUB_AUTH_MODE comes from the workflow_dispatch input,
+          # default "github_app" (cutover done — PR #127). The private key is stored
+          # single-line with literal \n; app_auth restores newlines. See
+          # docs/GITHUB_APP_MIGRATION.md.
           GITHUB_AUTH_MODE=${GITHUB_AUTH_MODE}
           GITHUB_APP_ID=${GITHUB_APP_ID}
           GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}
