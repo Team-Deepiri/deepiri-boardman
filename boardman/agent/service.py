@@ -1003,10 +1003,15 @@ async def iter_agent_chat_sse(
                     provider_override=byok_provider,
                     api_key_override=byok_key,
                 ):
-                    if not chunk:
-                        continue
-                    parts.append(chunk)
-                    yield _sse_event({"type": "token", "text": chunk})
+                    if isinstance(chunk, str):
+                        if not chunk:
+                            continue
+                        parts.append(chunk)
+                        yield _sse_event({"type": "token", "text": chunk})
+                    elif isinstance(chunk, dict):
+                        status = chunk.get("status")
+                        if status:
+                            yield _sse_event({"type": "status", "text": str(status)})
         else:
             logger.info("Agent chat stream: plain LLM path (session_id=%s)", sid)
             llm_messages = _build_plain_llm_messages(
