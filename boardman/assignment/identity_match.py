@@ -409,7 +409,9 @@ def score_github_vs_plaky(gh: dict[str, Any], plaky: dict[str, Any]) -> int:
         channels += 1
     if channels >= 2:
         bonus = 350
-    elif channels >= 1 and name_score >= 5600 and (email_best >= 5000 or login_channel_best >= 6000):
+    elif (
+        channels >= 1 and name_score >= 5600 and (email_best >= 5000 or login_channel_best >= 6000)
+    ):
         bonus = 250
 
     raw = base + bonus
