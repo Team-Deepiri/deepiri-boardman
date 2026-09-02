@@ -92,6 +92,15 @@ jobs:
           BYOK_ENCRYPTION_KEY=${BYOK_ENCRYPTION_KEY}
           CORS_ORIGINS=https://boardman.deepiri.com
           LOG_LEVEL=INFO
+          # Agent turn latency/token levers while we're still on the OpenRouter free
+          # tier (high queuing delay, strict rate limits). Trim history and cap
+          # tool-call recursion so a slow model doesn't compound its own latency;
+          # cache the Plaky schema fetch (~5-7s) longer; keep the worker's repo
+          # knowledge sweep on so context is pre-warmed instead of fetched inline.
+          AGENT_MAX_HISTORY=8
+          AGENT_RECURSION_LIMIT=8
+          PLAKY_BOARD_SCHEMA_CACHE_TTL_SECONDS=300.0
+          REPO_KNOWLEDGE_SWEEP_ENABLED=true
           EOF
           # ^ Using a quoted heredoc means ${VAR} above is literal, not expanded — so
           # expand it ourselves explicitly with envsubst, which only touches the names
