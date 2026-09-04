@@ -288,6 +288,28 @@ class Settings(BaseSettings):
     assignment_identity_llm_gray_low: int = 380
     assignment_identity_llm_gray_high: int = 8200
 
+    # BM25 precedent-based priority inference for a newly CREATED (unmatched) PR task —
+    # see boardman/services/priority_precedent.py. Determines the bucket only when the
+    # corpus is large enough and confident enough; otherwise falls back to
+    # infer_priority_from_text (priority_rules.py).
+    pr_priority_precedent_enabled: bool = True
+    # Below this many priority-bearing items on the target board, there isn't enough
+    # history to trust retrieval over the rule-based fallback.
+    pr_priority_precedent_min_corpus: int = 15
+    pr_priority_precedent_top_k: int = 7
+    # Exponential half-life for precedent recency weighting, in days — an 18-month-old
+    # decision in a since-refactored area should count for much less than last week's.
+    pr_priority_precedent_half_life_days: float = 120.0
+    # Consensus confidence (winning bucket's share of total retrieved weight) below this
+    # is too weak to trust; falls back to the rule-based inference instead.
+    pr_priority_precedent_confidence_floor: float = 0.45
+    # Best-effort confidence-only modifiers (never change the winning bucket — only how
+    # much to trust it). Both degrade to a neutral 1.0x multiplier on any fetch failure.
+    pr_priority_churn_enabled: bool = True
+    pr_priority_churn_lookback_days: float = 90.0
+    pr_priority_churn_max_files: int = 5
+    pr_priority_board_saturation_enabled: bool = True
+
     # PR ↔ Plaky fuzzy linking (pull_request.opened when no Fixes/Closes issue)
     pr_linking_pipeline_enabled: bool = True
     pr_linking_fetch_board_items: bool = True
