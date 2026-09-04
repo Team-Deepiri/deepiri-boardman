@@ -59,3 +59,13 @@ def plaky_display_name(p: dict[str, Any]) -> str:
     return normalize_identity_text(
         str(p.get("name") or p.get("displayName") or p.get("fullName") or "")
     )
+
+
+def plaky_username(p: dict[str, Any]) -> str:
+    """Plaky's own handle/login for this user, if the API exposes one — a direct
+    structural signal (GitHub login vs Plaky username) that score_github_vs_plaky
+    didn't previously check at all, only login-vs-email-local."""
+    v = p.get("username") or p.get("handle") or p.get("login")
+    if isinstance(v, str) and v.strip():
+        return v.strip().lower()
+    return ""
