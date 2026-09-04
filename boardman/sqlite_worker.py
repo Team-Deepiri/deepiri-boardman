@@ -84,6 +84,30 @@ async def _reconciliation_loop() -> None:
                     log_degraded(_log, f"reconciliation for {full_name}")
 
 
+async def _pr_task_lifecycle_loop() -> None:
+    """Sweep tasks the PR pipeline created or linked: delete orphaned "created" tasks
+    past their TTL, archive completed "matched" tasks off their working board."""
+    from boardman.services.pr_task_lifecycle import (
+        archive_completed_matched_tasks,
+        cleanup_orphaned_pr_tasks,
+    )
+
+    interval = max(60.0, float(settings.pr_task_cleanup_interval_seconds or 3600.0))
+    while True:
+        await asyncio.sleep(interval)
+        async with async_session() as session:
+            try:
+                async with background_work():
+                    cleanup_res = await cleanup_orphaned_pr_tasks(session)
+                    archive_res = await archive_completed_matched_tasks(session)
+                _log.info(
+                    "pr task lifecycle sweep: cleanup=%s archive=%s", cleanup_res, archive_res
+                )
+            except Exception:  # noqa: BLE001 - graceful degradation
+                await session.rollback()
+                log_degraded(_log, "pr task lifecycle sweep")
+
+
 async def _run_one(job_id: str, kind: str, payload: dict) -> None:
     handler = JOB_HANDLERS.get(kind)
     if handler is None:
@@ -141,6 +165,16 @@ async def run_worker_forever() -> None:
             "repo knowledge sweep every %.0fs (metadata-gated; only changed repos refetch)",
             settings.repo_knowledge_sweep_interval_seconds,
         )
+    lifecycle_task = None
+    if settings.pr_task_cleanup_enabled:
+        lifecycle_task = asyncio.create_task(
+            _pr_task_lifecycle_loop(), name="pr-task-lifecycle-sweep"
+        )
+        _log.info(
+            "pr task lifecycle sweep every %.0fs (ttl=%.0fd for orphaned created tasks)",
+            settings.pr_task_cleanup_interval_seconds,
+            settings.pr_task_cleanup_ttl_days,
+        )
     try:
         while True:
             row = await claim_next_job_row()
@@ -150,7 +184,7 @@ async def run_worker_forever() -> None:
             job_id, kind, payload = row
             await _run_one(job_id, kind, payload)
     finally:
-        for task in (reconcile_task, knowledge_task):
+        for task in (reconcile_task, knowledge_task, lifecycle_task):
             if task is not None:
                 task.cancel()
 

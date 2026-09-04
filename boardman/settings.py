@@ -304,6 +304,29 @@ class Settings(BaseSettings):
     assignment_identity_llm_gray_low: int = 380
     assignment_identity_llm_gray_high: int = 8200
 
+    # PRs whose base/head are BOTH one of these branches (in either direction, e.g.
+    # dev->main or main->dev) never get a Plaky task: they merge already-reviewed work
+    # between long-lived branches, not new work of their own. Comma-separated, case-insensitive.
+    pr_task_sync_skip_branches: str = "main,dev"
+    # Skip task creation/linking entirely for PRs opened by a bot account (GitHub App or
+    # Actions bot, e.g. dependabot[bot], a repo's own automation app). Detected structurally
+    # (GitHub's `user.type == "Bot"` / the `[bot]` login suffix convention) — no bot names
+    # are hardcoded, so any bot author is covered without a per-bot allowlist.
+    pr_task_sync_skip_bot_authors: bool = True
+
+    # Plaky tasks CREATED from a PR that matched no existing task (see
+    # ambiguous_pr.enabled) are provisional: if nobody ever ties real work to them, they
+    # are cleaned up automatically. Tasks that were LINKED to an existing task are never
+    # touched by this sweep — only ones this pipeline itself created.
+    pr_task_cleanup_enabled: bool = True
+    pr_task_cleanup_ttl_days: float = 14.0
+    pr_task_cleanup_interval_seconds: float = 3600.0
+    # Plaky board/group a MATCHED task is moved to once its linked PR is done (merged or
+    # closed) and the task itself reached a "done" status — instead of leaving it sitting
+    # on its working board forever. Empty disables the move (task just stays put).
+    pr_task_archive_board_id: str = ""
+    pr_task_archive_group_id: str = ""
+
     # PR ↔ Plaky fuzzy linking (pull_request.opened when no Fixes/Closes issue)
     pr_linking_pipeline_enabled: bool = True
     pr_linking_fetch_board_items: bool = True

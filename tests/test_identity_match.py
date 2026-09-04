@@ -9,6 +9,20 @@ from boardman.assignment.identity_match import (
 from boardman.settings import settings
 
 
+def test_short_login_substring_of_unrelated_long_name_stays_weak():
+    # gh_login "ric" is a short fragment that happens to appear inside "ricardo" — that
+    # is not evidence they are the same person, and must not score as a confident match.
+    gh = {"login": "ric", "email": "ric@example.com"}
+    pl = {"id": "p_ricardo", "name": "Someone Else", "email": "ricardo.long.local@company.org"}
+    assert score_github_vs_plaky(gh, pl) < 6000
+
+
+def test_short_login_token_substring_of_unrelated_name_stays_weak():
+    gh = {"login": "cardo", "name": ""}
+    pl = {"id": "p_ricardo", "name": "Ricardo Nunes", "email": ""}
+    assert score_github_vs_plaky(gh, pl) < 4800
+
+
 def test_exact_email():
     gh = {"login": "alice", "name": "Alice", "email": "alice@deepiri.com"}
     pl = {"id": "p1", "name": "Alice X", "email": "alice@deepiri.com"}

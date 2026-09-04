@@ -9,6 +9,7 @@ from boardman.github.pr_signals import (
     comment_requests_pause,
     infer_task_type_from_pr,
     pr_label_names,
+    score_task_type_from_text,
 )
 
 
@@ -34,8 +35,13 @@ def test_infer_type_from_branch(head_ref, expected):
     assert infer_task_type_from_pr(head_ref, None) == expected
 
 
-def test_branch_beats_labels():
-    assert infer_task_type_from_pr("fix/x", ["feature"]) == "Bug"
+def test_labels_beat_branch():
+    # A label is someone deliberately typing the PR; it wins over the branch convention.
+    assert infer_task_type_from_pr("fix/x", ["feature"]) == "Feature"
+
+
+def test_branch_wins_when_no_label_matches():
+    assert infer_task_type_from_pr("fix/x", []) == "Bug"
 
 
 def test_label_fallback_when_branch_has_no_convention():
@@ -79,6 +85,23 @@ def test_mention_of_support_login():
 def test_mention_team_handle():
     assert comment_mentions_qa_or_support("@Team-Deepiri/support-team take a look", set()) is True
     assert comment_mentions_qa_or_support("ready @qa", set()) is True
+
+
+def test_score_task_type_from_text_picks_most_frequent_token():
+    assert score_task_type_from_text("Fix a bug in the bug tracker", "this bug was a bug") == "Bug"
+
+
+def test_score_task_type_from_text_empty_when_no_tokens():
+    assert score_task_type_from_text("hello world", "") == ""
+
+
+def test_infer_task_type_falls_back_to_scoring_when_no_label_or_branch():
+    assert (
+        infer_task_type_from_pr(
+            "my-branch", [], title="fix bug", body="this fixes a nasty bug in prod"
+        )
+        == "Bug"
+    )
 
 
 def test_no_mention_or_unrelated_mention():

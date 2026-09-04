@@ -167,6 +167,19 @@ def _login_initial_plus_lastname(gh_login: str, pl_name: str, gh_display_name: s
     return 0
 
 
+def _substring_containment_ok(a: str, b: str, *, min_len: int = 4, min_ratio: float = 0.75) -> bool:
+    """One string containing the other is only meaningful when neither is a short
+    fragment lost inside a much longer, unrelated one — "ric" inside "ricardo" is not
+    evidence "ric" and "ricardo" are the same person. Requires both strings to clear a
+    minimum length AND the shorter to cover a real share of the longer."""
+    if not a or not b:
+        return False
+    shorter, longer = (a, b) if len(a) <= len(b) else (b, a)
+    if len(shorter) < min_len:
+        return False
+    return (len(shorter) / len(longer)) >= min_ratio
+
+
 def _login_vs_local_score(gh_login: str, plaky_local: str) -> int:
     if not gh_login or not plaky_local:
         return 0
@@ -176,9 +189,10 @@ def _login_vs_local_score(gh_login: str, plaky_local: str) -> int:
     if gh_login == loc:
         return 9000
     variants = _login_token_variants(gh_login)
-    if loc in variants or gh_login in loc or loc in gh_login:
-        if min(len(gh_login), len(loc)) >= 3:
-            return 7600
+    if loc in variants:
+        return 7600
+    if (gh_login in loc or loc in gh_login) and _substring_containment_ok(gh_login, loc):
+        return 7600
     lr = _similar(gh_login, loc)
     if lr >= 0.92:
         return int(6800 + lr * 200)
@@ -355,7 +369,7 @@ def score_github_vs_plaky(gh: dict[str, Any], plaky: dict[str, Any]) -> int:
             login_name_boost = 5200
         elif len(gh_login) >= 4:
             for t in p_tokens:
-                if len(t) >= 3 and (gh_login in t or t in gh_login):
+                if (gh_login in t or t in gh_login) and _substring_containment_ok(gh_login, t):
                     login_name_boost = 4800
                     break
 

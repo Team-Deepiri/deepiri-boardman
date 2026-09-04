@@ -1,7 +1,7 @@
 # deepiri-boardman — agent context
 
 > Machine-oriented project brief. Humans: see [README.md](README.md) and [docs/](docs/).
-> Last verified: 2026-08-20 (Boardman Brain: layered project state, event-driven cache invalidation, deterministic intent router, worker knowledge sweep, and /api/v1/metrics)
+> Last verified: 2026-09-04 (PR→Plaky sync exclusions for integration-branch/bot PRs, PR-task cleanup/archive sweep, label-first PR type inference with scoring fallback, tighter identity-match substring guards)
 
 ## Purpose
 
@@ -226,7 +226,7 @@ Full list: [.env.example](.env.example). Routing config: [repos.yml](repos.yml),
 
 ## DB tables (SQLite)
 
-`issue_task_map`, `pr_task_links`, `sync_log`, `github_webhook_deliveries`, `scan_runs`, `agent_sessions`, `agent_messages`, `project_contexts`, `open_pr_tracks`, `repo_tier_cache`, `background_jobs`, `agent_rate_limit_buckets`
+`issue_task_map`, `pr_task_links`, `pr_task_lifecycle`, `sync_log`, `github_webhook_deliveries`, `scan_runs`, `agent_sessions`, `agent_messages`, `project_contexts`, `open_pr_tracks`, `repo_tier_cache`, `background_jobs`, `agent_rate_limit_buckets`
 
 ## Plaky board routing
 
