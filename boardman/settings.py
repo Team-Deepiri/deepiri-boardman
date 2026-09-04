@@ -304,10 +304,12 @@ class Settings(BaseSettings):
     assignment_identity_llm_gray_low: int = 380
     assignment_identity_llm_gray_high: int = 8200
 
-    # PRs whose base/head are BOTH one of these branches (in either direction, e.g.
-    # dev->main or main->dev) never get a Plaky task: they merge already-reviewed work
-    # between long-lived branches, not new work of their own. Comma-separated, case-insensitive.
-    pr_task_sync_skip_branches: str = "main,dev"
+    # A PR whose {base, head} is EXACTLY this pair (in either direction — dev->main or
+    # main->dev) never gets a Plaky task: it merges already-reviewed work between two
+    # long-lived branches, not new work of its own. Any PR that only touches one of
+    # these branches (e.g. a feature branch merging into dev) is unaffected.
+    pr_task_sync_integration_branch_a: str = "main"
+    pr_task_sync_integration_branch_b: str = "dev"
     # Skip task creation/linking entirely for PRs opened by a bot account (GitHub App or
     # Actions bot, e.g. dependabot[bot], a repo's own automation app). Detected structurally
     # (GitHub's `user.type == "Bot"` / the `[bot]` login suffix convention) — no bot names

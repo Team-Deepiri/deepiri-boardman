@@ -5,10 +5,11 @@ Deliberately data/config-driven, not a name/keyword allowlist:
     `login` ending in the `[bot]` suffix GitHub stamps on every bot/App account
     (dependabot[bot], a repo's own GitHub App, etc.) — no specific bot name is hardcoded,
     so this covers dependabot, renovate, a custom GitHub App, or any future bot the same way.
-  - branch-pair skipping is driven by `settings.pr_task_sync_skip_branches`, a configurable
-    set of "integration" branch names (default main, dev) — a PR whose base AND head are
-    both in that set (e.g. dev->main, main->dev) is a merge-back between long-lived
-    branches, not new work, in either direction.
+  - branch-pair skipping is driven by two configurable branch names
+    (`settings.pr_task_sync_integration_branch_a`/`_b`, default main/dev) — a PR is
+    skipped ONLY when {base, head} is exactly that pair (dev->main or main->dev), never
+    for a PR merely touching one of those branches on the other side (e.g. a feature
+    branch merging into dev still gets a task; only a dev<->main merge-back does not).
 """
 
 from __future__ import annotations
@@ -25,21 +26,18 @@ def _is_bot_actor(user: dict | None) -> bool:
     return login.endswith("[bot]")
 
 
-def _skip_branch_set() -> set[str]:
-    raw = settings.pr_task_sync_skip_branches or ""
-    return {b.strip().casefold() for b in raw.split(",") if b.strip()}
-
-
 def is_integration_branch_pair(base_ref: str, head_ref: str) -> bool:
-    """True when base and head are both configured "integration" branches (dev<->main)."""
-    skip = _skip_branch_set()
-    if not skip:
+    """True ONLY when {base, head} is exactly the configured dev<->main pair, in either
+    direction — never for a PR that merely has one of those branches as base or head."""
+    a = (settings.pr_task_sync_integration_branch_a or "").strip().casefold()
+    b = (settings.pr_task_sync_integration_branch_b or "").strip().casefold()
+    if not a or not b:
         return False
-    b = (base_ref or "").strip().casefold()
-    h = (head_ref or "").strip().casefold()
-    if not b or not h:
+    base = (base_ref or "").strip().casefold()
+    head = (head_ref or "").strip().casefold()
+    if not base or not head:
         return False
-    return b in skip and h in skip
+    return {base, head} == {a, b}
 
 
 def pr_sync_exclusion_reason(
