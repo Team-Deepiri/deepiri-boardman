@@ -304,6 +304,53 @@ class Settings(BaseSettings):
     assignment_identity_llm_gray_low: int = 380
     assignment_identity_llm_gray_high: int = 8200
 
+    # BM25 precedent-based priority inference for a newly CREATED (unmatched) PR task —
+    # see boardman/services/priority_precedent.py. Determines the bucket only when the
+    # corpus is large enough and confident enough; otherwise falls back to
+    # infer_priority_from_text (priority_rules.py).
+    pr_priority_precedent_enabled: bool = True
+    # Below this many priority-bearing items on the target board, there isn't enough
+    # history to trust retrieval over the rule-based fallback.
+    pr_priority_precedent_min_corpus: int = 15
+    pr_priority_precedent_top_k: int = 7
+    # Exponential half-life for precedent recency weighting, in days — an 18-month-old
+    # decision in a since-refactored area should count for much less than last week's.
+    pr_priority_precedent_half_life_days: float = 120.0
+    # Consensus confidence (winning bucket's share of total retrieved weight) below this
+    # is too weak to trust; falls back to the rule-based inference instead.
+    pr_priority_precedent_confidence_floor: float = 0.45
+    # Best-effort confidence-only modifiers (never change the winning bucket — only how
+    # much to trust it). Both degrade to a neutral 1.0x multiplier on any fetch failure.
+    pr_priority_churn_enabled: bool = True
+    pr_priority_churn_lookback_days: float = 90.0
+    pr_priority_churn_max_files: int = 5
+    pr_priority_board_saturation_enabled: bool = True
+
+    # A PR whose {base, head} is EXACTLY this pair (in either direction — dev->main or
+    # main->dev) never gets a Plaky task: it merges already-reviewed work between two
+    # long-lived branches, not new work of its own. Any PR that only touches one of
+    # these branches (e.g. a feature branch merging into dev) is unaffected.
+    pr_task_sync_integration_branch_a: str = "main"
+    pr_task_sync_integration_branch_b: str = "dev"
+    # Skip task creation/linking entirely for PRs opened by a bot account (GitHub App or
+    # Actions bot, e.g. dependabot[bot], a repo's own automation app). Detected structurally
+    # (GitHub's `user.type == "Bot"` / the `[bot]` login suffix convention) — no bot names
+    # are hardcoded, so any bot author is covered without a per-bot allowlist.
+    pr_task_sync_skip_bot_authors: bool = True
+
+    # Plaky tasks CREATED from a PR that matched no existing task (see
+    # ambiguous_pr.enabled) are provisional: if nobody ever ties real work to them, they
+    # are cleaned up automatically. Tasks that were LINKED to an existing task are never
+    # touched by this sweep — only ones this pipeline itself created.
+    pr_task_cleanup_enabled: bool = True
+    pr_task_cleanup_ttl_days: float = 14.0
+    pr_task_cleanup_interval_seconds: float = 3600.0
+    # Plaky board/group a MATCHED task is moved to once its linked PR is done (merged or
+    # closed) and the task itself reached a "done" status — instead of leaving it sitting
+    # on its working board forever. Empty disables the move (task just stays put).
+    pr_task_archive_board_id: str = ""
+    pr_task_archive_group_id: str = ""
+
     # PR ↔ Plaky fuzzy linking (pull_request.opened when no Fixes/Closes issue)
     pr_linking_pipeline_enabled: bool = True
     pr_linking_fetch_board_items: bool = True
