@@ -696,7 +696,7 @@ async def _maybe_triage_ambiguous_pr(
         github_actor_payload,
         resolve_github_user_to_plaky_user_id,
     )
-    from boardman.services.priority_rules import infer_priority_from_text
+    from boardman.services.priority_precedent import infer_priority_for_new_task
     from boardman.services.task_mutations import CreateTaskInput, create_task_internal
 
     pr_obj = payload.pull_request
@@ -721,7 +721,30 @@ async def _maybe_triage_ambiguous_pr(
         number=pr_number, repo=repo_name, full_name=full_name
     )
     body_text = str(getattr(pr_obj, "body", "") or "")
-    priority = infer_priority_from_text(title, body_text, labels)
+    changed_files: list[str] = []
+    if settings.pr_priority_churn_enabled:
+        try:
+            from boardman.github.pr_review_context import fetch_pull_request_context
+
+            pr_ctx = await fetch_pull_request_context(
+                full_name, pr_number, max_files=settings.pr_priority_churn_max_files
+            )
+            changed_files = [
+                str(f.get("filename") or "")
+                for f in (pr_ctx.get("files") or [])
+                if isinstance(f, dict) and f.get("filename")
+            ]
+        except Exception:  # noqa: BLE001 - churn signal is a confidence nudge, not required
+            changed_files = []
+    priority = await infer_priority_for_new_task(
+        PlakyClient(),
+        board_id=bid,
+        title=title,
+        body=body_text,
+        labels=labels,
+        full_name=full_name,
+        changed_files=changed_files,
+    )
     description = (
         f"Auto-created from GitHub PR (no existing task matched): {pr_url}\n\n"
         f"**Repo:** `{full_name}`  **Branch:** `{head_ref or '?'}`  "
