@@ -177,6 +177,22 @@ class Settings(BaseSettings):
     github_reconcile_interval_seconds: float = 900.0
     github_reconcile_max_items: int = 50
     github_pat: str | None = None
+    # How Boardman authenticates to the GitHub API: "pat" (personal access token, the
+    # historical path), "github_app" (mint short-lived installation tokens so comments
+    # post as boardman[bot]), or "both" (prefer the App token, fall back to the PAT if
+    # minting it fails — a cutover safety net, not a permanent mode). See
+    # docs/GITHUB_APP_MIGRATION.md. readiness.py validates the value.
+    github_auth_mode: str = "pat"
+    # GitHub App credentials, only read when github_auth_mode is "github_app" or "both".
+    # github_app_private_key holds the PEM *contents* (not a file path), matching how
+    # byok_encryption_key is passed in.
+    github_app_id: str = ""
+    github_app_installation_id: str = ""
+    github_app_private_key: str = ""
+    # The GitHub App delivers webhooks signed with its own secret, separate from the
+    # org-level webhook's github_webhook_secret. Both are accepted while the org webhook
+    # still exists; see boardman/routes/github_events.py.
+    github_app_webhook_secret: str = ""
     github_org: str = "deepiri-org"
     # Prepended to bare repo slugs (no "owner/") for QA roster + create-task; e.g. Team-Deepiri/foo.
     # When empty, falls back to github_org. github_org is still used for API org listing and routing.
@@ -310,6 +326,31 @@ class Settings(BaseSettings):
     pr_priority_churn_max_files: int = 5
     pr_priority_board_saturation_enabled: bool = True
 
+    # A PR whose {base, head} is EXACTLY this pair (in either direction — dev->main or
+    # main->dev) never gets a Plaky task: it merges already-reviewed work between two
+    # long-lived branches, not new work of its own. Any PR that only touches one of
+    # these branches (e.g. a feature branch merging into dev) is unaffected.
+    pr_task_sync_integration_branch_a: str = "main"
+    pr_task_sync_integration_branch_b: str = "dev"
+    # Skip task creation/linking entirely for PRs opened by a bot account (GitHub App or
+    # Actions bot, e.g. dependabot[bot], a repo's own automation app). Detected structurally
+    # (GitHub's `user.type == "Bot"` / the `[bot]` login suffix convention) — no bot names
+    # are hardcoded, so any bot author is covered without a per-bot allowlist.
+    pr_task_sync_skip_bot_authors: bool = True
+
+    # Plaky tasks CREATED from a PR that matched no existing task (see
+    # ambiguous_pr.enabled) are provisional: if nobody ever ties real work to them, they
+    # are cleaned up automatically. Tasks that were LINKED to an existing task are never
+    # touched by this sweep — only ones this pipeline itself created.
+    pr_task_cleanup_enabled: bool = True
+    pr_task_cleanup_ttl_days: float = 14.0
+    pr_task_cleanup_interval_seconds: float = 3600.0
+    # Plaky board/group a MATCHED task is moved to once its linked PR is done (merged or
+    # closed) and the task itself reached a "done" status — instead of leaving it sitting
+    # on its working board forever. Empty disables the move (task just stays put).
+    pr_task_archive_board_id: str = ""
+    pr_task_archive_group_id: str = ""
+
     # PR ↔ Plaky fuzzy linking (pull_request.opened when no Fixes/Closes issue)
     pr_linking_pipeline_enabled: bool = True
     pr_linking_fetch_board_items: bool = True
@@ -353,9 +394,7 @@ class Settings(BaseSettings):
     planning_team_plaky_boards_file: str = "team_plaky_boards.json"
     planning_github_lookback_days: int = 14
     planning_plaky_lookback_days: int = 14
-    planning_plaky_highlight_statuses: str = (
-        "in progress,needs qa,in qa,blocked,ready for review"
-    )
+    planning_plaky_highlight_statuses: str = "in progress,needs qa,in qa,blocked,ready for review"
     planning_github_skip_bots: bool = True
     planning_llm_timeout_seconds: float = 120.0
     planning_output_dir: str = "plans"

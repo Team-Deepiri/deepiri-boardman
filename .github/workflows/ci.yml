@@ -3,14 +3,22 @@ name: CI
 on:
   pull_request:
     branches: [main, dev]
-  push:
-    branches: [main, dev]
-
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - '.gitignore'
+      - 'LICENSE*'
+  workflow_dispatch:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   python-lint:
+    timeout-minutes: 20
     name: Python lint
     runs-on: ubuntu-latest
     env:
@@ -41,6 +49,7 @@ jobs:
         run: poetry run black --check .
 
   python:
+    timeout-minutes: 20
     name: Python (Poetry, ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
@@ -74,6 +83,7 @@ jobs:
         run: poetry run pytest
 
   node:
+    timeout-minutes: 20
     name: Node (${{ matrix.name }})
     runs-on: ubuntu-latest
     strategy:
@@ -120,6 +130,7 @@ jobs:
         run: npx tsc --noEmit
 
   docker:
+    timeout-minutes: 20
     name: Docker build
     runs-on: ubuntu-latest
 

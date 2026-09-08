@@ -15,6 +15,7 @@ from boardman.agent.repo_context import merge_planning_snapshot
 from boardman.agent.task_draft import normalize_task_title
 from boardman.assignment.qa_picker import build_assignment_field_map
 from boardman.database.models import ProjectContext, ScanRun
+from boardman.github.auth import github_auth_available
 from boardman.github.http import shared_github_client
 from boardman.github.repo_fetch import (
     fetch_direction_md,
@@ -194,7 +195,7 @@ async def run_repo_scan(
     provider: str | None = None,
     model: str | None = None,
 ) -> dict[str, Any]:
-    if not settings.github_pat:
+    if not github_auth_available():
         return {"ok": False, "message": "GITHUB_PAT not configured"}
 
     parts = repo_full.split("/")

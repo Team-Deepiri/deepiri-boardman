@@ -78,18 +78,20 @@ def _score_one(query: str, member: Any) -> tuple[float, str]:
             cand = 0.93 if field == "name" else 0.9
             if cand > best:
                 best, why = cand, f"first-name match on {field} {value!r}"
-        # "ali f" / "a ferris" against "Ali Ferris"
+        # "ali ferris" against "Ali Ferris"
         q_tokens = _name_tokens(query)
-        # Initials match in EITHER direction: the roster stores Ali as "Ali F", so
-        # "Ali Ferris" has to line up "ferris" against the stored initial "f", and
-        # "a ferris" has to line up "a" against "ali".
-        if len(q_tokens) > 1 and all(
-            any(
-                t == vt or (len(t) == 1 and vt.startswith(t)) or (len(vt) == 1 and t.startswith(vt))
-                for vt in tokens
-            )
-            for t in q_tokens
-        ):
+        # Exact token match only -- no longer accepts a bare initial ("h") as
+        # standing in for any full token starting with that letter ("hauer",
+        # "harrison", "henderson", ...). That shortcut was a real false-positive
+        # incident in deepiri-norozo's sibling matcher: "Joe Black" vs a roster
+        # entry shaped like "Joe H<something>" scored 0.9 -- confident-looking,
+        # but a bare initial is compatible with dozens of unrelated surnames in
+        # any real-size roster, and the ambiguity check only catches the
+        # collision when a second same-shaped candidate happens to also be
+        # present, not when it's the only person with that first name + initial.
+        # An abbreviated "Firstname L." query still gets a chance via the
+        # graded surname/initials scorer below, which is far more conservative.
+        if len(q_tokens) > 1 and all(t in tokens for t in q_tokens):
             if best < 0.9:
                 best, why = 0.9, f"all parts of {query!r} match {value!r}"
         # Raw character similarity is only trustworthy for a ONE-WORD query (a typo).

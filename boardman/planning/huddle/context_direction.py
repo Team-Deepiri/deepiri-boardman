@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from boardman.database.models import ProjectContext, ScanRun
 from boardman.database.session import async_session
+from boardman.github.auth import github_auth_available
 from boardman.github.repo_fetch import fetch_direction_md
 from boardman.planning.huddle.async_bridge import run_sync
 from boardman.planning.huddle.context_sync import full_repo_name, repo_matches_team
@@ -91,7 +92,7 @@ class DirectionPlanningContext:
                             )
                         )
                         continue
-                if settings.github_pat:
+                if github_auth_available():
                     try:
                         text = await self._direction_fetcher(repo_full)
                     except Exception as exc:
@@ -139,12 +140,16 @@ class DirectionPlanningContext:
         cutoff = datetime.utcnow() - lookback
         async with self._session_factory() as session:
             rows = (
-                await session.execute(
-                    select(ScanRun)
-                    .where(ScanRun.created_at >= cutoff)
-                    .order_by(ScanRun.created_at.desc())
+                (
+                    await session.execute(
+                        select(ScanRun)
+                        .where(ScanRun.created_at >= cutoff)
+                        .order_by(ScanRun.created_at.desc())
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
         summaries: list[ScanRunSummary] = []
         seen: set[str] = set()
         for row in rows:

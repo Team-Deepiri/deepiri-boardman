@@ -259,7 +259,9 @@ async def save_cognition_state(
     if "contradictions" in cognition and isinstance(cognition["contradictions"], list):
         cognition["contradictions"] = cognition["contradictions"][-_MAX_COGNITION_CONTRADICTIONS:]
 
-    prev_cognition = existing.get("cognition") if isinstance(existing.get("cognition"), dict) else {}
+    prev_cognition = (
+        existing.get("cognition") if isinstance(existing.get("cognition"), dict) else {}
+    )
     merged_cognition = dict(prev_cognition)
     merged_cognition.update(cognition)
     existing["cognition"] = merged_cognition

@@ -5,7 +5,20 @@ name: Deploy to VPS
 # every merge. Switch to `push: branches: [main]` once the deploy has been proven a
 # few times, matching deepiri-platform's model at that point.
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      github_auth_mode:
+        description: "How Boardman authenticates to GitHub (see docs/GITHUB_APP_MIGRATION.md)"
+        required: false
+        # Cutover to the GitHub App is complete and verified (PR #127). github_app is
+        # now the sticky default so a routine deploy does NOT silently revert Boardman
+        # to posting as the PAT owner. Pick "pat"/"both" only to roll back.
+        default: "github_app"
+        type: choice
+        options:
+          - pat
+          - both
+          - github_app
 
 # Prevent two deploys racing each other on the same box. Never cancel-in-progress —
 # a half-finished deploy is worse than a queued one (lesson from deepiri-platform's
@@ -30,6 +43,14 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           BYOK_ENCRYPTION_KEY: ${{ secrets.BYOK_ENCRYPTION_KEY }}
+          # GitHub App auth (docs/GITHUB_APP_MIGRATION.md). App secrets are set; the
+          # cutover is live. Falls back to github_app when the workflow is triggered
+          # without the input (e.g. via the API) so a deploy never reverts to the PAT.
+          GITHUB_AUTH_MODE: ${{ inputs.github_auth_mode || 'github_app' }}
+          GITHUB_APP_ID: ${{ secrets.BOARDMAN_APP_ID }}
+          GITHUB_APP_INSTALLATION_ID: ${{ secrets.BOARDMAN_APP_INSTALLATION_ID }}
+          GITHUB_APP_PRIVATE_KEY: ${{ secrets.BOARDMAN_APP_PRIVATE_KEY }}
+          GITHUB_APP_WEBHOOK_SECRET: ${{ secrets.BOARDMAN_APP_WEBHOOK_SECRET }}
         run: |
           set -euo pipefail
           umask 077
@@ -46,6 +67,15 @@ jobs:
           GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET}
           GITHUB_ORG=Team-Deepiri
           GITHUB_SUPPORT_TEAM=Team-Deepiri/support-team
+          # GitHub App auth. GITHUB_AUTH_MODE comes from the workflow_dispatch input,
+          # default "github_app" (cutover done — PR #127). The private key is stored
+          # single-line with literal \n; app_auth restores newlines. See
+          # docs/GITHUB_APP_MIGRATION.md.
+          GITHUB_AUTH_MODE=${GITHUB_AUTH_MODE}
+          GITHUB_APP_ID=${GITHUB_APP_ID}
+          GITHUB_APP_INSTALLATION_ID=${GITHUB_APP_INSTALLATION_ID}
+          GITHUB_APP_PRIVATE_KEY="${GITHUB_APP_PRIVATE_KEY}"
+          GITHUB_APP_WEBHOOK_SECRET=${GITHUB_APP_WEBHOOK_SECRET}
           # Defaults to false. A real webhook does fuzzy-match scoring + Plaky API
           # calls inline -- without this, GitHub's own delivery timeout (~10s) can
           # fire before that finishes, producing a 504 on a delivery Boardman
@@ -66,13 +96,22 @@ jobs:
           BYOK_ENCRYPTION_KEY=${BYOK_ENCRYPTION_KEY}
           CORS_ORIGINS=https://boardman.deepiri.com
           LOG_LEVEL=INFO
+          # Agent turn latency/token levers while we're still on the OpenRouter free
+          # tier (high queuing delay, strict rate limits). Trim history and cap
+          # tool-call recursion so a slow model doesn't compound its own latency;
+          # cache the Plaky schema fetch (~5-7s) longer; keep the worker's repo
+          # knowledge sweep on so context is pre-warmed instead of fetched inline.
+          AGENT_MAX_HISTORY=8
+          AGENT_RECURSION_LIMIT=8
+          PLAKY_BOARD_SCHEMA_CACHE_TTL_SECONDS=300.0
+          REPO_KNOWLEDGE_SWEEP_ENABLED=true
           EOF
           # ^ Using a quoted heredoc means ${VAR} above is literal, not expanded — so
           # expand it ourselves explicitly with envsubst, which only touches the names
           # we pass it (never a bare $ that happens to be inside a secret's own value).
           # envsubst substitutes an unset var as an empty string silently, which is
           # exactly why the validation below runs AFTER expansion, not before.
-          envsubst '${PLAKY_API_KEY} ${GITHUB_PAT} ${GITHUB_WEBHOOK_SECRET} ${POSTGRES_PASSWORD} ${OPENROUTER_API_KEY} ${BYOK_ENCRYPTION_KEY}' \
+          envsubst '${PLAKY_API_KEY} ${GITHUB_PAT} ${GITHUB_WEBHOOK_SECRET} ${POSTGRES_PASSWORD} ${OPENROUTER_API_KEY} ${BYOK_ENCRYPTION_KEY} ${GITHUB_AUTH_MODE} ${GITHUB_APP_ID} ${GITHUB_APP_INSTALLATION_ID} ${GITHUB_APP_PRIVATE_KEY} ${GITHUB_APP_WEBHOOK_SECRET}' \
             < .env.deploy > .env.deploy.resolved
           mv .env.deploy.resolved .env.deploy
 
@@ -92,6 +131,28 @@ jobs:
             exit 1
           fi
           echo "All required secrets present and non-empty."
+
+          # When the run selects a GitHub App auth mode, the App credentials must be
+          # present too — otherwise the deploy would land a box that cannot authenticate
+          # to GitHub at all (github_app) or silently runs on the PAT (both).
+          mode=$(grep "^GITHUB_AUTH_MODE=" .env.deploy | cut -d= -f2- || true)
+          if [ "$mode" = "both" ] || [ "$mode" = "github_app" ]; then
+            app_missing=""
+            for key in GITHUB_APP_ID GITHUB_APP_INSTALLATION_ID GITHUB_APP_PRIVATE_KEY; do
+              line=$(grep "^${key}=" .env.deploy || true)
+              value="${line#*=}"
+              # strip surrounding quotes (the private key line is quoted)
+              value="${value%\"}"; value="${value#\"}"
+              if [ -z "$value" ]; then
+                app_missing="${app_missing} ${key}"
+              fi
+            done
+            if [ -n "$app_missing" ]; then
+              echo "::error::GITHUB_AUTH_MODE=${mode} but App secret(s) missing:${app_missing}"
+              exit 1
+            fi
+            echo "GitHub App secrets present for GITHUB_AUTH_MODE=${mode}."
+          fi
 
       - name: Set up SSH
         env:

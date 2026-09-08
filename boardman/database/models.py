@@ -68,6 +68,42 @@ class PullRequestTaskLink(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class PrTaskLifecycle(Base):
+    """
+    One row per Plaky task the PR pipeline created or linked to a PR, tracking what
+    should eventually happen to it:
+      - "created" rows (no existing task matched the PR) get a `cleanup_due_at` when
+        first seen and are deleted from Plaky + this table once that passes, UNLESS the
+        PR went on to merge/link something real in the meantime (`cleanup_due_at` cleared).
+      - "matched" rows (the PR was linked to an already-existing task) are never deleted;
+        once the PR is done and the task itself reached a finished status, `archived_at`
+        is stamped after the task is moved to the archive board.
+    """
+
+    __tablename__ = "pr_task_lifecycle"
+    __table_args__ = (
+        UniqueConstraint(
+            "github_repo",
+            "github_pr_number",
+            "plaky_task_id",
+            name="uq_pr_task_lifecycle_repo_pr_task",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    github_repo: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    github_pr_number: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    plaky_task_id: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    plaky_board_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # "created" (no match found, task manufactured for this PR) or "matched" (linked to
+    # a pre-existing task). Governs which cleanup path this row is eligible for.
+    origin: Mapped[str] = mapped_column(String(16), nullable=False)
+    cleanup_due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class SyncLog(Base):
     __tablename__ = "sync_log"
 

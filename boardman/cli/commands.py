@@ -16,6 +16,7 @@ from boardman.assignment.qa_picker import ensure_github_owner_repo
 from boardman.cli.plan_commands import plan_app
 from boardman.database.models import AgentSession, ProjectContext, ScanRun
 from boardman.database.session import async_session
+from boardman.github.auth import github_auth_available, github_auth_header
 from boardman.llm.ollama_autodetect import NoOllamaModelAvailable, effective_ollama_model
 from boardman.observability.degradation import log_degraded
 from boardman.plaky.client import PlakyClient
@@ -374,17 +375,14 @@ def sync(
         False, "--dry-run", help="Show what would be synced without making changes"
     ),
 ):
-    if not settings.github_pat:
-        console.print("[red]Error: GITHUB_PAT not configured[/red]")
+    if not github_auth_available():
+        console.print("[red]Error: GitHub auth not configured[/red]")
         raise typer.Exit(1)
     repo = ensure_github_owner_repo(repo)
 
     async def run():
         async with httpx.AsyncClient() as client:
-            headers = {
-                "Authorization": f"Bearer {settings.github_pat}",
-                "Accept": "application/vnd.github+json",
-            }
+            headers = await github_auth_header()
             resp = await client.get(
                 f"https://api.github.com/repos/{repo}/issues?state=open",
                 headers=headers,
@@ -490,7 +488,7 @@ def doctor():
         else:
             console.print("[red]PLAKY_API_KEY[/red] missing")
             ok = False
-        if settings.github_pat:
+        if github_auth_available():
             console.print("[green]GITHUB_PAT[/green] set")
         else:
             console.print("[yellow]GITHUB_PAT[/yellow] missing (needed for scan)")
@@ -937,7 +935,7 @@ def status_cmd(
         reg = list_registered_repos()
         if reg:
             console.print(f"repos.yml entries ({len(reg)}): {', '.join(reg.keys())}")
-        if settings.github_pat:
+        if github_auth_available():
             ws = await list_workspace_repos()
             console.print(f"Workspace repos (GitHub org {settings.github_org}): {len(ws)}")
         else:

@@ -26,10 +26,13 @@ import re
 from fnmatch import fnmatchcase
 from typing import Any, NamedTuple
 
+import httpx
+
 from boardman.assignment.capability_board import fetch_capability_tiers
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, load_team_assignments
 from boardman.assignment.repo_rules import qa_tier_allows_repo
 from boardman.assignment.tier_classifier import classify_repo_tier
+from boardman.github.auth import github_auth_available
 from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.observability.degradation import log_unexpected
 from boardman.repos_config import get_routing
@@ -99,19 +102,13 @@ def humanize_fit_reason(
     elif detail.direct > 0:
         strengths.append("they have some familiarity with this repository")
     if detail.lang >= 0.6:
-        strengths.append(
-            "they work extensively with the same languages this project uses"
-        )
+        strengths.append("they work extensively with the same languages this project uses")
     elif detail.lang >= 0.25:
         strengths.append("they have experience with the languages used here")
     if detail.tokens >= 0.4:
-        strengths.append(
-            "they've worked on closely related projects in the organization"
-        )
+        strengths.append("they've worked on closely related projects in the organization")
     elif detail.tokens >= 0.15:
-        strengths.append(
-            "they've worked on similar projects in the organization"
-        )
+        strengths.append("they've worked on similar projects in the organization")
     if not strengths:
         strengths.append("they're the best available match on the team right now")
 
@@ -142,8 +139,6 @@ async def _auto_classify_repo_tier(full_name: str) -> int:
         return 2
 
     owner, repo = full_name.split("/", 1)
-
-    import httpx
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         meta = await fetch_repo_metadata(client, owner, repo)
@@ -307,9 +302,7 @@ async def _best_classified_tier(profile: Any, org: str, *, use_live_classifier: 
     return best
 
 
-async def _github_inferred_tiers(
-    candidates: list[TeamMember], org: str
-) -> dict[str, str]:
+async def _github_inferred_tiers(candidates: list[TeamMember], org: str) -> dict[str, str]:
     """member.id -> hardware tier inferred from demonstrated GitHub activity, not a
     self-reported label anywhere.
 
@@ -326,10 +319,8 @@ async def _github_inferred_tiers(
     A member absent from the returned dict has demonstrated nothing anywhere the
     backend can see — the caller's population-level prior picks up from there.
     """
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return {}
-
-    import httpx
 
     from boardman.github.qa_contribution_profile import fetch_contribution_profile
 
@@ -401,10 +392,8 @@ async def _github_fit_scores(
         fetch_repo_info,
     )
 
-    if not settings.qa_github_fit_enabled or not (settings.github_pat or "").strip():
+    if not settings.qa_github_fit_enabled or not github_auth_available():
         return None
-
-    import httpx
 
     # Search the owner org of the target repo — settings.github_org may be a legacy
     # alias that GitHub search rejects with HTTP 422 (org_repos has a discovery
@@ -687,7 +676,9 @@ async def pick_qa_for_repo(
         if chosen:
             _log.info(
                 "pick_qa: %s repo_tier=%d candidates=%d",
-                chosen.display, repo_tier, len(qas),
+                chosen.display,
+                repo_tier,
+                len(qas),
             )
             return chosen.id, reason
 

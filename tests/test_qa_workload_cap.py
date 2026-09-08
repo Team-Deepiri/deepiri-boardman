@@ -197,20 +197,32 @@ async def test_multi_issue_pr_counts_as_one(db_factory):
     async with db_factory() as session:
         session.add(
             PullRequestTaskLink(
-                github_repo="repo", github_pr_number=5, github_issue_number=10,
-                plaky_task_id="t10", link_source="issue_keyword", qa_plaky_id="qa-alice",
+                github_repo="repo",
+                github_pr_number=5,
+                github_issue_number=10,
+                plaky_task_id="t10",
+                link_source="issue_keyword",
+                qa_plaky_id="qa-alice",
             )
         )
         session.add(
             PullRequestTaskLink(
-                github_repo="repo", github_pr_number=5, github_issue_number=11,
-                plaky_task_id="t11", link_source="issue_keyword", qa_plaky_id="qa-alice",
+                github_repo="repo",
+                github_pr_number=5,
+                github_issue_number=11,
+                plaky_task_id="t11",
+                link_source="issue_keyword",
+                qa_plaky_id="qa-alice",
             )
         )
         session.add(
             PullRequestTaskLink(
-                github_repo="repo", github_pr_number=5, github_issue_number=12,
-                plaky_task_id="t12", link_source="issue_keyword", qa_plaky_id="qa-alice",
+                github_repo="repo",
+                github_pr_number=5,
+                github_issue_number=12,
+                plaky_task_id="t12",
+                link_source="issue_keyword",
+                qa_plaky_id="qa-alice",
             )
         )
         await session.commit()

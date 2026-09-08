@@ -1,7 +1,7 @@
 # deepiri-boardman — agent context
 
 > Machine-oriented project brief. Humans: see [README.md](README.md) and [docs/](docs/).
-> Last verified: 2026-08-20 (Boardman Brain: layered project state, event-driven cache invalidation, deterministic intent router, worker knowledge sweep, and /api/v1/metrics)
+> Last verified: 2026-09-04 (PR→Plaky sync exclusions for integration-branch/bot PRs, PR-task cleanup/archive sweep, label-first PR type inference with scoring fallback, tighter identity-match substring guards)
 
 ## Purpose
 
@@ -184,7 +184,7 @@ Secrets in `.env` (never commit). Key groups:
 | Group | Vars |
 |-------|------|
 | Plaky | `PLAKY_API_KEY`, `PLAKY_API_BASE`, `PLAKY_PR_*_STATUS`, `PLAKY_QA_ITEM_FIELD_KEY` |
-| GitHub | `GITHUB_PAT`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_ORG`, `GITHUB_BARE_REPO_OWNER`, `GITHUB_SUPPORT_TEAM` |
+| GitHub | `GITHUB_PAT`, `GITHUB_AUTH_MODE`, `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_WEBHOOK_SECRET`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_ORG`, `GITHUB_BARE_REPO_OWNER`, `GITHUB_SUPPORT_TEAM` |
 | LLM | `LLM_PROVIDER`, `LLM_MODEL`, `OLLAMA_BASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` |
 | Agent | `AGENT_MAX_HISTORY`, `AGENT_LANGCHAIN_TOOLS`, `AGENT_RECURSION_LIMIT`, `PROMPT_VERSION`, `AGENT_ASYNC_ENQUEUE_ENABLED`, context-cache TTLs |
 | Assignment | `ASSIGNMENT_IDENTITY_LLM_*`, `PR_LINKING_*` |
@@ -226,7 +226,7 @@ Full list: [.env.example](.env.example). Routing config: [repos.yml](repos.yml),
 
 ## DB tables (SQLite)
 
-`issue_task_map`, `pr_task_links`, `sync_log`, `github_webhook_deliveries`, `scan_runs`, `agent_sessions`, `agent_messages`, `project_contexts`, `open_pr_tracks`, `repo_tier_cache`, `background_jobs`, `agent_rate_limit_buckets`
+`issue_task_map`, `pr_task_links`, `pr_task_lifecycle`, `sync_log`, `github_webhook_deliveries`, `scan_runs`, `agent_sessions`, `agent_messages`, `project_contexts`, `open_pr_tracks`, `repo_tier_cache`, `background_jobs`, `agent_rate_limit_buckets`
 
 ## Plaky board routing
 

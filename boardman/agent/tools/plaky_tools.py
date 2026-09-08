@@ -24,6 +24,7 @@ from boardman.plaky.name_match import rank_plaky_rows
 from boardman.plaky.task_tag_vocab import (
     canonical_task_priority,
 )
+from boardman.plaky.urls import plaky_task_web_url
 from boardman.services.task_mutations import (
     CreateSubtaskInput,
     CreateTaskInput,
@@ -986,14 +987,21 @@ async def _plaky_create_tasks_deferred(
     # those go behind the reply.
     existing: list[dict[str, Any]] = []
     dedupe_ok = False
+    dedupe_space_id: str | None = None
     if bid:
         try:
-            listing = await PlakyClient().get_tasks(board_id=bid, status="all")
+            plaky_dedupe = PlakyClient()
+            listing = await plaky_dedupe.get_tasks(board_id=bid, status="all")
             existing = [t for t in (listing.get("tasks") or []) if isinstance(t, dict)]
             dedupe_ok = bool(listing.get("ok", True))
         except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
             log_degraded(_log, "_plaky_create_tasks_deferred: get_tasks")
             dedupe_ok = False
+        if dedupe_ok:
+            try:
+                dedupe_space_id = await plaky_dedupe.resolve_space_for_board(bid)
+            except Exception:  # noqa: BLE001 - link stays best-effort without it
+                log_degraded(_log, "_plaky_create_tasks_deferred: resolve_space_for_board")
 
     already: list[dict[str, Any]] = []
     to_create: list[dict[str, Any]] = []
@@ -1013,7 +1021,11 @@ async def _plaky_create_tasks_deferred(
                     "title": str(row["title"]).strip(),
                     "existing_title": str(hit.get("name") or hit.get("title") or ""),
                     "task_id": ex_id,
-                    "task_url": f"https://app.plaky.com/task/{ex_id}" if ex_id else "",
+                    "task_url": (
+                        plaky_task_web_url(ex_id, board_id=bid, space_id=dedupe_space_id)
+                        if ex_id
+                        else ""
+                    ),
                 }
             )
 
@@ -1346,13 +1358,20 @@ async def _plaky_create_tasks(
 
     existing: list[dict[str, Any]] = []
     dedupe_bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip()
+    dedupe_sid: str | None = None
     if dedupe_bid:
         try:
-            listing = await PlakyClient().get_tasks(board_id=dedupe_bid, status="all")
+            plaky_dedupe = PlakyClient()
+            listing = await plaky_dedupe.get_tasks(board_id=dedupe_bid, status="all")
             existing = [t for t in (listing.get("tasks") or []) if isinstance(t, dict)]
         except Exception:  # noqa: BLE001 - Plaky API failure degrades gracefully
             log_degraded(_log, "_plaky_create_tasks: get_tasks")
             existing = []  # dedupe is best-effort; creation must not die on a listing blip
+        else:
+            try:
+                dedupe_sid = await plaky_dedupe.resolve_space_for_board(dedupe_bid)
+            except Exception:  # noqa: BLE001 - link stays best-effort without it
+                log_degraded(_log, "_plaky_create_tasks: resolve_space_for_board")
 
     # Plaky's create endpoint is ~0.2s solo but shapes concurrent bursts hard (measured
     # 2.5-11.8s per POST at 5-way). Two lanes with a 0.3s stagger measured fastest
@@ -1377,7 +1396,11 @@ async def _plaky_create_tasks(
                     "title": row["title"],
                     "existing_title": ex_title,
                     "task_id": ex_id,
-                    "task_url": f"https://app.plaky.com/task/{ex_id}" if ex_id else "",
+                    "task_url": (
+                        plaky_task_web_url(ex_id, board_id=dedupe_bid, space_id=dedupe_sid)
+                        if ex_id
+                        else ""
+                    ),
                     "message": "",
                 }
         fv = row.get("field_values")

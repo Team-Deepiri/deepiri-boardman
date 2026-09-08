@@ -64,19 +64,7 @@ def _branch_type_token(head_ref: str) -> str:
     return first
 
 
-def infer_task_type_from_pr(
-    head_ref: str | None = None,
-    labels: Sequence[str] | None = None,
-) -> str:
-    """Canonical Plaky Type for a PR, or "" if no convention matched.
-
-    Branch convention wins (it is the most explicit per the team's workflow); labels are the
-    fallback. ``labels`` may be raw GitHub label name strings.
-    """
-    token = _branch_type_token(head_ref or "")
-    if token and token in _TYPE_BY_TOKEN:
-        return _TYPE_BY_TOKEN[token]
-
+def _type_from_labels(labels: Sequence[str] | None) -> str:
     for raw in labels or []:
         name = str(raw or "").strip().lower()
         if not name:
@@ -97,6 +85,58 @@ def infer_task_type_from_pr(
                 continue
             if re.search(rf"\b{re.escape(tok)}\b", name):
                 return canon
+    return ""
+
+
+def score_task_type_from_text(*texts: str | None) -> str:
+    """Best-guess Plaky Type from free text (PR title/body) when there is neither a
+    matching label nor a matching branch convention to go on.
+
+    Not a keyword-presence check: every convention token is counted (whole-word,
+    case-insensitive) across all the supplied text, and the type whose tokens occur most
+    often wins — a title that only mentions "bug" once outscores one that happens to
+    also contain an unrelated "test" mention, and a text with no hits at all still
+    resolves to "" so the caller's own default applies.
+    """
+    blob = " ".join(str(t or "") for t in texts).lower()
+    if not blob.strip():
+        return ""
+    scores: dict[str, int] = {}
+    for tok, canon in _TYPE_BY_TOKEN.items():
+        hits = len(re.findall(rf"\b{re.escape(tok)}\b", blob))
+        if hits:
+            scores[canon] = scores.get(canon, 0) + hits
+    if not scores:
+        return ""
+    return max(scores.items(), key=lambda kv: kv[1])[0]
+
+
+def infer_task_type_from_pr(
+    head_ref: str | None = None,
+    labels: Sequence[str] | None = None,
+    *,
+    title: str | None = None,
+    body: str | None = None,
+) -> str:
+    """Canonical Plaky Type for a PR, or "" if nothing resolved it.
+
+    Labels are the most explicit human signal (someone deliberately typed the PR) and win
+    first; the branch naming convention is the fallback structural signal. When neither
+    resolves anything and ``title``/``body`` text was supplied, a scoring guess is made
+    from that text rather than silently leaving the type unset.
+    """
+    from_labels = _type_from_labels(labels)
+    if from_labels:
+        return from_labels
+
+    token = _branch_type_token(head_ref or "")
+    if token and token in _TYPE_BY_TOKEN:
+        return _TYPE_BY_TOKEN[token]
+
+    if title or body:
+        guessed = score_task_type_from_text(title, body)
+        if guessed:
+            return guessed
     return ""
 
 

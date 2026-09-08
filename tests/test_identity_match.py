@@ -9,6 +9,20 @@ from boardman.assignment.identity_match import (
 from boardman.settings import settings
 
 
+def test_short_login_substring_of_unrelated_long_name_stays_weak():
+    # gh_login "ric" is a short fragment that happens to appear inside "ricardo" — that
+    # is not evidence they are the same person, and must not score as a confident match.
+    gh = {"login": "ric", "email": "ric@example.com"}
+    pl = {"id": "p_ricardo", "name": "Someone Else", "email": "ricardo.long.local@company.org"}
+    assert score_github_vs_plaky(gh, pl) < 6000
+
+
+def test_short_login_token_substring_of_unrelated_name_stays_weak():
+    gh = {"login": "cardo", "name": ""}
+    pl = {"id": "p_ricardo", "name": "Ricardo Nunes", "email": ""}
+    assert score_github_vs_plaky(gh, pl) < 4800
+
+
 def test_exact_email():
     gh = {"login": "alice", "name": "Alice", "email": "alice@deepiri.com"}
     pl = {"id": "p1", "name": "Alice X", "email": "alice@deepiri.com"}
@@ -31,6 +45,27 @@ def test_similar_email_typo():
     gh = {"login": "x", "email": "joseph@deepiri.com"}
     pl = {"id": "p4", "email": "josef@deepiri.com"}
     assert score_github_vs_plaky(gh, pl) >= 640
+
+
+def test_login_matches_plaky_username_no_email_at_all():
+    """New signal: GitHub login vs Plaky's own username/handle field, when the API
+    exposes one — independent of email entirely (which may not even be present)."""
+    gh = {"login": "hungh206", "name": "Hung H."}
+    pl = {"id": "p5", "name": "Hung H.", "username": "hungh206"}
+    assert score_github_vs_plaky(gh, pl) >= 8500
+
+
+def test_username_field_absent_falls_back_to_existing_signals():
+    """No username field on the Plaky side -> behaves exactly as before (email-only)."""
+    gh = {"login": "alice", "name": "Alice", "email": "alice@deepiri.com"}
+    pl = {"id": "p6", "name": "Alice X", "email": "alice@deepiri.com"}
+    assert score_github_vs_plaky(gh, pl) >= 9000
+
+
+def test_username_mismatch_does_not_falsely_boost_unrelated_people():
+    gh = {"login": "alice", "name": "Alice Smith"}
+    pl = {"id": "p7", "name": "Bob Jones", "username": "bobjones99"}
+    assert score_github_vs_plaky(gh, pl) < 640
 
 
 def test_john_doe_vs_jonathan_doe():

@@ -58,7 +58,9 @@ def _widen_version_table(connection) -> None:
             ")"
         )
     )
-    connection.execute(text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255)"))
+    connection.execute(
+        text("ALTER TABLE alembic_version ALTER COLUMN version_num TYPE VARCHAR(255)")
+    )
 
 
 def do_run_migrations(connection):

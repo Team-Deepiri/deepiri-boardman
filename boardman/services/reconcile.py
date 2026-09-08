@@ -18,6 +18,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from boardman.github.auth import github_auth_available, github_auth_header
 from boardman.github.http import github_http_client
 from boardman.github.webhooks import IssueEventPayload, PullRequestEventPayload
 from boardman.observability.degradation import log_degraded
@@ -32,16 +33,12 @@ from boardman.services.pr_handler import (
     handle_pr_opened,
 )
 from boardman.services.pr_task_registry import distinct_task_ids_for_pr
-from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
 
 
-def _gh_headers() -> dict[str, str]:
-    return {
-        "Authorization": f"Bearer {settings.github_pat}",
-        "Accept": "application/vnd.github+json",
-    }
+async def _gh_headers() -> dict[str, str]:
+    return await github_auth_header()
 
 
 async def reconcile_repo(
@@ -51,8 +48,8 @@ async def reconcile_repo(
     max_items: int = 50,
 ) -> dict[str, Any]:
     """Detect and repair GitHub-Plaky drift for one repo. Safe to run repeatedly."""
-    if not (settings.github_pat or "").strip():
-        return {"ok": False, "message": "GITHUB_PAT is not configured"}
+    if not github_auth_available():
+        return {"ok": False, "message": "GitHub auth is not configured"}
     owner, _, short = full_name.partition("/")
     if not owner or not short:
         return {"ok": False, "message": "repo must be owner/name"}
@@ -79,7 +76,7 @@ async def reconcile_repo(
 
     r = await client.get(
         f"https://api.github.com/repos/{full_name}/issues?state=all&sort=updated&direction=desc&per_page={max_items}",
-        headers=_gh_headers(),
+        headers=await _gh_headers(),
     )
     if r.status_code != 200:
         return {"ok": False, "message": f"GitHub issues list failed: HTTP {r.status_code}"}
@@ -136,7 +133,7 @@ async def reconcile_repo(
 
     r2 = await client.get(
         f"https://api.github.com/repos/{full_name}/pulls?state=all&sort=updated&direction=desc&per_page={max_items}",
-        headers=_gh_headers(),
+        headers=await _gh_headers(),
     )
     if r2.status_code != 200:
         out["errors"].append(f"GitHub pulls list failed: HTTP {r2.status_code}")

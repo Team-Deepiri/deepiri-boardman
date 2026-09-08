@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 import yaml
 
+from boardman.github.auth import github_auth_available
 from boardman.settings import settings
 
 if TYPE_CHECKING:
@@ -260,7 +261,7 @@ async def list_workspace_repos(client: httpx.AsyncClient | None = None) -> dict[
     yaml_map: dict[str, Any] = dict(_load_raw().get("repos") or {})
     org = settings.github_org
 
-    if not settings.github_pat:
+    if not github_auth_available():
         return list_registered_repos()
 
     from boardman.github.org_repos import fetch_org_repository_full_names

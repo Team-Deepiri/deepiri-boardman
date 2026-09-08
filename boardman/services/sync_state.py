@@ -160,7 +160,13 @@ def resolve_pr_state(pr: Any, *, repo_full_name: str, repo_name: str) -> GitHubS
         url=str(_value(pr, "html_url", "") or "").strip(),
         labels=labels,
         native_type="",
-        task_type=infer_task_type_from_pr(head_ref, labels) or "Feature",
+        task_type=infer_task_type_from_pr(
+            head_ref,
+            labels,
+            title=str(_value(pr, "title", "") or ""),
+            body=str(_value(pr, "body", "") or ""),
+        )
+        or "Feature",
         priority=explicit_priority
         or infer_priority_from_text(
             str(_value(pr, "title", "") or ""), str(_value(pr, "body", "") or ""), labels
