@@ -34,6 +34,7 @@ from datetime import UTC, datetime
 from boardman.plaky.board_schema import fetch_board_schema_bundle, plaky_field_row_label
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.task_tag_vocab import TASK_PRIORITY_TAGS, canonical_task_priority
+from boardman.services.priority_rules import infer_priority_from_text, priority_from_github_label
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -426,11 +427,6 @@ async def infer_priority_for_new_task(
          priority-bearing precedent and retrieval was confident enough.
       3. Rule-based text inference (priority_rules.py) as the safety net otherwise.
     """
-    from boardman.services.priority_rules import (
-        infer_priority_from_text,
-        priority_from_github_label,
-    )
-
     for raw in labels:
         explicit = priority_from_github_label(raw)
         if explicit:
