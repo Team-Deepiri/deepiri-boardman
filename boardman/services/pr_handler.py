@@ -388,31 +388,35 @@ async def _assign_qa_for_pr(
     if not qa_key:
         return {"skipped": "no QA field key resolvable for this board"}
 
+    qid: str | None = None
+    why = ""
+    already_assigned = False
     if bid:
         current_qa = await _current_person_field_value(plaky, bid, task_id, qa_key)
         if current_qa:
-            return {"skipped": "qa_already_assigned", "qa_plaky_id": current_qa}
+            qid = str(current_qa)
+            why = "already assigned"
+            already_assigned = True
 
-    # Bug-typed tasks always go to the QA bug specialist (employer: "bug - assign to
-    # Hameeda") - unless she authored the PR (self-review) or the role is unset/unresolvable,
-    # in which case the ranked pick applies as usual.
-    qid: str | None = None
-    why = ""
-    specialist_name = (getattr(cfg, "qa_bug_specialist", "") or "").strip()
-    if specialist_name and await _task_type_is_bug(plaky, bid, task_id):
-        sm = _member_by_name(cfg, specialist_name)
-        if sm is None:
-            _log.warning(
-                "qa_bug_specialist %r not in roster or fallback - using ranked pick",
-                specialist_name,
-            )
-        elif (getattr(sm, "github_login", "") or "").casefold() == (
-            pr_author_login or ""
-        ).casefold() and pr_author_login:
-            _log.info("qa_bug_specialist authored PR #%s - using ranked pick", pr_number)
-        else:
-            qid = str(sm.id)
-            why = f"bug task -> QA bug specialist {getattr(sm, 'display', specialist_name)}"
+    if not qid:
+        # Bug-typed tasks always go to the QA bug specialist (employer: "bug - assign to
+        # Hameeda") - unless she authored the PR (self-review) or the role is
+        # unset/unresolvable, in which case the ranked pick applies as usual.
+        specialist_name = (getattr(cfg, "qa_bug_specialist", "") or "").strip()
+        if specialist_name and await _task_type_is_bug(plaky, bid, task_id):
+            sm = _member_by_name(cfg, specialist_name)
+            if sm is None:
+                _log.warning(
+                    "qa_bug_specialist %r not in roster or fallback - using ranked pick",
+                    specialist_name,
+                )
+            elif (getattr(sm, "github_login", "") or "").casefold() == (
+                pr_author_login or ""
+            ).casefold() and pr_author_login:
+                _log.info("qa_bug_specialist authored PR #%s - using ranked pick", pr_number)
+            else:
+                qid = str(sm.id)
+                why = f"bug task -> QA bug specialist {getattr(sm, 'display', specialist_name)}"
 
     if not qid:
         # The author is never a candidate (self-review). GitHub refuses a review from
@@ -434,30 +438,64 @@ async def _assign_qa_for_pr(
     qa_login = (getattr(member, "github_login", "") or "").strip() if member else ""
     qa_display = (getattr(member, "display", "") or "").strip() if member else ""
 
-    res = await update_task_internal(
-        task_id,
-        UpdateTaskInput(qa_plaky_id=str(qid), plaky_board_id=bid or None),
-    )
-    out["plaky_qa"] = {
-        "id": str(qid),
-        "display": qa_display,
-        "ok": res.get("ok"),
-        "reason": why[:220],
-    }
+    if already_assigned:
+        # Plaky already has this QA -- don't re-pick or re-write it, but a PREVIOUS
+        # attempt's GitHub comment/reviewer-request may have failed independently
+        # (e.g. the PAT lacked Issues/PR write access at the time) while the Plaky
+        # write succeeded. Falling straight through to the notify step below lets
+        # that retry on every later reconcile, instead of this function treating
+        # "Plaky is correct" as "there is nothing left to do."
+        out["plaky_qa"] = {"id": str(qid), "display": qa_display, "skipped": "qa_already_assigned"}
+    else:
+        res = await update_task_internal(
+            task_id,
+            UpdateTaskInput(qa_plaky_id=str(qid), plaky_board_id=bid or None),
+        )
+        out["plaky_qa"] = {
+            "id": str(qid),
+            "display": qa_display,
+            "ok": res.get("ok"),
+            "reason": why[:220],
+        }
 
-    if session is not None:
-        try:
-            from boardman.services.pr_task_registry import stamp_qa_on_pr_links
+        if session is not None:
+            try:
+                from boardman.services.pr_task_registry import stamp_qa_on_pr_links
 
-            repo_short = repo_full.rsplit("/", 1)[-1] if "/" in repo_full else repo_full
-            await stamp_qa_on_pr_links(
-                session, github_repo=repo_short, github_pr_number=pr_number, qa_plaky_id=str(qid)
-            )
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("stamp_qa_on_pr_links failed for PR #%s: %s", pr_number, exc)
+                repo_short = repo_full.rsplit("/", 1)[-1] if "/" in repo_full else repo_full
+                await stamp_qa_on_pr_links(
+                    session,
+                    github_repo=repo_short,
+                    github_pr_number=pr_number,
+                    qa_plaky_id=str(qid),
+                )
+            except Exception as exc:  # noqa: BLE001
+                _log.warning("stamp_qa_on_pr_links failed for PR #%s: %s", pr_number, exc)
+
+    if already_assigned:
+        # Idempotency check: without it, a task that already has its QA correctly
+        # written to Plaky would get a fresh "you've been assigned" comment on EVERY
+        # reconcile pass forever, since this branch exists specifically to retry a
+        # GitHub notification that failed independently of the (already-successful)
+        # Plaky write.
+        from boardman.github.pr_actions import has_qa_assignment_comment
+
+        if await has_qa_assignment_comment(repo_full, pr_number):
+            out["github_comment"] = {"ok": True, "skipped": "already_commented"}
+            return out
 
     mention = f"@{qa_login}" if qa_login else (qa_display or "QA")
-    task_ref = task_url or f"Plaky task `{task_id}`"
+    from boardman.plaky.urls import plaky_task_markdown_link
+
+    resolved_space_id = None
+    if bid:
+        try:
+            resolved_space_id = await plaky.resolve_space_for_board(bid)
+        except Exception:  # noqa: BLE001 - link stays best-effort without it
+            _log.warning("resolve_space_for_board failed for board_id=%s", bid)
+    task_ref = plaky_task_markdown_link(
+        task_id, task_url, board_id=bid or None, space_id=resolved_space_id
+    )
     body = (
         f"{mention} you've been assigned as **QA reviewer** for this PR by Boardman.\n\n"
         f"Linked task: {task_ref}\n\n"
@@ -1686,6 +1724,16 @@ async def handle_pr_edited(
             # forever: every later reconcile pass only re-syncs metadata here, never
             # revisits QA. `_assign_qa_for_pr` already no-ops when a QA is already
             # set (`qa_already_assigned`), so this is safe to call unconditionally.
+            # Unconditional so "never reached this PR at all" (e.g. reconcile only
+            # calls this for OPEN PRs -- a closed/merged one produces no log line
+            # anywhere) is distinguishable from "reached it and decided not to act"
+            # (draft, or no board resolved) from the logs alone.
+            _log.info(
+                "PR #%s: QA backfill considered (board_id=%r, draft=%s)",
+                pr_number,
+                board_id,
+                state.draft,
+            )
             if board_id and not state.draft:
                 try:
                     qa_res = await _assign_qa_for_pr(
@@ -1704,8 +1752,12 @@ async def handle_pr_edited(
                         _log.info(
                             "PR #%s: QA backfill on task %s -> %s", pr_number, task_id, qa_res
                         )
-                except Exception as exc:  # noqa: BLE001 - a QA backfill miss must not break the sync
-                    _log.warning("QA backfill failed for PR #%s task %s: %s", pr_number, task_id, exc)
+                except (
+                    Exception
+                ) as exc:  # noqa: BLE001 - a QA backfill miss must not break the sync
+                    _log.warning(
+                        "QA backfill failed for PR #%s task %s: %s", pr_number, task_id, exc
+                    )
         await session.commit()
 
         # `item_text_immutable` is Plaky saying it has no verb for renaming an item, not a
@@ -1855,6 +1907,26 @@ async def handle_pr_review_requested(
     payload: PullRequestEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
+    """``review_requested`` fires the instant a reviewer is asked for — including when
+    Boardman's own QA-assignment step calls ``request_reviewers`` right after posting
+    the "you've been assigned as QA reviewer" comment. That is Boardman ASKING, not the
+    QA engaging: the task must stay at Needs QA (already set on PR open) until the
+    assigned QA (or another support-team QA) actually comments or pushes a commit — see
+    the participant/assigned-QA gate in ``pr_review_handler.handle_issue_comment_on_pr``.
+    Writing In QA here moved the task before anyone on QA had done anything, which is
+    exactly the "why does this say In QA when Amy hasn't even looked at it" symptom.
+
+    ``review_request_removed`` is unaffected: un-asking for a review is still handled,
+    reverting an in-progress request back to Needs QA (never onto a verdict already in).
+    """
+    if payload.action != "review_request_removed":
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "asking for a review is not QA engaging; task stays at Needs QA",
+            "event": "review_requested",
+        }
+
     await _ensure_links_live(payload, session)
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
@@ -1869,21 +1941,16 @@ async def handle_pr_review_requested(
     routing = await get_routing_async(payload.repository.full_name, repo_name, settings.github_org)
     board_id = (routing.plaky_board_id if routing and routing.plaky_board_id else "") or ""
 
-    request_removed = payload.action == "review_request_removed"
+    request_removed = True
     target_status = (
-        (settings.plaky_pr_needs_qa_status or settings.plaky_status_needs_qa or "").strip()
-        if request_removed
-        else (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
-    )
+        settings.plaky_pr_needs_qa_status or settings.plaky_status_needs_qa or ""
+    ).strip()
     target_field_key: str | None = None
     bid = (board_id or "").strip()
     if not target_status and bid:
         from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
-        rp = await resolve_plaky_status_patch(
-            bid,
-            intent="workflow_needs_qa" if request_removed else "workflow_in_qa",
-        )
+        rp = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa")
         if rp:
             target_field_key, target_status = rp[0], rp[1]
     if not target_status:

@@ -190,9 +190,30 @@ def test_duplicates_do_not_break_a_clear_match() -> None:
     assert hit and hit.member.id == "476634"
 
 
-def test_initials_match_in_both_directions() -> None:
-    """The roster stores Ali as 'Ali F', so a typed 'Ali Ferris' must still land."""
-    roster = [M("481106", "Ali F", "Blasted-ctrl")]
-    for query in ("Ali Ferris", "a ferris", "Ali F"):
+def test_initials_match_when_the_query_is_abbreviated() -> None:
+    """A typed abbreviated given name ('a ferris') still resolves to the full
+    roster name -- handled by the graded surname/initials scorer, which requires
+    the given names to plausibly agree rather than accepting a bare initial as a
+    stand-in for any surname."""
+    roster = [M("481106", "Ali Ferris", "Blasted-ctrl")]
+    for query in ("a ferris", "Ali Ferris"):
         hit = best_member_for_name(query, roster)
         assert hit and hit.member.id == "481106", query
+
+
+def test_exact_match_still_works_when_the_roster_itself_is_abbreviated() -> None:
+    roster = [M("481106", "Ali F", "Blasted-ctrl")]
+    hit = best_member_for_name("Ali F", roster)
+    assert hit and hit.member.id == "481106"
+
+
+def test_full_name_no_longer_guesses_against_an_abbreviated_roster_entry() -> None:
+    """A real false-positive incident in the sibling deepiri-norozo matcher: 'Joe
+    Black' spuriously matched an unrelated roster entry stored as 'Joe H' at high
+    confidence, because a bare surname initial on the CANDIDATE side used to stand
+    in for any surname starting with that letter. Typing someone's full name must
+    not resolve to a different person merely because the roster abbreviates their
+    surname to the same initial."""
+    roster = [M("1", "Joe H", "joeh")]
+    assert best_member_for_name("Joe Hauer", roster) is None
+    assert best_member_for_name("Joe Black", roster) is None

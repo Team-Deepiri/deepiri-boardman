@@ -20,6 +20,7 @@ from typing import Any
 
 import httpx
 
+from boardman.github.auth import github_auth_available
 from boardman.github.repo_fetch import fetch_repo_file_text
 from boardman.github.repo_hotspots import fetch_repo_hotspots
 from boardman.observability.degradation import log_degraded
@@ -107,7 +108,7 @@ async def search_repo_code(
     limit: int = 12,
 ) -> dict[str, Any] | None:
     """Grep the repo's largest source files for `query` (literal, case-insensitive)."""
-    if not (settings.github_pat or "").strip() or not (query or "").strip():
+    if not github_auth_available() or not (query or "").strip():
         return None
     hot = await fetch_repo_hotspots(
         client,
@@ -147,7 +148,7 @@ async def scan_repo_defects(
     client: httpx.AsyncClient, owner: str, repo: str
 ) -> dict[str, Any] | None:
     """Run every defect probe over the repo's largest source files, with real line numbers."""
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return None
     hot = await fetch_repo_hotspots(
         client,

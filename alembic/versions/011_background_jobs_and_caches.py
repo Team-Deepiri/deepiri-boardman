@@ -66,9 +66,7 @@ def upgrade() -> None:
             sa.Column("pr_title", sa.String(512), nullable=True),
             sa.Column("created_at", sa.DateTime(), nullable=False),
         )
-        op.create_index(
-            "ix_open_pr_tracks_repo_full_name", "open_pr_tracks", ["repo_full_name"]
-        )
+        op.create_index("ix_open_pr_tracks_repo_full_name", "open_pr_tracks", ["repo_full_name"])
 
     if "repo_tier_cache" not in existing:
         op.create_table(
@@ -78,12 +76,15 @@ def upgrade() -> None:
             sa.Column("tier", sa.Integer(), nullable=False),
             sa.Column("classified_at", sa.DateTime(), nullable=False),
         )
-        op.create_index(
-            "ix_repo_tier_cache_repo_full_name", "repo_tier_cache", ["repo_full_name"]
-        )
+        op.create_index("ix_repo_tier_cache_repo_full_name", "repo_tier_cache", ["repo_full_name"])
 
 
 def downgrade() -> None:
-    for table in ("repo_tier_cache", "open_pr_tracks", "agent_rate_limit_buckets", "background_jobs"):
+    for table in (
+        "repo_tier_cache",
+        "open_pr_tracks",
+        "agent_rate_limit_buckets",
+        "background_jobs",
+    ):
         if table in _existing_tables():
             op.drop_table(table)

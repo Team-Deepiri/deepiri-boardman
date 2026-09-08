@@ -51,12 +51,11 @@ async def current_revision(repo: str) -> tuple[str, str]:
     exactly the case it is for. It still shares `github_request` with every other GitHub
     reader, so it gets the same headers and the same redirect handling for a renamed repo.
     """
+    from boardman.github.auth import github_auth_available
     from boardman.github.http import shared_github_client
     from boardman.github.repo_fetch import github_request
-    from boardman.settings import settings
 
-    token = (settings.github_pat or "").strip()
-    if not token or "/" not in repo:
+    if not github_auth_available() or "/" not in repo:
         return "", "no token or malformed repo"
     owner, name = repo.split("/", 1)
     try:

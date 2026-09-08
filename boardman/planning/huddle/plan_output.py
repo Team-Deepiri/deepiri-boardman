@@ -125,7 +125,9 @@ def validate_meeting_plan_markdown(
     for spec in section_constraints:
         body = _find_section_body(sections, spec.titles)
         if body is None:
-            errors.append(f"Missing required section heading matching one of: {', '.join(spec.titles)}")
+            errors.append(
+                f"Missing required section heading matching one of: {', '.join(spec.titles)}"
+            )
             continue
         lowered = body.lower()
         if len(body) < spec.min_chars:

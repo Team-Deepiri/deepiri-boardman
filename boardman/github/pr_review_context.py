@@ -18,6 +18,7 @@ from urllib.parse import quote
 
 import httpx
 
+from boardman.github.auth import github_auth_available, github_auth_header
 from boardman.github.repo_fetch import _parse_owner_repo
 from boardman.settings import (
     DEFAULT_GITHUB_PR_MAX_BODY_CHARS,
@@ -93,10 +94,7 @@ async def _json(client: httpx.AsyncClient, path: str, what: str) -> tuple[Any, s
     try:
         r = await client.get(
             f"https://api.github.com{path}",
-            headers={
-                "Authorization": f"Bearer {settings.github_pat}",
-                "Accept": "application/vnd.github+json",
-            },
+            headers=await github_auth_header(),
             follow_redirects=True,
         )
     except httpx.HTTPError as e:
@@ -125,8 +123,8 @@ async def fetch_pull_request_context(
     parsed = _parse_owner_repo(full_name)
     if not parsed:
         return {"ok": False, "error": f"{full_name!r} is not in owner/repo form"}
-    if not (settings.github_pat or "").strip():
-        return {"ok": False, "error": "GITHUB_PAT is not configured — cannot read pull requests"}
+    if not github_auth_available():
+        return {"ok": False, "error": "GitHub auth is not configured — cannot read pull requests"}
     owner, repo = parsed
     base = f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
     n = int(pr_number)

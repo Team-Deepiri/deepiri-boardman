@@ -322,9 +322,14 @@ async def test_pr_merged_sets_completed_on_plaky(
 
 
 @pytest.mark.asyncio
-async def test_pr_review_requested_moves_to_in_qa(
+async def test_pr_review_requested_does_not_move_to_in_qa(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
+    """Boardman's own QA-assignment step calls GitHub's request-reviewers API, which
+    fires this exact event — so writing In QA here moved the task before the assigned
+    QA had looked at anything (reported: PR shows In QA when the QA "didn't say they
+    were reviewing it"). Asking for a review is not QA engaging; only an actual
+    comment/commit from the assigned QA or a support-team member may move it there."""
     fake = RecordingPlaky()
     _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_handler.PlakyClient", lambda: fake)
@@ -360,7 +365,8 @@ async def test_pr_review_requested_moves_to_in_qa(
         out = await handle_pr_review_requested(payload, session)
 
     assert out.get("ok") is True
-    assert fake.status_calls == [("task-rev", "in_qa")]
+    assert out.get("skipped") is True
+    assert fake.status_calls == []
     await engine.dispose()
 
 
@@ -418,20 +424,14 @@ async def test_pr_review_comment_assigned_qa_moves_in_qa_fuzzy_link(
 
 
 @pytest.mark.asyncio
-async def test_issue_comment_assignee_moves_in_qa(
+async def test_issue_comment_by_plain_assignee_does_not_move_to_in_qa(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
+    """A GitHub assignee/requested-reviewer who is not the assigned QA or a support-team
+    member is not QA — their comment must not read as "QA started reviewing"."""
     fake = RecordingPlaky()
     _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
-
-    async def _participants(*_a, **_k):
-        return {"alice"}
-
-    monkeypatch.setattr(
-        "boardman.services.pr_review_handler.fetch_pr_assignees_and_reviewers_logins",
-        _participants,
-    )
 
     engine, factory = await _memory_session_factory()
     async with factory() as session:
@@ -457,7 +457,8 @@ async def test_issue_comment_assignee_moves_in_qa(
         out = await handle_issue_comment_on_pr(payload, session)
 
     assert out.get("ok") is True
-    assert fake.status_calls == [("task-ic", "in_qa")]
+    assert out.get("skipped") is True
+    assert fake.status_calls == []
     await engine.dispose()
 
 
@@ -470,14 +471,6 @@ async def test_issue_comment_plaky_assigned_qa_moves_in_qa_without_github_partic
     _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
 
-    async def _no_participants(*_a, **_k):
-        return set()
-
-    monkeypatch.setattr(
-        "boardman.services.pr_review_handler.fetch_pr_assignees_and_reviewers_logins",
-        _no_participants,
-    )
-
     cfg = TeamAssignmentsConfig(
         plaky_field_qa="fld_qa",
         members=[
@@ -485,6 +478,11 @@ async def test_issue_comment_plaky_assigned_qa_moves_in_qa_without_github_partic
         ],
     )
     monkeypatch.setattr("boardman.services.pr_review_handler.load_team_assignments", lambda: cfg)
+
+    async def _author_login(*_a, **_k):
+        return "dev-author"
+
+    monkeypatch.setattr("boardman.services.pr_review_handler._pr_author_login", _author_login)
 
     engine, factory = await _memory_session_factory()
     async with factory() as session:
@@ -515,20 +513,129 @@ async def test_issue_comment_plaky_assigned_qa_moves_in_qa_without_github_partic
 
 
 @pytest.mark.asyncio
+async def test_issue_comment_by_pr_author_on_support_roster_does_not_move_to_in_qa(
+    monkeypatch: pytest.MonkeyPatch, qa_settings: None
+):
+    """The PR author is on the support/QA roster (self-assigned a PR) — their own comment
+    must NOT read as "QA started reviewing" and move the task to In QA. Only the assigned
+    QA, or a different support member, may do that (reported: task showed In QA after the
+    author commented and no QA had engaged yet)."""
+    # The commenter is on the roster but is NOT the assigned QA on the task.
+    fake = RecordingPlaky(qa_field="fld_qa", qa_plaky_id="actual-qa-id")
+    _patch_task_mutations_plaky(monkeypatch, fake)
+    monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
+
+    cfg = TeamAssignmentsConfig(
+        plaky_field_qa="fld_qa",
+        members=[
+            TeamMember(
+                id="author-plaky-id", github_login="pr-author-dev", display="Dev", qa_tier=0
+            ),
+            TeamMember(id="actual-qa-id", github_login="real-qa-user", display="QE", qa_tier=3),
+        ],
+    )
+    monkeypatch.setattr("boardman.services.pr_review_handler.load_team_assignments", lambda: cfg)
+
+    # The issue_comment payload does not carry the PR author; we fetch it from GitHub.
+    async def _author_login(*_a, **_k):
+        return "pr-author-dev"
+
+    monkeypatch.setattr("boardman.services.pr_review_handler._pr_author_login", _author_login)
+
+    engine, factory = await _memory_session_factory()
+    async with factory() as session:
+        session.add(
+            PullRequestTaskLink(
+                github_repo="svc",
+                github_pr_number=33,
+                plaky_task_id="task-author",
+                github_issue_number=0,
+                link_source="auto_link",
+            )
+        )
+        await session.commit()
+
+    payload = IssueCommentEventPayload(
+        action="created",
+        issue=IssueCommentIssuePayload(number=33, pull_request={"url": "http://api/github.com"}),
+        comment={"user": {"login": "pr-author-dev"}, "body": "addressing my own PR"},
+        repository=GitHubRepository(full_name="deepiri-org/svc", name="svc"),
+    )
+
+    async with factory() as session:
+        out = await handle_issue_comment_on_pr(payload, session)
+
+    assert out.get("ok") is True
+    assert out.get("skipped") is True
+    assert fake.status_calls == []
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_issue_comment_by_support_member_not_author_moves_to_in_qa(
+    monkeypatch: pytest.MonkeyPatch, qa_settings: None
+):
+    """A support/roster member who is NOT the PR author and is not the assigned QA is still
+    covering QA — their comment moves the task to In QA. Guards against over-restricting the
+    fix to the point it breaks legitimate QA-side engagement."""
+    fake = RecordingPlaky(qa_field="fld_qa", qa_plaky_id="actual-qa-id")
+    _patch_task_mutations_plaky(monkeypatch, fake)
+    monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
+
+    cfg = TeamAssignmentsConfig(
+        plaky_field_qa="fld_qa",
+        members=[
+            TeamMember(
+                id="author-plaky-id", github_login="pr-author-dev", display="Dev", qa_tier=0
+            ),
+            TeamMember(id="real-qa-plaky-id", github_login="real-qa-user", display="QE", qa_tier=3),
+            TeamMember(
+                id="covering-plaky-id", github_login="covering-user", display="QE", qa_tier=3
+            ),
+        ],
+    )
+    monkeypatch.setattr("boardman.services.pr_review_handler.load_team_assignments", lambda: cfg)
+
+    async def _author_login(*_a, **_k):
+        return "pr-author-dev"
+
+    monkeypatch.setattr("boardman.services.pr_review_handler._pr_author_login", _author_login)
+
+    engine, factory = await _memory_session_factory()
+    async with factory() as session:
+        session.add(
+            PullRequestTaskLink(
+                github_repo="svc",
+                github_pr_number=34,
+                plaky_task_id="task-cover",
+                github_issue_number=0,
+                link_source="auto_link",
+            )
+        )
+        await session.commit()
+
+    payload = IssueCommentEventPayload(
+        action="created",
+        issue=IssueCommentIssuePayload(number=34, pull_request={"url": "http://api/github.com"}),
+        comment={"user": {"login": "covering-user"}, "body": "I'm covering QA on this"},
+        repository=GitHubRepository(full_name="deepiri-org/svc", name="svc"),
+    )
+
+    async with factory() as session:
+        out = await handle_issue_comment_on_pr(payload, session)
+
+    assert out.get("ok") is True
+    assert fake.status_calls == [("task-cover", "in_qa")]
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
 async def test_issue_comment_skips_when_not_participant_and_not_plaky_qa(
     monkeypatch: pytest.MonkeyPatch, qa_settings: None
 ):
     fake = RecordingPlaky(qa_field="fld_qa", qa_plaky_id="qa-plaky-77")
     _patch_task_mutations_plaky(monkeypatch, fake)
     monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
-
-    async def _participants(*_a, **_k):
-        return {"alice"}
-
-    monkeypatch.setattr(
-        "boardman.services.pr_review_handler.fetch_pr_assignees_and_reviewers_logins",
-        _participants,
-    )
 
     cfg = TeamAssignmentsConfig(
         plaky_field_qa="fld_qa",
@@ -563,4 +670,63 @@ async def test_issue_comment_skips_when_not_participant_and_not_plaky_qa(
 
     assert out.get("skipped") is True
     assert fake.status_calls == []
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_comment_on_an_already_merged_pr_does_not_bounce_a_completed_task_to_in_progress(
+    monkeypatch: pytest.MonkeyPatch, qa_settings: None
+):
+    """A comment can be processed after (or race) the PR's own merge webhook. Without a
+    live merged check, a stale pre-merge "approved" status read would still match and
+    unconditionally overwrite a just-applied Completed status with In Progress — the
+    reported symptom of "I merged it and Plaky flipped to In Progress"."""
+    fake = RecordingPlaky()
+    fake_item = {"fields": [{"key": "status-2", "value": {"id": "qa_approved"}}]}
+
+    async def _get_board_item_public(_bid: str, _iid: str) -> dict[str, Any]:
+        return {"ok": True, "item": fake_item}
+
+    fake.get_board_item_public = _get_board_item_public  # type: ignore[method-assign]
+    _patch_task_mutations_plaky(monkeypatch, fake)
+    monkeypatch.setattr("boardman.services.pr_review_handler.PlakyClient", lambda: fake)
+    monkeypatch.setattr(settings, "plaky_status_in_progress", "in_progress")
+
+    async def _resolve_status_stub(_board_id: str, env_value: str, *intents: str):
+        if env_value:
+            return "status-2", env_value
+        return None, ""
+
+    monkeypatch.setattr("boardman.services.pr_review_handler._resolve_status", _resolve_status_stub)
+
+    async def _merged_true(*_a, **_k) -> bool:
+        return True
+
+    monkeypatch.setattr("boardman.services.pr_review_handler._pr_is_merged", _merged_true)
+
+    engine, factory = await _memory_session_factory()
+    async with factory() as session:
+        session.add(
+            PullRequestTaskLink(
+                github_repo="svc",
+                github_pr_number=126,
+                plaky_task_id="task-merged",
+                github_issue_number=0,
+                link_source="auto_link",
+            )
+        )
+        await session.commit()
+
+    payload = IssueCommentEventPayload(
+        action="created",
+        issue=IssueCommentIssuePayload(number=126, pull_request={"url": "http://api/github.com"}),
+        comment={"user": {"login": "random-dev"}, "body": "thanks, merging!"},
+        repository=GitHubRepository(full_name="deepiri-org/svc", name="svc"),
+    )
+
+    async with factory() as session:
+        out = await handle_issue_comment_on_pr(payload, session)
+
+    assert out.get("event") != "revisions_in_progress"
+    assert ("task-merged", "in_progress") not in fake.status_calls
     await engine.dispose()

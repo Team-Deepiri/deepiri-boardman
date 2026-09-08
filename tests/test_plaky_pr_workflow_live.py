@@ -161,10 +161,6 @@ def _routing_factory(board_id: str):
     return _routing
 
 
-async def _empty_github_participants(*_a: Any, **_k: Any) -> set[str]:
-    return set()
-
-
 @skip_no_plaky
 @skip_live_writes
 @pytest.mark.asyncio
@@ -301,10 +297,6 @@ async def test_live_issue_comment_by_plaky_assigned_qa_sets_in_qa(
         await session.commit()
 
     monkeypatch.setattr("boardman.repos_config.get_routing", _routing_factory(board_id))
-    monkeypatch.setattr(
-        "boardman.services.pr_review_handler.fetch_pr_assignees_and_reviewers_logins",
-        _empty_github_participants,
-    )
 
     payload = IssueCommentEventPayload(
         action="created",

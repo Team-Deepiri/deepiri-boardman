@@ -40,6 +40,17 @@ type StreamSsePayload =
   | { type: "done" }
   | { type: "error"; message: string };
 
+/** Coerce any SSE payload field to a safe string (guards against a server sending an object). */
+function toText(v: unknown): string {
+  if (v == null) return "";
+  if (typeof v === "string") return v;
+  try {
+    return JSON.stringify(v);
+  } catch {
+    return String(v);
+  }
+}
+
 /** Plain chat only: SSE from Ollama → snappier perceived latency (tokens as they generate). */
 async function sendChatStream(
   message: string,
@@ -115,8 +126,8 @@ async function sendChatStream(
         continue;
       }
       if (j.type === "session") onSession(j.session_id);
-      else if (j.type === "token") onToken(j.text);
-      else if (j.type === "status") onStatus?.(j.text);
+      else if (j.type === "token") onToken(toText(j.text));
+      else if (j.type === "status") onStatus?.(toText(j.text));
       else if (j.type === "error") throw new Error(j.message || "stream error");
     }
   }

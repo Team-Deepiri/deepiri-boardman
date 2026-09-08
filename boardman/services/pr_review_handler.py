@@ -6,12 +6,14 @@ import json
 import logging
 from typing import Any
 
+import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import TeamAssignmentsConfig, load_team_assignments
 from boardman.database.models import SyncLog
+from boardman.github.auth import github_auth_available, github_auth_header
+from boardman.github.http import github_http_client
 from boardman.github.pr_actions import is_boardman_comment
-from boardman.github.repo_fetch import fetch_pr_assignees_and_reviewers_logins
 from boardman.github.support_qa import support_team_logins_casefold
 from boardman.github.webhooks import IssueCommentEventPayload, PullRequestReviewEventPayload
 from boardman.observability.degradation import log_degraded
@@ -50,6 +52,36 @@ def _qa_rejected_status() -> str:
 
 def _in_qa_status() -> str:
     return (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
+
+
+async def _pr_author_login(full_name: str, pr_number: int) -> str:
+    """The PR's author GitHub login, fetched from the API.
+
+    The `issue_comment` webhook payload does not embed the PR author, but knowing it is
+    required to keep the PR author's own comments from reading as "QA started" — they are
+    on the support roster more often than not, and their comment must not move a task to
+    In QA. One lightweight `/pulls/{n}` call is cheaper than the state corruption it
+    prevents. Returns "" if the PR cannot be read (fail-closed: never guess).
+    """
+    try:
+        owner_repo = (full_name or "").strip().strip("/")
+        if not owner_repo or "/" not in owner_repo:
+            return ""
+        from urllib.parse import quote
+
+        owner, repo = owner_repo.split("/", 1)
+        url = (
+            "https://api.github.com/repos/"
+            f"{quote(owner, safe='')}/{quote(repo, safe='')}/pulls/{int(pr_number)}"
+        )
+        r = await github_http_client().get(url, headers=await github_auth_header())
+        if r.status_code != 200:
+            return ""
+        data = r.json()
+        user = data.get("user") if isinstance(data, dict) else None
+        return str((user or {}).get("login") or "").strip() if isinstance(user, dict) else ""
+    except (httpx.HTTPError, ValueError, TypeError):
+        return ""
 
 
 def _paused_status() -> str:
@@ -111,16 +143,13 @@ async def _failing_required_checks(full_name: str, pr_number: int) -> list[str]:
     marking the task QA Verified would present broken work as done. API trouble returns
     [] on purpose: absence of the signal is not evidence of failure.
     """
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return []
     try:
         from boardman.github.http import github_http_client
 
         client = github_http_client()
-        hdr = {
-            "Authorization": f"Bearer {settings.github_pat}",
-            "Accept": "application/vnd.github+json",
-        }
+        hdr = await github_auth_header()
         r = await client.get(
             f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}", headers=hdr
         )
@@ -450,16 +479,13 @@ async def handle_pull_request_review(
 async def _current_commit_count(full_name: str, pr_number: int) -> int | None:
     """Live commit count on the PR right now — None when unknowable (no PAT, API
     trouble), so callers skip stamping rather than recording a wrong baseline."""
-    if not (settings.github_pat or "").strip():
+    if not github_auth_available():
         return None
     try:
         from boardman.github.http import github_http_client
 
         client = github_http_client()
-        hdr = {
-            "Authorization": f"Bearer {settings.github_pat}",
-            "Accept": "application/vnd.github+json",
-        }
+        hdr = await github_auth_header()
         r = await client.get(
             f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}", headers=hdr
         )
@@ -469,6 +495,36 @@ async def _current_commit_count(full_name: str, pr_number: int) -> int | None:
         return int(commits) if isinstance(commits, int) else None
     except Exception:  # noqa: BLE001 - a missing baseline degrades to "can't escalate yet"
         return None
+
+
+async def _pr_is_merged(full_name: str, pr_number: int) -> bool:
+    """Live merged state on the PR right now — False (not "unknown") on any API trouble.
+
+    "Resume work" comment handling reads the task's post-review status and, if it
+    matches an approved/changes-requested verdict, moves the task to In Progress. That
+    read can race a `pull_request.closed(merged=true)` webhook delivered around the same
+    time: if this comment webhook is processed first (or the Plaky write from the merge
+    handler hasn't landed yet), the stale pre-merge status still matches and the task
+    gets bounced back to In Progress right after (or just before) it was set Completed,
+    with nothing downstream ever correcting it. Checking the PR's live merged state
+    directly — not the comment payload, which does not carry it — closes that race.
+    """
+    if not github_auth_available():
+        return False
+    try:
+        from boardman.github.http import github_http_client
+
+        client = github_http_client()
+        hdr = await github_auth_header()
+        r = await client.get(
+            f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}", headers=hdr
+        )
+        if r.status_code != 200:
+            return False
+        return bool(r.json().get("merged"))
+    except Exception:  # noqa: BLE001 - unknowable degrades to "not merged" (safe default:
+        # the branch still runs, matching today's behavior when this check can't run)
+        return False
 
 
 async def _sync_plain_issue_comment(
@@ -742,14 +798,36 @@ async def handle_issue_comment_on_pr(
             "message": "in_qa status not configured or discoverable",
         }
 
-    participants = await fetch_pr_assignees_and_reviewers_logins(
-        payload.repository.full_name,
-        pr_number,
-    )
-    participants_cf = {str(p).casefold() for p in participants} if participants else set()
-    is_participant = bool(participants_cf) and commenter.casefold() in participants_cf
-
     cfg = load_team_assignments()
+    # A comment moves the task to In QA only when the commenter IS QA — the assigned
+    # QA, or another support-team member covering for them. A plain PR assignee or
+    # requested reviewer who is not on QA's side (which can include the PR author
+    # themselves, once self-assigned) commenting must not read as "QA started
+    # reviewing" — that was moving tasks to In QA before any QA had looked at anything.
+    support = support_team_logins_casefold()
+    roster_logins = {
+        (getattr(m, "github_login", "") or "").strip().casefold()
+        for pool in (cfg.members, getattr(cfg, "fallback_members", []) or [])
+        for m in pool
+        if (getattr(m, "github_login", "") or "").strip()
+    }
+    is_qa_side_commenter = bool(commenter) and commenter.casefold() in (support | roster_logins)
+    # The PR author's own comment must NEVER read as "QA started", even when they are on
+    # the support roster (the author self-assigned a PR and commented without any QA having
+    # looked at it). Knowing the author also lets the gate below enforce "support member
+    # EXCEPT the author". Fail-closed: if the author cannot be read, roster+support alone no
+    # longer authorizes In QA — only an explicit Plaky QA assignment does. The author fetch
+    # is a deliberate, one-off GitHub API call that only runs when a roster/support member
+    # commented (the only case where the outcome would otherwise have been In QA) — plain
+    # devs and assignees never pay for it.
+    pr_author = ""
+    is_pr_author = False
+    authorizes_in_qa_from_side = False
+    if is_qa_side_commenter:
+        pr_author = (await _pr_author_login(payload.repository.full_name, pr_number)).casefold()
+        commenter_cf = (commenter or "").casefold()
+        is_pr_author = bool(commenter_cf) and commenter_cf == pr_author
+        authorizes_in_qa_from_side = not is_pr_author and bool(pr_author)
     qa_field = await resolve_qa_assignee_field_key(bid, cfg.plaky_field_qa)
     member_plaky_id: str | None = None
     if commenter:
@@ -779,21 +857,48 @@ async def handle_issue_comment_on_pr(
         rej_key, rej_val = await _resolve_status(
             bid, _qa_rejected_status(), "github_pr_review_changes_requested"
         )
-        appr_key, appr_val = await _resolve_status(bid, _qa_approved_status(), "github_pr_review_approved")
+        appr_key, appr_val = await _resolve_status(
+            bid, _qa_approved_status(), "github_pr_review_approved"
+        )
         verdict_checks: dict[str, set[str]] = {}
         if rej_key and rej_val:
             verdict_checks.setdefault(rej_key, set()).add(str(rej_val))
         if appr_key and appr_val:
             verdict_checks.setdefault(appr_key, set()).add(str(appr_val))
+        if verdict_checks and await _pr_is_merged(payload.repository.full_name, pr_number):
+            # A comment can land on (or its webhook can be processed after) a PR that
+            # has since merged — GitHub gives no ordering guarantee between the
+            # `issue_comment` and `pull_request.closed` deliveries. Reading the task's
+            # status here would still see the pre-merge "approved"/"changes requested"
+            # value if the merge handler's Completed write hasn't landed yet (or already
+            # has), and unconditionally bouncing it to In Progress either races or
+            # clobbers that write with nothing downstream to correct it. A merged PR has
+            # nothing left to "resume".
+            verdict_checks = {}
         if verdict_checks:
             ip_key, ip_val = await _resolve_status(
                 bid, _in_progress_status(), "workflow_in_progress"
+            )
+            # Same STATUS field the verdict/in-progress checks read — schema boards keep
+            # every workflow position (Completed included) on one field, so no separate
+            # resolution is needed to know where "Completed" lives.
+            completed_field_key = ip_key or next(iter(verdict_checks), None)
+            _, completed_val = await _resolve_status(
+                bid, (settings.plaky_status_completed or "").strip(), "workflow_completed"
             )
             if ip_val:
                 resumed: list[dict[str, Any]] = []
                 for tid in task_ids:
                     info = await plaky.get_board_item_public(board_id or "", tid)
                     if not info.get("ok") or not info.get("item"):
+                        continue
+                    if (
+                        completed_val
+                        and completed_field_key
+                        and plaky_item_status_id(info["item"], completed_field_key) == completed_val
+                    ):
+                        # Already Completed — writing In Progress here would be a pure
+                        # regression, whatever put it there (a merge, a person, a sweep).
                         continue
                     hit = any(
                         plaky_item_status_id(info["item"], key) == vid
@@ -826,12 +931,16 @@ async def handle_issue_comment_on_pr(
                         "event": "revisions_in_progress",
                     }
 
-    if not is_participant and not is_assigned_qa:
+    # In QA is only justified when the commenter IS QA: the assigned QA on the task, or a
+    # support/roster member covering for them. The PR author (self-assigned or on the
+    # roster) commenting must never count — they are engaged as the author, not QA.
+    if not is_assigned_qa and not authorizes_in_qa_from_side:
         return {
             "ok": True,
             "skipped": True,
-            "message": "commenter is not an assignee, requested reviewer, or Plaky-assigned QA",
+            "message": "commenter is not the assigned QA or (support member who is not the PR author)",
             "commenter": commenter,
+            "pr_author_matches_commenter": is_pr_author,
         }
 
     updated: list[dict[str, Any]] = []

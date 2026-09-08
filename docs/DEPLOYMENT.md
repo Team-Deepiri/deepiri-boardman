@@ -206,6 +206,69 @@ replace it with HTTPS before wider rollout.
 
 Record the smoke test result in the Plaky task or deployment notes.
 
+## Agent Redis Cache & Production Performance Runbook
+
+Boardman includes optional Redis caching for agent session states, Plaky board schemas, and
+repository contexts. Enabling Redis significantly reduces tool-calling latency by avoiding
+repetitive 5–7s Plaky API board schema fetches and caching multi-turn agent context.
+
+### 1. Enabling the Agent Redis Cache
+
+The `docker-compose.prod.yml` file already declares an isolated, resource-capped Redis service
+(`deepiri-boardman-redis-cache`, 256MB cap, alpine) under the `agent-cache` profile on the
+internal `deepiri-network`.
+
+To enable on the production VPS:
+
+1. Start the Redis cache service:
+   ```bash
+   docker compose -f docker-compose.prod.yml --profile agent-cache up -d redis
+   ```
+2. Configure `.env` on the host:
+   ```dotenv
+   AGENT_REDIS_URL=redis://redis:6379/1
+   ```
+3. Restart the `boardman` API container to pick up the cache:
+   ```bash
+   docker compose -f docker-compose.prod.yml up -d --no-deps boardman
+   ```
+4. Verify from API logs:
+   ```bash
+   docker compose -f docker-compose.prod.yml logs --tail=50 boardman | grep -i redis
+   ```
+   Look for: `Redis agent cache connected on db 1` or cache initialization logs.
+
+> [!NOTE]
+> **Worker Isolation**: As documented in `boardman.cache.agent_redis`, `boardman-worker` must
+> keep `AGENT_REDIS_URL=""`. The SQLite worker handles queued jobs independently and must never
+> take a runtime dependency on Redis. Only the API container connects to Redis.
+
+### 2. Performance Tuning Under Constraints
+
+If the production agent feels slow or unreliable, review these operational levers:
+
+- **Model Selection (`LLM_MODEL`)**: When `LLM_PROVIDER=openrouter` is set without an explicit
+  `LLM_MODEL`, Boardman defaults to the free-tier `minimax/minimax-m3:free`. Free-tier models
+  suffer from high queue wait times and strict rate limits (429 errors causing backoff delays).
+  For production responsiveness, specify a fast, cost-effective hosted model in `.env`, such as:
+  ```dotenv
+  LLM_MODEL=google/gemini-2.0-flash-001
+  # or: LLM_MODEL=anthropic/claude-3-5-haiku
+  # or: LLM_MODEL=openai/gpt-4o-mini
+  ```
+- **History Trimming (`AGENT_MAX_HISTORY`)**: Default is 16. In multi-turn chat sessions with tool
+  outputs, large histories balloon token payloads. Tuning `AGENT_MAX_HISTORY=8` in `.env` reduces
+  time-to-first-token noticeably on chat turns.
+- **Plaky Schema Cache TTL (`PLAKY_BOARD_SCHEMA_CACHE_TTL_SECONDS`)**: Plaky API schema fetches
+  take ~5–7s. Raising the cache TTL to `300.0` (5 minutes) prevents repetitive schema roundtrips
+  during agent conversations.
+- **Pre-warmed Repo Knowledge (`REPO_KNOWLEDGE_SWEEP_ENABLED`)**: Keep this `true` so the
+  `boardman-worker` pre-warms repository snapshots in SQLite asynchronously, preventing synchronous
+  GitHub tree fetches during user queries.
+- **Tool Recursion Bounds (`AGENT_RECURSION_LIMIT`)**: Default `0` automatically enforces 10 (read)
+  / 16 (write) steps. Pinning to `AGENT_RECURSION_LIMIT=8` prevents runaway tool calls on complex
+  prompts.
+
 ## Cloudflare Worker Optional Path
 
 The `worker/` package is a Cloudflare Worker for QA assignment only. It is separate from the Compose

@@ -33,6 +33,7 @@ import httpx
 
 from boardman.database.models import SyncLog
 from boardman.database.session import async_session
+from boardman.github.auth import github_auth_available, github_auth_header
 from boardman.github.change_signal import note_repo_changed, repo_full_name_from_payload
 from boardman.github.webhooks import (
     IssueCommentEventPayload,
@@ -256,7 +257,7 @@ async def resolve_poller_repos() -> tuple[list[str], list[tuple[str, str]]]:
         return [], []
 
     org = (settings.github_org or "").strip()
-    if not org or not (settings.github_pat or "").strip():
+    if not org or not github_auth_available():
         return [], [("(org listing)", "GITHUB_ORG and GITHUB_PAT are both required")]
 
     from boardman.github.http import github_http_client
@@ -369,11 +370,8 @@ class GitHubEventPoller:
         """Open PR head branches currently polled for commits, across the watched repos."""
         return sum(len(self._processed.get(r, {}).get("pr_branches") or {}) for r in repos)
 
-    def _gh_headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {settings.github_pat}",
-            "Accept": "application/vnd.github+json",
-        }
+    async def _gh_headers(self) -> dict[str, str]:
+        return await github_auth_header()
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -470,7 +468,7 @@ class GitHubEventPoller:
 
     # ── Real-time direct polling (issues / PRs / commits) ────────────────────────
     async def _poll_direct(self, full_name: str) -> None:
-        if not (settings.github_pat or "").strip():
+        if not github_auth_available():
             return
         baseline = self._baseline_dt.get(full_name)
         if baseline is None:
@@ -528,7 +526,7 @@ class GitHubEventPoller:
             f"https://api.github.com/repos/{full_name}/issues"
             f"?state=all&since={since}&sort=created&direction=desc&per_page=50"
         )
-        r = await client.get(url, headers=self._gh_headers())
+        r = await client.get(url, headers=await self._gh_headers())
         if r.status_code != 200:
             _log.warning("poller: GET issues %s -> HTTP %s", full_name, r.status_code)
             return
@@ -615,7 +613,7 @@ class GitHubEventPoller:
             f"https://api.github.com/repos/{full_name}/pulls"
             f"?state=all&sort=updated&direction=desc&per_page=30"
         )
-        r = await client.get(url, headers=self._gh_headers())
+        r = await client.get(url, headers=await self._gh_headers())
         if r.status_code != 200:
             _log.warning("poller: GET pulls %s -> HTTP %s", full_name, r.status_code)
             return
@@ -746,7 +744,8 @@ class GitHubEventPoller:
         probed = proc.setdefault("reopen_probed", set())
         for num in sorted(withdrawn_here - seen_here - probed)[:_MAX_REOPEN_PROBES_PER_CYCLE]:
             probe = await client.get(
-                f"https://api.github.com/repos/{full_name}/pulls/{num}", headers=self._gh_headers()
+                f"https://api.github.com/repos/{full_name}/pulls/{num}",
+                headers=await self._gh_headers(),
             )
             if probe.status_code != 200:
                 continue
@@ -799,7 +798,7 @@ class GitHubEventPoller:
                 from urllib.parse import quote
 
                 url += f"&sha={quote(branch, safe='')}"
-            r = await client.get(url, headers=self._gh_headers())
+            r = await client.get(url, headers=await self._gh_headers())
             if r.status_code != 200:
                 continue
             commits = r.json()
@@ -823,7 +822,7 @@ class GitHubEventPoller:
             await self._comment_commits(full_name, actor or "someone", normalized)
 
     async def _poll_repo(self, full_name: str) -> None:
-        if not (settings.github_pat or "").strip():
+        if not github_auth_available():
             _log.warning("poller: GITHUB_PAT missing — cannot poll %s", full_name)
             return
         headers = {}
@@ -833,11 +832,7 @@ class GitHubEventPoller:
         async with httpx.AsyncClient(timeout=30) as client:
             r = await client.get(
                 f"https://api.github.com/repos/{full_name}/events?per_page=50",
-                headers={
-                    "Authorization": f"Bearer {settings.github_pat}",
-                    "Accept": "application/vnd.github+json",
-                    **headers,
-                },
+                headers={**(await github_auth_header()), **headers},
             )
         if r.status_code == 304:
             return

@@ -192,4 +192,4 @@ async def test_missing_credentials_are_reported_distinctly(monkeypatch) -> None:
     out = await org_activity_ranking()
 
     assert out["ok"] is False
-    assert "GITHUB_ORG and GITHUB_PAT" in out["message"]
+    assert "GITHUB_ORG and a GitHub credential" in out["message"]
