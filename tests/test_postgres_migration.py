@@ -33,8 +33,9 @@ def test_alembic_upgrade_head_creates_all_tables_on_postgres(monkeypatch) -> Non
     # which cannot nest inside pytest-asyncio's already-running loop.
     import asyncio
 
-    from alembic import command
     from alembic.config import Config
+
+    from alembic import command
 
     # boardman.settings.settings is a singleton read once at import time — setenv alone
     # would not reach alembic/env.py's `settings.database_url` lookup.
