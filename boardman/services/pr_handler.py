@@ -6,7 +6,7 @@ import json
 import logging
 import uuid
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
@@ -14,7 +14,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import load_team_assignments
-from boardman.database.models import IssueTaskMap, PullRequestTaskLink, SyncLog
+from boardman.database.models import (
+    IssueTaskMap,
+    PrTaskLifecycle,
+    PullRequestTaskLink,
+    SyncLog,
+)
+from boardman.github.pr_exclusion import pr_sync_exclusion_reason
 from boardman.github.webhooks import (
     DeploymentStatusEventPayload,
     PullRequestEventPayload,
@@ -189,7 +195,12 @@ async def _apply_pr_type_and_assignee(
     head = getattr(pull_request, "head", None)
     head_ref = str(head.get("ref")) if isinstance(head, dict) else ""
     labels = pr_label_names(getattr(pull_request, "labels", None))
-    canon_type = infer_task_type_from_pr(head_ref, labels)
+    canon_type = infer_task_type_from_pr(
+        head_ref,
+        labels,
+        title=str(getattr(pull_request, "title", "") or ""),
+        body=str(getattr(pull_request, "body", "") or ""),
+    )
     pr_state = resolve_pr_state(
         pull_request,
         repo_full_name=repo_full,
@@ -692,7 +703,9 @@ async def _maybe_triage_ambiguous_pr(
     head = getattr(pr_obj, "head", None)
     head_ref = str(head.get("ref") or "") if isinstance(head, dict) else ""
     labels = pr_label_names(getattr(pr_obj, "labels", None))
-    task_type = infer_task_type_from_pr(head_ref, labels) or "Feature"
+    pr_title = str(getattr(pr_obj, "title", "") or "")
+    pr_body = str(getattr(pr_obj, "body", "") or "")
+    task_type = infer_task_type_from_pr(head_ref, labels, title=pr_title, body=pr_body) or "Feature"
     is_draft = bool(getattr(pr_obj, "draft", False))
 
     pr_user = getattr(pr_obj, "user", None)
@@ -746,6 +759,18 @@ async def _maybe_triage_ambiguous_pr(
     if task_id:
         reservation.plaky_task_id = task_id
         reservation.link_source = _PR_TASK_CREATED_LINK_SOURCE
+        if settings.pr_task_cleanup_enabled:
+            session.add(
+                PrTaskLifecycle(
+                    github_repo=repo_name,
+                    github_pr_number=pr_number,
+                    plaky_task_id=task_id,
+                    plaky_board_id=bid,
+                    origin="created",
+                    cleanup_due_at=datetime.utcnow()
+                    + timedelta(days=settings.pr_task_cleanup_ttl_days),
+                )
+            )
         # The PR named an issue that has no task yet. Claim that issue for THIS card, so
         # when the issue itself syncs it updates this one instead of opening a second
         # card for the same piece of work.
@@ -1065,6 +1090,20 @@ async def handle_pr_opened(
     opened_state = resolve_pr_state(
         payload.pull_request, repo_full_name=full_name, repo_name=repo_name
     )
+    base = getattr(payload.pull_request, "base", None)
+    base_ref = str(base.get("ref") or "") if isinstance(base, dict) else ""
+    pr_user = payload.pull_request.user if isinstance(payload.pull_request.user, dict) else None
+    exclusion_reason = pr_sync_exclusion_reason(
+        base_ref=base_ref, head_ref=opened_state.head_ref, pr_user=pr_user
+    )
+    if exclusion_reason:
+        _log.info("PR #%s in %s not synced: %s", pr_number, full_name, exclusion_reason)
+        return {
+            "ok": True,
+            "skipped": True,
+            "excluded": True,
+            "message": exclusion_reason,
+        }
     linked_issues = linked_issue_numbers_for_pr(
         body=payload.pull_request.body,
         title=payload.pull_request.title,
