@@ -21,6 +21,8 @@ qa_excluded:
 # 2026-09: specific individual exclusions (not lead/manager-team-derived).
 - RiccoWrld  # Ricardo Beale
 - christiankrider1  # Christian Krider
+- ConnorWhite9  # Connor White
+- CherryQuartzio  # Quang Nguyen
 # Auto-excluded from QA on top of the above: live membership of these GitHub org teams
 # (leads/managers by construction) -- add/remove someone on the team and it takes effect
 # on the next roster load, no YAML edit needed. See settings.github_qa_excluded_teams.

@@ -144,15 +144,17 @@ def test_live_qa_tier_team_overrides_yaml_qa_tier(tmp_path, monkeypatch):
     assert cfg.members[0].qa_tier == 3
 
 
-def test_no_live_qa_tier_team_keeps_yaml_qa_tier(tmp_path, monkeypatch):
-    """No matching org team is 'no evidence', not 'tier 0' -- the configured value stands."""
+def test_no_live_qa_tier_team_keeps_explicit_member_override(tmp_path, monkeypatch):
+    """No matching org team is 'no evidence' -- but a per-member `qa_tier:` a human
+    explicitly typed for THIS login still stands; it's only the blanket
+    member_defaults.qa_tier guess that yields to the cold-start default."""
     yml = tmp_path / "ta.yml"
     yml.write_text(
         yaml.dump(
             {
                 "plaky_field_keys": {"engineer": "fe", "qa": "fq"},
-                "member_defaults": {"repo_globs": ["deepiri-org/*"], "roles": ["qa"], "qa_tier": 2},
-                "member_overrides": {"alice": {"id": "plaky-alice"}},
+                "member_defaults": {"repo_globs": ["deepiri-org/*"], "roles": ["qa"], "qa_tier": 1},
+                "member_overrides": {"alice": {"id": "plaky-alice", "qa_tier": 2}},
             }
         ),
         encoding="utf-8",
@@ -181,6 +183,103 @@ def test_no_live_qa_tier_team_keeps_yaml_qa_tier(tmp_path, monkeypatch):
     cfg = config.load_team_assignments()
     assert len(cfg.members) == 1
     assert cfg.members[0].qa_tier == 2
+    assert cfg.members[0].qa_tier_is_explicit_override is True
+
+
+def test_no_signal_at_all_falls_back_to_cold_start_default(tmp_path, monkeypatch):
+    """No live team tier, no explicit per-member override, GitHunt off: a blanket
+    member_defaults.qa_tier guess must NOT stand in as if it were a real decision --
+    the person gets qa_tier_cold_start_default, never a silent 'assume tier 3'."""
+    yml = tmp_path / "ta.yml"
+    yml.write_text(
+        yaml.dump(
+            {
+                "plaky_field_keys": {"engineer": "fe", "qa": "fq"},
+                "member_defaults": {"repo_globs": ["deepiri-org/*"], "roles": ["qa"], "qa_tier": 3},
+                "member_overrides": {"alice": {"id": "plaky-alice"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config.settings, "team_assignments_yml_path", str(yml))
+    monkeypatch.setattr(config.settings, "github_qa_tier_team_scan_enabled", True)
+    monkeypatch.setattr(config.settings, "github_org", "Team-Deepiri")
+    monkeypatch.setattr(config.settings, "qa_tier_cold_start_default", 2)
+    monkeypatch.setattr(config.settings, "githunt_api_key", "")
+    config._raw.cache_clear()
+    config._qa_tier_teams_cache = None
+
+    monkeypatch.setattr(
+        "boardman.assignment.config.get_cached_support_team_roster",
+        lambda spec: {"ok": True, "members": [{"login": "alice", "name": "Alice"}]},
+    )
+    monkeypatch.setattr(
+        PlakyClient,
+        "list_workspace_users_sync",
+        lambda self: {"ok": True, "users": []},
+    )
+    monkeypatch.setattr(config, "github_auth_available", lambda: True)
+    monkeypatch.setattr(
+        config,
+        "fetch_login_max_qa_tier_from_org_teams_sync",
+        lambda client, org, headers: ({}, []),
+    )
+    cfg = config.load_team_assignments()
+    assert len(cfg.members) == 1
+    assert cfg.members[0].qa_tier == 2
+    assert cfg.members[0].qa_tier_is_explicit_override is False
+
+
+def test_githunt_cold_start_seeds_qa_tier_when_configured(tmp_path, monkeypatch):
+    """With no live team tier and no explicit override, a configured GitHunt key seeds
+    the starting qa_tier from the cached/looked-up activity+tech-stack score."""
+    yml = tmp_path / "ta.yml"
+    yml.write_text(
+        yaml.dump(
+            {
+                "plaky_field_keys": {"engineer": "fe", "qa": "fq"},
+                "member_defaults": {"repo_globs": ["deepiri-org/*"], "roles": ["qa"]},
+                "member_overrides": {"alice": {"id": "plaky-alice"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config.settings, "team_assignments_yml_path", str(yml))
+    monkeypatch.setattr(config.settings, "github_qa_tier_team_scan_enabled", True)
+    monkeypatch.setattr(config.settings, "github_org", "Team-Deepiri")
+    monkeypatch.setattr(config.settings, "githunt_api_key", "test-key")
+    config._raw.cache_clear()
+    config._qa_tier_teams_cache = None
+
+    monkeypatch.setattr(
+        "boardman.assignment.config.get_cached_support_team_roster",
+        lambda spec: {"ok": True, "members": [{"login": "alice", "name": "Alice"}]},
+    )
+    monkeypatch.setattr(
+        PlakyClient,
+        "list_workspace_users_sync",
+        lambda self: {"ok": True, "users": []},
+    )
+    monkeypatch.setattr(config, "github_auth_available", lambda: True)
+    monkeypatch.setattr(
+        config,
+        "fetch_login_max_qa_tier_from_org_teams_sync",
+        lambda client, org, headers: ({}, []),
+    )
+
+    from boardman.github import githunt_enrichment
+
+    monkeypatch.setattr(githunt_enrichment, "cached_profile", lambda login: None)
+    monkeypatch.setattr(githunt_enrichment, "has_cached", lambda login: False)
+    monkeypatch.setattr(
+        githunt_enrichment,
+        "fetch_and_cache_profile_sync",
+        lambda login: {"activity_score": 90, "tech_stack_score": 88},
+    )
+
+    cfg = config.load_team_assignments()
+    assert len(cfg.members) == 1
+    assert cfg.members[0].qa_tier == 3
 
 
 def test_explicit_members_list_skips_github_fetch(tmp_path, monkeypatch):

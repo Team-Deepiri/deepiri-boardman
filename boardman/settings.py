@@ -221,6 +221,21 @@ class Settings(BaseSettings):
     # repo). False = legacy overlap-pool weighted-random pick only.
     qa_github_fit_enabled: bool = True
     qa_max_active_prs: int = 5
+    # QA cold-start default for someone with no live team-name tier AND no explicit
+    # human override -- a person is never assumed tier 3 (all repos) just because
+    # nobody typed a number for them. Repo matching still steers a thin-history person
+    # toward tier-1 work (see qa_picker's cold-start preference), so this ceiling is a
+    # safety net, not the main mechanism.
+    qa_tier_cold_start_default: int = 2
+    # GitHunt (https://githunt.ai) developer-scoring API: a one-time cold-start signal
+    # for a QA with no GitHub team-name tier and no explicit override yet. Empty key =
+    # feature off (no network call, same as every other optional live-data source here).
+    # Free tier is 50 calls/month, so a lookup is cached indefinitely per login (see
+    # boardman/github/githunt_enrichment.py) -- it seeds a starting tier once, then
+    # boardman's own decayed PR-activity inference takes over and stays authoritative.
+    githunt_api_key: str = ""
+    githunt_api_base: str = "https://api.githunt.ai"
+    githunt_cache_json_path: str = "githunt_cache.json"
 
     # sqlite+aiosqlite is a fine zero-config default for one person running Boardman
     # locally, but it serializes every write onto a single connection — with the API
