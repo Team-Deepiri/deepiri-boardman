@@ -73,9 +73,7 @@ def test_qa_excluded_merges_live_management_team_logins(tmp_path, monkeypatch):
             return {"ok": True, "members": [{"login": "lead-login"}]}
         return {"ok": True, "members": []}
 
-    monkeypatch.setattr(
-        "boardman.assignment.config.get_cached_support_team_roster", _fake_roster
-    )
+    monkeypatch.setattr("boardman.assignment.config.get_cached_support_team_roster", _fake_roster)
     cfg = config.load_team_assignments()
     assert "Static Person" in cfg.qa_excluded
     assert "lead-login" in cfg.qa_excluded
