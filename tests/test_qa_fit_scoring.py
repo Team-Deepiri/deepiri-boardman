@@ -77,6 +77,52 @@ def test_ranked_choice_prefers_higher_fit() -> None:
     assert "We picked qa-a" in detail and "Confidence:" in detail
 
 
+def test_ranked_choice_newcomer_floor_wins_tier1_repo() -> None:
+    """A thin-history newcomer can win a tier-1 repo against a much-higher-fit veteran
+    -- raw fit-ranking alone made this essentially impossible (a 4-5x score gap that
+    +-jitter cannot close), which is exactly the starvation pattern seen in real org
+    data (a few high-fit reviewers absorbing nearly all QA load)."""
+    veteran, newcomer = _member("qa-veteran"), _member("qa-newcomer")
+    cfg = _cfg([veteran, newcomer])
+    cfg.random_jitter = 0.0
+    fits = {
+        "qa-veteran": (0.85, qp.FitDetail(0.5, 0.7, 0.3, ["org/repo-x"])),
+        "qa-newcomer": (0.0, qp.FitDetail(0.0, 0.0, 0.0, [])),
+    }
+    winner, _ = qp._ranked_choice([veteran, newcomer], cfg, fits, repo_tier=1)
+    assert winner is not None and winner.id == "qa-newcomer"
+
+
+def test_ranked_choice_newcomer_floor_does_not_apply_above_tier1() -> None:
+    """The nudge is deliberately tier-1-only -- a thin-history newcomer must NOT win a
+    tier-2/3 repo over an experienced reviewer just because of this floor; eligibility
+    (qa_tier >= repo_tier) already governs whether they can be in the pool at all, and
+    once there, harder repos still favor real experience."""
+    veteran, newcomer = _member("qa-veteran"), _member("qa-newcomer")
+    cfg = _cfg([veteran, newcomer])
+    cfg.random_jitter = 0.0
+    fits = {
+        "qa-veteran": (0.85, qp.FitDetail(0.5, 0.7, 0.3, ["org/repo-x"])),
+        "qa-newcomer": (0.0, qp.FitDetail(0.0, 0.0, 0.0, [])),
+    }
+    winner, _ = qp._ranked_choice([veteran, newcomer], cfg, fits, repo_tier=2)
+    assert winner is not None and winner.id == "qa-veteran"
+
+
+def test_ranked_choice_newcomer_floor_fades_once_fit_grows() -> None:
+    """Once someone's own fit rises past the thin-history ceiling, the floor stops
+    applying on its own -- no separate decay schedule needed."""
+    veteran, grown = _member("qa-veteran"), _member("qa-grown")
+    cfg = _cfg([veteran, grown])
+    cfg.random_jitter = 0.0
+    fits = {
+        "qa-veteran": (0.85, qp.FitDetail(0.5, 0.7, 0.3, ["org/repo-x"])),
+        "qa-grown": (0.5, qp.FitDetail(0.3, 0.3, 0.2, ["org/repo-y"])),
+    }
+    winner, _ = qp._ranked_choice([veteran, grown], cfg, fits, repo_tier=1)
+    assert winner is not None and winner.id == "qa-veteran"
+
+
 def test_ranked_choice_weight_breaks_zero_fit_ties() -> None:
     a, b = _member("qa-a", weight=0.5), _member("qa-b", weight=2.0)
     cfg = _cfg([a, b])
