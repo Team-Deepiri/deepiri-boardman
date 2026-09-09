@@ -103,6 +103,86 @@ def test_qa_excluded_team_fetch_failure_keeps_static_list(tmp_path, monkeypatch)
     assert cfg.qa_excluded == ["Static Person"]
 
 
+def test_live_qa_tier_team_overrides_yaml_qa_tier(tmp_path, monkeypatch):
+    """A GitHub team named like `qa-tier-3` is live evidence of someone's real QA tier
+    and must win over whatever number is hand-typed in member_defaults/member_overrides
+    -- per Joe: never hardcode a person's tier when there's a live signal for it."""
+    yml = tmp_path / "ta.yml"
+    yml.write_text(
+        yaml.dump(
+            {
+                "plaky_field_keys": {"engineer": "fe", "qa": "fq"},
+                "member_defaults": {"repo_globs": ["deepiri-org/*"], "roles": ["qa"], "qa_tier": 1},
+                "member_overrides": {"alice": {"id": "plaky-alice"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config.settings, "team_assignments_yml_path", str(yml))
+    monkeypatch.setattr(config.settings, "github_qa_tier_team_scan_enabled", True)
+    monkeypatch.setattr(config.settings, "github_org", "Team-Deepiri")
+    config._raw.cache_clear()
+    config._qa_tier_teams_cache = None
+
+    monkeypatch.setattr(
+        "boardman.assignment.config.get_cached_support_team_roster",
+        lambda spec: {"ok": True, "members": [{"login": "alice", "name": "Alice"}]},
+    )
+    monkeypatch.setattr(
+        PlakyClient,
+        "list_workspace_users_sync",
+        lambda self: {"ok": True, "users": []},
+    )
+    monkeypatch.setattr(config, "github_auth_available", lambda: True)
+    monkeypatch.setattr(
+        config,
+        "fetch_login_max_qa_tier_from_org_teams_sync",
+        lambda client, org, headers: ({"alice": 3}, ["qa-tier-3(t3)"]),
+    )
+    cfg = config.load_team_assignments()
+    assert len(cfg.members) == 1
+    assert cfg.members[0].qa_tier == 3
+
+
+def test_no_live_qa_tier_team_keeps_yaml_qa_tier(tmp_path, monkeypatch):
+    """No matching org team is 'no evidence', not 'tier 0' -- the configured value stands."""
+    yml = tmp_path / "ta.yml"
+    yml.write_text(
+        yaml.dump(
+            {
+                "plaky_field_keys": {"engineer": "fe", "qa": "fq"},
+                "member_defaults": {"repo_globs": ["deepiri-org/*"], "roles": ["qa"], "qa_tier": 2},
+                "member_overrides": {"alice": {"id": "plaky-alice"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config.settings, "team_assignments_yml_path", str(yml))
+    monkeypatch.setattr(config.settings, "github_qa_tier_team_scan_enabled", True)
+    monkeypatch.setattr(config.settings, "github_org", "Team-Deepiri")
+    config._raw.cache_clear()
+    config._qa_tier_teams_cache = None
+
+    monkeypatch.setattr(
+        "boardman.assignment.config.get_cached_support_team_roster",
+        lambda spec: {"ok": True, "members": [{"login": "alice", "name": "Alice"}]},
+    )
+    monkeypatch.setattr(
+        PlakyClient,
+        "list_workspace_users_sync",
+        lambda self: {"ok": True, "users": []},
+    )
+    monkeypatch.setattr(config, "github_auth_available", lambda: True)
+    monkeypatch.setattr(
+        config,
+        "fetch_login_max_qa_tier_from_org_teams_sync",
+        lambda client, org, headers: ({}, []),
+    )
+    cfg = config.load_team_assignments()
+    assert len(cfg.members) == 1
+    assert cfg.members[0].qa_tier == 2
+
+
 def test_explicit_members_list_skips_github_fetch(tmp_path, monkeypatch):
     yml = tmp_path / "ta.yml"
     yml.write_text(

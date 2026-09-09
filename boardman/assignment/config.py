@@ -16,6 +16,8 @@ import yaml
 from boardman.assignment.identity_match import best_plaky_match_for_github
 from boardman.assignment.llm_identity_match import clear_identity_llm_cache
 from boardman.assignment.repo_rules import QaRepoRules, default_qa_repo_rules
+from boardman.github.auth import github_auth_available, github_auth_header_sync
+from boardman.github.qa_tier_teams import fetch_login_max_qa_tier_from_org_teams_sync
 from boardman.github.team_roster import clear_support_team_cache, get_cached_support_team_roster
 from boardman.observability.degradation import log_unexpected
 from boardman.plaky.board_schema import (
@@ -31,20 +33,19 @@ from boardman.settings import settings
 # Matching is case-insensitive against member display name AND GitHub login.
 # Override the whole list with `qa_excluded:` in team_assignments.yml.
 DEFAULT_QA_EXCLUDED: tuple[str, ...] = (
-    "Joe Black",
-    "Austin Heitzman",
-    "Devin Gamble",
+    "jrb00013",  # Joe Black
+    "austinm2h35-sketch",  # Austin Heitzman
+    "devcodesfr",  # Devin Gamble
     "SeanSan06",  # Sean San
     "Nathan-123",  # Nathan Adams
     # Added per Joe's PR #81 review: on the GitHub support team but leads/managers,
     # never auto-assigned as PR QA.
-    "Asheen Hameeda",
+    "asheenhameeda8-cpu",  # Asheen Hameeda
     "AndyN-star",
-    "David Poindexter",
-    # 2026-09: specific individual exclusions (not lead/manager-team-derived). Keyed on
-    # GitHub login, not display name -- a login is stable and unambiguous, while display
-    # names drift with Plaky profile edits and can collide between people.
-    "jrb00013",
+    "Dpoin23",  # David Poindexter
+    # 2026-09: specific individual exclusions (not lead/manager-team-derived). All keyed
+    # on GitHub login, not display name -- a login is stable and unambiguous, while a
+    # display name drifts with Plaky profile edits and can collide between people.
     "RiccoWrld",  # Ricardo Beale
     "christiankrider1",  # Christian Krider
 )
@@ -454,6 +455,46 @@ def _parse_qa_tier(val: Any) -> int:
     return t if t in (1, 2, 3) else 3
 
 
+# (monotonic_ts, org, result) — a person's QA tier should come from where they actually
+# sit (a live "qa-tier-N"-named GitHub team), not a number someone typed into YAML once
+# and never revisited. TTL-cached like the support-team roster so this stays cheap on
+# every roster load instead of listing org teams on every PR webhook.
+_qa_tier_teams_cache: tuple[float, str, dict[str, int]] | None = None
+_QA_TIER_TEAMS_TTL_SECONDS = 300.0
+
+
+def _qa_tier_from_org_teams() -> dict[str, int]:
+    """{github_login (lowercased) -> qa_tier} from live GitHub team names/slugs.
+
+    Empty when disabled, unauthenticated, or no org team encodes a tier -- callers must
+    treat that the same as "no live evidence, keep whatever team_assignments.yml says."
+    This is additive over the YAML value, never a hard requirement to have one.
+    """
+    global _qa_tier_teams_cache
+    if not settings.github_qa_tier_team_scan_enabled or not github_auth_available():
+        return {}
+    org = (settings.github_org or "").strip()
+    if not org:
+        return {}
+    now = time.monotonic()
+    cached = _qa_tier_teams_cache
+    if cached is not None and cached[1] == org and (now - cached[0]) < _QA_TIER_TEAMS_TTL_SECONDS:
+        return cached[2]
+    try:
+        import httpx
+
+        with httpx.Client(timeout=30) as client:
+            login_tier, _used = fetch_login_max_qa_tier_from_org_teams_sync(
+                client, org, github_auth_header_sync()
+            )
+    except Exception as exc:  # noqa: BLE001 - a failed live lookup must not block roster load
+        _log.warning("qa_tier org-team scan failed for %s: %s", org, exc)
+        log_unexpected(_log, "_qa_tier_from_org_teams")
+        return cached[2] if cached else {}
+    _qa_tier_teams_cache = (now, org, login_tier)
+    return login_tier
+
+
 def _qa_excluded_team_logins(data: dict[str, Any]) -> list[str]:
     """GitHub logins auto-excluded from QA (reviewer) assignment via live team membership.
 
@@ -713,6 +754,18 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
                 "read access to return to the live roster.",
                 len(members),
             )
+
+    # Live GitHub team membership (a "qa-tier-N"-named team) beats whatever qa_tier a
+    # human typed into member_defaults/member_overrides -- the number in YAML drifts the
+    # moment someone's actual capability changes and nobody remembers to edit the file.
+    # No matching team for a person just means "no live evidence"; their configured
+    # qa_tier (default 3) stands unchanged.
+    live_qa_tiers = _qa_tier_from_org_teams()
+    if live_qa_tiers:
+        for m in members:
+            live_tier = live_qa_tiers.get(m.github_login.strip().lower())
+            if live_tier is not None:
+                m.qa_tier = live_tier
 
     req = data.get("repo_requirements") or {}
     heavy: list[str] = []

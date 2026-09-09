@@ -69,15 +69,14 @@ def test_default_exclusion_list_names() -> None:
     individual exclusions (keyed on GitHub login, not display name, where a login is
     known -- stable and unambiguous, unlike a Plaky display name)."""
     assert set(DEFAULT_QA_EXCLUDED) == {
-        "Joe Black",
-        "Austin Heitzman",
-        "Devin Gamble",
+        "jrb00013",
+        "austinm2h35-sketch",
+        "devcodesfr",
         "SeanSan06",
         "Nathan-123",
-        "Asheen Hameeda",
+        "asheenhameeda8-cpu",
         "AndyN-star",
-        "David Poindexter",
-        "jrb00013",
+        "Dpoin23",
         "RiccoWrld",
         "christiankrider1",
     }
@@ -86,7 +85,7 @@ def test_default_exclusion_list_names() -> None:
 @pytest.mark.asyncio
 async def test_excluded_leads_are_never_picked(monkeypatch: pytest.MonkeyPatch) -> None:
     austin = _member("qa-austin", display="Austin Heitzman", login="austinm2h35-sketch")
-    joe = _member("qa-joe", display="Joe Black", login="joeblack")
+    joe = _member("qa-joe", display="Joe Black", login="jrb00013")
     worker = _member("qa-worker", display="Regular QA", login="regular-qa")
     cfg = _cfg([austin, joe, worker])
 
@@ -126,7 +125,7 @@ async def test_exclusion_matches_github_login_too(monkeypatch: pytest.MonkeyPatc
 
 @pytest.mark.asyncio
 async def test_all_excluded_returns_clear_reason(monkeypatch: pytest.MonkeyPatch) -> None:
-    only_lead = _member("qa-austin", display="Austin Heitzman")
+    only_lead = _member("qa-austin", display="Austin Heitzman", login="austinm2h35-sketch")
     cfg = _cfg([only_lead])
 
     async def fake_tier(fn: str) -> int:
