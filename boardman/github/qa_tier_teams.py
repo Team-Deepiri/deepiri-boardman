@@ -158,3 +158,110 @@ async def fetch_login_max_qa_tier_from_org_teams(
         )
 
     return login_tier, used_slugs
+
+
+def _list_team_members_sync(
+    client: httpx.Client,
+    org: str,
+    team_slug: str,
+    headers: dict[str, str],
+) -> list[str]:
+    """Blocking twin of `_list_team_members`, for callers that load synchronously
+    (team_assignments.yml is read by a sync loader, same as the support-team roster)."""
+    org_q, slug_q = quote(org, safe=""), quote(team_slug, safe="")
+    path_base = f"https://api.github.com/orgs/{org_q}/teams/{slug_q}/members"
+    out: list[str] = []
+    page = 1
+    while page <= 20:
+        r = client.get(f"{path_base}?per_page=100&page={page}", headers=headers)
+        if r.status_code != 200:
+            _log.debug("Team members %s/%s page %s: HTTP %s", org, team_slug, page, r.status_code)
+            break
+        batch = r.json()
+        if not isinstance(batch, list) or not batch:
+            break
+        for u in batch:
+            if isinstance(u, dict):
+                login = (u.get("login") or "").strip().lower()
+                if login:
+                    out.append(login)
+        if len(batch) < 100:
+            break
+        page += 1
+    return out
+
+
+def fetch_login_max_qa_tier_from_org_teams_sync(
+    client: httpx.Client,
+    org: str,
+    headers: dict[str, str],
+    *,
+    skip_team_slug: str | None = None,
+) -> tuple[dict[str, int], list[str]]:
+    """Blocking twin of `fetch_login_max_qa_tier_from_org_teams` (same semantics)."""
+    login_tier: dict[str, int] = {}
+    used_slugs: list[str] = []
+    skip_slug = (skip_team_slug or "").strip().lower()
+
+    page = 1
+    while page <= 20:
+        org_q = quote(org, safe="")
+        url = f"https://api.github.com/orgs/{org_q}/teams?per_page=100&page={page}"
+        r = client.get(url, headers=headers)
+        if r.status_code == 404:
+            _log.warning("GitHub org teams not found for %r (404)", org)
+            break
+        if r.status_code == 403:
+            _log.warning(
+                "GitHub 403 listing teams for %r — token needs read:org (or admin:org). Tier teams skipped.",
+                org,
+            )
+            break
+        if r.status_code != 200:
+            _log.warning(
+                "GitHub HTTP %s listing teams for %s: %s", r.status_code, org, r.text[:200]
+            )
+            break
+
+        teams = r.json()
+        if not isinstance(teams, list) or not teams:
+            break
+
+        for team in teams:
+            if not isinstance(team, dict):
+                continue
+            slug = (team.get("slug") or "").strip()
+            name = (team.get("name") or "").strip() or None
+            if not slug:
+                continue
+            if skip_slug and slug.lower() == skip_slug:
+                continue
+            tier = parse_qa_tier_from_github_team(slug, name)
+            if tier is None:
+                continue
+
+            used_slugs.append(f"{slug}(t{tier})")
+            logins = _list_team_members_sync(client, org, slug, headers)
+            for login in logins:
+                prev = login_tier.get(login, 0)
+                login_tier[login] = max(prev, tier)
+
+        if len(teams) < 100:
+            break
+        page += 1
+
+    if used_slugs:
+        _log.info(
+            "QA tier teams in %s: %d team(s) with tier in name → %d member login(s). Examples: %s",
+            org,
+            len(used_slugs),
+            len(login_tier),
+            ", ".join(used_slugs[:12]) + ("…" if len(used_slugs) > 12 else ""),
+        )
+    else:
+        _log.info(
+            "No org teams in %s matched QA tier slug/name patterns — using activity-only qa_tier inference.",
+            org,
+        )
+
+    return login_tier, used_slugs
