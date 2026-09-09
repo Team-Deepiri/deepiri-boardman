@@ -282,6 +282,104 @@ def test_githunt_cold_start_seeds_qa_tier_when_configured(tmp_path, monkeypatch)
     assert cfg.members[0].qa_tier == 3
 
 
+def _base_cold_start_yml(tmp_path):
+    yml = tmp_path / "ta.yml"
+    yml.write_text(
+        yaml.dump(
+            {
+                "plaky_field_keys": {"engineer": "fe", "qa": "fq"},
+                "member_defaults": {"repo_globs": ["deepiri-org/*"], "roles": ["qa"]},
+                "member_overrides": {"alice": {"id": "plaky-alice"}},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return yml
+
+
+def _patch_cold_start_common(monkeypatch, tmp_path, yml):
+    monkeypatch.setattr(config.settings, "team_assignments_yml_path", str(yml))
+    monkeypatch.setattr(config.settings, "github_qa_tier_team_scan_enabled", True)
+    monkeypatch.setattr(config.settings, "github_org", "Team-Deepiri")
+    config._raw.cache_clear()
+    config._qa_tier_teams_cache = None
+    monkeypatch.setattr(
+        "boardman.assignment.config.get_cached_support_team_roster",
+        lambda spec: {"ok": True, "members": [{"login": "alice", "name": "Alice"}]},
+    )
+    monkeypatch.setattr(
+        PlakyClient,
+        "list_workspace_users_sync",
+        lambda self: {"ok": True, "users": []},
+    )
+    monkeypatch.setattr(config, "github_auth_available", lambda: True)
+    monkeypatch.setattr(
+        config,
+        "fetch_login_max_qa_tier_from_org_teams_sync",
+        lambda client, org, headers: ({}, []),
+    )
+
+
+def test_mined_capability_profile_seeds_qa_tier(tmp_path, monkeypatch):
+    """Our own mined-commit-history profile (the in-memory cache
+    qa_capability_store.refresh_capability_cache() populates from the DB) seeds the
+    cold-start qa_tier when present, without needing GitHunt at all."""
+    yml = _base_cold_start_yml(tmp_path)
+    _patch_cold_start_common(monkeypatch, tmp_path, yml)
+    monkeypatch.setattr(config.settings, "githunt_api_key", "")
+
+    from boardman.services import qa_capability_store
+
+    monkeypatch.setattr(qa_capability_store, "cached_capability_tiers", lambda: {"alice": 3})
+
+    cfg = config.load_team_assignments()
+    assert len(cfg.members) == 1
+    assert cfg.members[0].qa_tier == 3
+
+
+def test_mined_capability_profile_wins_over_githunt(tmp_path, monkeypatch):
+    """Our own demonstrated-activity evidence outranks GitHunt's opaque score --
+    GitHunt is only consulted when we have no mined profile for this login."""
+    yml = _base_cold_start_yml(tmp_path)
+    _patch_cold_start_common(monkeypatch, tmp_path, yml)
+    monkeypatch.setattr(config.settings, "githunt_api_key", "test-key")
+
+    from boardman.services import qa_capability_store
+
+    monkeypatch.setattr(qa_capability_store, "cached_capability_tiers", lambda: {"alice": 1})
+
+    from boardman.github import githunt_enrichment
+
+    def _fail(*args, **kwargs):
+        raise AssertionError("GitHunt must not be consulted when a mined profile exists")
+
+    monkeypatch.setattr(githunt_enrichment, "cached_profile", _fail)
+    monkeypatch.setattr(githunt_enrichment, "has_cached", _fail)
+    monkeypatch.setattr(githunt_enrichment, "fetch_and_cache_profile_sync", _fail)
+
+    cfg = config.load_team_assignments()
+    assert len(cfg.members) == 1
+    assert cfg.members[0].qa_tier == 1
+
+
+def test_missing_capability_profile_falls_through_cleanly(tmp_path, monkeypatch):
+    """No mined profile for this login at all (cache empty, script never run yet) must
+    not error -- it's additive evidence, same contract as every other optional cache
+    in this module."""
+    yml = _base_cold_start_yml(tmp_path)
+    _patch_cold_start_common(monkeypatch, tmp_path, yml)
+    monkeypatch.setattr(config.settings, "githunt_api_key", "")
+    monkeypatch.setattr(config.settings, "qa_tier_cold_start_default", 2)
+
+    from boardman.services import qa_capability_store
+
+    monkeypatch.setattr(qa_capability_store, "cached_capability_tiers", lambda: {})
+
+    cfg = config.load_team_assignments()
+    assert len(cfg.members) == 1
+    assert cfg.members[0].qa_tier == 2
+
+
 def test_explicit_members_list_skips_github_fetch(tmp_path, monkeypatch):
     yml = tmp_path / "ta.yml"
     yml.write_text(

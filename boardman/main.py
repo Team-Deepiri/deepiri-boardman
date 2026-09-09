@@ -38,6 +38,13 @@ async def lifespan(app: FastAPI):
     """Startup: DB, rate limiter, security checks, LLM probe, cache warmup. Shutdown: HTTP pools, Redis, Ollama, job queue."""
     setup_logging()
     await init_db()
+    try:
+        from boardman.services.qa_capability_store import refresh_capability_cache
+
+        await refresh_capability_cache()
+    except Exception as e:  # noqa: BLE001 - an empty cache is a fine startup state
+        _log.warning("qa_capability_store: startup cache warmup failed: %s", e)
+        log_unexpected(_log, "lifespan: refresh_capability_cache")
     if settings.agent_rate_limit_enabled:
         try:
             await get_agent_leaky_limiter()

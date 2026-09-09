@@ -108,6 +108,23 @@ async def _pr_task_lifecycle_loop() -> None:
                 log_degraded(_log, "pr task lifecycle sweep")
 
 
+async def _qa_capability_cache_loop() -> None:
+    """Keep boardman.assignment.config's in-memory qa_capability_profiles cache from
+    going permanently stale in a long-running process. The underlying DB table only
+    changes when scripts/mine_qa_repo_capability.py is actually run (rare -- it's a
+    heavy full-clone mining pass), so this loop is cheap: just a DB read on an interval,
+    never anything that clones or mines."""
+    from boardman.services.qa_capability_store import refresh_capability_cache
+
+    interval = max(300.0, float(settings.qa_capability_cache_refresh_interval_seconds or 3600.0))
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            await refresh_capability_cache()
+        except Exception:  # noqa: BLE001 - a stale cache is fine; a dead loop is not
+            log_degraded(_log, "qa capability cache refresh")
+
+
 async def _run_one(job_id: str, kind: str, payload: dict) -> None:
     handler = JOB_HANDLERS.get(kind)
     if handler is None:
@@ -175,6 +192,9 @@ async def run_worker_forever() -> None:
             settings.pr_task_cleanup_interval_seconds,
             settings.pr_task_cleanup_ttl_days,
         )
+    capability_cache_task = asyncio.create_task(
+        _qa_capability_cache_loop(), name="qa-capability-cache-refresh"
+    )
     try:
         while True:
             row = await claim_next_job_row()
@@ -184,7 +204,7 @@ async def run_worker_forever() -> None:
             job_id, kind, payload = row
             await _run_one(job_id, kind, payload)
     finally:
-        for task in (reconcile_task, knowledge_task, lifecycle_task):
+        for task in (reconcile_task, knowledge_task, lifecycle_task, capability_cache_task):
             if task is not None:
                 task.cancel()
 

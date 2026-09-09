@@ -217,6 +217,23 @@ class RepoTierCache(Base):
     classified_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class QaCapabilityProfile(Base):
+    """Own commit-history-mined QA cold-start signal (scripts/mine_qa_repo_capability.py),
+    read by boardman/assignment/config.py's live qa_tier resolution via an in-memory
+    cache -- lives in the DB (durable, queryable, VM-local) rather than a JSON file that
+    could churn in the git working tree on every mining run."""
+
+    __tablename__ = "qa_capability_profiles"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    github_login: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
+    qa_tier: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    repos_discovered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    repos_mined: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    computed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
 class BackgroundJob(Base):
     """SQLite-backed async job queue (replaces arq/Redis)."""
 
