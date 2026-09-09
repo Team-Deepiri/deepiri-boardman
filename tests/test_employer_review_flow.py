@@ -64,17 +64,22 @@ def _cfg(members: list[TeamMember], excluded: list[str] | None = None) -> TeamAs
 
 
 def test_default_exclusion_list_names() -> None:
-    """Original five from Austin's checklist plus the two Joe added in his PR #81
-    review (leads/managers on the support team, never auto-assigned as PR QA)."""
+    """Original five from Austin's checklist, the two Joe added in his PR #81 review
+    (leads/managers on the support team, never auto-assigned as PR QA), and the 2026-09
+    individual exclusions (keyed on GitHub login, not display name, where a login is
+    known -- stable and unambiguous, unlike a Plaky display name)."""
     assert set(DEFAULT_QA_EXCLUDED) == {
         "Joe Black",
         "Austin Heitzman",
         "Devin Gamble",
-        "Sean San",
-        "Nathan Adams",
+        "SeanSan06",
+        "Nathan-123",
         "Asheen Hameeda",
         "AndyN-star",
         "David Poindexter",
+        "jrb00013",
+        "RiccoWrld",
+        "christiankrider1",
     }
 
 
@@ -103,7 +108,7 @@ async def test_excluded_leads_are_never_picked(monkeypatch: pytest.MonkeyPatch) 
 
 @pytest.mark.asyncio
 async def test_exclusion_matches_github_login_too(monkeypatch: pytest.MonkeyPatch) -> None:
-    lead = _member("qa-lead", display="S. Santos", login="sean san")
+    lead = _member("qa-lead", display="S. Santos", login="SeanSan06")
     worker = _member("qa-worker", display="Regular QA", login="regular-qa")
     cfg = _cfg([lead, worker])
 

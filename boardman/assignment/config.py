@@ -34,13 +34,19 @@ DEFAULT_QA_EXCLUDED: tuple[str, ...] = (
     "Joe Black",
     "Austin Heitzman",
     "Devin Gamble",
-    "Sean San",
-    "Nathan Adams",
+    "SeanSan06",  # Sean San
+    "Nathan-123",  # Nathan Adams
     # Added per Joe's PR #81 review: on the GitHub support team but leads/managers,
     # never auto-assigned as PR QA.
     "Asheen Hameeda",
     "AndyN-star",
     "David Poindexter",
+    # 2026-09: specific individual exclusions (not lead/manager-team-derived). Keyed on
+    # GitHub login, not display name -- a login is stable and unambiguous, while display
+    # names drift with Plaky profile edits and can collide between people.
+    "jrb00013",
+    "RiccoWrld",  # Ricardo Beale
+    "christiankrider1",  # Christian Krider
 )
 
 # Optional: route all bug-typed tasks to one named QA. Per Joe's PR #81 review this is
@@ -448,6 +454,48 @@ def _parse_qa_tier(val: Any) -> int:
     return t if t in (1, 2, 3) else 3
 
 
+def _qa_excluded_team_logins(data: dict[str, Any]) -> list[str]:
+    """GitHub logins auto-excluded from QA (reviewer) assignment via live team membership.
+
+    Scalable alternative to hand-maintaining names: `qa_excluded_github_teams` (YAML) or
+    GITHUB_QA_EXCLUDED_TEAMS (env, comma-separated `org/team-slug`) names the org team(s)
+    whose members are leads/managers by construction — e.g. IT / Management Team. Anyone
+    added to or removed from that team is picked up on the next roster load, no code or
+    YAML change required. Best-effort: a team fetch failure (no PAT org read, rate limit)
+    is swallowed and only the static list applies, same as a support-team roster failure.
+    """
+    raw = data.get("qa_excluded_github_teams")
+    if raw is None:
+        raw = settings.github_qa_excluded_teams
+    if isinstance(raw, str):
+        specs = [s.strip() for s in raw.split(",") if s.strip()]
+    elif isinstance(raw, list):
+        specs = [str(s).strip() for s in raw if str(s).strip()]
+    else:
+        specs = []
+
+    logins: list[str] = []
+    for spec in specs:
+        try:
+            roster = get_cached_support_team_roster(spec)
+        except Exception as exc:  # noqa: BLE001 - a failed lookup must not block roster load
+            _log.warning("qa_excluded_github_teams: roster fetch for %s failed: %s", spec, exc)
+            log_unexpected(_log, "_qa_excluded_team_logins")
+            continue
+        if not roster.get("ok"):
+            _log.warning(
+                "qa_excluded_github_teams: could not load %s for QA exclusion: %s",
+                spec,
+                roster.get("message"),
+            )
+            continue
+        for m in roster.get("members") or []:
+            login = str((m or {}).get("login") or "").strip()
+            if login:
+                logins.append(login)
+    return logins
+
+
 def _members_from_github_roster(data: dict[str, Any]) -> list[TeamMember]:
     """
     Roster = GitHub org team (e.g. Team-Deepiri/support-team). Names/logins from API;
@@ -703,6 +751,7 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
     exc_raw = data.get("qa_excluded")
     if isinstance(exc_raw, list):
         excluded = [str(x).strip() for x in exc_raw if str(x).strip()]
+    excluded.extend(_qa_excluded_team_logins(data))
 
     bug_specialist = DEFAULT_QA_BUG_SPECIALIST
     if "qa_bug_specialist" in data:
