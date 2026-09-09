@@ -237,6 +237,24 @@ class Settings(BaseSettings):
     githunt_api_base: str = "https://api.githunt.ai"
     githunt_cache_json_path: str = "githunt_cache.json"
 
+    # Our own no-vendor alternative to GitHunt: scripts/mine_qa_repo_capability.py
+    # clones every repo a QA has actually contributed to and mines their real commit
+    # history with PyDriller (churn, commit count, files touched), then classifies each
+    # repo's difficulty with the same tier_classifier used everywhere else in this
+    # codebase. Inspired by chrkaatz/git-intelligence and hoangsonww/GitIntel-MCP-Server
+    # (both real, MIT-licensed, but Node/TS local-repo analyzers with no hosted API --
+    # this is our own Python-native equivalent). Written to the qa_capability_profiles
+    # DB table (not a JSON file -- a mining run writes fresh rows every time, and that
+    # kind of churn has no business in the git working tree), read into an in-memory
+    # cache by boardman.services.qa_capability_store.refresh_capability_cache(), which
+    # boardman/assignment/config.py's live qa_tier resolution reads synchronously. Run
+    # the script periodically (cron/manual) to keep the table fresh, same convention as
+    # repo_signals.json's Phase 0.
+    # How often boardman-worker re-reads the qa_capability_profiles table into its
+    # in-memory cache. Cheap (one DB read, no cloning/mining) -- this just keeps a
+    # long-running process from missing a mining run that happened after it started.
+    qa_capability_cache_refresh_interval_seconds: float = 3600.0
+
     # sqlite+aiosqlite is a fine zero-config default for one person running Boardman
     # locally, but it serializes every write onto a single connection — with the API
     # process and the worker (or more than one Boardman instance) writing concurrently,

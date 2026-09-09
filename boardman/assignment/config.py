@@ -507,6 +507,25 @@ def _qa_tier_from_org_teams() -> dict[str, int]:
     return login_tier
 
 
+def _qa_capability_tiers() -> dict[str, int]:
+    """{github_login (lowercased) -> qa_tier} from the in-memory cache that
+    boardman.services.qa_capability_store.refresh_capability_cache() populates from
+    the qa_capability_profiles DB table (written by scripts/mine_qa_repo_capability.py
+    -- real commit-history mining via PyDriller, never run inline here).
+
+    DB-backed rather than a JSON file: a mining run writes a fresh row per login every
+    time it runs, and a data file that churns on every run has no business living in
+    the git working tree. This loader is synchronous, so it never queries the DB
+    directly (that would need an event loop); it only ever reads whatever the async
+    refresh already cached in-process. Empty until that refresh has run at least once
+    (e.g. at app/worker startup) -- same "additive, never a hard dependency" contract
+    as every other optional cache in this module.
+    """
+    from boardman.services.qa_capability_store import cached_capability_tiers
+
+    return cached_capability_tiers()
+
+
 def _qa_excluded_team_logins(data: dict[str, Any]) -> list[str]:
     """GitHub logins auto-excluded from QA (reviewer) assignment via live team membership.
 
@@ -776,6 +795,7 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
     # qa_tier (default 3) stands unchanged.
     live_qa_tiers = _qa_tier_from_org_teams()
     githunt_enabled = bool((settings.githunt_api_key or "").strip())
+    mined_tiers = _qa_capability_tiers()
     for m in members:
         login_l = m.github_login.strip().lower()
         live_tier = live_qa_tiers.get(login_l) if login_l else None
@@ -788,13 +808,17 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
         # cold-start case. A blanket member_defaults.qa_tier guess is not a real
         # decision about THIS person (that's the whole point of the explicit-override
         # flag), so it does not survive here either -- reset to the configurable
-        # cold-start default, then let GitHunt (if configured) seed a better one-time
-        # starting point from their overall GitHub activity/tech-stack score. Boardman's
-        # own decayed PR-activity history takes over as the authoritative signal from
-        # here on; this only ever runs once per login (see githunt_enrichment's
-        # permanent cache), and only for QA-role members, to protect the 50-call/month
-        # free-tier quota.
+        # cold-start default, then let progressively richer evidence improve on it:
+        # our own mined commit-history capability (real, demonstrated work -- see
+        # scripts/mine_qa_repo_capability.py) beats GitHunt's opaque third-party score,
+        # which in turn beats a flat default. Boardman's own decayed PR-activity
+        # inference remains authoritative going forward; both of these only ever seed
+        # a STARTING point.
         m.qa_tier = settings.qa_tier_cold_start_default
+        mined_tier = mined_tiers.get(login_l) if login_l else None
+        if isinstance(mined_tier, int) and mined_tier in (1, 2, 3):
+            m.qa_tier = mined_tier
+            continue
         if githunt_enabled and login_l and "qa" in m.roles:
             from boardman.github import githunt_enrichment
 
