@@ -173,6 +173,32 @@ def test_infer_plaky_field_keys_when_plaky_omits_field_type():
     assert inferred.get("repo") == "k_repo"
 
 
+def test_infer_plaky_field_keys_does_not_collide_engineer_and_qa():
+    """Two PERSON columns with no name matching "qa"/"engineer"/etc must resolve to
+    DIFFERENT keys. Colliding here means the QA-assignment write (which runs after
+    the engineer/assignee write on PR-open) silently overwrites the assignee column
+    with the QA reviewer, per the deepiri-cascade#70 report (Joel assignee -> Sergio
+    reviewer request -> Plaky showed Sergio as the assignee)."""
+    inferred = config.infer_plaky_field_keys_from_normalized(
+        {
+            "fields": [
+                {"key": "person-1", "name": "Assignee", "type": "PERSON"},
+                {"key": "person-2", "name": "Reviewer", "type": "PERSON"},
+            ]
+        }
+    )
+    assert inferred.get("engineer") != inferred.get("qa")
+
+
+def test_infer_plaky_field_keys_single_person_field_leaves_qa_unresolved():
+    """Only one PERSON column on the board: engineer claims it, qa must NOT collide."""
+    inferred = config.infer_plaky_field_keys_from_normalized(
+        {"fields": [{"key": "person-1", "name": "Owner", "type": "PERSON"}]}
+    )
+    assert inferred.get("engineer") == "person-1"
+    assert "qa" not in inferred
+
+
 @pytest.mark.asyncio
 async def test_sync_team_assignment_field_keys_from_board_updates_only_blanks(
     tmp_path, monkeypatch

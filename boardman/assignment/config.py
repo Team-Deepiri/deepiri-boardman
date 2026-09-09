@@ -291,8 +291,18 @@ def infer_plaky_field_keys_from_normalized(normalized: dict[str, Any] | None) ->
             if key != out.get("qa"):
                 out["engineer"] = key
                 break
-    if "qa" not in out and person_fields:
-        out["qa"] = person_fields[0][0]
+    if "qa" not in out:
+        # Must dodge whatever "engineer" just landed on (whether matched by name or by
+        # the fallback above) -- picking person_fields[0] unconditionally handed QA the
+        # SAME key as engineer whenever neither field's label matched a keyword, and the
+        # PR-open pipeline writes engineer first and QA second, so QA's write silently
+        # clobbered the assignee it had just set (a reviewer request ended up shown as
+        # the task's assignee). One shared person column means the board genuinely has
+        # no distinct QA field -- leave qa unresolved rather than collide.
+        for key, _ in person_fields:
+            if key != out.get("engineer"):
+                out["qa"] = key
+                break
 
     singular_repo_tokens = ("github repo", "repository", "repo")
     plural_repo_tokens = ("github repos", "repositories", "repo list", "repos")
