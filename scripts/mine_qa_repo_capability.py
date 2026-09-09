@@ -25,20 +25,22 @@ For each GitHub support-team member:
   4. Bucket the person's demonstrated tier from real, substantive activity (see
      boardman/github/repo_capability_mining.py's thresholds).
 
-Written to qa_capability_profiles.json -- read by boardman/assignment/config.py's live
-qa_tier resolution, never computed inline on a live request. This is genuinely heavy
-(full clones + commit-history walks): run it periodically (cron/manual), same
-convention as sync_qa_capabilities.py's repo_signals.json / worker_team.json.
+Written to the qa_capability_profiles DB table (NOT a JSON file -- a mining run writes
+fresh rows every time, and that kind of churn has no business living in the git
+working tree) -- read into an in-memory cache by
+boardman.services.qa_capability_store.refresh_capability_cache(), which
+boardman/assignment/config.py's live qa_tier resolution reads synchronously. This is
+genuinely heavy (full clones + commit-history walks): run it periodically
+(cron/manual), same cadence as sync_qa_capabilities.py's repo_signals.json /
+worker_team.json.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import sys
-from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import quote
 
@@ -48,12 +50,14 @@ REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
 
 from boardman.assignment.tier_classifier import classify_repo_tier
+from boardman.database.session import async_session
 from boardman.github.repo_capability_mining import (
     demonstrated_tier_from_repo_stats,
     mined_author_stats_for_clone_url,
 )
 from boardman.github.repo_metadata import fetch_repo_metadata
 from boardman.github.team_roster import fetch_support_team_members
+from boardman.services.qa_capability_store import upsert_profile
 from boardman.settings import settings
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
@@ -61,7 +65,6 @@ _log = logging.getLogger("mine_qa_repo_capability")
 
 TOKEN = settings.github_pat
 ORG = settings.github_org
-OUTPUT_PATH = settings.qa_capability_profiles_json_path
 # Bounds total runtime: a prolific contributor could otherwise touch hundreds of repos.
 MAX_REPOS_PER_PERSON = 10
 MAX_SEARCH_PAGES = 2
@@ -183,7 +186,7 @@ async def run() -> None:
     )
 
     headers = {"Authorization": f"Bearer {TOKEN}", "Accept": "application/vnd.github+json"}
-    profiles: dict[str, Any] = {}
+    profiles: dict[str, dict[str, Any]] = {}
     async with httpx.AsyncClient(timeout=30) as client:
         for m in members:
             login = (m.get("login") or "").strip().lower()
@@ -194,12 +197,25 @@ async def run() -> None:
                 profiles[login] = await mine_one(client, login, headers)
             except Exception as e:  # noqa: BLE001 - one bad person must not sink the run
                 _log.warning("mining %s failed: %s", login, e)
-                profiles[login] = {"qa_tier": None, "repos_mined": 0, "reason": str(e)[:200]}
+                profiles[login] = {
+                    "qa_tier": None,
+                    "repos_discovered": 0,
+                    "repos_mined": 0,
+                    "reason": str(e)[:200],
+                }
 
-    output = {"computed_at": datetime.now(UTC).isoformat(), "profiles": profiles}
-    with open(OUTPUT_PATH, "w") as f:
-        json.dump(output, f, indent=2)
-    _log.info("Wrote %d profile(s) to %s", len(profiles), OUTPUT_PATH)
+    async with async_session() as session:
+        for login, p in profiles.items():
+            await upsert_profile(
+                session,
+                github_login=login,
+                qa_tier=p.get("qa_tier"),
+                repos_discovered=int(p.get("repos_discovered") or 0),
+                repos_mined=int(p.get("repos_mined") or 0),
+                reason=p.get("reason"),
+            )
+        await session.commit()
+    _log.info("Wrote %d profile(s) to qa_capability_profiles", len(profiles))
 
 
 if __name__ == "__main__":

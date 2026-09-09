@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import textwrap
 
 import pytest
@@ -302,9 +301,6 @@ def _patch_cold_start_common(monkeypatch, tmp_path, yml):
     monkeypatch.setattr(config.settings, "team_assignments_yml_path", str(yml))
     monkeypatch.setattr(config.settings, "github_qa_tier_team_scan_enabled", True)
     monkeypatch.setattr(config.settings, "github_org", "Team-Deepiri")
-    monkeypatch.setattr(
-        config.settings, "qa_capability_profiles_json_path", str(tmp_path / "profiles.json")
-    )
     config._raw.cache_clear()
     config._qa_tier_teams_cache = None
     monkeypatch.setattr(
@@ -325,17 +321,16 @@ def _patch_cold_start_common(monkeypatch, tmp_path, yml):
 
 
 def test_mined_capability_profile_seeds_qa_tier(tmp_path, monkeypatch):
-    """Our own mined-commit-history profile (scripts/mine_qa_repo_capability.py's
-    output) seeds the cold-start qa_tier when present, without needing GitHunt at all."""
+    """Our own mined-commit-history profile (the in-memory cache
+    qa_capability_store.refresh_capability_cache() populates from the DB) seeds the
+    cold-start qa_tier when present, without needing GitHunt at all."""
     yml = _base_cold_start_yml(tmp_path)
     _patch_cold_start_common(monkeypatch, tmp_path, yml)
     monkeypatch.setattr(config.settings, "githunt_api_key", "")
 
-    profiles_path = tmp_path / "profiles.json"
-    profiles_path.write_text(
-        json.dumps({"profiles": {"alice": {"qa_tier": 3, "repos_mined": 4}}}),
-        encoding="utf-8",
-    )
+    from boardman.services import qa_capability_store
+
+    monkeypatch.setattr(qa_capability_store, "cached_capability_tiers", lambda: {"alice": 3})
 
     cfg = config.load_team_assignments()
     assert len(cfg.members) == 1
@@ -349,11 +344,9 @@ def test_mined_capability_profile_wins_over_githunt(tmp_path, monkeypatch):
     _patch_cold_start_common(monkeypatch, tmp_path, yml)
     monkeypatch.setattr(config.settings, "githunt_api_key", "test-key")
 
-    profiles_path = tmp_path / "profiles.json"
-    profiles_path.write_text(
-        json.dumps({"profiles": {"alice": {"qa_tier": 1, "repos_mined": 2}}}),
-        encoding="utf-8",
-    )
+    from boardman.services import qa_capability_store
+
+    monkeypatch.setattr(qa_capability_store, "cached_capability_tiers", lambda: {"alice": 1})
 
     from boardman.github import githunt_enrichment
 
@@ -369,13 +362,18 @@ def test_mined_capability_profile_wins_over_githunt(tmp_path, monkeypatch):
     assert cfg.members[0].qa_tier == 1
 
 
-def test_missing_capability_profiles_file_falls_through_cleanly(tmp_path, monkeypatch):
-    """No qa_capability_profiles.json at all (script never run yet) must not error --
-    it's additive evidence, same contract as every other optional cache in this module."""
+def test_missing_capability_profile_falls_through_cleanly(tmp_path, monkeypatch):
+    """No mined profile for this login at all (cache empty, script never run yet) must
+    not error -- it's additive evidence, same contract as every other optional cache
+    in this module."""
     yml = _base_cold_start_yml(tmp_path)
     _patch_cold_start_common(monkeypatch, tmp_path, yml)
     monkeypatch.setattr(config.settings, "githunt_api_key", "")
     monkeypatch.setattr(config.settings, "qa_tier_cold_start_default", 2)
+
+    from boardman.services import qa_capability_store
+
+    monkeypatch.setattr(qa_capability_store, "cached_capability_tiers", lambda: {})
 
     cfg = config.load_team_assignments()
     assert len(cfg.members) == 1

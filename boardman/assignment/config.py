@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import shutil
 import time
@@ -508,28 +507,23 @@ def _qa_tier_from_org_teams() -> dict[str, int]:
     return login_tier
 
 
-def _qa_capability_profiles() -> dict[str, Any]:
-    """{github_login (lowercased) -> mined profile} from qa_capability_profiles.json,
-    written by scripts/mine_qa_repo_capability.py (real commit-history mining via
-    PyDriller, never run inline here). Missing/unreadable file = no data, same
-    "additive, never a hard dependency" contract as every other optional cache read
-    in this module."""
-    path_str = (settings.qa_capability_profiles_json_path or "").strip()
-    if not path_str:
-        return {}
-    path = Path(path_str)
-    if not path.is_absolute():
-        path = Path.cwd() / path
-    if not path.is_file():
-        return {}
-    try:
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, ValueError) as exc:
-        _log.warning("qa_capability_profiles.json unreadable (%s): %s", path, exc)
-        return {}
-    profiles = data.get("profiles") if isinstance(data, dict) else None
-    return profiles if isinstance(profiles, dict) else {}
+def _qa_capability_tiers() -> dict[str, int]:
+    """{github_login (lowercased) -> qa_tier} from the in-memory cache that
+    boardman.services.qa_capability_store.refresh_capability_cache() populates from
+    the qa_capability_profiles DB table (written by scripts/mine_qa_repo_capability.py
+    -- real commit-history mining via PyDriller, never run inline here).
+
+    DB-backed rather than a JSON file: a mining run writes a fresh row per login every
+    time it runs, and a data file that churns on every run has no business living in
+    the git working tree. This loader is synchronous, so it never queries the DB
+    directly (that would need an event loop); it only ever reads whatever the async
+    refresh already cached in-process. Empty until that refresh has run at least once
+    (e.g. at app/worker startup) -- same "additive, never a hard dependency" contract
+    as every other optional cache in this module.
+    """
+    from boardman.services.qa_capability_store import cached_capability_tiers
+
+    return cached_capability_tiers()
 
 
 def _qa_excluded_team_logins(data: dict[str, Any]) -> list[str]:
@@ -801,7 +795,7 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
     # qa_tier (default 3) stands unchanged.
     live_qa_tiers = _qa_tier_from_org_teams()
     githunt_enabled = bool((settings.githunt_api_key or "").strip())
-    mined_profiles = _qa_capability_profiles()
+    mined_tiers = _qa_capability_tiers()
     for m in members:
         login_l = m.github_login.strip().lower()
         live_tier = live_qa_tiers.get(login_l) if login_l else None
@@ -821,8 +815,7 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
         # inference remains authoritative going forward; both of these only ever seed
         # a STARTING point.
         m.qa_tier = settings.qa_tier_cold_start_default
-        mined = mined_profiles.get(login_l) if login_l else None
-        mined_tier = mined.get("qa_tier") if isinstance(mined, dict) else None
+        mined_tier = mined_tiers.get(login_l) if login_l else None
         if isinstance(mined_tier, int) and mined_tier in (1, 2, 3):
             m.qa_tier = mined_tier
             continue
