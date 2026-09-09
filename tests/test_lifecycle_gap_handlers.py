@@ -980,7 +980,7 @@ def test_bug_specialist_is_off_by_default() -> None:
     from boardman.assignment.config import DEFAULT_QA_BUG_SPECIALIST, DEFAULT_QA_EXCLUDED
 
     assert DEFAULT_QA_BUG_SPECIALIST == ""
-    assert "Asheen Hameeda" in DEFAULT_QA_EXCLUDED
+    assert "asheenhameeda8-cpu" in DEFAULT_QA_EXCLUDED  # Asheen Hameeda
     assert "AndyN-star" in DEFAULT_QA_EXCLUDED
 
 
