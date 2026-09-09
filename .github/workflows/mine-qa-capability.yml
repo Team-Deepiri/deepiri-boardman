@@ -1,0 +1,62 @@
+name: Mine QA Repo Capability
+
+# Manual, on-demand run of scripts/mine_qa_repo_capability.py against production --
+# clones each QA's actually-contributed repos and mines real commit history (churn,
+# commit count, files touched) into the qa_capability_profiles Postgres table (see
+# boardman/services/qa_capability_store.py). Genuinely heavy (real git clones,
+# seconds-to-minutes per repo) -- deliberately NOT run on every deploy or on a schedule
+# yet. Re-run this whenever the roster changes meaningfully or the data goes stale.
+on:
+  workflow_dispatch: {}
+
+# One mining run at a time -- overlapping runs would double-clone the same repos for
+# no benefit and could race writes to the same DB rows.
+concurrency:
+  group: mine-qa-capability
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  mine:
+    name: Mine QA repo capability on the VPS
+    runs-on: ubuntu-latest
+    # PyDriller walks full commit history per repo across up to 10 repos per QA --
+    # comfortably longer than a routine deploy, but still bounded.
+    timeout-minutes: 45
+    steps:
+      - name: Set up SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -p "${VPS_PORT:-22}" -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run the mining script inside an ephemeral container
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          # Slurp-then-execute (same pattern as deploy.yml): docker compose run reads
+          # stdin, so piping straight into `ssh ... bash -s` would swallow the rest
+          # of this heredoc silently.
+          ssh -T -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
+          set -euo pipefail
+          cd /opt/deepiri/deepiri-boardman
+
+          # `run --rm`, not `exec` into the long-lived boardman API container: a full
+          # git clone of a large repo has no business competing for memory/CPU with
+          # the live API process inside the SAME container instance. This gets its
+          # own ephemeral container on the same image, network, and .env, and is
+          # discarded when the script exits.
+          docker compose -f docker-compose.prod.yml run --rm boardman \
+            python scripts/mine_qa_repo_capability.py
+          EOSSH
