@@ -48,6 +48,8 @@ DEFAULT_QA_EXCLUDED: tuple[str, ...] = (
     # display name drifts with Plaky profile edits and can collide between people.
     "RiccoWrld",  # Ricardo Beale
     "christiankrider1",  # Christian Krider
+    "ConnorWhite9",  # Connor White
+    "CherryQuartzio",  # Quang Nguyen
 )
 
 # Optional: route all bug-typed tasks to one named QA. Per Joe's PR #81 review this is
@@ -80,6 +82,11 @@ class TeamMember:
     # an explicit override gets the safe universal default, not a blanket config guess.
     tier_is_explicit_override: bool = False
     qa_tier: int = 3  # 1 = web/core only, 2 = all except AI/heavy repos, 3 = all repos
+    # True only when a human explicitly wrote `qa_tier:` for THIS person (member_overrides
+    # or a members: row) -- member_defaults.qa_tier is a blanket guess, not a decision
+    # about this specific person, so it does NOT count. Someone with neither this NOR a
+    # live team-name tier gets qa_tier_cold_start_default, never a silent "assume tier 3."
+    qa_tier_is_explicit_override: bool = False
     repo_globs: list[str] = field(default_factory=list)
     explicit_repos: list[str] = field(default_factory=list)
     weight: float = 1.0
@@ -446,13 +453,18 @@ def _augment_repo_globs_with_github_org(globs: list[str]) -> list[str]:
 
 
 def _parse_qa_tier(val: Any) -> int:
+    """An unset or invalid value is "nobody has an opinion yet," not "assume tier 3" --
+    it falls back to the configurable cold-start default (see qa_tier_is_explicit_override
+    on TeamMember, and the GitHunt/team-scan resolution in _build_team_assignments)."""
+    dflt = settings.qa_tier_cold_start_default
+    dflt = dflt if dflt in (1, 2, 3) else 2
     if val is None or val == "":
-        return 3
+        return dflt
     try:
         t = int(val)
     except (TypeError, ValueError):
-        return 3
-    return t if t in (1, 2, 3) else 3
+        return dflt
+    return t if t in (1, 2, 3) else dflt
 
 
 # (monotonic_ts, org, result) — a person's QA tier should come from where they actually
@@ -657,6 +669,7 @@ def _members_from_github_roster(data: dict[str, Any]) -> list[TeamMember]:
                 tier=tier,
                 tier_is_explicit_override="tier" in ov,
                 qa_tier=qt,
+                qa_tier_is_explicit_override="qa_tier" in ov,
                 repo_globs=globs,
                 explicit_repos=explicit,
                 weight=weight,
@@ -726,6 +739,7 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
                     tier=str(m.get("tier") or defaults.get("tier") or "standard").lower(),
                     tier_is_explicit_override="tier" in m,
                     qa_tier=qa_tier,
+                    qa_tier_is_explicit_override=m.get("qa_tier") is not None,
                     repo_globs=[str(g).strip() for g in globs if str(g).strip()],
                     explicit_repos=[str(r).strip().lower() for r in explicit if str(r).strip()],
                     weight=float(m.get("weight", defaults.get("weight", 1.0))),
@@ -761,11 +775,35 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
     # No matching team for a person just means "no live evidence"; their configured
     # qa_tier (default 3) stands unchanged.
     live_qa_tiers = _qa_tier_from_org_teams()
-    if live_qa_tiers:
-        for m in members:
-            live_tier = live_qa_tiers.get(m.github_login.strip().lower())
-            if live_tier is not None:
-                m.qa_tier = live_tier
+    githunt_enabled = bool((settings.githunt_api_key or "").strip())
+    for m in members:
+        login_l = m.github_login.strip().lower()
+        live_tier = live_qa_tiers.get(login_l) if login_l else None
+        if live_tier is not None:
+            m.qa_tier = live_tier
+            continue
+        if m.qa_tier_is_explicit_override:
+            continue
+        # Neither a live team-name tier nor a human override: this person is a
+        # cold-start case. A blanket member_defaults.qa_tier guess is not a real
+        # decision about THIS person (that's the whole point of the explicit-override
+        # flag), so it does not survive here either -- reset to the configurable
+        # cold-start default, then let GitHunt (if configured) seed a better one-time
+        # starting point from their overall GitHub activity/tech-stack score. Boardman's
+        # own decayed PR-activity history takes over as the authoritative signal from
+        # here on; this only ever runs once per login (see githunt_enrichment's
+        # permanent cache), and only for QA-role members, to protect the 50-call/month
+        # free-tier quota.
+        m.qa_tier = settings.qa_tier_cold_start_default
+        if githunt_enabled and login_l and "qa" in m.roles:
+            from boardman.github import githunt_enrichment
+
+            profile = githunt_enrichment.cached_profile(login_l)
+            if profile is None and not githunt_enrichment.has_cached(login_l):
+                profile = githunt_enrichment.fetch_and_cache_profile_sync(login_l)
+            suggested = githunt_enrichment.qa_tier_from_profile(profile)
+            if suggested is not None:
+                m.qa_tier = suggested
 
     req = data.get("repo_requirements") or {}
     heavy: list[str] = []

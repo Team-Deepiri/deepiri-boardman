@@ -79,6 +79,8 @@ def test_default_exclusion_list_names() -> None:
         "Dpoin23",
         "RiccoWrld",
         "christiankrider1",
+        "ConnorWhite9",
+        "CherryQuartzio",
     }
 
 
