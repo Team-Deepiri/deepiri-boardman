@@ -453,18 +453,46 @@ async def _github_fit_scores(
     return out or None
 
 
+# A candidate at/under this raw GitHub-fit score is "thin history" -- new to the org,
+# or new enough that their contribution profile barely registers yet. Eligibility
+# (member.qa_tier >= repo_tier) already gates WHETHER they can take a repo; this floor
+# is about whether they ever WIN the pick once they're in the eligible pool, which raw
+# fit-ranking alone starves out (an experienced reviewer's fit dwarfs 0.15 base + 0 fit
+# by 4-5x -- jitter can't close that gap). Confirmed by real org data: a handful of
+# high-fit reviewers absorbed the overwhelming majority of QA load while several
+# roster members with zero recent PR history got picked rarely or never.
+NEWCOMER_FIT_CEILING = 0.15
+# On a tier-1 repo, a thin-history candidate's fit is floored to (at least) this value
+# instead of scored at face value. Deliberately close to the top of the fit range: tier
+# 1 is the simplest work in the whole repo-tier system and does not need a veteran's
+# deep experience elsewhere, so newcomers should win most tier-1 picks, not merely
+# "occasionally beat" an experienced reviewer. As a candidate's own real fit rises past
+# NEWCOMER_FIT_CEILING, the floor stops applying on its own -- no separate decay
+# schedule needed, and it never touches tier-2/3 picks at all.
+NEWCOMER_TIER1_FIT_FLOOR = 0.9
+
+
 def _ranked_choice(
     qas: list[TeamMember],
     cfg: TeamAssignmentsConfig,
     fits: dict[str, tuple[float, FitDetail]],
     role: str = "reviewer",
+    repo_tier: int = 0,
 ) -> tuple[TeamMember | None, str]:
-    """Rank by (base + fit) * weight * hardware bias * jitter; return winner + humanized reason."""
+    """Rank by (base + effective fit) * weight * hardware bias * jitter; return winner
+    + humanized reason. "effective fit" floors a thin-history candidate's fit on a
+    tier-1 repo (see NEWCOMER_TIER1_FIT_FLOOR) so cold-start QAs actually get picked,
+    not merely eligible."""
     jitter = cfg.random_jitter
     rows: list[tuple[float, TeamMember, FitDetail]] = []
     for m in qas:
         fit, detail = fits.get(m.id, (0.0, _NO_FIT_DETAIL))
-        score = (FIT_BASE_SCORE + fit) * max(0.05, m.weight) * _tier_bias(cfg, m.tier)
+        effective_fit = (
+            max(fit, NEWCOMER_TIER1_FIT_FLOOR)
+            if repo_tier == 1 and fit <= NEWCOMER_FIT_CEILING
+            else fit
+        )
+        score = (FIT_BASE_SCORE + effective_fit) * max(0.05, m.weight) * _tier_bias(cfg, m.tier)
         if jitter > 0:
             score *= 1.0 + random.uniform(-jitter, jitter)
         rows.append((score, m, detail))
@@ -672,7 +700,7 @@ async def pick_qa_for_repo(
         log_unexpected(_log, f"pick_qa_for_repo: _github_fit_scores({fn})", e)
 
     if fits:
-        chosen, reason = _ranked_choice(qas, cfg, fits, role="QA reviewer")
+        chosen, reason = _ranked_choice(qas, cfg, fits, role="QA reviewer", repo_tier=repo_tier)
         if chosen:
             _log.info(
                 "pick_qa: %s repo_tier=%d candidates=%d",
