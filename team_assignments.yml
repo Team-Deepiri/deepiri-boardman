@@ -3,17 +3,37 @@ plaky_field_keys:
   qa: person-2
   repo: tag-2
   github_repos: tag-2
-# Leads/managers never auto-assigned to review PRs (matched on display name or GitHub login).
+# Leads/managers never auto-assigned to review PRs. Keyed on GitHub login (stable,
+# unambiguous) rather than display name where a login is known.
 qa_excluded:
 - Joe Black
 - Austin Heitzman
 - Devin Gamble
-- Sean San
-- Nathan Adams
+- SeanSan06  # Sean San
+- Nathan-123  # Nathan Adams
 # Added per Joe's PR #81 review (leads/managers on the support team, never PR QA):
 - Asheen Hameeda
 - AndyN-star
 - David Poindexter
+# 2026-09: specific individual exclusions (not lead/manager-team-derived).
+- jrb00013
+- RiccoWrld  # Ricardo Beale
+- christiankrider1  # Christian Krider
+# Auto-excluded from QA on top of the above: live membership of these GitHub org teams
+# (leads/managers by construction) -- add/remove someone on the team and it takes effect
+# on the next roster load, no YAML edit needed. See settings.github_qa_excluded_teams.
+qa_excluded_github_teams:
+- Team-Deepiri/it-management-team
+
+# Never written into the developer/Assignee column either (mirrors the individual
+# qa_excluded entries above -- these people should not show up as PR assignee/reviewer
+# in Plaky at all, not just as QA reviewer).
+developer_excluded:
+- Nathan-123  # Nathan Adams
+- jrb00013
+- RiccoWrld  # Ricardo Beale
+- christiankrider1  # Christian Krider
+- SeanSan06  # Sean San
 
 member_defaults:
   roles:
