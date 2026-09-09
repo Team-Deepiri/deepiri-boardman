@@ -199,6 +199,11 @@ class Settings(BaseSettings):
     github_bare_repo_owner: str = "Team-Deepiri"
     # Org team for support roster: GET /api/v1/github/support-team/members (names/logins from GitHub)
     github_support_team: str = "Team-Deepiri/support-team"
+    # Comma-separated org/team-slug specs whose live membership is auto-excluded from QA
+    # (reviewer) assignment, on top of the static qa_excluded names in team_assignments.yml.
+    # Scales without a code/YAML edit when leads change: add/remove them on the GitHub team
+    # and the exclusion follows. Empty disables the dynamic layer (static list still applies).
+    github_qa_excluded_teams: str = "Team-Deepiri/it-management-team"
     # List org teams (GET /orgs/{org}/teams) and parse tier from slug/name (qa-tier-3, t2-qa, …).
     # When false or no matching teams, Phase 1 uses activity-only inference.
     github_qa_tier_team_scan_enabled: bool = True

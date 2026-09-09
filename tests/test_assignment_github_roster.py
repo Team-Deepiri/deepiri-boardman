@@ -48,6 +48,61 @@ def test_github_roster_merge(tmp_path, monkeypatch):
     assert "qa" in cfg.members[0].roles
 
 
+def test_qa_excluded_merges_live_management_team_logins(tmp_path, monkeypatch):
+    """qa_excluded_github_teams pulls in live team members as QA exclusions, in addition
+    to the static qa_excluded list -- so a lead added to that GitHub team is excluded
+    without a YAML/code change."""
+    yml = tmp_path / "ta.yml"
+    yml.write_text(
+        yaml.dump(
+            {
+                "plaky_field_keys": {"engineer": "fe", "qa": "fq"},
+                "member_defaults": {"repo_globs": ["deepiri-org/*"], "roles": ["qa"]},
+                "qa_excluded": ["Static Person"],
+                "qa_excluded_github_teams": ["Team-Deepiri/it-management-team"],
+                "members": [{"github_login": "alice", "id": "1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config.settings, "team_assignments_yml_path", str(yml))
+    config._raw.cache_clear()
+
+    def _fake_roster(spec: str):
+        if spec == "Team-Deepiri/it-management-team":
+            return {"ok": True, "members": [{"login": "lead-login"}]}
+        return {"ok": True, "members": []}
+
+    monkeypatch.setattr("boardman.assignment.config.get_cached_support_team_roster", _fake_roster)
+    cfg = config.load_team_assignments()
+    assert "Static Person" in cfg.qa_excluded
+    assert "lead-login" in cfg.qa_excluded
+
+
+def test_qa_excluded_team_fetch_failure_keeps_static_list(tmp_path, monkeypatch):
+    """A failed/unreachable team roster must not blow away the static exclusion list."""
+    yml = tmp_path / "ta.yml"
+    yml.write_text(
+        yaml.dump(
+            {
+                "plaky_field_keys": {"engineer": "fe", "qa": "fq"},
+                "qa_excluded": ["Static Person"],
+                "qa_excluded_github_teams": ["Team-Deepiri/it-management-team"],
+                "members": [{"github_login": "alice", "id": "1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config.settings, "team_assignments_yml_path", str(yml))
+    config._raw.cache_clear()
+    monkeypatch.setattr(
+        "boardman.assignment.config.get_cached_support_team_roster",
+        lambda spec: {"ok": False, "message": "boom"},
+    )
+    cfg = config.load_team_assignments()
+    assert cfg.qa_excluded == ["Static Person"]
+
+
 def test_explicit_members_list_skips_github_fetch(tmp_path, monkeypatch):
     yml = tmp_path / "ta.yml"
     yml.write_text(
@@ -171,6 +226,32 @@ def test_infer_plaky_field_keys_when_plaky_omits_field_type():
     assert inferred.get("engineer") == "k_contrib"
     assert inferred.get("qa") == "k_qa"
     assert inferred.get("repo") == "k_repo"
+
+
+def test_infer_plaky_field_keys_does_not_collide_engineer_and_qa():
+    """Two PERSON columns with no name matching "qa"/"engineer"/etc must resolve to
+    DIFFERENT keys. Colliding here means the QA-assignment write (which runs after
+    the engineer/assignee write on PR-open) silently overwrites the assignee column
+    with the QA reviewer, per the deepiri-cascade#70 report (Joel assignee -> Sergio
+    reviewer request -> Plaky showed Sergio as the assignee)."""
+    inferred = config.infer_plaky_field_keys_from_normalized(
+        {
+            "fields": [
+                {"key": "person-1", "name": "Assignee", "type": "PERSON"},
+                {"key": "person-2", "name": "Reviewer", "type": "PERSON"},
+            ]
+        }
+    )
+    assert inferred.get("engineer") != inferred.get("qa")
+
+
+def test_infer_plaky_field_keys_single_person_field_leaves_qa_unresolved():
+    """Only one PERSON column on the board: engineer claims it, qa must NOT collide."""
+    inferred = config.infer_plaky_field_keys_from_normalized(
+        {"fields": [{"key": "person-1", "name": "Owner", "type": "PERSON"}]}
+    )
+    assert inferred.get("engineer") == "person-1"
+    assert "qa" not in inferred
 
 
 @pytest.mark.asyncio
