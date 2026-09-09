@@ -41,6 +41,7 @@ langchain-anthropic = ">=0.2.0"
 langchain-openai = ">=0.2.0"
 langchain-google-genai = ">=2.0.0"
 redis = "^5.0"
+pydriller = "^2.11"
 
 [tool.poetry.group.dev.dependencies]
 pytest = ">=8,<10"
@@ -70,6 +71,7 @@ ignore = ["E501", "B008", "SIM102", "SIM105", "SIM108", "SIM110", "SIM117", "SIM
 "boardman/plaky/board_schema.py" = ["E402"]
 "scripts/e2e_test.py" = ["E402"]
 "scripts/sync_qa_capabilities.py" = ["E402"]
+"scripts/mine_qa_repo_capability.py" = ["E402"]
 "tests/conftest.py" = ["E402"]
 
 [tool.mypy]

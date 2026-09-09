@@ -237,6 +237,17 @@ class Settings(BaseSettings):
     githunt_api_base: str = "https://api.githunt.ai"
     githunt_cache_json_path: str = "githunt_cache.json"
 
+    # Our own no-vendor alternative to GitHunt: scripts/mine_qa_repo_capability.py
+    # clones every repo a QA has actually contributed to and mines their real commit
+    # history with PyDriller (churn, commit count, files touched), then classifies each
+    # repo's difficulty with the same tier_classifier used everywhere else in this
+    # codebase. Inspired by chrkaatz/git-intelligence and hoangsonww/GitIntel-MCP-Server
+    # (both real, MIT-licensed, but Node/TS local-repo analyzers with no hosted API --
+    # this is our own Python-native equivalent). Written here, read by
+    # boardman/assignment/config.py's live qa_tier resolution; run the script
+    # periodically (cron/manual) to keep it fresh, same convention as repo_signals.json.
+    qa_capability_profiles_json_path: str = "qa_capability_profiles.json"
+
     # sqlite+aiosqlite is a fine zero-config default for one person running Boardman
     # locally, but it serializes every write onto a single connection — with the API
     # process and the worker (or more than one Boardman instance) writing concurrently,

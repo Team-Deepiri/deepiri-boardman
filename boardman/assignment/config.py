@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import shutil
 import time
@@ -507,6 +508,30 @@ def _qa_tier_from_org_teams() -> dict[str, int]:
     return login_tier
 
 
+def _qa_capability_profiles() -> dict[str, Any]:
+    """{github_login (lowercased) -> mined profile} from qa_capability_profiles.json,
+    written by scripts/mine_qa_repo_capability.py (real commit-history mining via
+    PyDriller, never run inline here). Missing/unreadable file = no data, same
+    "additive, never a hard dependency" contract as every other optional cache read
+    in this module."""
+    path_str = (settings.qa_capability_profiles_json_path or "").strip()
+    if not path_str:
+        return {}
+    path = Path(path_str)
+    if not path.is_absolute():
+        path = Path.cwd() / path
+    if not path.is_file():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError) as exc:
+        _log.warning("qa_capability_profiles.json unreadable (%s): %s", path, exc)
+        return {}
+    profiles = data.get("profiles") if isinstance(data, dict) else None
+    return profiles if isinstance(profiles, dict) else {}
+
+
 def _qa_excluded_team_logins(data: dict[str, Any]) -> list[str]:
     """GitHub logins auto-excluded from QA (reviewer) assignment via live team membership.
 
@@ -776,6 +801,7 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
     # qa_tier (default 3) stands unchanged.
     live_qa_tiers = _qa_tier_from_org_teams()
     githunt_enabled = bool((settings.githunt_api_key or "").strip())
+    mined_profiles = _qa_capability_profiles()
     for m in members:
         login_l = m.github_login.strip().lower()
         live_tier = live_qa_tiers.get(login_l) if login_l else None
@@ -788,13 +814,18 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
         # cold-start case. A blanket member_defaults.qa_tier guess is not a real
         # decision about THIS person (that's the whole point of the explicit-override
         # flag), so it does not survive here either -- reset to the configurable
-        # cold-start default, then let GitHunt (if configured) seed a better one-time
-        # starting point from their overall GitHub activity/tech-stack score. Boardman's
-        # own decayed PR-activity history takes over as the authoritative signal from
-        # here on; this only ever runs once per login (see githunt_enrichment's
-        # permanent cache), and only for QA-role members, to protect the 50-call/month
-        # free-tier quota.
+        # cold-start default, then let progressively richer evidence improve on it:
+        # our own mined commit-history capability (real, demonstrated work -- see
+        # scripts/mine_qa_repo_capability.py) beats GitHunt's opaque third-party score,
+        # which in turn beats a flat default. Boardman's own decayed PR-activity
+        # inference remains authoritative going forward; both of these only ever seed
+        # a STARTING point.
         m.qa_tier = settings.qa_tier_cold_start_default
+        mined = mined_profiles.get(login_l) if login_l else None
+        mined_tier = mined.get("qa_tier") if isinstance(mined, dict) else None
+        if isinstance(mined_tier, int) and mined_tier in (1, 2, 3):
+            m.qa_tier = mined_tier
+            continue
         if githunt_enabled and login_l and "qa" in m.roles:
             from boardman.github import githunt_enrichment
 
