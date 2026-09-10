@@ -152,11 +152,20 @@ async def mine_one(
         if meta is None:
             continue
         tier, _ = classify_repo_tier(meta)
-        clone_url = f"https://github.com/{fn}.git"
+        # Authenticated clone URL -- most Team-Deepiri repos are private, and an
+        # unauthenticated https clone fails with git exit 128 (as seen against prod:
+        # 8 of the org's repos rejected the plain URL). The PAT works as either
+        # username or password over HTTPS; this is the same TOKEN already proven
+        # valid for the REST calls above.
+        clone_url = f"https://{TOKEN}@github.com/{fn}.git"
         # Mining is synchronous/blocking (real clone + disk I/O) -- run it off the
         # event loop so one slow repo does not stall every other async task in the batch.
         stats = await asyncio.to_thread(
-            mined_author_stats_for_clone_url, clone_url, author_emails=emails, author_names=names
+            mined_author_stats_for_clone_url,
+            clone_url,
+            author_emails=emails,
+            author_names=names,
+            redact_secret=TOKEN,
         )
         if stats is None:
             continue

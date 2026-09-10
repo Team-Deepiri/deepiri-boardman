@@ -71,6 +71,30 @@ def test_mined_author_stats_for_clone_url_failure_returns_none(monkeypatch):
     assert result is None
 
 
+def test_mined_author_stats_for_clone_url_redacts_secret_on_failure(monkeypatch, caplog):
+    """A private-repo clone URL carries a PAT for git's own HTTPS auth -- a failure
+    must never leak it into logs (CI/Actions logs are not secret-redacted for a value
+    the workflow itself never references)."""
+
+    def _boom(url, dest):
+        raise RuntimeError(f"auth failed for {url}")
+
+    monkeypatch.setattr(rcm, "clone_full", _boom)
+    with caplog.at_level("WARNING"):
+        result = rcm.mined_author_stats_for_clone_url(
+            "https://SUPER_SECRET_TOKEN@github.com/org/repo.git",
+            author_emails={"a@example.com"},
+            redact_secret="SUPER_SECRET_TOKEN",
+        )
+    assert result is None
+    assert "SUPER_SECRET_TOKEN" not in caplog.text
+    assert "***@github.com/org/repo.git" in caplog.text
+
+
+def test_redact_no_secret_returns_text_unchanged():
+    assert rcm._redact("hello world", "") == "hello world"
+
+
 def test_demonstrated_tier_no_qualifying_evidence_returns_floor_tier1():
     stats = rcm.AuthorRepoStats(commits=1, lines_added=1, lines_removed=0)
     assert rcm.demonstrated_tier_from_repo_stats([(3, stats)]) == 1
