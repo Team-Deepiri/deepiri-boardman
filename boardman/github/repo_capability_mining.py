@@ -94,23 +94,45 @@ def clone_full(clone_url: str, dest_dir: str) -> None:
     git.Repo.clone_from(clone_url, dest_dir)
 
 
+def _redact(text: str, secret: str) -> str:
+    """Scrub a known secret substring out of `text` before it ever reaches a log line.
+
+    Most Team-Deepiri repos are private, so `clone_url` legitimately carries a PAT for
+    git's own HTTPS auth (see scripts/mine_qa_repo_capability.py) -- but GitPython's own
+    exceptions can embed the full command line (URL and all) verbatim. Logging the raw
+    exception or URL on a clone failure would leak that token into CI/Actions logs,
+    which are not secret-redacted for a value the workflow never itself references.
+    This is a blunt string replace, not URL parsing, deliberately: it must catch the
+    secret wherever it appears, not just where a URL parser expects credentials.
+    """
+    if not secret:
+        return text
+    return text.replace(secret, "***")
+
+
 def mined_author_stats_for_clone_url(
     clone_url: str,
     *,
     author_emails: set[str] | None = None,
     author_names: set[str] | None = None,
+    redact_secret: str = "",
 ) -> AuthorRepoStats | None:
     """Clone `clone_url` to a throwaway temp dir, mine it, then clean up.
 
     Returns None (rather than raising) on any clone/mining failure -- a single
     unreachable/renamed/huge repo must not abort an entire batch mining run.
+
+    `redact_secret`: pass the raw credential embedded in `clone_url` (e.g. a PAT for a
+    private repo) so it never appears in the failure log -- see `_redact`.
     """
     tmp_dir = tempfile.mkdtemp(prefix="qa-capability-mine-")
     try:
         clone_full(clone_url, tmp_dir)
         return mine_author_stats(tmp_dir, author_emails=author_emails, author_names=author_names)
     except Exception as exc:  # noqa: BLE001 - one bad repo must not sink the whole batch
-        _log.warning("repo_capability_mining: mining %s failed: %s", clone_url, exc)
+        safe_url = _redact(clone_url, redact_secret)
+        safe_exc = _redact(str(exc), redact_secret)
+        _log.warning("repo_capability_mining: mining %s failed: %s", safe_url, safe_exc)
         return None
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
