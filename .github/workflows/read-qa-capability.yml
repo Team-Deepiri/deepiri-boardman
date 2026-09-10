@@ -1,0 +1,43 @@
+name: Read QA Capability Profiles
+
+# Read-only debugging aid: dumps the qa_capability_profiles table from production so
+# its contents can be inspected without direct DB/SSH access. Safe to run any time --
+# never writes anything.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  read:
+    name: Dump qa_capability_profiles from production
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Set up SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -p "${VPS_PORT:-22}" -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Query the table
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -T -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
+          set -euo pipefail
+          cd /opt/deepiri/deepiri-boardman
+          docker compose -f docker-compose.prod.yml exec -T postgres \
+            psql -U boardman -d boardman -c \
+            "select github_login, qa_tier, repos_discovered, repos_mined, reason, computed_at from qa_capability_profiles order by github_login;"
+          EOSSH
