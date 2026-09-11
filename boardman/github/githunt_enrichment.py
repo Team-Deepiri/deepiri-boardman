@@ -116,13 +116,16 @@ def fetch_and_cache_profile_sync(login: str) -> dict[str, Any] | None:
         return None
 
 
-def qa_tier_from_profile(profile: dict[str, Any] | None) -> int | None:
-    """Bucket a GitHunt profile's activity/tech-stack score (0-100 each) into a
-    starting qa_tier (1-3). None when the profile has neither score.
+def qa_tier_from_profile(profile: dict[str, Any] | None) -> float | None:
+    """Map a GitHunt profile's activity/tech-stack score (0-100 each) onto a
+    fractional starting qa_tier (1.0-3.0), linearly. None when the profile has
+    neither score.
 
-    Advisory only -- this seeds where a brand-new QA starts; boardman's own decayed
-    PR-activity history is what actually governs their tier from then on, so the exact
-    thresholds here matter far less than "don't start everyone at the same default."
+    Linear, not stepped into three buckets: a score of 51 and a score of 69 are
+    genuinely different positions, and forcing both to round to the same tier throws
+    away real signal GitHunt gave us. Advisory only either way -- this seeds where a
+    brand-new QA starts; boardman's own decayed PR-activity history (or our own mined
+    evidence, which outranks this) is what actually governs their tier from then on.
     """
     if not isinstance(profile, dict):
         return None
@@ -132,8 +135,5 @@ def qa_tier_from_profile(profile: dict[str, Any] | None) -> int | None:
     if not vals:
         return None
     avg = sum(vals) / len(vals)
-    if avg >= 70:
-        return 3
-    if avg >= 35:
-        return 2
-    return 1
+    # 0-100 -> 1.0-3.0
+    return max(1.0, min(3.0, 1.0 + (max(0.0, min(100.0, avg)) / 100.0) * 2.0))

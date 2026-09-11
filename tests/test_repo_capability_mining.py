@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 from boardman.github import repo_capability_mining as rcm
 
 
@@ -113,3 +115,20 @@ def test_demonstrated_tier_only_tier1_activity_stays_tier1():
 
 def test_demonstrated_tier_empty_input_is_floor_tier1():
     assert rcm.demonstrated_tier_from_repo_stats([]) == 1
+
+
+def test_demonstrated_tier_blends_into_a_genuine_fraction():
+    """Heavy tier-1 evidence plus light tier-3 evidence should land somewhere
+    honestly in between -- not forced to round to either whole bucket."""
+    heavy_t1 = rcm.AuthorRepoStats(commits=40, lines_added=800, lines_removed=200)
+    light_t3 = rcm.AuthorRepoStats(commits=3, lines_added=60, lines_removed=10)
+    result = rcm.demonstrated_tier_from_repo_stats([(1, heavy_t1), (3, light_t3)])
+    assert 1.0 < result < 2.0  # tier-1 evidence dominates by volume, but not to 1.0
+    assert result != 1 and result != 3
+
+
+def test_demonstrated_tier_more_evidence_pulls_the_average_toward_it():
+    equal_t1 = rcm.AuthorRepoStats(commits=10, lines_added=100, lines_removed=0)
+    equal_t3 = rcm.AuthorRepoStats(commits=10, lines_added=100, lines_removed=0)
+    result = rcm.demonstrated_tier_from_repo_stats([(1, equal_t1), (3, equal_t3)])
+    assert result == pytest.approx(2.0)
