@@ -226,7 +226,7 @@ Full list: [.env.example](.env.example). Routing config: [repos.yml](repos.yml),
 
 ## DB tables (SQLite)
 
-`issue_task_map`, `pr_task_links`, `pr_task_lifecycle`, `sync_log`, `github_webhook_deliveries`, `scan_runs`, `agent_sessions`, `agent_messages`, `project_contexts`, `open_pr_tracks`, `repo_tier_cache`, `background_jobs`, `agent_rate_limit_buckets`
+`issue_task_map`, `pr_task_links`, `pr_task_lifecycle`, `sync_log`, `github_webhook_deliveries`, `scan_runs`, `agent_sessions`, `agent_messages`, `project_contexts`, `open_pr_tracks`, `repo_tier_cache`, `background_jobs`, `agent_rate_limit_buckets`, `qa_capability_profiles`, `pr_review_nudges`
 
 ## Plaky board routing
 

@@ -125,6 +125,28 @@ async def _qa_capability_cache_loop() -> None:
             log_degraded(_log, "qa capability cache refresh")
 
 
+async def _pr_review_nudge_loop() -> None:
+    """DB-only escalation sweep (boardman/services/pr_review_nudges.py): the comment/
+    review/push webhook handlers already keep each tracked PR's state current as
+    events arrive, so this loop never re-fetches a PR's timeline from GitHub -- it
+    only reads the small pr_review_nudges table and, for whatever's actually due,
+    posts one comment per PR."""
+    from boardman.services.pr_review_nudges import sweep_due_nudges
+
+    interval = max(300.0, float(settings.pr_review_nudge_sweep_interval_seconds or 3600.0))
+    while True:
+        await asyncio.sleep(interval)
+        async with async_session() as session:
+            try:
+                async with background_work():
+                    results = await sweep_due_nudges(session)
+                if results:
+                    _log.info("pr review nudge sweep: sent %d nudge(s)", len(results))
+            except Exception:  # noqa: BLE001 - graceful degradation
+                await session.rollback()
+                log_degraded(_log, "pr review nudge sweep")
+
+
 async def _run_one(job_id: str, kind: str, payload: dict) -> None:
     handler = JOB_HANDLERS.get(kind)
     if handler is None:
@@ -195,6 +217,15 @@ async def run_worker_forever() -> None:
     capability_cache_task = asyncio.create_task(
         _qa_capability_cache_loop(), name="qa-capability-cache-refresh"
     )
+    review_nudge_task = None
+    if settings.pr_review_nudge_enabled:
+        review_nudge_task = asyncio.create_task(
+            _pr_review_nudge_loop(), name="pr-review-nudge-sweep"
+        )
+        _log.info(
+            "pr review nudge sweep every %.0fs (DB-only; nudges whoever's turn it is)",
+            settings.pr_review_nudge_sweep_interval_seconds,
+        )
     try:
         while True:
             row = await claim_next_job_row()
@@ -204,7 +235,13 @@ async def run_worker_forever() -> None:
             job_id, kind, payload = row
             await _run_one(job_id, kind, payload)
     finally:
-        for task in (reconcile_task, knowledge_task, lifecycle_task, capability_cache_task):
+        for task in (
+            reconcile_task,
+            knowledge_task,
+            lifecycle_task,
+            capability_cache_task,
+            review_nudge_task,
+        ):
             if task is not None:
                 task.cancel()
 
