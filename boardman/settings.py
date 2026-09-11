@@ -393,6 +393,16 @@ class Settings(BaseSettings):
     pr_task_archive_board_id: str = ""
     pr_task_archive_group_id: str = ""
 
+    # Stale-PR @mention escalation (boardman/services/pr_review_nudges.py): whoever's
+    # turn it is (QA or developer -- whichever side did NOT make the most recent
+    # comment/review/commit) gets @mentioned on GitHub if nobody's acted in 3 days,
+    # again every 3 days up to day 15, then daily after that. State is kept current by
+    # the existing comment/review/push webhook handlers (no extra GitHub calls); this
+    # interval only controls how often the DB-only sweep checks what's due and posts
+    # the (at most a few) actually-due comments.
+    pr_review_nudge_enabled: bool = True
+    pr_review_nudge_sweep_interval_seconds: float = 3600.0
+
     # PR ↔ Plaky fuzzy linking (pull_request.opened when no Fixes/Closes issue)
     pr_linking_pipeline_enabled: bool = True
     pr_linking_fetch_board_items: bool = True

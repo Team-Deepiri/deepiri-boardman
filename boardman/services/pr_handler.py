@@ -449,6 +449,20 @@ async def _assign_qa_for_pr(
     qa_login = (getattr(member, "github_login", "") or "").strip() if member else ""
     qa_display = (getattr(member, "display", "") or "").strip() if member else ""
 
+    if session is not None and pr_author_login and qa_login:
+        try:
+            from boardman.services.pr_review_nudges import ensure_tracked
+
+            await ensure_tracked(
+                session,
+                github_repo=repo_full.rsplit("/", 1)[-1] if "/" in repo_full else repo_full,
+                github_pr_number=pr_number,
+                developer_login=pr_author_login,
+                primary_qa_login=qa_login,
+            )
+        except Exception as exc:  # noqa: BLE001 - the review-nudge sweep is a bonus feature
+            _log.warning("pr_review_nudges.ensure_tracked failed for PR #%s: %s", pr_number, exc)
+
     if already_assigned:
         # Plaky already has this QA -- don't re-pick or re-write it, but a PREVIOUS
         # attempt's GitHub comment/reviewer-request may have failed independently
@@ -2091,6 +2105,27 @@ async def handle_pr_synchronized(
     pr_number = payload.pull_request.number
     # A push is proof the PR is alive: clear any stale withdrawal before resolving.
     await _ensure_links_live(payload, session)
+
+    try:
+        from boardman.services.pr_review_nudges import parse_github_timestamp, record_activity
+
+        pr_user = payload.pull_request.user or {}
+        pusher_login = str(pr_user.get("login") or "") if isinstance(pr_user, dict) else ""
+        at_raw = payload.pull_request.updated_at
+        at = parse_github_timestamp(at_raw) if at_raw else datetime.utcnow()
+        if pusher_login:
+            await record_activity(
+                session,
+                github_repo=repo_name,
+                github_pr_number=pr_number,
+                actor_login=pusher_login,
+                at=at,
+            )
+    except Exception as exc:  # noqa: BLE001 - the review-nudge sweep is a bonus feature
+        _log.warning(
+            "pr_review_nudges.record_activity (push) failed for PR #%s: %s", pr_number, exc
+        )
+
     task_ids = await distinct_task_ids_for_pr(
         session, github_repo=repo_name, github_pr_number=pr_number
     )
