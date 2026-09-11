@@ -89,11 +89,17 @@ def test_network_error_returns_none_without_caching(tmp_path, monkeypatch):
     [
         (None, None),
         ({}, None),
-        ({"activity_score": 90, "tech_stack_score": 92}, 3),
-        ({"activity_score": 50, "tech_stack_score": 40}, 2),
-        ({"activity_score": 10, "tech_stack_score": 5}, 1),
-        ({"activity_score": 90}, 3),
+        ({"activity_score": 90, "tech_stack_score": 92}, 2.82),
+        ({"activity_score": 50, "tech_stack_score": 40}, 1.9),
+        ({"activity_score": 10, "tech_stack_score": 5}, 1.15),
+        ({"activity_score": 90}, 2.8),
+        ({"activity_score": 100, "tech_stack_score": 100}, 3.0),
+        ({"activity_score": 0, "tech_stack_score": 0}, 1.0),
     ],
 )
-def test_qa_tier_from_profile_buckets(profile, expected):
-    assert ge.qa_tier_from_profile(profile) == expected
+def test_qa_tier_from_profile_linear_mapping(profile, expected):
+    result = ge.qa_tier_from_profile(profile)
+    if expected is None:
+        assert result is None
+    else:
+        assert result == pytest.approx(expected)

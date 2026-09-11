@@ -81,7 +81,13 @@ class TeamMember:
     # "nobody has any evidence" — a brand-new QA with neither a live/inferred tier NOR
     # an explicit override gets the safe universal default, not a blanket config guess.
     tier_is_explicit_override: bool = False
-    qa_tier: int = 3  # 1 = web/core only, 2 = all except AI/heavy repos, 3 = all repos
+    # Fractional (e.g. 1.7): 1 = web/core only, 2 = all except AI/heavy repos, 3 = all
+    # repos, with real positions in between reflecting weighted, demonstrated evidence
+    # rather than a forced round to the nearest whole bucket. See
+    # repo_capability_mining.demonstrated_tier_from_repo_stats and
+    # repo_rules.qa_tier_allows_repo (which floors a fractional value to decide
+    # pattern-rule eligibility).
+    qa_tier: float = 3.0
     # True only when a human explicitly wrote `qa_tier:` for THIS person (member_overrides
     # or a members: row) -- member_defaults.qa_tier is a blanket guess, not a decision
     # about this specific person, so it does NOT count. Someone with neither this NOR a
@@ -452,19 +458,22 @@ def _augment_repo_globs_with_github_org(globs: list[str]) -> list[str]:
     return out
 
 
-def _parse_qa_tier(val: Any) -> int:
+def _parse_qa_tier(val: Any) -> float:
     """An unset or invalid value is "nobody has an opinion yet," not "assume tier 3" --
     it falls back to the configurable cold-start default (see qa_tier_is_explicit_override
-    on TeamMember, and the GitHunt/team-scan resolution in _build_team_assignments)."""
+    on TeamMember, and the GitHunt/team-scan/mined-evidence resolution in
+    _build_team_assignments). qa_tier is fractional (e.g. 1.7 from weighted mined
+    evidence) -- a human-typed YAML value is still typically a whole number (1, 2, 3),
+    but is not forced to be."""
     dflt = settings.qa_tier_cold_start_default
-    dflt = dflt if dflt in (1, 2, 3) else 2
+    dflt = dflt if 1.0 <= dflt <= 3.0 else 1.5
     if val is None or val == "":
         return dflt
     try:
-        t = int(val)
+        t = float(val)
     except (TypeError, ValueError):
         return dflt
-    return t if t in (1, 2, 3) else dflt
+    return t if 1.0 <= t <= 3.0 else dflt
 
 
 # (monotonic_ts, org, result) — a person's QA tier should come from where they actually
@@ -507,7 +516,7 @@ def _qa_tier_from_org_teams() -> dict[str, int]:
     return login_tier
 
 
-def _qa_capability_tiers() -> dict[str, int]:
+def _qa_capability_tiers() -> dict[str, float]:
     """{github_login (lowercased) -> qa_tier} from the in-memory cache that
     boardman.services.qa_capability_store.refresh_capability_cache() populates from
     the qa_capability_profiles DB table (written by scripts/mine_qa_repo_capability.py
@@ -816,7 +825,7 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
         # a STARTING point.
         m.qa_tier = settings.qa_tier_cold_start_default
         mined_tier = mined_tiers.get(login_l) if login_l else None
-        if isinstance(mined_tier, int) and mined_tier in (1, 2, 3):
+        if isinstance(mined_tier, int | float) and 1.0 <= mined_tier <= 3.0:
             m.qa_tier = mined_tier
             continue
         if githunt_enabled and login_l and "qa" in m.roles:

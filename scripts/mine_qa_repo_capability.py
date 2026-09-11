@@ -15,7 +15,11 @@ requiring a second language runtime on the deploy box.
 For each GitHub support-team member:
   1. Discover distinct repos they've authored/reviewed PRs in (GitHub Search API,
      same query shape as qa_activity_inference.py's activity signal), capped per
-     person to bound total runtime.
+     person to bound total runtime. Org-scoped (Team-Deepiri) first; if that turns up
+     fewer than GLOBAL_FALLBACK_THRESHOLD repos, ALSO searches all of GitHub and
+     merges in what it finds -- "no PRs in Deepiri yet" is not the same claim as
+     "no evidence anywhere," and someone new to this org may have a real,
+     demonstrated track record elsewhere that deserves to count.
   2. Classify each repo's difficulty tier with the SAME IDF-based tier_classifier used
      everywhere else in this codebase (repo_signals.json must exist -- run
      sync_qa_capabilities.py's Phase 0 first if it doesn't). Memoized in a
@@ -26,8 +30,9 @@ For each GitHub support-team member:
      is skipped, never aborts the whole run. Clones run concurrently, bounded by
      CLONE_CONCURRENCY across the WHOLE run (not per person), so the total wall-clock
      cost is roughly (total repo-mines / CLONE_CONCURRENCY) rather than one-at-a-time.
-  4. Bucket the person's demonstrated tier from real, substantive activity (see
-     boardman/github/repo_capability_mining.py's thresholds).
+  4. Weight-average the person's demonstrated tier from real, substantive activity
+     into a FRACTIONAL qa_tier (e.g. 1.7, not forced to round to 1/2/3 -- see
+     boardman/github/repo_capability_mining.py's demonstrated_tier_from_repo_stats).
 
 Written to the qa_capability_profiles DB table (NOT a JSON file -- a mining run writes
 fresh rows every time, and that kind of churn has no business living in the git
@@ -77,16 +82,23 @@ MAX_SEARCH_PAGES = 2
 # container's memory limit all at once. Repo-metadata fetches (cheap API calls) are
 # not bounded by this; only the actual clone+mine work is.
 CLONE_CONCURRENCY = 4
+# Below this many org-scoped repos discovered, a person is "thin evidence in Deepiri"
+# and worth searching GLOBALLY too (see mine_one) -- someone new to this org may still
+# have a real, demonstrated track record elsewhere on GitHub, and "no Deepiri PRs yet"
+# is not the same claim as "no evidence anywhere."
+GLOBAL_FALLBACK_THRESHOLD = 2
 
 
 async def _discover_repos(
-    client: httpx.AsyncClient, login: str, org: str, headers: dict[str, str]
+    client: httpx.AsyncClient, login: str, headers: dict[str, str], *, org: str | None
 ) -> list[str]:
-    """Distinct `owner/repo` this login has authored or reviewed a PR in (org-scoped),
-    newest activity first -- same query shape as qa_activity_inference.py."""
+    """Distinct `owner/repo` this login has authored or reviewed a PR in, newest
+    activity first -- same query shape as qa_activity_inference.py. `org=None` searches
+    ALL of GitHub instead of one org (see GLOBAL_FALLBACK_THRESHOLD)."""
+    scope = f"org:{org} " if org else ""
     seen: list[str] = []
     seen_set: set[str] = set()
-    for q in (f"is:pr org:{org} author:{login}", f"is:pr org:{org} reviewed-by:{login}"):
+    for q in (f"is:pr {scope}author:{login}", f"is:pr {scope}reviewed-by:{login}"):
         for page in range(1, MAX_SEARCH_PAGES + 1):
             url = (
                 "https://api.github.com/search/issues?q="
@@ -199,9 +211,24 @@ async def mine_one(
     repo_tier_cache: dict[str, int],
     clone_semaphore: asyncio.Semaphore,
 ) -> dict[str, Any]:
-    repos = await _discover_repos(client, login, ORG, headers)
+    repos = await _discover_repos(client, login, headers, org=ORG)
+    used_global = False
+    if len(repos) < GLOBAL_FALLBACK_THRESHOLD:
+        # Thin (or zero) evidence inside Deepiri is not the same claim as "no evidence
+        # anywhere" -- someone new to this org may have a real track record elsewhere
+        # on GitHub. Search globally too and merge, still capped at
+        # MAX_REPOS_PER_PERSON overall.
+        global_repos = await _discover_repos(client, login, headers, org=None)
+        seen = set(repos)
+        for fn in global_repos:
+            if fn not in seen:
+                repos.append(fn)
+                seen.add(fn)
+                used_global = True
+                if len(repos) >= MAX_REPOS_PER_PERSON:
+                    break
     if not repos:
-        return {"qa_tier": None, "repos_mined": 0, "reason": "no PR activity found"}
+        return {"qa_tier": None, "repos_mined": 0, "reason": "no PR activity found anywhere"}
 
     emails, names = await _resolve_author_identities(client, login, headers)
 
@@ -226,6 +253,7 @@ async def mine_one(
         "qa_tier": qa_tier,
         "repos_discovered": len(repos),
         "repos_mined": len(tier_and_stats),
+        "reason": "includes evidence from outside Team-Deepiri" if used_global else None,
     }
 
 

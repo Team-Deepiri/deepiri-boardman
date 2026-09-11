@@ -227,7 +227,10 @@ class QaCapabilityProfile(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     github_login: Mapped[str] = mapped_column(String(255), unique=True, nullable=False, index=True)
-    qa_tier: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # Fractional (e.g. 1.7): a weighted blend of demonstrated-evidence tiers, not a
+    # forced round to the nearest bucket -- see
+    # repo_capability_mining.demonstrated_tier_from_repo_stats.
+    qa_tier: Mapped[float | None] = mapped_column(Float, nullable=True)
     repos_discovered: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     repos_mined: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     reason: Mapped[str | None] = mapped_column(String(255), nullable=True)

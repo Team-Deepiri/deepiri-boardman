@@ -29,7 +29,9 @@ _log = logging.getLogger(__name__)
 
 # {github_login (lowercased) -> qa_tier}. Populated ONLY by refresh_capability_cache();
 # read by the synchronous config.py roster loader via cached_capability_tiers().
-_capability_cache: dict[str, int] = {}
+# Fractional (e.g. 1.7) -- a weighted blend of demonstrated evidence, not forced to
+# round to the nearest whole bucket.
+_capability_cache: dict[str, float] = {}
 _capability_cache_loaded_at: float = 0.0
 
 
@@ -37,7 +39,7 @@ async def upsert_profile(
     session: AsyncSession,
     *,
     github_login: str,
-    qa_tier: int | None,
+    qa_tier: float | None,
     repos_discovered: int = 0,
     repos_mined: int = 0,
     reason: str | None = None,
@@ -101,14 +103,14 @@ async def refresh_capability_cache() -> None:
         _log.warning("qa_capability_store: refresh failed, keeping previous cache: %s", exc)
         return
     _capability_cache = {
-        login: p["qa_tier"]
+        login: float(p["qa_tier"])
         for login, p in profiles.items()
-        if isinstance(p.get("qa_tier"), int) and p["qa_tier"] in (1, 2, 3)
+        if isinstance(p.get("qa_tier"), int | float) and 1.0 <= p["qa_tier"] <= 3.0
     }
     _capability_cache_loaded_at = time.monotonic()
 
 
-def cached_capability_tiers() -> dict[str, int]:
+def cached_capability_tiers() -> dict[str, float]:
     """Synchronous read of the in-memory cache -- safe to call from config.py's
     synchronous roster loader. Empty until refresh_capability_cache() has run at least
     once (e.g. at app/worker startup); that's the same "no data yet" contract as every

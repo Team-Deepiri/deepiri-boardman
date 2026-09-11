@@ -279,7 +279,7 @@ def test_githunt_cold_start_seeds_qa_tier_when_configured(tmp_path, monkeypatch)
 
     cfg = config.load_team_assignments()
     assert len(cfg.members) == 1
-    assert cfg.members[0].qa_tier == 3
+    assert cfg.members[0].qa_tier == pytest.approx(2.78)
 
 
 def _base_cold_start_yml(tmp_path):
