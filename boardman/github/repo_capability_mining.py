@@ -147,22 +147,33 @@ _MIN_CHURN_TO_COUNT = 20
 
 def demonstrated_tier_from_repo_stats(
     repo_tier_and_stats: list[tuple[int, AuthorRepoStats]],
-) -> int:
-    """Bucket a person's mined activity across N repos (each with its own
-    tier_classifier-assigned tier) into a single starting qa_tier (1-3).
+) -> float:
+    """Weighted-average a person's mined activity across N repos (each with its own
+    tier_classifier-assigned tier) into a single fractional starting qa_tier (1.0-3.0).
 
-    Someone with real, substantive activity (see thresholds above) in at least one
-    tier-3 repo demonstrates tier 3; failing that, real activity in a tier-2 repo
-    demonstrates tier 2; otherwise (only tier-1 activity, or no qualifying activity at
-    all) they demonstrate tier 1 -- this is a FLOOR a person has proven, not a guess,
-    so "no qualifying evidence" still returns 1 rather than the caller's cold-start
-    default; callers with zero input repos entirely should not call this at all and
-    should fall through to qa_tier_cold_start_default instead.
+    Deliberately NOT "max tier with any qualifying activity wins the whole tier" --
+    that forced a false-precision round: a person with one modest tier-3 repo and a
+    mountain of tier-1 work looked identical to someone who has spent years at tier 3.
+    Instead each qualifying repo's tier is weighted by how MUCH evidence it carries
+    (commits + churn, so a 40-commit history counts far more than a 2-commit one), and
+    the result is their real position on the 1-3 spectrum, e.g. 2.4 -- honest
+    uncertainty, not a coin-flip round to 2 or 3.
+
+    "No qualifying evidence at all" (see thresholds above) returns the floor, 1.0 -- a
+    proven absence of demonstrated work, not a guess; callers with zero input repos
+    entirely should not call this at all and should fall through to
+    qa_tier_cold_start_default instead.
     """
-    best = 1
+    weighted_sum = 0.0
+    weight_total = 0.0
     for tier, stats in repo_tier_and_stats:
         if stats.commits < _MIN_COMMITS_TO_COUNT and stats.churn < _MIN_CHURN_TO_COUNT:
             continue
-        if tier > best:
-            best = tier
-    return best if best in (1, 2, 3) else 1
+        # Commits are the primary volume signal; churn is folded in at a damped scale
+        # so one enormous refactor commit doesn't single-handedly dominate the weight.
+        weight = float(stats.commits) + (stats.churn / 50.0)
+        weighted_sum += tier * weight
+        weight_total += weight
+    if weight_total <= 0:
+        return 1.0
+    return max(1.0, min(3.0, weighted_sum / weight_total))

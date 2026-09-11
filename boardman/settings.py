@@ -221,12 +221,16 @@ class Settings(BaseSettings):
     # repo). False = legacy overlap-pool weighted-random pick only.
     qa_github_fit_enabled: bool = True
     qa_max_active_prs: int = 5
-    # QA cold-start default for someone with no live team-name tier AND no explicit
-    # human override -- a person is never assumed tier 3 (all repos) just because
-    # nobody typed a number for them. Repo matching still steers a thin-history person
-    # toward tier-1 work (see qa_picker's cold-start preference), so this ceiling is a
-    # safety net, not the main mechanism.
-    qa_tier_cold_start_default: int = 2
+    # TRUE last resort: only used when NOTHING else answered -- no live team-name
+    # tier, no explicit human override, no mined commit-history evidence (org-scoped
+    # OR global -- see scripts/mine_qa_repo_capability.py), and no GitHunt signal.
+    # Deliberately fractional and below the midpoint (1.5, not 2.0): with literally no
+    # evidence anywhere, "assume moderate capability" is still an assumption, and a
+    # person is never assumed tier 3 (all repos) just because nobody typed a number
+    # for them. Repo matching also steers a thin-history person toward tier-1 work
+    # (see qa_picker's cold-start preference), so this ceiling is a safety net, not the
+    # main mechanism -- real evidence (mined or GitHunt) always overrides it first.
+    qa_tier_cold_start_default: float = 1.5
     # GitHunt (https://githunt.ai) developer-scoring API: a one-time cold-start signal
     # for a QA with no GitHub team-name tier and no explicit override yet. Empty key =
     # feature off (no network call, same as every other optional live-data source here).

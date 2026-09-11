@@ -52,13 +52,23 @@ def repo_matches_any_pattern(full_name: str, patterns: list[str]) -> bool:
     return False
 
 
-def qa_tier_allows_repo(qa_tier: int, full_name: str, rules: QaRepoRules) -> bool:
+def qa_tier_allows_repo(qa_tier: float, full_name: str, rules: QaRepoRules) -> bool:
     """
     Tier 3: any repo.
     Tier 2: repos that match tier2_excluded_patterns are not allowed.
     Tier 1: only repos matching tier1_only_patterns.
+
+    qa_tier may be fractional (e.g. 1.7, from weighted-evidence or cold-start bucketing
+    -- see boardman/github/repo_capability_mining.py and
+    qa_tier_cold_start_default). The pattern rules below are inherently three discrete
+    buckets, so a fractional value is FLOORED, not rounded, to decide which bucket
+    applies: someone sitting at 2.9 is genuinely not yet proven at tier 3 and must not
+    get tier-3 access on the strength of rounding alone.
     """
-    t = qa_tier if qa_tier in (1, 2, 3) else 3
+    # Clamp before flooring, not after: an out-of-range value (defensive only -- every
+    # producer of qa_tier already clamps to [1.0, 3.0]) falls back to the SAFEST bucket
+    # (1), never the most permissive one, since unknown must never mean "grant more."
+    t = int(min(max(qa_tier, 1.0), 3.0))
     fn = _norm_fn(full_name)
     if not fn:
         return False
