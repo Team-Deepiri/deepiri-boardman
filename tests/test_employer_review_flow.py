@@ -81,6 +81,8 @@ def test_default_exclusion_list_names() -> None:
         "christiankrider1",
         "ConnorWhite9",
         "CherryQuartzio",
+        "HungH206",
+        "neutral207",
     }
 
 
