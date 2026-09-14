@@ -878,6 +878,19 @@ def _build_team_assignments() -> TeamAssignmentsConfig:
     if isinstance(exc_raw, list):
         excluded = [str(x).strip() for x in exc_raw if str(x).strip()]
     excluded.extend(_qa_excluded_team_logins(data))
+    # Dedupe case-insensitively, preserving first-seen order: the static list and the
+    # live GitHub team scan legitimately overlap (a lead named individually AND
+    # currently on the auto-excluded team), and printing/matching against the same
+    # login twice is pure noise, not a correctness bug -- but it makes the resolved
+    # list confusing to read (see the production qa_excluded dump this fixed).
+    seen_excluded: set[str] = set()
+    deduped_excluded: list[str] = []
+    for entry in excluded:
+        key = entry.casefold()
+        if key not in seen_excluded:
+            seen_excluded.add(key)
+            deduped_excluded.append(entry)
+    excluded = deduped_excluded
 
     bug_specialist = DEFAULT_QA_BUG_SPECIALIST
     if "qa_bug_specialist" in data:
