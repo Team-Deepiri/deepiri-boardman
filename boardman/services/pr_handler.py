@@ -453,6 +453,9 @@ async def _assign_qa_for_pr(
         try:
             from boardman.services.pr_review_nudges import ensure_tracked
 
+            # Same defensive short-name extraction as stamp_qa_on_pr_links below --
+            # repo_full is owner/repo in every caller today, but this guards a bare
+            # repo name too rather than assuming the format (Sorge review, PR #163).
             await ensure_tracked(
                 session,
                 github_repo=repo_full.rsplit("/", 1)[-1] if "/" in repo_full else repo_full,
