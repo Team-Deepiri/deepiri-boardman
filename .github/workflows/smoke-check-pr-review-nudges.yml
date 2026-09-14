@@ -1,0 +1,57 @@
+name: Smoke Check PR Review Nudges
+
+# Read-only production smoke test for the stale-PR @mention escalation feature:
+# confirms the boardman-worker process picked up the new sweep loop, and dumps the
+# pr_review_nudges table (empty is a valid, expected result -- the table only gets
+# rows once a real PR gets a QA assigned after this feature's deploy). Never writes
+# anything.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Check pr_review_nudges + worker loop on production
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Set up SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -p "${VPS_PORT:-22}" -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Check worker loop registration + table contents
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -T -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
+          set -euo pipefail
+          cd /opt/deepiri/deepiri-boardman
+
+          echo "--- containers ---"
+          docker compose -f docker-compose.prod.yml ps
+
+          echo "--- worker startup log (looking for the pr review nudge sweep line) ---"
+          docker compose -f docker-compose.prod.yml logs boardman-worker 2>&1 \
+            | grep -i "pr review nudge" || echo "NOT FOUND in current worker logs"
+
+          echo "--- pr_review_nudges table ---"
+          docker compose -f docker-compose.prod.yml exec -T postgres \
+            psql -U boardman -d boardman -c \
+            "select github_repo, github_pr_number, waiting_on, developer_login, primary_qa_login, nudge_stage, last_activity_at from pr_review_nudges order by updated_at desc limit 20;"
+
+          echo "--- API health ---"
+          curl -fsS http://127.0.0.1:8090/api/v1/health || echo "HEALTH CHECK FAILED"
+          EOSSH
