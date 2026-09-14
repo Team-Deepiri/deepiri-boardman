@@ -79,6 +79,39 @@ def test_qa_excluded_merges_live_management_team_logins(tmp_path, monkeypatch):
     assert "lead-login" in cfg.qa_excluded
 
 
+def test_qa_excluded_dedupes_static_and_team_scan_overlap(tmp_path, monkeypatch):
+    """A login named in the static qa_excluded list AND currently on the auto-excluded
+    GitHub team (e.g. jrb00013/RiccoWrld/neutral207 in production) must appear only
+    once in the resolved list -- verified against a real production duplicate."""
+    yml = tmp_path / "ta.yml"
+    yml.write_text(
+        yaml.dump(
+            {
+                "plaky_field_keys": {"engineer": "fe", "qa": "fq"},
+                "member_defaults": {"repo_globs": ["deepiri-org/*"], "roles": ["qa"]},
+                "qa_excluded": ["SomeLogin", "Other"],
+                "qa_excluded_github_teams": ["Team-Deepiri/it-management-team"],
+                "members": [{"github_login": "alice", "id": "1"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(config.settings, "team_assignments_yml_path", str(yml))
+    config._raw.cache_clear()
+
+    def _fake_roster(spec: str):
+        if spec == "Team-Deepiri/it-management-team":
+            # Case-differing duplicate of an entry already in the static list.
+            return {"ok": True, "members": [{"login": "somelogin"}, {"login": "new-lead"}]}
+        return {"ok": True, "members": []}
+
+    monkeypatch.setattr("boardman.assignment.config.get_cached_support_team_roster", _fake_roster)
+    cfg = config.load_team_assignments()
+    assert cfg.qa_excluded.count("SomeLogin") + cfg.qa_excluded.count("somelogin") == 1
+    assert "new-lead" in cfg.qa_excluded
+    assert "Other" in cfg.qa_excluded
+
+
 def test_qa_excluded_team_fetch_failure_keeps_static_list(tmp_path, monkeypatch):
     """A failed/unreachable team roster must not blow away the static exclusion list."""
     yml = tmp_path / "ta.yml"
