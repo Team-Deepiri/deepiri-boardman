@@ -510,3 +510,27 @@ def pr_assignee_and_reviewer_logins(pr: dict) -> set[str]:
     assignees = pr.get("assignees") if isinstance(pr, dict) else None
     reviewers = pr.get("requested_reviewers") if isinstance(pr, dict) else None
     return _login_set(assignees) | _login_set(reviewers)
+
+
+async def all_active_pr_links(session: AsyncSession) -> list[tuple[str, int, str | None]]:
+    """Distinct (github_repo, github_pr_number, qa_plaky_id) for every currently
+    active (not merged, not withdrawn) PR link, across every task -- the input to the
+    review-nudge sweep (boardman/services/pr_review_nudges.py), which needs every open
+    PR Boardman is tracking, not one task's links at a time.
+
+    qa_plaky_id may repeat/differ across rows for the SAME (repo, pr) pair only in a
+    transient window right after re-linking; picking any one non-null value is fine --
+    stamp_qa_on_pr_links keeps all active rows for a PR in sync moments later.
+    """
+    q = select(
+        PullRequestTaskLink.github_repo,
+        PullRequestTaskLink.github_pr_number,
+        PullRequestTaskLink.qa_plaky_id,
+    ).where(_active_link_clause())
+    rows = (await session.execute(q)).all()
+    seen: dict[tuple[str, int], str | None] = {}
+    for repo, num, qa_id in rows:
+        key = (str(repo), int(num))
+        if key not in seen or (not seen[key] and qa_id):
+            seen[key] = qa_id
+    return [(repo, num, qa_id) for (repo, num), qa_id in seen.items()]
