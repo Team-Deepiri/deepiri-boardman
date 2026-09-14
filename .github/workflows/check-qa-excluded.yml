@@ -1,0 +1,50 @@
+name: Check QA Excluded List
+
+# Read-only production check: runs the live team_assignments resolution inside the
+# running boardman container and dumps cfg.qa_excluded, so a QA-exclusion change can
+# actually be verified in prod instead of just trusting the deploy succeeded. Never
+# writes anything.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Dump qa_excluded from the live production container
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Set up SSH
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+        run: |
+          set -euo pipefail
+          umask 077
+          mkdir -p ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/vps_key
+          chmod 600 ~/.ssh/vps_key
+          ssh-keyscan -p "${VPS_PORT:-22}" -H "$VPS_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Run the live resolution inside the boardman container
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+        run: |
+          set -euo pipefail
+          ssh -T -i ~/.ssh/vps_key "${VPS_USER}@${VPS_HOST}" \
+            'd=$(mktemp) || exit 1; cat > "$d"; bash "$d"; rc=$?; rm -f "$d"; exit $rc' <<'EOSSH'
+          set -euo pipefail
+          cd /opt/deepiri/deepiri-boardman
+          echo "--- deployed commit ---"
+          git rev-parse HEAD
+          echo "--- cfg.qa_excluded (live resolution, inside the running container) ---"
+          docker compose -f docker-compose.prod.yml exec -T boardman python -c "
+          from boardman.assignment.config import load_team_assignments
+          cfg = load_team_assignments(refresh=True)
+          for login in sorted(cfg.qa_excluded):
+              print(login)
+          "
+          EOSSH
