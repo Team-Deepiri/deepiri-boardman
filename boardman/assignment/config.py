@@ -50,6 +50,8 @@ DEFAULT_QA_EXCLUDED: tuple[str, ...] = (
     "christiankrider1",  # Christian Krider
     "ConnorWhite9",  # Connor White
     "CherryQuartzio",  # Quang Nguyen
+    "HungH206",  # Hung Hoang
+    "neutral207",  # Joel S.
 )
 
 # Optional: route all bug-typed tasks to one named QA. Per Joe's PR #81 review this is
