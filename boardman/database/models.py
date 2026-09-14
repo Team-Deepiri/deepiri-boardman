@@ -237,6 +237,47 @@ class QaCapabilityProfile(Base):
     computed_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 
+class PrReviewNudge(Base):
+    """Escalation state for boardman/services/pr_review_nudges.py's stale-PR @mention
+    sweep: whose turn it currently is (QA or developer), since when, and how far the
+    escalation schedule has already progressed for that turn -- so a periodic sweep
+    knows what it already said and never repeats a stage."""
+
+    __tablename__ = "pr_review_nudges"
+    __table_args__ = (
+        UniqueConstraint("github_repo", "github_pr_number", name="uq_pr_review_nudges_repo_pr"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    github_repo: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    github_pr_number: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    # Both taken directly from GitHub at the moment they're first known (PR author;
+    # whoever Boardman requested as reviewer) -- never a config-file/YAML roster
+    # lookup, so this stays correct even for someone the roster doesn't know about.
+    developer_login: Mapped[str] = mapped_column(String(255), nullable=False)
+    primary_qa_login: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # {login (casefold) -> comment count} for commenters who are neither the developer
+    # nor the primary QA -- once a second commenter's count reaches 2, they're
+    # "chipping in" and get @mentioned alongside the primary QA from then on. JSON text,
+    # not a side table: this is small, per-PR, and read/written as a single unit.
+    extra_qa_json: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # "qa" or "developer" -- whose turn it currently is (the side NOT responsible for
+    # the most recent qualifying comment/review/commit).
+    waiting_on: Mapped[str] = mapped_column(String(16), nullable=False)
+    # Timestamp of the most recent qualifying action (GitHub's clock) -- the escalation
+    # clock counts from here, not from when this row was last touched.
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    # How far the schedule has already progressed for the CURRENT waiting_on/
+    # last_activity_at pair: 0 = nothing sent, 1..5 = the day-3/6/9/12/15 pings, 6+ =
+    # daily pings past day 15. Reset to 0 whenever waiting_on or last_activity_at moves
+    # (the turn flipped, or new activity pushed the clock forward).
+    nudge_stage: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    last_nudge_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
+
 class BackgroundJob(Base):
     """SQLite-backed async job queue (replaces arq/Redis)."""
 

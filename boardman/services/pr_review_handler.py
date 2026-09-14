@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -275,6 +276,23 @@ async def handle_pull_request_review(
     state = (payload.review.state or "").strip().casefold()
     support = support_team_logins_casefold()
     on_support_roster = bool(reviewer_login) and reviewer_login.casefold() in support
+
+    if reviewer_login and not reviewer_login.endswith("[bot]"):
+        try:
+            from boardman.services.pr_review_nudges import parse_github_timestamp, record_activity
+
+            submitted_raw = payload.review.submitted_at
+            await record_activity(
+                session,
+                github_repo=repo_name,
+                github_pr_number=pr_number,
+                actor_login=reviewer_login,
+                at=parse_github_timestamp(submitted_raw) if submitted_raw else datetime.utcnow(),
+            )
+        except Exception as exc:  # noqa: BLE001 - the review-nudge sweep is a bonus feature
+            _log.warning(
+                "pr_review_nudges.record_activity (review) failed for PR #%s: %s", pr_number, exc
+            )
 
     bid = (board_id or "").strip()
     plaky = PlakyClient()
@@ -650,6 +668,27 @@ async def handle_issue_comment_on_pr(
     # finding or per bump, and every one of them was landing on the Plaky card.
     if commenter.endswith("[bot]"):
         return {"ok": True, "skipped": True, "message": "bot comment ignored"}
+
+    if commenter:
+        try:
+            from boardman.services.pr_review_nudges import parse_github_timestamp, record_activity
+
+            created_raw = (
+                str(payload.comment.get("created_at") or "")
+                if isinstance(payload.comment, dict)
+                else ""
+            )
+            await record_activity(
+                session,
+                github_repo=repo_name,
+                github_pr_number=pr_number,
+                actor_login=commenter,
+                at=parse_github_timestamp(created_raw) if created_raw else datetime.utcnow(),
+            )
+        except Exception as exc:  # noqa: BLE001 - the review-nudge sweep is a bonus feature
+            _log.warning(
+                "pr_review_nudges.record_activity (comment) failed for PR #%s: %s", pr_number, exc
+            )
 
     bid = (board_id or "").strip()
     comment_url = (
