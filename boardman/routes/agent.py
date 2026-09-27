@@ -1,5 +1,6 @@
 """HTTP endpoints for the Boardman assistant (chat, streaming, job polling)."""
 
+import re
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 
@@ -18,11 +19,18 @@ from boardman.broker.job_queue import get_job_queue
 from boardman.database.session import async_session, get_db
 from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
 from boardman.ratelimit.dependencies import require_agent_rate_limit
+from boardman.security.api_auth import require_internal_auth
 from boardman.services.direction_init import init_direction_file
 from boardman.services.scan_handler import run_repo_scan
 from boardman.settings import settings
 
 router = APIRouter()
+
+# Exactly one "owner/name" pair, each half limited to the characters GitHub
+# permits in an owner or repository name AND required to start with an
+# alphanumeric. The leading-alphanumeric rule is what rejects "-x/evil": no shell
+# is involved, so this is argument injection, not shell injection.
+_REPO_SLUG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,99}/[A-Za-z0-9][A-Za-z0-9._-]{0,99}$")
 
 
 class AgentChatRequest(BaseModel):
@@ -190,7 +198,9 @@ async def agent_chat_stream(body: AgentChatRequest, request: Request) -> Streami
 
 
 @router.get("/agent/jobs/{job_id}")
-async def agent_job_status(job_id: str) -> dict[str, Any]:
+async def agent_job_status(
+    job_id: str, _auth: None = Depends(require_internal_auth)
+) -> dict[str, Any]:
     q = get_job_queue()
     data = await q.fetch_public_job(job_id)
     if data is None:
@@ -228,7 +238,10 @@ class SetByokKeyRequest(BaseModel):
 
 @router.post("/agent/sessions/{session_id}/byok")
 async def agent_session_set_byok(
-    session_id: str, body: SetByokKeyRequest, session: AsyncSession = Depends(get_db)
+    session_id: str,
+    body: SetByokKeyRequest,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
 ) -> dict:
     """Bring-your-own-key for this session only: the key is Fernet-encrypted at rest,
     time-limited, and never echoed back — see boardman/security/byok.py."""
@@ -241,7 +254,9 @@ async def agent_session_set_byok(
 
 @router.delete("/agent/sessions/{session_id}/byok")
 async def agent_session_clear_byok(
-    session_id: str, session: AsyncSession = Depends(get_db)
+    session_id: str,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
 ) -> dict:
     from boardman.agent.service import clear_session_byok_key
 
@@ -251,7 +266,9 @@ async def agent_session_clear_byok(
 
 @router.get("/agent/sessions/{session_id}/byok")
 async def agent_session_byok_status(
-    session_id: str, session: AsyncSession = Depends(get_db)
+    session_id: str,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
 ) -> dict:
     """Never returns the key — provider + expiry only, so the UI can show
     "using your key (expires in Xh)" without ever handling the secret again."""
@@ -265,6 +282,7 @@ async def agent_scan(
     body: ScanRequest,
     request: Request,
     session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
 ) -> dict:
     await require_agent_rate_limit(request)
     if body.queue:
@@ -286,14 +304,24 @@ async def agent_scan(
 
 
 @router.post("/agent/init-direction", response_model=InitDirectionResponse)
-async def api_init_direction(body: InitDirectionRequest) -> dict:
+async def api_init_direction(
+    body: InitDirectionRequest, _auth: None = Depends(require_internal_auth)
+) -> dict:
     """
     Initialize DIRECTION.md by opening a PR from a temporary branch.
     Requires a signed-in `gh` user with push access to the target repo.
     """
+    # owner/name go straight into `gh`/`git` argv (see direction_init._run_cmd).
+    # There is no shell, so this is not shell injection -- but argv elements that
+    # begin with "-" are read as *flags* by those tools, so an unvalidated owner
+    # ("--repo=other/repo") would be interpreted as an option rather than a name.
+    # Restrict both halves to the character set GitHub actually permits.
+    if not _REPO_SLUG_RE.match(body.repo):
+        return {
+            "ok": False,
+            "message": "repo must be owner/name using only letters, digits, '.', '_' or '-'",
+        }
     parts = body.repo.split("/")
-    if len(parts) != 2:
-        return {"ok": False, "message": "repo must be owner/name"}
     owner, name = parts[0], parts[1]
     # `init_direction_file` currently chooses the PR base/branch itself.
     return await init_direction_file(owner, name, force=body.force)

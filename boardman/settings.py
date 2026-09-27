@@ -339,6 +339,12 @@ class Settings(BaseSettings):
     # Shared with Cloudflare worker (Bearer) for POST /api/v1/assignment/pick-qa
     worker_internal_secret: str = ""
 
+    # Bearer token for the privileged agent routes (init-direction, scan, job
+    # status, BYOK) -- anything that spends LLM budget, touches caller-supplied
+    # API keys, or drives the server's own GitHub credentials. Falls back to
+    # worker_internal_secret when unset, so existing deployments stay protected.
+    boardman_api_token: str = ""
+
     # Gray-zone GitHub↔Plaky identity: optional LLM (Ollama recommended, temperature 0 in code)
     assignment_identity_llm_enabled: bool = False
     assignment_identity_llm_min_confidence: float = 0.82
