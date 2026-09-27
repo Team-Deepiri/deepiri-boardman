@@ -23,6 +23,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from boardman.routes.agent import _REPO_SLUG_RE
 from boardman.routes.agent import router as agent_router
 from boardman.security.api_auth import require_internal_auth
 from boardman.settings import settings
@@ -127,7 +128,9 @@ def test_privileged_routes_fail_closed_without_a_configured_secret(
     client = TestClient(app, raise_server_exceptions=False)
 
     for method, path in PRIVILEGED_ROUTES:
-        response = client.request(method, path, json={}, headers={"Authorization": "Bearer anything"})
+        response = client.request(
+            method, path, json={}, headers={"Authorization": "Bearer anything"}
+        )
         assert response.status_code == 404, (
             f"{method} {path} returned {response.status_code} with no secret configured; "
             "it must fail closed"
@@ -176,11 +179,9 @@ def test_init_direction_rejects_untrusted_repo_values(client: TestClient, repo: 
     ],
 )
 def test_init_direction_accepts_wellformed_repo_values(client: TestClient, repo: str) -> None:
-    """Well-formed slugs must clear validation. init_direction_file is stubbed so
-    no `gh` process is ever spawned."""
-    assert (
-        __import__("boardman.routes.agent", fromlist=["_REPO_SLUG_RE"])._REPO_SLUG_RE.match(repo)
-    ), f"regex rejected the legitimate slug {repo!r}"
+    """Well-formed slugs must clear validation. Asserted against the regex
+    directly so no `gh` process is ever spawned."""
+    assert _REPO_SLUG_RE.match(repo), f"regex rejected the legitimate slug {repo!r}"
 
 
 # --- The public interface that made the above reachable from the internet ------
@@ -191,9 +192,9 @@ def test_production_compose_does_not_publish_the_api_publicly() -> None:
     0.0.0.0 exposed every route above directly to the internet, bypassing the
     nginx vhost. Regression guard for that exact mistake."""
     compose = COMPOSE_PROD.read_text(encoding="utf-8")
-    assert '"8090:8090"' not in compose, (
-        "production compose publishes 8090 on all interfaces; bind 127.0.0.1:8090:8090"
-    )
+    assert (
+        '"8090:8090"' not in compose
+    ), "production compose publishes 8090 on all interfaces; bind 127.0.0.1:8090:8090"
     assert '"127.0.0.1:8090:8090"' in compose
 
 
