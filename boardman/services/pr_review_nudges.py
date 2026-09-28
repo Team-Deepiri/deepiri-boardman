@@ -8,7 +8,16 @@ API calls each, every sweep, forever). Instead:
   here as a side effect, updating one small DB row per PR. No extra GitHub calls.
 - `sweep_due_nudges()` (the periodic loop, boardman/sqlite_worker.py) only ever reads
   that DB table -- zero GitHub calls for anything except the PRs that are actually due,
-  where it makes exactly one call each to post the nudge comment.
+  where it makes one call to check the PR is still open and one to post the comment.
+
+That last part is the point. A row outlives the PR it describes: nothing in the event
+stream says "this is over", and a merge doesn't stop the clock. So a PR merged on day 2
+kept its escalation state, and the sweep went on @mentioning a QA engineer on it at days
+3, 6, 9, 12, 15 and then every day after that -- for a PR that had already shipped
+(deepiri-mudspeed#50 merged 2026-09-14, nudged 09-17, 09-20, 09-23, 09-26). The DB says
+"waiting on QA"; only GitHub says whether there is still anything to wait for. So every
+row the sweep is about to act on gets exactly one live state check, and a PR that is
+merged or closed has its row retired instead of mentioned.
 
 Also deliberately does NOT resolve who's who from team_assignments.yml/Plaky ids: the
 developer is the PR's own author (GitHub's own `pull_request.user.login`), and the
@@ -27,7 +36,12 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.models import PrReviewNudge
-from boardman.github.pr_actions import comment_on_pr
+from boardman.github.pr_actions import (
+    PR_STATE_UNKNOWN,
+    PR_TERMINAL,
+    comment_on_pr,
+    pr_lifecycle_state,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -188,10 +202,42 @@ def _compose_message(waiting_on: str, days: int, recipients: list[str]) -> str:
     )
 
 
+async def retire(session: AsyncSession, *, github_repo: str, github_pr_number: int) -> bool:
+    """Stop tracking a PR that has reached a terminal state (merged, or closed unmerged).
+
+    Escalation state is only meaningful while there is something left to do, and a nudge
+    aimed at a PR nobody can act on any more is a mention with no recipient. Called from
+    the merge/close handlers so the row normally goes away at the moment the PR does,
+    and from the sweep for anything those events missed (a dropped delivery, a PR that
+    merged while the worker was down).
+
+    Safe to call for a PR that was never tracked, and safe to call twice. Deleting rather
+    than flagging the row keeps the table's meaning single ("PRs someone is waiting on"),
+    and a reopened PR is re-tracked from scratch by the reopen path's QA assignment --
+    which is correct anyway: a PR that was reopened is a fresh review conversation, and
+    the old escalation clock described a PR that no longer exists.
+    """
+    row = await _get_row(session, github_repo, github_pr_number)
+    if row is None:
+        return False
+    await session.delete(row)
+    _log.info(
+        "pr_review_nudges: retired escalation state for closed PR %s#%s",
+        github_repo,
+        github_pr_number,
+    )
+    return True
+
+
 async def sweep_due_nudges(session: AsyncSession) -> list[dict]:
-    """DB-only scan for rows whose escalation schedule is due, then exactly one
-    GitHub API call (the comment post) per PR actually due -- see module docstring
-    for why this never re-fetches every tracked PR's state from GitHub."""
+    """DB-only scan for rows whose escalation schedule is due, then for each of those
+    exactly one GitHub state check and, only if the PR is still active, one comment.
+
+    The state check is what stops this from @mentioning people on a merged PR: a row
+    says who owes a review, never whether there is still a review to owe. Reading rows
+    that are not due still costs zero GitHub calls -- the point of the table is that the
+    common case is a local comparison.
+    """
     from boardman.assignment.qa_picker import ensure_github_owner_repo
 
     now = _now()
@@ -202,6 +248,41 @@ async def sweep_due_nudges(session: AsyncSession) -> list[dict]:
         target = _target_stage(days_waiting)
         if target <= row.nudge_stage:
             continue
+        full_name = ensure_github_owner_repo(row.github_repo)
+
+        # Authoritative, not the stored clock. Deliberately asked per DUE row only.
+        lifecycle = await pr_lifecycle_state(full_name, row.github_pr_number)
+        if lifecycle == PR_TERMINAL:
+            retired = await retire(
+                session,
+                github_repo=row.github_repo,
+                github_pr_number=row.github_pr_number,
+            )
+            results.append(
+                {
+                    "github_repo": row.github_repo,
+                    "github_pr_number": row.github_pr_number,
+                    "days_waiting": days_waiting,
+                    "stage": target,
+                    "ok": True,
+                    "skipped": "pr_not_active",
+                    "retired": retired,
+                }
+            )
+            continue
+        if lifecycle == PR_STATE_UNKNOWN:
+            # No comment, and no stage advance either: the next sweep re-reads this row
+            # and tries again. Retiring it here would silently drop escalation for a PR
+            # that is still open because GitHub was briefly unreachable.
+            _log.warning(
+                "pr_review_nudges: %s#%s is due (stage %d) but its PR state could not be "
+                "read; skipping this sweep without advancing the stage",
+                row.github_repo,
+                row.github_pr_number,
+                target,
+            )
+            continue
+
         recipients = _recipients(row)
         if not recipients:
             _log.info(
@@ -214,7 +295,6 @@ async def sweep_due_nudges(session: AsyncSession) -> list[dict]:
             )
             continue
         message = _compose_message(row.waiting_on, days_waiting, recipients)
-        full_name = ensure_github_owner_repo(row.github_repo)
         res = await comment_on_pr(full_name, row.github_pr_number, message)
         outcome = {
             "github_repo": row.github_repo,

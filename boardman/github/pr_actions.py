@@ -2,6 +2,12 @@
 
 Both are best-effort: a read-only PAT gets HTTP 403 — we log ONE clear hint about the
 missing scope and carry on, because the Plaky side of the assignment must still happen.
+
+Also home to `pr_lifecycle_state`, the read that every OUTWARD action on a PR asks
+before it acts. A webhook payload describes the PR at the moment the event was
+emitted; a queued delivery, a retried job, or a periodic sweep can act on it minutes or
+days later, by which time the payload is a lie. Someone @mentioning a QA engineer on a
+pull request that already merged is not something the payload can tell you about.
 """
 
 from __future__ import annotations
@@ -72,6 +78,61 @@ async def has_qa_assignment_comment(full_name: str, pr_number: int) -> bool:
         if is_boardman_comment(body) and "QA reviewer" in body:
             return True
     return False
+
+
+PR_ACTIVE = "active"
+PR_TERMINAL = "terminal"
+PR_STATE_UNKNOWN = "unknown"
+
+
+async def pr_lifecycle_state(full_name: str, pr_number: int) -> str:
+    """Is this PR still active RIGHT NOW? `active` / `terminal` / `unknown`.
+
+    The authoritative read, deliberately not the event payload. A `pull_request` payload
+    is a photograph taken when GitHub emitted the event; a delivery that sat in the job
+    queue, a retry after a 500, or a periodic sweep acts on it later, and by then the
+    PR may be merged. `state`/`merged` in that payload still say `open`.
+
+    Reads the single-PR endpoint rather than the list one: only the single-PR GET carries
+    the `merged` boolean, and `reconcile.py` documents what reading a merged PR as
+    "closed" from the list payload already cost once.
+
+    Tri-state on purpose, and `unknown` is NOT collapsed into `active`. The two callers
+    resolve it in opposite directions, and that is deliberate:
+
+    - `pr_review_nudges.sweep_due_nudges` FAILS CLOSED. Skip the outward action, keep the
+      row and its stage so the next sweep retries. A nudge deferred by one flaky read
+      costs nothing and is not retractable once sent, and retiring on a bad read would
+      silently drop escalation for a PR that is still open.
+    - `pr_handler._assign_qa_for_pr` FAILS OPEN. Carry on with the assignment, so a
+      transient GitHub failure cannot leave an open PR with nobody asked to review it.
+      The sweep's own state check is the backstop that keeps a mention off a PR that
+      finished in the meantime.
+
+    Neither caller guesses at "merged": that is the one answer this function refuses to
+    infer from an unanswered request.
+    """
+    if not github_auth_available():
+        return PR_STATE_UNKNOWN
+    url = f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}"
+    try:
+        async with shared_github_client() as client:
+            r = await client.get(url, headers=await github_auth_header())
+        if r.status_code != 200:
+            _log.warning(
+                "pr lifecycle read on %s#%s -> HTTP %s; treating state as unknown",
+                full_name,
+                pr_number,
+                r.status_code,
+            )
+            return PR_STATE_UNKNOWN
+        pr = r.json() or {}
+    except Exception as e:  # noqa: BLE001 - unknowable state must not raise into a webhook
+        _log.warning("pr lifecycle read on %s#%s failed: %s", full_name, pr_number, e)
+        return PR_STATE_UNKNOWN
+    if bool(pr.get("merged")) or str(pr.get("state") or "open").casefold() == "closed":
+        return PR_TERMINAL
+    return PR_ACTIVE
 
 
 async def comment_on_pr(full_name: str, pr_number: int, body: str) -> dict[str, Any]:
