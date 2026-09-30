@@ -116,7 +116,13 @@ services:
     container_name: deepiri-boardman-ui
     restart: unless-stopped
     ports:
-      - "8088:80"
+      # Loopback only, for the same reason as the API above: publishing this UI on
+      # 0.0.0.0 put a second, nginx-less copy of the SPA on the internet, bypassing
+      # the platform vhost, its TLS policy and any rate limiting. The platform
+      # nginx reaches this container by name over `platform-shared` (see the
+      # `boardman` upstream in ops/nginx/cloud-prod.conf), so it needs no public
+      # host port. Keep the host binding for operators' `curl` smoke tests.
+      - "127.0.0.1:8088:80"
     depends_on:
       - boardman
     networks:

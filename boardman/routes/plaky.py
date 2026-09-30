@@ -5,13 +5,14 @@ from __future__ import annotations
 import logging
 
 import httpx
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from boardman.llm.ollama_autodetect import NoOllamaModelAvailable
 from boardman.observability.degradation import log_degraded
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.name_match import rank_plaky_rows
+from boardman.security.api_auth import require_internal_auth
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -20,7 +21,7 @@ router = APIRouter()
 
 
 @router.get("/llm/models")
-async def list_llm_models() -> dict:
+async def list_llm_models(_auth: None = Depends(require_internal_auth)) -> dict:
     """
     List available LLM models based on provider setting.
     For Ollama: fetches from /api/tags.
@@ -90,8 +91,16 @@ async def list_llm_models() -> dict:
 
 
 @router.get("/plaky/users")
-async def plaky_workspace_users(query: str = "") -> dict:
-    """Workspace users for assignee pickers (Plaky GET /v1/public/users)."""
+async def plaky_workspace_users(
+    query: str = "",
+    _auth: None = Depends(require_internal_auth),
+) -> dict:
+    """Workspace users for assignee pickers (Plaky GET /v1/public/users).
+
+    Guarded: this enumerates every human user in the Plaky workspace, including
+    names, emails and avatar URLs. An assignee picker is not a reason to publish
+    the full workspace directory to an unauthenticated caller.
+    """
     c = PlakyClient()
     r = await c.list_workspace_users()
     users = r.get("users") or []
