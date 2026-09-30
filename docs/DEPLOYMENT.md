@@ -278,6 +278,21 @@ pass `nginx -t` and fail this check.
 CI runs both automatically: `nginx -t` against the production `nginx:alpine` image it already
 builds, and the live check. `pytest` runs them too and skips when no nginx is available.
 
+**nginx must be 1.25.1 or newer.** The vhost uses `http2 on`, which landed in 1.25.1; production
+runs `nginx:1.27-alpine`. An older binary rejects it as `unknown directive "http2"`, which says
+nothing about the vhost — only that the binary is too old to judge one. The validator therefore
+exits **77 (skipped)** rather than reporting a failure when the nginx it found is older than
+`NGINX_MIN_VERSION` (default `1.25.1`). `pytest` turns 77 into a skip; the CI `docker` job treats
+it as a failure, because there the check is required to actually run. Keep the skip honest by
+pointing `NGINX_BIN` at a modern nginx:
+
+```bash
+NGINX_BIN=/path/to/nginx-1.27 bash scripts/validate_nginx_conf.sh --live
+```
+
+Note that the GitHub `ubuntu` runner ships nginx 1.24.0, so CI installs nginx from nginx.org for
+the live check rather than relying on the runner's copy.
+
 To check against the exact production image by hand:
 
 ```bash

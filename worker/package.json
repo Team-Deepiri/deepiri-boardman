@@ -1,5 +1,8 @@
 {
   "name": "deepiri-boardman-worker",
+  "engines": {
+    "node": ">=22"
+  },
   "private": true,
   "scripts": {
     "deploy": "wrangler deploy",

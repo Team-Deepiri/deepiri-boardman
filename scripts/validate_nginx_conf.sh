@@ -32,12 +32,21 @@
 #   --live          also verify routing end to end (implies a real nginx).
 #   KEEP_WORK=1     keep the generated config for debugging.
 #   NGINX_BIN=...   use this nginx binary instead of PATH or the auto-build.
+#   NGINX_MIN_VERSION=...  refuse an nginx older than this (default 1.25.1).
+#
+# Exit status: 0 passed, 1 a vhost failed validation, 2 usage/environment error,
+# 77 skipped because the available nginx is too old to parse these vhosts.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 NGINX_BIN="${NGINX_BIN:-}"
 LIVE=0
 RENDER_DIR=""
+
+# Lowest nginx that can parse deploy/nginx at all (`http2 on` landed in 1.25.1).
+# Production runs nginx:1.27-alpine, so anything below this is simply not the
+# nginx this repo is written for.
+NGINX_MIN_VERSION="${NGINX_MIN_VERSION:-1.25.1}"
 
 # Unprivileged stand-ins for the deployment's 80/443 and the docker-published 8090.
 # Overridable mainly so the live check can run twice concurrently in tests.
@@ -106,6 +115,31 @@ fi
 if [[ -z "$RENDER_DIR" ]]; then
   echo "using nginx: $NGINX_BIN"
   "$NGINX_BIN" -v 2>&1 | sed 's/^/  /'
+
+  # The vhost uses `http2 on`, which only exists from nginx 1.25.1; production
+  # runs nginx:1.27-alpine. An older binary rejects it as an unknown directive,
+  # which reads like a broken vhost when it is really an nginx that is too old to
+  # judge one. Exit 77 (the conventional "skipped" status) to keep those two cases
+  # distinct, so a stale nginx can never masquerade as a passing or failing check.
+  ver="$("$NGINX_BIN" -v 2>&1 | sed -n 's|.*nginx/\([0-9][0-9.]*\).*|\1|p')"
+  if [[ -z "$ver" ]]; then
+    echo "could not parse an nginx version out of '$NGINX_BIN -v'" >&2
+    exit 2
+  fi
+  if [[ "$(printf '%s\n%s\n' "$NGINX_MIN_VERSION" "$ver" | sort -V | head -1)" != "$NGINX_MIN_VERSION" ]]; then
+    cat >&2 <<EOF
+nginx $ver is older than the $NGINX_MIN_VERSION this vhost needs.
+
+  deploy/nginx uses \`http2 on\`, added in nginx 1.25.1; production runs
+  nginx:1.27-alpine. An older binary cannot parse the committed vhost at all, so
+  this run cannot judge it either way. That is a limitation of this nginx, not a
+  defect in the config, so exiting 77 (skipped) rather than reporting a failure.
+  Callers should treat 77 as "not run" -- pytest skips, CI is expected to fail.
+
+  Point NGINX_BIN at nginx >= $NGINX_MIN_VERSION to run the check for real.
+EOF
+    exit 77
+  fi
 fi
 
 # --- 2. prerequisites nginx needs but the repo doesn't ship -------------------

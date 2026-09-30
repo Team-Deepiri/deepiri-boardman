@@ -104,7 +104,10 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 22, not 20: every wrangler release in range (4.120.0 included) declares
+          # engines.node >=22, so running the worker job on 20 makes `npm ci` emit
+          # EBADENGINE against an unsupported engine on every run.
+          node-version: 22
           cache: npm
           cache-dependency-path: ${{ matrix.cache-dependency-path }}
 
@@ -165,17 +168,29 @@ jobs:
                 nginx -t -c "$c" -p "$(dirname "$c")"
               done'
 
+      # deploy/nginx uses `http2 on`, which needs nginx >= 1.25.1. The Ubuntu
+      # runner ships 1.24.0, which rejects it as an unknown directive -- that
+      # says nothing about the vhost, only that the runner is too old to check it.
+      # Install nginx from nginx.org so the live check runs for real against the
+      # same version production uses, instead of skipping (status 77).
+      - name: Install nginx >= 1.25.1 for the live check
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ca-certificates curl gnupg
+          curl -fsSL https://nginx.org/keys/nginx_signing.key \
+            | sudo gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
+          echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/ubuntu $(lsb_release -cs) nginx" \
+            | sudo tee /etc/apt/sources.list.d/nginx.list >/dev/null
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends nginx
+          nginx -v
+
       # nginx -t only proves the file parses. Boot the public vhost behind a stub
       # backend and make real requests, so the allowlist is verified to actually
       # route: if `location = /api/v1/webhooks/github` ever lost precedence to the
       # catch-all, every GitHub delivery would 403 while still passing -t.
       - name: Live-check the public vhost allowlist
         run: |
-          # The runner image ships nginx; install it if a future image drops it.
-          # The script's fallback would compile one, but that needs PCRE/openssl
-          # headers and is far slower than apt.
-          if ! command -v nginx >/dev/null 2>&1; then
-            sudo apt-get update
-            sudo apt-get install -y --no-install-recommends nginx
-          fi
+          set -euo pipefail
           bash scripts/validate_nginx_conf.sh --live deploy/nginx/boardman.deepiri.com.conf

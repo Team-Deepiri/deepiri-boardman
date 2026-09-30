@@ -1,5 +1,6 @@
 # Build SPA then serve with nginx (see docs/PLAN.md)
-FROM node:20-alpine AS ui
+# node:22 matches boardman-ui's engines.node; node:20 predates it and npm warns.
+FROM node:22-alpine AS ui
 WORKDIR /ui
 COPY boardman-ui/package.json ./
 RUN npm install

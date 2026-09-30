@@ -34,6 +34,10 @@ from boardman.security.api_auth import require_internal_auth
 from boardman.security.repo_slug import REPO_SLUG_RE, is_valid_repo_slug, split_repo_slug
 from boardman.settings import settings
 
+# Must match NGINX_MIN_VERSION in scripts/validate_nginx_conf.sh.
+_NGINX_MIN_VERSION = "1.25.1"
+_NGINX_TOO_OLD_STATUS = 77
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 COMPOSE_PROD = REPO_ROOT / "docker-compose.prod.yml"
 
@@ -336,6 +340,26 @@ def _available_nginx() -> str | None:
     return shutil.which("nginx")
 
 
+def _skip_if_nginx_too_old(result: subprocess.CompletedProcess[str]) -> None:
+    """Treat the validator's "skipped" status as a skip, not a failure.
+
+    deploy/nginx uses `http2 on`, which needs nginx >= 1.25.1. A GitHub runner
+    ships 1.24.0, and asking that binary to parse the vhost produces a
+    `unknown directive "http2"` error that says nothing about the vhost. The
+    script signals that with status 77; without this, every Python job would fail
+    on an environment limitation that has nothing to do with the config.
+
+    The dedicated `docker` job runs both checks against nginx:1.27-alpine -- the
+    image production actually uses -- so the guard is still enforced on every
+    push; it is only skipped where a usable nginx is absent.
+    """
+    if result.returncode == _NGINX_TOO_OLD_STATUS:
+        pytest.skip(
+            "the available nginx is too old to parse deploy/nginx "
+            f"(needs >= {_NGINX_MIN_VERSION}); set NGINX_BIN to enable:\n{result.stderr}"
+        )
+
+
 def test_nginx_vhosts_pass_a_real_nginx_config_test() -> None:
     """Run the real `nginx -t` over both deploy/nginx fragments.
 
@@ -360,6 +384,7 @@ def test_nginx_vhosts_pass_a_real_nginx_config_test() -> None:
         timeout=300,
         env={**os.environ, "NGINX_BIN": nginx},
     )
+    _skip_if_nginx_too_old(result)
     assert result.returncode == 0, (
         "nginx rejected a deploy/nginx vhost:\n" f"{result.stdout}\n{result.stderr}"
     )
@@ -402,6 +427,7 @@ def test_public_vhost_allowlist_actually_routes_through_a_real_nginx() -> None:
         stdin=subprocess.DEVNULL,
         env={**os.environ, "NGINX_BIN": nginx},
     )
+    _skip_if_nginx_too_old(result)
     assert result.returncode == 0, (
         "the public vhost does not route the way the allowlist claims:\n"
         f"{result.stdout}\n{result.stderr}"
