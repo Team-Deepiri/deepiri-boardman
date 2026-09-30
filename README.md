@@ -178,18 +178,39 @@ bash scripts/deploy_smoke.sh
 
 ## API Endpoints
 
+🔒 = requires `Authorization: Bearer $BOARDMAN_API_TOKEN` (falls back to
+`WORKER_INTERNAL_SECRET`; returns 404 when neither is configured, so a deployment that
+forgot to set one fails closed instead of serving openly). These are the routes that write
+to Plaky/GitHub with the server's own credentials, rewrite a config file on disk, or spend
+LLM budget.
+
 - `GET /api/v1/health` - Health check
-- `POST /api/v1/webhooks/github` - GitHub webhook receiver
-- `POST /api/v1/reconcile/{owner}/{repo}` - bounded GitHub → Plaky drift repair
-- `POST /api/v1/tasks` - Create Plaky task
+- `POST /api/v1/webhooks/github` - GitHub webhook receiver (HMAC-verified, not bearer)
+- `POST /api/v1/reconcile/{owner}/{repo}` - bounded GitHub → Plaky drift repair 🔒
+- `POST /api/v1/tasks` - Create Plaky task 🔒
 - `GET /api/v1/tasks` - List Plaky tasks
-- `GET /api/v1/mappings` - List issue↔task mappings
-- `POST /api/v1/tasks/{id}/link-pr` - Link PR to task
+- `PATCH /api/v1/tasks/{id}` - Update task 🔒
+- `POST /api/v1/tasks/{id}/subtasks` - Create subtask 🔒
+- `POST /api/v1/tasks/{id}/link-pr` - Link PR to task 🔒
+- `GET /api/v1/mappings` - List issue↔task mappings 🔒
+- `GET /api/v1/sync-logs` - Sync audit log 🔒
+- `POST /api/v1/repos/classify` - Re-classify repo tiers (rewrites `repos.yml`) 🔒
+- `POST /api/v1/plans/generate` - Generate a meeting plan (LLM + disk write) 🔒
+- `POST /api/v1/assignment/sync-field-keys` - Sync Plaky field keys 🔒
 - `POST /api/v1/agent/chat` - Agent chat (`message`, `session_id?`, `repo?`, `provider?`, `model?`, **`allow_writes`**)
-- `GET /api/v1/agent/sessions/{id}/history` - Session transcript
-- `DELETE /api/v1/agent/sessions/{id}` - Drop session
-- `POST /api/v1/agent/scan` - `{ "repo": "owner/name", "dry_run": false, "queue": false, ... }`; set `queue: true` for a worker job and poll `/api/v1/agent/jobs/{job_id}`
-- `POST /api/v1/agent/init-direction` - opens a PR for `DIRECTION.md` using signed-in `gh` user (`{ "repo": "owner/name", "branch?": "main", "force?": false }`)
+- `POST /api/v1/agent/chat/stream` - Streaming agent chat
+- `GET /api/v1/agent/sessions/{id}/history` - Session transcript 🔒
+- `DELETE /api/v1/agent/sessions/{id}` - Drop session 🔒
+- `POST /api/v1/agent/scan` - `{ "repo": "owner/name", "dry_run": false, "queue": false, ... }`; set `queue: true` for a worker job and poll `/api/v1/agent/jobs/{job_id}` 🔒
+- `POST /api/v1/agent/init-direction` - opens a PR for `DIRECTION.md` using signed-in `gh` user (`{ "repo": "owner/name", "branch?": "main", "force?": false }`) 🔒
+
+Agent chat stays open because `boardman-ui` is a public static bundle that cannot hold a
+secret. The privilege it carries is `allow_writes`, which grants the agent the Plaky mutation
+tools; an unauthenticated caller asking for it is **silently downgraded to read-only** rather
+than trusted. The UI collects the token at runtime (paste it into the sidebar; it is kept in
+`sessionStorage` and dropped when the tab closes), which is what enables the 🔒 SPA-called
+routes. This is a gate on an internal tool, not a user-authentication system — anything
+needing real identity belongs behind a session cookie at the nginx/app layer.
 
 ## Configuration
 
@@ -197,6 +218,7 @@ See `.env.example` for all options. Key variables:
 
 - `PLAKY_API_KEY` - Required. Your Plaky API key
 - `GITHUB_WEBHOOK_SECRET` - Optional. For HMAC verification
+- `BOARDMAN_API_TOKEN` - **Required in production.** Bearer token for the 🔒 routes above. Falls back to `WORKER_INTERNAL_SECRET`; if neither is set they 404. Generate with `openssl rand -hex 32`
 - `GITHUB_PAT` - Optional. For CLI sync command
 - `gh` CLI auth - Required for `boardman init` and `/api/v1/agent/init-direction` (must be signed in with repo write access)
 - `PLAKY_PR_MERGE_STATUS` - Status to set on PR merge (default: `in_review`)
