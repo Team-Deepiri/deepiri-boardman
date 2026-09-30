@@ -26,6 +26,25 @@ def _configured_secret() -> str:
     return (settings.boardman_api_token or settings.worker_internal_secret or "").strip()
 
 
+def internal_auth_ok(authorization: str | None) -> bool:
+    """Non-raising form of :func:`require_internal_auth`.
+
+    For routes the browser SPA legitimately has to reach (agent chat) but which
+    expose a privilege *inside* the request body rather than behind the route --
+    ``allow_writes`` hands the agent Plaky mutation tools. Those cannot be gated
+    with a dependency, because the route itself has to stay open; instead the
+    privilege is downgraded when this returns False.
+    """
+    secret = _configured_secret()
+    if not secret:
+        return False
+    presented = (authorization or "").strip()
+    if not presented.lower().startswith("bearer "):
+        return False
+    token = presented[len("bearer ") :].strip()
+    return len(token) == len(secret) and hmac.compare_digest(token, secret)
+
+
 def require_internal_auth(authorization: str | None = Header(None)) -> None:
     """FastAPI dependency: 401 unless the caller presents the internal bearer token.
 
@@ -36,12 +55,5 @@ def require_internal_auth(authorization: str | None = Header(None)) -> None:
     if not secret:
         raise HTTPException(status_code=404, detail="internal API not configured")
 
-    presented = (authorization or "").strip()
-    if not presented.lower().startswith("bearer "):
-        raise HTTPException(status_code=401, detail="invalid authorization")
-
-    token = presented[len("bearer ") :].strip()
-    # Constant-time compare; length check first because hmac.compare_digest is
-    # only meaningful for equal-length inputs.
-    if len(token) != len(secret) or not hmac.compare_digest(token, secret):
+    if not internal_auth_ok(authorization):
         raise HTTPException(status_code=401, detail="invalid authorization")

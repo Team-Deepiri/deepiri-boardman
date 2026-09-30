@@ -6,6 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.models import IssueTaskMap, SyncLog
 from boardman.database.session import get_db
+from boardman.security.api_auth import require_internal_auth
 
 router = APIRouter()
 
@@ -35,7 +36,15 @@ async def metrics():
 
 
 @router.get("/mappings")
-async def list_mappings(session: AsyncSession = Depends(get_db)):
+async def list_mappings(
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
+):
+    """Issue<->task mapping table.
+
+    Guarded: it enumerates every repo, issue, task and Plaky id the sync has
+    touched. No UI consumer; it is an ops/diagnostic view.
+    """
     result = await session.execute(select(IssueTaskMap))
     mappings = result.scalars().all()
     return {
@@ -54,7 +63,12 @@ async def list_mappings(session: AsyncSession = Depends(get_db)):
 
 
 @router.get("/sync-logs")
-async def list_logs(limit: int = 50, session: AsyncSession = Depends(get_db)):
+async def list_logs(
+    limit: int = 50,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
+):
+    """Sync audit log. Guarded: repo names, actors and error strings, ops-only."""
     result = await session.execute(select(SyncLog).order_by(SyncLog.created_at.desc()).limit(limit))
     logs = result.scalars().all()
     return {
