@@ -6,6 +6,7 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 import boardman.services.task_mutations as tm
@@ -202,19 +203,37 @@ async def test_synchronize_noop_without_a_review_baseline(monkeypatch: pytest.Mo
     await engine.dispose()
 
 
-def test_agent_routes_gated_by_flag(monkeypatch: pytest.MonkeyPatch):
+def _app_paths() -> set[str]:
+    """Every path the app actually serves, read from the OpenAPI schema.
+
+    Do not introspect ``app.routes``: as of FastAPI 0.141 an included router is
+    wrapped in an ``_IncludedRouter`` that has no ``.path``, so
+    ``{getattr(r, "path", "") for r in app.routes}`` silently yields only the four
+    built-in doc routes plus a pile of empty strings -- which made this test report
+    a false failure for months. The schema is the contract we actually care about.
+    """
     from boardman.main import create_app
 
+    client = TestClient(create_app())
+    try:
+        response = client.get("/openapi.json")
+        assert response.status_code == 200
+        return set(response.json()["paths"])
+    finally:
+        client.close()
+
+
+def test_agent_routes_gated_by_flag(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(settings, "boardman_enable_agent_api", True)
-    paths_on = {getattr(r, "path", "") for r in create_app().routes}
-    assert any("/agent/chat" in p for p in paths_on)
-    assert any("/webhooks/github" in p for p in paths_on)
+    paths_on = _app_paths()
+    assert any("/agent/chat" in p for p in paths_on), sorted(paths_on)
+    assert any("/webhooks/github" in p for p in paths_on), sorted(paths_on)
 
     monkeypatch.setattr(settings, "boardman_enable_agent_api", False)
-    paths_off = {getattr(r, "path", "") for r in create_app().routes}
-    assert not any("/agent/" in p for p in paths_off)
+    paths_off = _app_paths()
+    assert not any("/agent/" in p for p in paths_off), sorted(paths_off)
     # Worker-only surface still present:
-    assert any("/webhooks/github" in p for p in paths_off)
+    assert any("/webhooks/github" in p for p in paths_off), sorted(paths_off)
     assert any("/health" in p for p in paths_off)
     assert any("/assignment/" in p for p in paths_off)
 

@@ -37,7 +37,11 @@ services:
       postgres:
         condition: service_healthy
     ports:
-      - "8090:8090"
+      # Loopback only. The API has no authentication of its own on the read-mostly
+      # UI routes (the browser SPA cannot hold a secret), so publishing it on
+      # 0.0.0.0 exposed it directly to the internet and bypassed the nginx
+      # vhost in front of it. nginx is the only intended entry point.
+      - "127.0.0.1:8090:8090"
     env_file:
       - .env
     environment:

@@ -173,8 +173,17 @@ if compose_config="$(compose config 2>/dev/null)"; then
   if printf '%s\n' "$compose_config" | grep -Eq 'published: "?11434"?'; then
     warn "compose publishes Ollama port 11434; keep it firewalled/private on VPS"
   fi
+  # The API port is intentionally published (nginx proxies to it), so its host IP
+  # is the whole question. A bare "published: 8090" or a 0.0.0.0/:: host binds every
+  # interface and bypasses the nginx vhost -- that is a failure, not a warning,
+  # because it puts the unauthenticated read-mostly UI routes on the public
+  # internet. Loopback (127.0.0.1 / ::1) is the intended configuration.
   if printf '%s\n' "$compose_config" | grep -Eq 'published: "?8090"?'; then
-    warn "compose publishes API port 8090; prefer nginx/TLS as the public entrypoint"
+    if printf '%s\n' "$compose_config" | grep -Eq 'host_ip: "?(127\.0\.0\.1|::1)"?'; then
+      pass "compose publishes API port 8090 on loopback only"
+    else
+      fail "compose publishes API port 8090 on a non-loopback host IP; this exposes the API directly to the internet and bypasses nginx. Bind 127.0.0.1:8090:8090"
+    fi
   fi
 else
   fail "docker compose config failed"

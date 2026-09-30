@@ -50,7 +50,14 @@ async def pick_qa_internal(
 
 
 @router.post("/assignment/sync-field-keys", response_model=SyncFieldKeysResponse)
-async def sync_field_keys(board_id: str | None = None) -> SyncFieldKeysResponse:
+async def sync_field_keys(
+    board_id: str | None = None,
+    authorization: str | None = Header(None),
+) -> SyncFieldKeysResponse:
+    # Same internal-auth class as pick-qa: this rewrites team_assignments.yml on
+    # disk, so an anonymous caller must not be able to trigger it (nor probe which
+    # board IDs exist). boardman-ui never calls this route, so nothing regresses.
+    _require_internal(authorization)
     bid = (board_id or "").strip()
     if not bid:
         return SyncFieldKeysResponse(

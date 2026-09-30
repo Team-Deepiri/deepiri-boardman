@@ -51,7 +51,8 @@ Create a server-local `.env` from `.env.production.example`. Do not commit `.env
 | `PLAKY_API_KEY` | Boardman creates, reads, comments on, and updates Plaky tasks. | Staff change, suspected leak, scheduled service key rotation. |
 | `GITHUB_PAT` | Boardman reads repos/issues/PRs, discovers org/team data, and initializes/scans repo direction files. | Staff change, permission change, suspected leak, scheduled service key rotation. |
 | `GITHUB_WEBHOOK_SECRET` | GitHub webhook HMAC verification. | Suspected leak, webhook rebuild, scheduled service secret rotation. |
-| `WORKER_INTERNAL_SECRET` | Bearer token for `/api/v1/assignment/pick-qa`, used by Cloudflare Worker or internal automation. | Suspected leak, worker redeploy, scheduled service secret rotation. |
+| `WORKER_INTERNAL_SECRET` | Bearer token for `/api/v1/assignment/pick-qa` and `sync-field-keys`, used by Cloudflare Worker or internal automation. Also the fallback for `BOARDMAN_API_TOKEN`. | Suspected leak, worker redeploy, scheduled service secret rotation. |
+| `BOARDMAN_API_TOKEN` | Bearer token for every privileged `/api/v1` route (see the 🔒 list in the root README): task writes, reconcile, repo classify, plans generate, agent init-direction/scan/jobs/BYOK/session history, mappings, sync-logs. | Suspected leak, operator offboarding, scheduled service secret rotation. |
 | `ROUTE_SECRET` | Cloudflare Worker public route bearer token for `/assign-qa`. | Suspected leak, caller change, scheduled service secret rotation. |
 
 Generate strong secrets with:
@@ -107,6 +108,7 @@ PLAKY_API_KEY=<service-plaky-key>
 GITHUB_PAT=<service-github-pat>
 GITHUB_WEBHOOK_SECRET=<random-hex-secret>
 WORKER_INTERNAL_SECRET=<random-hex-secret>
+BOARDMAN_API_TOKEN=<random-hex-secret>
 ROUTE_SECRET=<random-hex-secret-if-cloudflare-worker-is-used>
 BOARDMAN_SECRETS_ROTATED=true
 BOARDMAN_TARGET_ENV=vps
@@ -171,6 +173,151 @@ Expected:
 - Redis remains disabled unless `--profile agent-cache` is explicitly enabled; if enabled, keep it private.
 - Logs say the Plaky API key is present.
 - Webhook `ping` returns HTTP 200 with `pong`.
+
+## Privileged API Routes (bearer token)
+
+`docker-compose.prod.yml` binds the API to `127.0.0.1:8090` and the nginx vhost is the
+public entry point. That protects the *port*, not the *routes*: nginx proxies all of
+`/api/` through, so any unauthenticated write route is reachable from the internet.
+
+Every route that writes to Plaky or GitHub with the server's own credentials, rewrites a
+config file on disk, or spends LLM budget therefore requires:
+
+```
+Authorization: Bearer $BOARDMAN_API_TOKEN
+```
+
+- Falls back to `WORKER_INTERNAL_SECRET`, so a deployment that predates this var stays
+  protected rather than silently opening up.
+- If **neither** is set, these routes return **404** — a misconfigured box does not
+  advertise them. Verify before declaring go-live.
+- Compared in constant time. Case-insensitive scheme; the token itself must match exactly.
+
+Check the deployment is actually closed:
+
+```bash
+# must be 401 (or 404 if no secret is configured) -- never 200
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST \
+  http://localhost:8090/api/v1/reconcile/Team-Deepiri/deepiri-boardman
+
+# must be 200
+curl -sS -o /dev/null -w '%{http_code}\n' -X POST \
+  -H "Authorization: Bearer $BOARDMAN_API_TOKEN" \
+  http://localhost:8090/api/v1/reconcile/Team-Deepiri/deepiri-boardman
+```
+
+The `boardman-ui` bundle is public and cannot embed a secret, so `POST /api/v1/tasks` and
+`POST /api/v1/repos/classify` need the token too. Operators paste it into the UI sidebar
+("API token"); it is held in `sessionStorage` and cleared when the tab closes. Agent chat
+stays open, but an anonymous caller's `allow_writes: true` is downgraded to read-only, so the
+Plaky mutation tools are only reachable with the token.
+
+`scripts/production_checklist.py` reads `BOARDMAN_API_TOKEN` (falling back to
+`WORKER_INTERNAL_SECRET`) and authenticates its reconcile and agent-write checks
+automatically.
+
+**Known limitation:** this is a shared bearer token, not user authentication. Anyone
+holding it has every privileged capability. It is appropriate for an internal tool behind a
+trusted network; for per-user identity, put a session/auth layer in front at nginx and drop
+the token from the browser entirely.
+
+## Public nginx vhost (boardman.deepiri.com)
+
+`deploy/nginx/boardman.deepiri.com.conf` is the box's public entry point and serves **no UI**,
+so it does not proxy the whole API tree. Its catch-all `location /api/` returns **403** and only
+three paths are proxied:
+
+| Path | Why it is public |
+| --- | --- |
+| `POST /api/v1/webhooks/github` | GitHub webhook delivery (HMAC-verified) |
+| `POST /api/v1/assignment/pick-qa` | Cloudflare Worker (bearer `WORKER_INTERNAL_SECRET`) |
+| `GET /health` | monitoring |
+
+Everything else — the org/repo listings, Plaky board and user rosters, support-team roster, LLM
+model list, and agent chat (which spends LLM budget on the server's key) — is **not reachable
+through this vhost**, even though some of those routes are unauthenticated inside the app. Call
+them over the docker network or on `127.0.0.1:8090` instead.
+
+Two consequences worth knowing:
+
+- **Adding a route to the app does not publish it.** To expose a new endpoint deliberately, add
+  an explicit `location = /api/v1/...` block with its own `proxy_pass`.
+- `deploy/nginx/default.conf` (the `boardman-ui` vhost on `:8088`) intentionally still proxies
+  all of `/api/`, because the SPA needs those reads. Do not copy the 403 catch-all there — it
+  would break the UI.
+
+Verify after any nginx change. The checked-in validator runs the real `nginx -t` over **both**
+vhosts, and needs neither Docker nor root:
+
+```bash
+bash scripts/validate_nginx_conf.sh
+```
+
+It wraps each fragment in a throwaway prefix, substituting only what is specific to the VPS — the
+Let's Encrypt cert paths, the privileged `listen 80`/`443` ports, and the docker-internal
+`boardman` upstream — and hands the result to a real nginx, so `location` blocks, `proxy_pass`
+targets, `ssl_*` settings and `http2 on` are all parsed exactly as written. If no nginx is on
+`PATH` it builds one into a temp dir (needs `gcc`, `make`, OpenSSL headers, network); point
+`NGINX_BIN` at an existing binary to skip that.
+
+Add `--live` to also check that the vhost *routes* as it reads, not just that it parses:
+
+```bash
+bash scripts/validate_nginx_conf.sh --live deploy/nginx/boardman.deepiri.com.conf
+```
+
+`nginx -t` alone cannot see the failure this vhost exists to prevent. If
+`location = /api/v1/webhooks/github` ever lost precedence to the `location /api/` catch-all — a
+reordered block, someone tidying the `=` away — every GitHub delivery would 403 and `nginx -t`
+would still pass. `--live` boots the real nginx in front of a stub backend and asserts per path
+whether the request reached the backend: the three allowlisted paths must be proxied, and
+`/api/v1/tasks`, `/api/v1/repos/org`, `/api/v1/llm/models`, `POST /api/v1/agent/chat` and
+`POST /api/v1/repos/classify` must be stopped at the edge. Both regressions were confirmed to
+pass `nginx -t` and fail this check.
+
+CI runs both automatically: `nginx -t` against the production `nginx:alpine` image it already
+builds, and the live check. `pytest` runs them too and skips when no nginx is available.
+
+**nginx must be 1.25.1 or newer.** The vhost uses `http2 on`, which landed in 1.25.1; production
+runs `nginx:1.27-alpine`. An older binary rejects it as `unknown directive "http2"`, which says
+nothing about the vhost — only that the binary is too old to judge one. The validator therefore
+exits **77 (skipped)** rather than reporting a failure when the nginx it found is older than
+`NGINX_MIN_VERSION` (default `1.25.1`). `pytest` turns 77 into a skip; the CI `docker` job treats
+it as a failure, because there the check is required to actually run. Keep the skip honest by
+pointing `NGINX_BIN` at a modern nginx:
+
+```bash
+NGINX_BIN=/path/to/nginx-1.27 bash scripts/validate_nginx_conf.sh --live
+```
+
+Note that the GitHub `ubuntu` runner ships nginx 1.24.0, so CI installs nginx from nginx.org for
+the live check rather than relying on the runner's copy.
+
+To check against the exact production image by hand:
+
+```bash
+docker run --rm -v "$PWD/deploy/nginx:/etc/nginx/conf.d" -v "$PWD/deploy/nginx/boardman.deepiri.com.conf:/etc/nginx/conf.d/default.conf:ro" nginx:alpine nginx -t
+```
+
+### What these checks cannot cover
+
+The VPS's own nginx main config (the one that `include`s this fragment) is not in this repository,
+so two things stay unverified until you check them on the host:
+
+- **The include wiring itself.** That the fragment is actually included in the `http {}` block of
+  the running nginx, and that no other vhost on the box also claims `boardman.deepiri.com`. A
+  `server_name` collision would make the more specific vhost win or lose depending on load order.
+- **That the upstream resolves on the box.** The live check substitutes `boardman` with loopback.
+  On the VPS, `boardman:8090` must resolve from the platform's nginx container, which needs the
+  shared/external network attach described at the top of the fragment.
+
+After wiring it up, confirm from outside the host that the boundary holds:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://boardman.deepiri.com/api/v1/tasks        # 403
+curl -s -o /dev/null -w '%{http_code}\n' https://boardman.deepiri.com/api/v1/repos/org    # 403
+curl -s -o /dev/null -w '%{http_code}\n' https://boardman.deepiri.com/health             # 200
+```
 
 ## GitHub Webhook Setup
 

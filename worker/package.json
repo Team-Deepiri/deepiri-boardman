@@ -1,5 +1,8 @@
 {
   "name": "deepiri-boardman-worker",
+  "engines": {
+    "node": ">=22"
+  },
   "private": true,
   "scripts": {
     "deploy": "wrangler deploy",
@@ -8,6 +11,6 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260722.1",
     "typescript": "^5.8.0",
-    "wrangler": "^4.120.0"
+    "wrangler": "^4.144.0"
   }
 }
