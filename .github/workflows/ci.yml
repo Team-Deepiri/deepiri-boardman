@@ -143,3 +143,39 @@ jobs:
 
       - name: Build nginx UI image
         run: docker build --file deploy/nginx/Dockerfile --tag deepiri-boardman-ui:ci .
+
+      # The vhosts are include fragments for the VPS's own nginx, so nothing else in
+      # CI ever parses them. Run the real nginx -t over both, using the production
+      # nginx image that was just built, so a broken vhost cannot merge green.
+      # scripts/validate_nginx_conf.sh --render substitutes only the VPS-specific
+      # bits (Let's Encrypt paths, privileged ports, the docker-internal upstream).
+      # Mounting the render dir at the same absolute path keeps those substitutions
+      # valid inside the container.
+      - name: nginx -t on the deploy/nginx vhosts
+        run: |
+          render="$RUNNER_TEMP/nginx-render"
+          bash scripts/validate_nginx_conf.sh --render "$render"
+          docker run --rm \
+            --volume "$render:$render" \
+            --env "RENDER=$render" \
+            deepiri-boardman-ui:ci \
+            sh -c 'set -e
+              for c in "$RENDER"/*/nginx.conf; do
+                echo "--- nginx -t $c"
+                nginx -t -c "$c" -p "$(dirname "$c")"
+              done'
+
+      # nginx -t only proves the file parses. Boot the public vhost behind a stub
+      # backend and make real requests, so the allowlist is verified to actually
+      # route: if `location = /api/v1/webhooks/github` ever lost precedence to the
+      # catch-all, every GitHub delivery would 403 while still passing -t.
+      - name: Live-check the public vhost allowlist
+        run: |
+          # The runner image ships nginx; install it if a future image drops it.
+          # The script's fallback would compile one, but that needs PCRE/openssl
+          # headers and is far slower than apt.
+          if ! command -v nginx >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends nginx
+          fi
+          bash scripts/validate_nginx_conf.sh --live deploy/nginx/boardman.deepiri.com.conf
