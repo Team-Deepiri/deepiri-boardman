@@ -40,13 +40,22 @@ With `TASK_PROVIDER=clickup` the chat agent gets `clickup_*` tools instead of `p
 - The system prompt gets a ClickUp notice that maps each `plaky_*` tool to its ClickUp equivalent. ClickUp has no board schema, groups or custom-field patching, so those tools have no counterpart.
 - The agent's "board id" is a ClickUp list id (or `CLICKUP_DEFAULT_LIST_ID`).
 
+## QA assignment (Phase 2)
+
+QA picking is provider-neutral: `pick_qa_for_repo` ranks the GitHub support-team roster and returns a person id. What changed for ClickUp:
+
+- **Roster ids:** when `TASK_PROVIDER=clickup`, `team_assignments` matches GitHub members to ClickUp workspace members (by name and email) and uses the ClickUp user id. A `member_overrides[login].id` still wins.
+- **Applying QA:** if `CLICKUP_QA_FIELD_ID` is set (a custom field of type "users"), QA is written to that field. Otherwise the QA person is added as an extra assignee.
+- **One entry point:** `update_task_internal` dispatches to `boardman/services/clickup_mutations.py` on ClickUp, so `PATCH /tasks/{id}`, the CLI and the agent all take the same `UpdateTaskInput` (status, priority, title, description, `qa_plaky_id`, or `auto_assign_qa` with `github_repo`). `task_type` has no ClickUp equivalent and is skipped.
+- **Agent:** `clickup_update_task` takes `qa` (a plain name) or `auto_assign_qa` with `github_repo`.
+- **Not supported yet:** engineer (developer) assignment is refused on ClickUp, because it needs the developer-eligibility rules that come with the webhook sync (Phase 3).
+
 ## What is still Plaky-only
 
 Plaky has board schemas, custom fields and per-board placement that ClickUp does not model the same way. These still call `PlakyClient` directly and are not provider-neutral yet:
 
 - GitHub webhook sync (issue and PR handlers), PR status transitions and QA assignment
-- `PATCH /tasks/{id}` (`update_task_internal`)
-- QA assignment (Phase 2), the planning and huddle code, and board-schema helpers
+- The planning and huddle code and board-schema helpers
 - Scan task creation
 
 Moving these over is the next step. It needs a ClickUp equivalent of placement and assignment, so treat it as a separate piece of work.

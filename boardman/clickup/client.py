@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 import httpx
@@ -100,6 +101,38 @@ class ClickUpClient:
                     continue
                 if response.status_code in _TRANSIENT and idempotent and attempt < retries:
                     await asyncio.sleep(0.5 * (2**attempt))
+                    continue
+                return response
+        assert response is not None
+        return response
+
+    def _request_sync(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: list[tuple[str, Any]] | dict[str, Any] | None = None,
+        retries: int = 2,
+    ) -> httpx.Response:
+        """Blocking twin of ``_request`` for callers that cannot await (config loading)."""
+        url = f"{self.base_url}{path}"
+        transport = self._transport if isinstance(self._transport, httpx.BaseTransport) else None
+        response: httpx.Response | None = None
+        with httpx.Client(transport=transport, timeout=20) as client:
+            for attempt in range(retries + 1):
+                try:
+                    response = client.request(method, url, headers=self._headers(), params=params)
+                except httpx.RequestError:
+                    if attempt == retries:
+                        raise
+                    time.sleep(0.5 * (2**attempt))
+                    continue
+                if response.status_code == 429 and attempt < retries:
+                    reset = response.headers.get("Retry-After") or ""
+                    time.sleep(min(int(reset), 30) if reset.isdigit() else 2)
+                    continue
+                if response.status_code in _TRANSIENT and attempt < retries:
+                    time.sleep(0.5 * (2**attempt))
                     continue
                 return response
         assert response is not None
@@ -294,14 +327,8 @@ class ClickUpClient:
 
     # -- workspace --------------------------------------------------------------------------
 
-    async def list_workspace_users(self) -> dict[str, Any]:
-        """Members of the configured workspace (CLICKUP_TEAM_ID, else the first workspace)."""
-        if not self.api_token:
-            return {**self._missing_token(), "users": []}
-        response = await self._request("GET", "/team")
-        if response.status_code != 200:
-            return {**self._failure(response, "list workspaces"), "users": []}
-        teams = response.json().get("teams") or []
+    def _users_from_teams(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        teams = payload.get("teams") or []
         team = next((t for t in teams if str(t.get("id")) == str(self.team_id)), None)
         team = team or (teams[0] if teams else {})
         users: list[dict[str, Any]] = []
@@ -317,7 +344,61 @@ class ClickUpClient:
                     "github_login": None,
                 }
             )
-        return {"ok": True, "status": 200, "users": users}
+        return users
+
+    async def list_workspace_users(self) -> dict[str, Any]:
+        """Members of the configured workspace (CLICKUP_TEAM_ID, else the first workspace)."""
+        if not self.api_token:
+            return {**self._missing_token(), "users": []}
+        response = await self._request("GET", "/team")
+        if response.status_code != 200:
+            return {**self._failure(response, "list workspaces"), "users": []}
+        return {"ok": True, "status": 200, "users": self._users_from_teams(response.json())}
+
+    def list_workspace_users_sync(self) -> dict[str, Any]:
+        """Blocking ``list_workspace_users`` (same result shape) for non-async callers."""
+        if not self.api_token:
+            return {**self._missing_token(), "users": []}
+        response = self._request_sync("GET", "/team")
+        if response.status_code != 200:
+            return {**self._failure(response, "list workspaces"), "users": []}
+        return {"ok": True, "status": 200, "users": self._users_from_teams(response.json())}
+
+    async def set_user_field(
+        self,
+        task_id: str,
+        field_id: str,
+        add_user_ids: list[int],
+        remove_user_ids: list[int] | None = None,
+    ) -> dict[str, Any]:
+        """Set a custom field of type "users" (add and remove member ids)."""
+        if not self.api_token:
+            return self._missing_token()
+        body = {"value": {"add": list(add_user_ids), "rem": list(remove_user_ids or [])}}
+        response = await self._request("POST", f"/task/{task_id}/field/{field_id}", json=body)
+        if response.status_code in (200, 201):
+            return {"ok": True, "status": response.status_code}
+        return self._failure(response, "set user field")
+
+    async def assign_qa(
+        self, task_id: str, qa_user_id: str, *, qa_field_id: str | None = None
+    ) -> dict[str, Any]:
+        """Put the QA reviewer on a task: the configured users field when there is one,
+        otherwise as an extra assignee."""
+        if not str(qa_user_id).strip().isdigit():
+            return {
+                "ok": False,
+                "status": 400,
+                "message": f"'{qa_user_id}' is not a ClickUp user id.",
+            }
+        uid = int(str(qa_user_id).strip())
+        field_id = settings.clickup_qa_field_id if qa_field_id is None else qa_field_id
+        if (field_id or "").strip():
+            res = await self.set_user_field(task_id, field_id.strip(), [uid])
+            return {**res, "via": "custom_field", "qa_user_id": uid}
+        res = await self.update_task_fields(task_id, add_assignee_ids=[uid])
+        res.pop("task", None)
+        return {**res, "via": "assignee", "qa_user_id": uid}
 
     async def list_boards(self) -> dict[str, Any]:
         """All lists (the ClickUp equivalent of boards), across spaces, folders and folderless."""
