@@ -239,36 +239,122 @@ def test_production_compose_does_not_publish_the_api_publicly() -> None:
     assert "127.0.0.1:8090:8090" in COMPOSE_PROD.read_text(encoding="utf-8")
 
 
+def _run_preflight_loopback_guard(compose_config: str, port: int) -> str:
+    """Run the preflight's published-port loopback check against a compose config.
+
+    Sources the two functions straight out of `deploy_preflight.sh` so this tests
+    the shipped logic rather than a copy of it. `docker compose config` is not
+    invoked: the rendered config is handed in directly, which keeps the test
+    runnable offline with no Docker daemon.
+    """
+    script = (REPO_ROOT / "scripts" / "deploy_preflight.sh").read_text("utf-8")
+    functions = []
+    for name in ("service_block_publishing", "check_published_port_is_loopback"):
+        start = script.index(f"{name}() {{")
+        depth, i = 0, start
+        while True:
+            if script[i] == "{":
+                depth += 1
+            elif script[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        functions.append(script[start : i + 1])
+
+    harness = "\n".join(
+        [
+            "set -u",
+            "pass() { printf 'PASS %s\\n' \"$1\"; }",
+            "fail() { printf 'FAIL %s\\n' \"$1\"; }",
+            *functions,
+            'check_published_port_is_loopback "$CONFIG" "$PORT" "API"',
+        ]
+    )
+    result = subprocess.run(
+        ["bash", "-c", harness],
+        input=compose_config,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        env={**os.environ, "CONFIG": compose_config, "PORT": str(port)},
+    )
+    assert result.returncode == 0, f"guard harness failed: {result.stderr}"
+    return result.stdout
+
+
+def _rendered_compose(api_host_ip: str, ui_host_ip: str) -> str:
+    """A minimal `docker compose config` rendering with two published ports."""
+    return (
+        "name: deepiri-boardman\n"
+        "services:\n"
+        "  boardman:\n"
+        "    container_name: deepiri-boardman\n"
+        "    ports:\n"
+        "      - mode: ingress\n"
+        "        target: 8090\n"
+        '        published: "8090"\n'
+        f"        host_ip: {api_host_ip}\n"
+        "        protocol: tcp\n"
+        "  boardman-ui:\n"
+        "    container_name: deepiri-boardman-ui\n"
+        "    ports:\n"
+        "      - mode: ingress\n"
+        "        target: 80\n"
+        '        published: "8088"\n'
+        f"        host_ip: {ui_host_ip}\n"
+        "        protocol: tcp\n"
+        "networks:\n"
+        "  platform-shared:\n"
+        "    external: true\n"
+    )
+
+
 def test_preflight_treats_a_public_api_bind_as_a_failure() -> None:
     """`deploy_preflight.sh` runs on every deploy and is the last gate before the
     stack is brought up. When it published the API on all interfaces it only
     *warned* -- which does not stop a deploy. It must fail, and it must accept the
     intended loopback bind without complaint (a warning there would train operators
     to ignore the check).
-
-    Asserted against the script text because the compose config path needs a live
-    Docker daemon, which the test suite does not have.
     """
-    script = (REPO_ROOT / "scripts" / "deploy_preflight.sh").read_text("utf-8")
+    ok = _run_preflight_loopback_guard(_rendered_compose("127.0.0.1", "127.0.0.1"), 8090)
+    assert ok.startswith("PASS "), f"loopback API bind should pass cleanly, got: {ok!r}"
 
-    # Find the 8090 branch and make sure it fails rather than warns.
-    marker = 'published: "?8090"?'
-    assert marker in script, "preflight no longer checks the API port at all"
-    branch = script[script.index(marker) :]
-    branch = branch[: branch.index("\n  fi")]
-
-    assert 'pass "compose publishes API port 8090 on loopback only"' in branch, (
-        "the loopback case should pass, not warn -- otherwise every correct deploy "
-        "prints a warning and people learn to ignore this check"
-    )
-    assert 'fail "compose publishes API port 8090 on a non-loopback host IP' in branch, (
+    bad = _run_preflight_loopback_guard(_rendered_compose("0.0.0.0", "127.0.0.1"), 8090)
+    assert bad.startswith("FAIL "), (
         "a public API bind must FAIL the preflight, not warn: a warning does not "
-        "stop a deploy, and this is the exact mistake that exposed the API"
+        f"stop a deploy, and this is the exact mistake that exposed the API. Got: {bad!r}"
     )
-    assert 'warn "compose publishes API port 8090' not in branch
 
-    # And the loopback test must actually be loopback-specific.
-    assert "127\\.0\\.0\\.1" in branch and "::1" in branch
+
+def test_preflight_loopback_check_is_scoped_to_the_publishing_service() -> None:
+    """The host_ip must be read from the service block that publishes the port.
+
+    It used to be grepped out of the whole rendered config, so *any* loopback
+    binding satisfied the check. Adding the loopback-only boardman-ui service on
+    127.0.0.1:8088 therefore masked a regression of the API to 0.0.0.0:8090 --
+    the guard passed on exactly the config it exists to reject. This is the
+    regression that shipped, so pin the scoping.
+    """
+    # API public, UI loopback: the API must still be caught.
+    api_public = _run_preflight_loopback_guard(_rendered_compose("0.0.0.0", "127.0.0.1"), 8090)
+    assert api_public.startswith("FAIL "), (
+        "the UI's loopback binding satisfied the API's check; the host_ip has to be "
+        f"read from the API's own service block. Got: {api_public!r}"
+    )
+
+    # UI public, API loopback: the UI must be caught too. Nothing checked 8088
+    # before, so a public UI bind (a second, nginx-less copy of the SPA) went
+    # unreported.
+    ui_public = _run_preflight_loopback_guard(_rendered_compose("127.0.0.1", "0.0.0.0"), 8088)
+    assert ui_public.startswith(
+        "FAIL "
+    ), f"the UI port is published too and must be loopback-only. Got: {ui_public!r}"
+
+    # And a service that does not publish the port produces no output at all,
+    # rather than a spurious failure.
+    absent = _run_preflight_loopback_guard("name: x\nservices:\n  boardman:\n    image: y\n", 8090)
+    assert absent.strip() == "", f"unpublished port should be a no-op, got: {absent!r}"
 
 
 def test_public_vhost_only_proxies_an_explicit_allowlist() -> None:
