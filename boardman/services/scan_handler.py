@@ -29,6 +29,7 @@ from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing_async
 from boardman.settings import settings
+from boardman.task_provider import get_task_client
 
 _log = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ def _normalize_scan_tasks(raw_tasks: Any) -> tuple[list[dict[str, Any]], list[st
 
 
 async def fetch_plaky_titles_for_repo(repo_full: str, short: str) -> str:
-    plaky = PlakyClient()
+    plaky = get_task_client()
     r = await plaky.get_tasks(status="open")
     if not r.get("ok"):
         return f"(Plaky: {r.get('message')})"

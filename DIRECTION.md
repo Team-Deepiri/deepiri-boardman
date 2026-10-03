@@ -16,8 +16,10 @@ Core sync, scan, agent, UI, and production Docker stack are shipped. Focus: prod
 - [ ] QA tier distribution tuning per [TAKEHOME_STATUS.md](docs/TAKEHOME_STATUS.md)
 - [ ] Keep [AGENTS.md](AGENTS.md), [PLAN.md](docs/PLAN.md), and related docs in sync with code changes
 
+- [ ] ClickUp as a second task provider ([docs/CLICKUP.md](docs/CLICKUP.md)): core task routes done; webhook sync, assignment and the agent tools are still Plaky-only
+
 ## What's NOT In Scope
 
 - Discord notifications (norozo)
-- Alternate kanban providers (Linear, ClickUp) — see [ADDITIONAL_FEATURES.md](docs/ADDITIONAL_FEATURES.md)
+- Kanban providers other than Plaky and ClickUp (e.g. Linear) — see [ADDITIONAL_FEATURES.md](docs/ADDITIONAL_FEATURES.md)
 - Running Ollama in cloud production
