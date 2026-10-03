@@ -26,8 +26,8 @@ from boardman.plaky.board_schema import (
     field_row_item_key,
     plaky_field_row_label,
 )
-from boardman.plaky.client import PlakyClient
 from boardman.settings import settings
+from boardman.task_provider import get_task_client
 
 # QA leads/managers who must NEVER be auto-assigned to review PRs (employer requirement).
 # Matching is case-insensitive against member display name AND GitHub login.
@@ -626,7 +626,7 @@ def _members_from_github_roster(data: dict[str, Any]) -> list[TeamMember]:
 
     plaky_users: list[dict[str, Any]] = []
     if auto_match:
-        pr = PlakyClient().list_workspace_users_sync()
+        pr = get_task_client().list_workspace_users_sync()
         if pr.get("ok"):
             plaky_users = [u for u in (pr.get("users") or []) if isinstance(u, dict)]
         else:

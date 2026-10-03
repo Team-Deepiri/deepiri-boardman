@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     # Workspace ("team") id for user listing, and the default list new tasks are created in.
     clickup_team_id: str = ""
     clickup_default_list_id: str = ""
+    # Optional ClickUp custom field (type "users") that holds the QA reviewer. Empty = add the QA
+    # person as an extra assignee instead.
+    clickup_qa_field_id: str = ""
 
     plaky_api_key: str = ""
     plaky_api_base: str = "https://api.plaky.com/v1/public"
