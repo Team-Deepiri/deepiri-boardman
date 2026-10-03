@@ -250,10 +250,17 @@ class ClickUpClient:
         description: str | None = None,
         priority: str | int | None = None,
         status: str | None = None,
+        add_assignee_ids: list[int] | None = None,
+        remove_assignee_ids: list[int] | None = None,
     ) -> dict[str, Any]:
         if not self.api_token:
             return self._missing_token()
         body: dict[str, Any] = {}
+        if add_assignee_ids or remove_assignee_ids:
+            body["assignees"] = {
+                "add": list(add_assignee_ids or []),
+                "rem": list(remove_assignee_ids or []),
+            }
         if title is not None:
             body["name"] = title
         if description is not None:

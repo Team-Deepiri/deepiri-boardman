@@ -20,6 +20,7 @@ from boardman.agent.brain import (
     render_project_state,
     schedule_revalidation,
 )
+from boardman.agent.clickup_prompt_extra import clickup_provider_markdown
 from boardman.agent.fast_path import maybe_fast_path
 from boardman.agent.guardrails import has_confirm_token, looks_like_board_organize_request
 from boardman.agent.memory_store import db_messages_to_langchain
@@ -36,6 +37,7 @@ from boardman.llm.completion import chat_complete, chat_complete_stream
 from boardman.observability.degradation import log_degraded, log_unexpected
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.settings import settings
+from boardman.task_provider import active_provider
 
 logger = logging.getLogger(__name__)
 
@@ -520,6 +522,10 @@ async def _plaky_system_suffix(
     plaky_group_id: str | None,
     note: str = "",
 ) -> str:
+    if active_provider() == "clickup":
+        return clickup_provider_markdown(
+            (plaky_board_id or "").strip() or settings.clickup_default_list_id, note
+        )
     out = plaky_placement_markdown(plaky_board_id, plaky_group_id, note)
     bid = (plaky_board_id or "").strip()
     if bid:
