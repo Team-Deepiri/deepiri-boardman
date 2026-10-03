@@ -9,6 +9,19 @@ from httpx import ASGITransport, AsyncClient
 
 from boardman.assignment.config import TeamAssignmentsConfig, TeamMember, TierSpec
 from boardman.main import create_app
+from boardman.settings import settings
+
+# Task writes use the server's own Plaky credentials, so /tasks, /tasks/{id}
+# (PATCH), subtasks and link-pr are all behind the internal bearer token. These
+# tests exercise the handlers, so they authenticate; the anonymous cases live in
+# test_security_audit_2026_09.py.
+AUTH = {"Authorization": "Bearer tasks-test-token"}
+
+
+@pytest.fixture(autouse=True)
+def _auth_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "boardman_api_token", "tasks-test-token", raising=False)
+    monkeypatch.setattr(settings, "worker_internal_secret", "", raising=False)
 
 
 def _cfg_placeholder_yaml_keys() -> TeamAssignmentsConfig:
@@ -151,6 +164,7 @@ async def test_post_tasks_accepts_legacy_top_level_repo(monkeypatch: pytest.Monk
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
             "/api/v1/tasks",
+            headers=AUTH,
             json={
                 "title": "Legacy repo field",
                 "description": "",
@@ -217,6 +231,7 @@ async def test_post_tasks_passes_board_to_plaky_and_patches_assignments(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
             "/api/v1/tasks",
+            headers=AUTH,
             json={
                 "title": "Route test task",
                 "description": "",
@@ -306,6 +321,7 @@ async def test_post_tasks_scrubs_placeholder_yaml_keys_and_infers_real_columns(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
             "/api/v1/tasks",
+            headers=AUTH,
             json={
                 "title": "Scrub keys",
                 "github_repos": ["acme/widget"],
@@ -386,6 +402,7 @@ async def test_post_tasks_keeps_native_plaky_keys_when_they_appear_on_board_sche
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
             "/api/v1/tasks",
+            headers=AUTH,
             json={
                 "title": "Native keys",
                 "github_repos": ["acme/widget"],
@@ -481,6 +498,7 @@ async def test_post_tasks_merges_default_status_type_priority_from_schema(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
             "/api/v1/tasks",
+            headers=AUTH,
             json={
                 "title": "Schema defaults",
                 "github_repos": ["acme/widget"],
@@ -585,6 +603,7 @@ async def test_post_tasks_accepts_status_type_priority_tags_and_type_json_key(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
             "/api/v1/tasks",
+            headers=AUTH,
             json={
                 "title": "Tagged task",
                 "github_repos": ["acme/widget"],
@@ -701,6 +720,7 @@ async def test_post_tasks_uses_board_from_create_when_patch_board_unknown(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
             "/api/v1/tasks",
+            headers=AUTH,
             json={
                 "title": "No board in json",
                 "github_repos": ["acme/widget"],
@@ -808,6 +828,7 @@ async def test_patch_tasks_create_then_update_status_type_priority_qa(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         create_r = await client.post(
             "/api/v1/tasks",
+            headers=AUTH,
             json={
                 "title": "Create before update",
                 "description": "seed",
@@ -823,6 +844,7 @@ async def test_patch_tasks_create_then_update_status_type_priority_qa(
 
         r = await client.patch(
             "/api/v1/tasks/item-123",
+            headers=AUTH,
             json={
                 "plaky_board_id": "board-77",
                 "qa_plaky_id": "qa-9",
@@ -864,7 +886,7 @@ async def test_patch_tasks_rejects_empty_payload(monkeypatch: pytest.MonkeyPatch
 
     app = create_app()
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
-        r = await client.patch("/api/v1/tasks/item-123", json={})
+        r = await client.patch("/api/v1/tasks/item-123", headers=AUTH, json={})
     assert r.status_code == 200
     body = r.json()
     assert body.get("ok") is False

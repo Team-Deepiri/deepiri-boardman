@@ -14,6 +14,7 @@ import {
 } from "./components/Icons";
 import { AppSelect } from "./components/AppSelect";
 import { MarkdownMessage } from "./components/MarkdownMessage";
+import { authHeader, clearApiToken, getApiToken, hasApiToken, setApiToken } from "./lib/apiToken";
 
 type Role = "user" | "assistant";
 
@@ -32,6 +33,24 @@ const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE || "",
   headers: { "Content-Type": "application/json" },
 });
+
+/**
+ * Attach the operator's token to every API call when one has been entered.
+ * Reading it per-request (rather than once at module load) means a token pasted
+ * later in the session takes effect immediately without a reload.
+ */
+api.interceptors.request.use((cfg) => {
+  const token = getApiToken();
+  if (token) {
+    cfg.headers.set("Authorization", `Bearer ${token}`);
+  }
+  return cfg;
+});
+
+/** True when a rejection is the backend refusing a missing/invalid bearer token. */
+function isAuthError(e: unknown): boolean {
+  return axios.isAxiosError(e) && (e.response?.status === 401 || e.response?.status === 404);
+}
 
 type StreamSsePayload =
   | { type: "session"; session_id: string }
@@ -73,7 +92,7 @@ async function sendChatStream(
   const res = await fetch(url, {
     method: "POST",
     signal,
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+    headers: { "Content-Type": "application/json", Accept: "text/event-stream", ...authHeader() },
     body: JSON.stringify({
       message,
       session_id: opts.sessionId || undefined,
@@ -187,6 +206,9 @@ export default function App() {
 
   const [classifyBusy, setClassifyBusy] = useState(false);
   const [classifyMsg, setClassifyMsg] = useState<string | null>(null);
+  // Held in state only while the field is being typed into; the saved copy lives in
+  // sessionStorage (see lib/apiToken) and the input is cleared after saving.
+  const [tokenDraft, setTokenDraft] = useState("");
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const drawerScrollRef = useRef<HTMLDivElement>(null);
@@ -423,7 +445,13 @@ export default function App() {
         setCreateMsg(data.message || "Create failed.");
       }
     } catch (e: unknown) {
-      setCreateMsg(axios.isAxiosError(e) ? e.message : String(e));
+      setCreateMsg(
+        isAuthError(e)
+          ? "Creating a task is a privileged action — add your API token first."
+          : axios.isAxiosError(e)
+            ? e.message
+            : String(e)
+      );
     } finally {
       setCreateBusy(false);
     }
@@ -574,6 +602,53 @@ export default function App() {
         </div>
 
         <div className="field">
+          <label className="field__label" htmlFor="boardman-token-input">
+            API token {hasApiToken() ? "(set)" : "(not set)"}
+          </label>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              id="boardman-token-input"
+              className="field__input"
+              type="password"
+              autoComplete="off"
+              placeholder="Paste BOARDMAN_API_TOKEN"
+              value={tokenDraft}
+              onChange={(e) => setTokenDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  setApiToken(tokenDraft);
+                  setTokenDraft("");
+                }
+              }}
+            />
+            <button
+              type="button"
+              className="field__button field__button--secondary"
+              onClick={() => {
+                setApiToken(tokenDraft);
+                setTokenDraft("");
+              }}
+            >
+              Save
+            </button>
+            {hasApiToken() ? (
+              <button
+                type="button"
+                className="field__button field__button--secondary"
+                onClick={() => clearApiToken()}
+                title="Forget the token for this tab"
+              >
+                Clear
+              </button>
+            ) : null}
+          </div>
+          <p className="field__hint">
+            Unlocks privileged actions (create task, re-classify repos, agent writes). Kept in
+            this tab only and cleared when it closes.
+          </p>
+        </div>
+
+        <div className="field">
           <button
             type="button"
             className="field__button field__button--secondary"
@@ -591,7 +666,13 @@ export default function App() {
                   setClassifyMsg(data.error || "Classification failed.");
                 }
               } catch (e: unknown) {
-                setClassifyMsg(axios.isAxiosError(e) ? e.message : String(e));
+                setClassifyMsg(
+                  isAuthError(e)
+                    ? "Classification is a privileged action — add your API token first."
+                    : axios.isAxiosError(e)
+                      ? e.message
+                      : String(e)
+                );
               } finally {
                 setClassifyBusy(false);
               }

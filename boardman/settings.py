@@ -339,10 +339,17 @@ class Settings(BaseSettings):
     # Shared with Cloudflare worker (Bearer) for POST /api/v1/assignment/pick-qa
     worker_internal_secret: str = ""
 
-    # Bearer token for the privileged agent routes (init-direction, scan, job
-    # status, BYOK) -- anything that spends LLM budget, touches caller-supplied
-    # API keys, or drives the server's own GitHub credentials. Falls back to
-    # worker_internal_secret when unset, so existing deployments stay protected.
+    # Bearer token for the privileged API routes. Covers every endpoint that
+    # writes to Plaky/GitHub with the server's own credentials, rewrites a config
+    # file on disk, or spends LLM budget: agent init-direction/scan/jobs/BYOK/
+    # session history, task create/update/subtask/link-pr, reconcile, repo
+    # classify, plans generate, assignment sync-field-keys, mappings, sync-logs.
+    # Falls back to worker_internal_secret when unset, so existing deployments
+    # stay protected. If neither is set the routes 404 (fail closed).
+    #
+    # NOT a substitute for user auth: boardman-ui is a public bundle and cannot
+    # hold a secret, so operators paste this token into the UI at runtime, where
+    # it is held in sessionStorage (see boardman-ui/src/lib/apiToken.ts).
     boardman_api_token: str = ""
 
     # Gray-zone GitHub↔Plaky identity: optional LLM (Ollama recommended, temperature 0 in code)

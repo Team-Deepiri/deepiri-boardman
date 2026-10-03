@@ -127,29 +127,46 @@ flowchart LR
 | Method | Path | Notes |
 |--------|------|-------|
 | GET | `/api/v1/health` | Health check |
-| GET | `/api/v1/mappings` | Issue↔task mappings |
-| GET | `/api/v1/sync-logs` | Sync audit log |
-| POST | `/api/v1/webhooks/github` | GitHub webhook receiver |
-| POST | `/api/v1/tasks` | Create Plaky task |
+| GET | `/api/v1/mappings` | Issue↔task mappings 🔒 |
+| GET | `/api/v1/sync-logs` | Sync audit log 🔒 |
+| POST | `/api/v1/webhooks/github` | GitHub webhook receiver (HMAC, not bearer) |
+| POST | `/api/v1/tasks` | Create Plaky task 🔒 |
 | GET | `/api/v1/tasks` | List tasks |
-| GET/PATCH | `/api/v1/tasks/{id}` | Get/update task |
-| POST | `/api/v1/tasks/{id}/subtasks` | Create subtask |
-| POST | `/api/v1/tasks/{id}/link-pr` | Link PR to task |
+| GET/PATCH | `/api/v1/tasks/{id}` | Get / update task (PATCH 🔒) |
+| POST | `/api/v1/tasks/{id}/subtasks` | Create subtask 🔒 |
+| POST | `/api/v1/tasks/{id}/link-pr` | Link PR to task 🔒 |
 | POST | `/api/v1/agent/chat` | Agent chat (`allow_writes`, `session_id`, `repo`, `queue`) |
 | POST | `/api/v1/agent/chat/stream` | Streaming agent chat |
-| GET | `/api/v1/agent/jobs/{job_id}` | Async agent job status |
-| GET | `/api/v1/agent/sessions/{id}/history` | Session transcript |
-| DELETE | `/api/v1/agent/sessions/{id}` | Drop session |
-| POST | `/api/v1/agent/scan` | LLM scan from `DIRECTION.md`; `queue: true` runs it on the worker |
-| POST | `/api/v1/agent/init-direction` | PR to add `DIRECTION.md` |
-| POST | `/api/v1/assignment/pick-qa` | QA assignment (worker auth) |
-| POST | `/api/v1/assignment/sync-field-keys` | Sync Plaky field keys |
+| GET | `/api/v1/agent/jobs/{job_id}` | Async agent job status 🔒 |
+| GET | `/api/v1/agent/sessions/{id}/history` | Session transcript 🔒 |
+| DELETE | `/api/v1/agent/sessions/{id}` | Drop session 🔒 |
+| GET/POST/DELETE | `/api/v1/agent/sessions/{id}/byok` | Caller-supplied API keys 🔒 |
+| POST | `/api/v1/agent/scan` | LLM scan from `DIRECTION.md`; `queue: true` runs it on the worker 🔒 |
+| POST | `/api/v1/agent/init-direction` | PR to add `DIRECTION.md` 🔒 |
+| POST | `/api/v1/reconcile/{owner}/{repo}` | Bounded webhook-miss repair 🔒 |
+| POST | `/api/v1/plans/generate` | Meeting plan (LLM + disk write) 🔒 |
+| POST | `/api/v1/assignment/pick-qa` | QA assignment (worker auth) 🔒 |
+| POST | `/api/v1/assignment/sync-field-keys` | Sync Plaky field keys 🔒 |
 | GET | `/api/v1/github/support-team/members` | Support team roster |
 | GET | `/api/v1/repos/org` | List org repos + tiers |
 | GET | `/api/v1/repos/tier/{full_name}` | Single repo tier |
-| POST | `/api/v1/repos/classify` | Classify repo tiers |
+| POST | `/api/v1/repos/classify` | Classify repo tiers 🔒 (rewrites `repos.yml`) |
 | GET | `/api/v1/plaky/boards`, `/groups`, `/schema`, … | Plaky discovery helpers |
-| GET | `/api/v1/llm/models` | Available LLM models |
+| GET | `/api/v1/plaky/users` | Workspace users 🔒 (full directory: names, emails, avatars) |
+| GET | `/api/v1/llm/models` | Available LLM models 🔒 |
+
+🔒 = requires `Authorization: Bearer $BOARDMAN_API_TOKEN` (falls back to
+`WORKER_INTERNAL_SECRET`; 404 when neither is set). The gate is
+`boardman.security.api_auth.require_internal_auth`, which fails closed and compares in
+constant time. `boardman/security/repo_slug.py` is the shared `owner/name` validator for
+every route that hands one to `gh`/`git` argv or a GitHub API path.
+
+Agent chat is deliberately **not** 🔒 — it is the SPA's main call and the bundle cannot hold
+a secret. The privilege it carries (`allow_writes`, which grants the Plaky mutation tools) is
+downgraded to read-only unless the caller presents the token. `boardman-ui` collects the
+token at runtime into `sessionStorage` (`boardman-ui/src/lib/apiToken.ts`) and sends it on
+every request, which is what keeps the 🔒 SPA-called routes (`POST /tasks`,
+`POST /repos/classify`) working for an authenticated operator.
 
 Webhook delivery processing is durable: production can acknowledge verified payloads with
 HTTP 202, enqueue `boardman_github_webhook_job`, and let the SQLite worker retry failed
@@ -187,6 +204,7 @@ Secrets in `.env` (never commit). Key groups:
 | GitHub | `GITHUB_PAT`, `GITHUB_AUTH_MODE`, `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`, `GITHUB_APP_WEBHOOK_SECRET`, `GITHUB_WEBHOOK_SECRET`, `GITHUB_ORG`, `GITHUB_BARE_REPO_OWNER`, `GITHUB_SUPPORT_TEAM` |
 | LLM | `LLM_PROVIDER`, `LLM_MODEL`, `OLLAMA_BASE_URL`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `OPENROUTER_API_KEY` |
 | Agent | `AGENT_MAX_HISTORY`, `AGENT_LANGCHAIN_TOOLS`, `AGENT_RECURSION_LIMIT`, `PROMPT_VERSION`, `AGENT_ASYNC_ENQUEUE_ENABLED`, context-cache TTLs |
+| API auth | `BOARDMAN_API_TOKEN` (privileged routes; falls back to `WORKER_INTERNAL_SECRET`) |
 | Assignment | `ASSIGNMENT_IDENTITY_LLM_*`, `PR_LINKING_*` |
 | Webhook/repair | `GITHUB_WEBHOOK_ASYNC_ENABLED`, `GITHUB_WEBHOOK_JOB_RETRIES`, `GITHUB_RECONCILE_ENABLED`, `GITHUB_RECONCILE_INTERVAL_SECONDS`, `GITHUB_RECONCILE_MAX_ITEMS` |
 | Queue | `QUEUE_WORKER_POLL_SECONDS` (worker); optional `AGENT_REDIS_URL` (cache only) |

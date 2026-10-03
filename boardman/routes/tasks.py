@@ -8,6 +8,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.session import get_db
 from boardman.plaky.client import PlakyClient
+from boardman.security.api_auth import require_internal_auth
+from boardman.security.repo_slug import INVALID_REPO_MESSAGE, is_valid_repo_slug
 from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
 from boardman.services.task_mutations import (
     CreateSubtaskInput,
@@ -98,7 +100,17 @@ class CreateSubtaskRequest(BaseModel):
 
 
 @router.post("/tasks")
-async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(get_db)):
+async def create_task(
+    req: CreateTaskRequest,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
+):
+    """Create a Plaky task with the *server's* Plaky credentials.
+
+    Guarded for the same reason as PATCH/subtasks/link-pr: an anonymous caller
+    could otherwise write arbitrary tasks onto the team's real board. The UI's
+    "create task" form now needs the bearer token; see boardman-ui.
+    """
     return await create_task_internal(
         CreateTaskInput(
             title=req.title,
@@ -119,7 +131,10 @@ async def create_task(req: CreateTaskRequest, session: AsyncSession = Depends(ge
 
 @router.post("/tasks/{task_id}/subtasks")
 async def create_subtask(
-    task_id: str, req: CreateSubtaskRequest, session: AsyncSession = Depends(get_db)
+    task_id: str,
+    req: CreateSubtaskRequest,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
 ):
     return await create_subtask_internal(
         CreateSubtaskInput(
@@ -159,7 +174,10 @@ async def get_task(task_id: str, session: AsyncSession = Depends(get_db)):
 
 @router.patch("/tasks/{task_id}")
 async def update_task(
-    task_id: str, req: UpdateTaskRequest, session: AsyncSession = Depends(get_db)
+    task_id: str,
+    req: UpdateTaskRequest,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
 ):
     return await update_task_internal(
         task_id,
@@ -176,7 +194,12 @@ async def update_task(
 
 
 @router.post("/tasks/{task_id}/link-pr")
-async def link_pr(task_id: str, req: LinkPRRequest, session: AsyncSession = Depends(get_db)):
+async def link_pr(
+    task_id: str,
+    req: LinkPRRequest,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
+):
     urls = collect_pr_urls(pr_url=req.pr_url, pr_urls=req.pr_urls)
     if not urls:
         return {
@@ -208,13 +231,23 @@ async def reconcile_repository(
     repo: str,
     max_items: int = 50,
     session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
 ) -> dict:
     """Detect and repair GitHub-Plaky drift for one repo (bounded, idempotent).
 
     Webhooks are the fast path; this is the safety net for missed deliveries. It walks
     CURRENT open issues and PRs and replays them through the normal handlers, which
     dedupe, so running it twice changes nothing.
+
+    Guarded because it replays the full write handlers (task creation, status and
+    assignee updates, PR comments) using the *server's* GitHub credentials against
+    any repo the token can read -- the same exposure class as init-direction.
     """
+    if not is_valid_repo_slug(f"{owner}/{repo}"):
+        return {"ok": False, "message": INVALID_REPO_MESSAGE}
+    if not 1 <= max_items <= 100:
+        return {"ok": False, "message": "max_items must be between 1 and 100"}
+
     from boardman.services.reconcile import reconcile_repo
 
     return await reconcile_repo(f"{owner}/{repo}", session, max_items=max(1, min(max_items, 100)))
