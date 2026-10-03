@@ -193,7 +193,7 @@ LLM budget.
 - `POST /api/v1/tasks/{id}/subtasks` - Create subtask 🔒
 - `POST /api/v1/tasks/{id}/link-pr` - Link PR to task 🔒
 - `GET /api/v1/mappings` - List issue↔task mappings 🔒
-- `GET /api/v1/sync-logs` - Sync audit log 🔒
+- `GET /api/v1/sync-logs` - Sync audit log 🔒 (`?limit=` bounded to 200)
 - `POST /api/v1/repos/classify` - Re-classify repo tiers (rewrites `repos.yml`) 🔒
 - `POST /api/v1/plans/generate` - Generate a meeting plan (LLM + disk write) 🔒
 - `POST /api/v1/assignment/sync-field-keys` - Sync Plaky field keys 🔒
@@ -203,6 +203,8 @@ LLM budget.
 - `DELETE /api/v1/agent/sessions/{id}` - Drop session 🔒
 - `POST /api/v1/agent/scan` - `{ "repo": "owner/name", "dry_run": false, "queue": false, ... }`; set `queue: true` for a worker job and poll `/api/v1/agent/jobs/{job_id}` 🔒
 - `POST /api/v1/agent/init-direction` - opens a PR for `DIRECTION.md` using signed-in `gh` user (`{ "repo": "owner/name", "branch?": "main", "force?": false }`) 🔒
+- `GET /api/v1/plaky/users` - Workspace users for assignee pickers 🔒 (full directory — names, emails, avatars)
+- `GET /api/v1/llm/models` - Available LLM models 🔒
 
 Agent chat stays open because `boardman-ui` is a public static bundle that cannot hold a
 secret. The privilege it carries is `allow_writes`, which grants the agent the Plaky mutation

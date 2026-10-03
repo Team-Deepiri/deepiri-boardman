@@ -1,6 +1,6 @@
 """Health check and process metrics endpoints."""
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -9,6 +9,12 @@ from boardman.database.session import get_db
 from boardman.security.api_auth import require_internal_auth
 
 router = APIRouter()
+
+# Upper bound on any caller-supplied page size. Without it a single request could
+# ask for the whole table: `?limit=100000` on sync-logs serialised ~17.8k rows into
+# a single multi-megabyte response from a container capped at 512 MiB, which is both
+# an unauthenticated bulk-extraction primitive and a cheap memory-pressure lever.
+MAX_PAGE_SIZE = 200
 
 
 @router.get("/health")
@@ -64,11 +70,15 @@ async def list_mappings(
 
 @router.get("/sync-logs")
 async def list_logs(
-    limit: int = 50,
+    limit: int = Query(50, ge=1, le=MAX_PAGE_SIZE),
     session: AsyncSession = Depends(get_db),
     _auth: None = Depends(require_internal_auth),
 ):
-    """Sync audit log. Guarded: repo names, actors and error strings, ops-only."""
+    """Sync audit log. Guarded: repo names, actors and error strings, ops-only.
+
+    Page size is bounded by MAX_PAGE_SIZE: `?limit=100000` returned the whole
+    table (~17.8k rows) in one response from a container capped at 512 MiB.
+    """
     result = await session.execute(select(SyncLog).order_by(SyncLog.created_at.desc()).limit(limit))
     logs = result.scalars().all()
     return {

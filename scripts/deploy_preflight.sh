@@ -37,6 +37,51 @@ compose() {
   docker compose -f "$COMPOSE_FILE_PATH" "$@"
 }
 
+# Print the `docker compose config` service block that publishes $1, or nothing.
+#
+# `docker compose config` emits services as two-space-indented keys under
+# `services:`, with each port as a `published:`/`host_ip:` pair. awk has no YAML
+# parser available here, so this tracks the current service by indentation and
+# emits it only if that block is the one carrying the port. Scoping matters: a
+# whole-file grep for `host_ip: 127.0.0.1` matches whichever service happens to
+# be bound to loopback, which is how the API check came to be satisfied by the UI.
+service_block_publishing() {
+  local port="$1"
+  awk -v want="$port" '
+    /^services:[[:space:]]*$/ { in_services = 1; next }
+    # Any top-level key ends the services mapping.
+    in_services && /^[^[:space:]#]/ { in_services = 0 }
+    in_services && /^  [^[:space:]#][^:]*:[[:space:]]*$/ {
+      if (block != "" && published(block)) { print block }
+      block = $0 "\n"
+      next
+    }
+    in_services && /^  / { block = block $0 "\n" }
+    END { if (block != "" && published(block)) { print block } }
+
+    function published(text,   pattern) {
+      pattern = "published: \"?" want "\"?([[:space:]]|$)"
+      return text ~ pattern
+    }
+  '
+}
+
+check_published_port_is_loopback() {
+  local config="$1"
+  local port="$2"
+  local label="$3"
+  local block
+  block="$(printf '%s\n' "$config" | service_block_publishing "$port")"
+  if [[ -z "$block" ]]; then
+    return 0
+  fi
+  if printf '%s\n' "$block" | grep -Eq 'host_ip: "?(127\.0\.0\.1|::1)"?'; then
+    pass "compose publishes ${label} port ${port} on loopback only"
+  else
+    fail "compose publishes ${label} port ${port} on a non-loopback host IP; this exposes it directly to the internet and bypasses nginx. Bind 127.0.0.1:${port}:${port}"
+  fi
+}
+
 check_env_key() {
   local key="$1"
   local value
@@ -173,18 +218,20 @@ if compose_config="$(compose config 2>/dev/null)"; then
   if printf '%s\n' "$compose_config" | grep -Eq 'published: "?11434"?'; then
     warn "compose publishes Ollama port 11434; keep it firewalled/private on VPS"
   fi
-  # The API port is intentionally published (nginx proxies to it), so its host IP
-  # is the whole question. A bare "published: 8090" or a 0.0.0.0/:: host binds every
-  # interface and bypasses the nginx vhost -- that is a failure, not a warning,
-  # because it puts the unauthenticated read-mostly UI routes on the public
-  # internet. Loopback (127.0.0.1 / ::1) is the intended configuration.
-  if printf '%s\n' "$compose_config" | grep -Eq 'published: "?8090"?'; then
-    if printf '%s\n' "$compose_config" | grep -Eq 'host_ip: "?(127\.0\.0\.1|::1)"?'; then
-      pass "compose publishes API port 8090 on loopback only"
-    else
-      fail "compose publishes API port 8090 on a non-loopback host IP; this exposes the API directly to the internet and bypasses nginx. Bind 127.0.0.1:8090:8090"
-    fi
-  fi
+  # The API and UI ports are intentionally published (nginx reaches the API over
+  # the host, operators curl both), so their host IP is the whole question. A bare
+  # "published: 8090" or a 0.0.0.0/:: host binds every interface and bypasses the
+  # nginx vhost -- that is a failure, not a warning, because it puts the
+  # unauthenticated read-mostly routes on the public internet. Loopback
+  # (127.0.0.1 / ::1) is the intended configuration.
+  #
+  # The host_ip has to be read from the SAME service block that publishes the
+  # port, not from the config as a whole. A whole-file grep is satisfied by any
+  # loopback binding anywhere, so the boardman-ui service publishing
+  # 127.0.0.1:8088 masked a regression of the API to 0.0.0.0 -- the guard passed
+  # on the exact config it exists to reject.
+  check_published_port_is_loopback "$compose_config" 8090 "API"
+  check_published_port_is_loopback "$compose_config" 8088 "UI"
 else
   fail "docker compose config failed"
 fi

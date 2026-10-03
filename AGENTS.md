@@ -152,7 +152,8 @@ flowchart LR
 | GET | `/api/v1/repos/tier/{full_name}` | Single repo tier |
 | POST | `/api/v1/repos/classify` | Classify repo tiers 🔒 (rewrites `repos.yml`) |
 | GET | `/api/v1/plaky/boards`, `/groups`, `/schema`, … | Plaky discovery helpers |
-| GET | `/api/v1/llm/models` | Available LLM models |
+| GET | `/api/v1/plaky/users` | Workspace users 🔒 (full directory: names, emails, avatars) |
+| GET | `/api/v1/llm/models` | Available LLM models 🔒 |
 
 🔒 = requires `Authorization: Bearer $BOARDMAN_API_TOKEN` (falls back to
 `WORKER_INTERNAL_SECRET`; 404 when neither is set). The gate is

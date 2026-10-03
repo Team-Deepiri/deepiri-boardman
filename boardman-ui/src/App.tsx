@@ -338,9 +338,13 @@ export default function App() {
           setWorkspaceUsers([]);
           setUsersHint(data.message || "Could not load Plaky workspace users.");
         }
-      } catch {
+      } catch (e: unknown) {
         if (!cancelled) {
-          setUsersHint("Could not reach Plaky users endpoint.");
+          setUsersHint(
+            isAuthError(e)
+              ? "Loading Plaky users is privileged — add your API token first."
+              : "Could not reach Plaky users endpoint."
+          );
         }
       }
     })();
@@ -403,10 +407,14 @@ export default function App() {
           setLlmModels([]);
           setLlmModelsHint(data.error || "Could not load models.");
         }
-      } catch {
+      } catch (e: unknown) {
         if (!cancelled) {
           setLlmModels([]);
-          setLlmModelsHint("Could not reach LLM models endpoint.");
+          setLlmModelsHint(
+            isAuthError(e)
+              ? "Loading LLM models is privileged — add your API token first."
+              : "Could not reach LLM models endpoint."
+          );
         }
       }
     })();
