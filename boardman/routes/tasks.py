@@ -7,7 +7,6 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.database.session import get_db
-from boardman.plaky.client import PlakyClient
 from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
 from boardman.services.task_mutations import (
     CreateSubtaskInput,
@@ -18,6 +17,7 @@ from boardman.services.task_mutations import (
     update_task_internal,
 )
 from boardman.settings import settings
+from boardman.task_provider import get_task_client
 
 router = APIRouter()
 
@@ -145,14 +145,14 @@ async def list_tasks(
     plaky_board_id: str | None = None,
     session: AsyncSession = Depends(get_db),
 ):
-    plaky = PlakyClient()
+    plaky = get_task_client()
     result = await plaky.get_tasks(status=status, board_id=plaky_board_id)
     return result
 
 
 @router.get("/tasks/{task_id}")
 async def get_task(task_id: str, session: AsyncSession = Depends(get_db)):
-    plaky = PlakyClient()
+    plaky = get_task_client()
     result = await plaky.get_task(task_id)
     return result
 
@@ -185,7 +185,7 @@ async def link_pr(task_id: str, req: LinkPRRequest, session: AsyncSession = Depe
             "message": "Provide pr_url and/or pr_urls with at least one PR URL",
         }
 
-    plaky = PlakyClient()
+    plaky = get_task_client()
     comment = format_pr_link_comment(urls)
     bid = (req.plaky_board_id or "").strip() or None
     result = await plaky.add_comment(task_id, comment, board_id=bid)

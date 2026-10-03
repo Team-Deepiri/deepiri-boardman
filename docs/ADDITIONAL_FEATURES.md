@@ -5,7 +5,7 @@
 Support pluggable integrations beyond Plaky so users can choose their preferred workflow management tool:
 
 - **Linear** integration
-- **ClickUp** integration
+- **ClickUp** integration — started, see [CLICKUP.md](CLICKUP.md)
 - Other Kanban / workflow management platforms as demand arises
 
 This would be an optional selection — the system should abstract the board provider so swapping or adding new ones is straightforward.
