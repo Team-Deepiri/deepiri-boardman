@@ -18,11 +18,11 @@ from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing_async
 from boardman.services.comment_dedupe import mirror_github_activity
-from boardman.services.issue_sync_common import issue_assignee_login as _issue_assignee_login
 from boardman.services.issue_sync_common import (
-    post_create_patch_failed as _post_create_patch_failed,
+    issue_assignee_login,
+    post_create_patch_failed,
+    pre_close_status,
 )
-from boardman.services.issue_sync_common import pre_close_status as _pre_close_status
 from boardman.services.sync_state import (
     UNREADABLE_STATUS,
     issue_status_intent,
@@ -263,7 +263,7 @@ async def handle_issue_changed(
     # A replayed `opened` whose post-create patch failed is the one non-ownership event
     # that MUST set status: that replay exists to repair the write that did not land, and
     # status is the field it was built to repair.
-    repairing = event_label == "issue_opened_reconciled" and await _post_create_patch_failed(
+    repairing = event_label == "issue_opened_reconciled" and await post_create_patch_failed(
         session, str(mapping.plaky_task_id)
     )
     status_value = ""
@@ -756,7 +756,7 @@ async def _issue_status_transition(
     if capture_previous:
         detail["previous_status_value"] = previous_status
         detail["previous_status_key"] = status_field_key or ""
-        # Flagged so `_pre_close_status` can ASK for the rows that captured something,
+        # Flagged so `pre_close_status` can ASK for the rows that captured something,
         # rather than scanning back through however many blank replays the reconciliation
         # sweep has appended since.
         detail["captured_previous"] = bool(previous_status)
@@ -806,7 +806,7 @@ async def handle_issue_reopened(payload: IssueEventPayload, session: AsyncSessio
         return await clickup_issue_sync.handle_issue_reopened(payload, session)
     n = payload.issue.number
     repo_name = payload.repository.name
-    has_owner = bool(_issue_assignee_login(payload.issue))
+    has_owner = bool(issue_assignee_login(payload.issue))
     resolved: tuple[str | None, str] | None = None
     if has_owner:
         # Only an owned issue may resume a working status. If the assignee was removed
@@ -815,7 +815,7 @@ async def handle_issue_reopened(payload: IssueEventPayload, session: AsyncSessio
         # a working status with nobody on it. Unowned always means NEEDS ASSIGNED.
         mapping = await find_plaky_task_by_issue(repo_name, n, session)
         if mapping and mapping.plaky_task_id:
-            resolved = await _pre_close_status(session, mapping.plaky_task_id)
+            resolved = await pre_close_status(session, mapping.plaky_task_id)
     intents = ("workflow_assigned",) if has_owner else ("workflow_needs_assigned",)
     return await _issue_status_transition(
         payload,
