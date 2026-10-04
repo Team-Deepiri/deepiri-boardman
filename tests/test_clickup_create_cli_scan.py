@@ -258,6 +258,19 @@ async def test_clickup_scan_dry_run_creates_nothing_and_a_missing_list_says_why(
     assert created == 0 and "No ClickUp list for o/a" in warnings[0] and not cu.fake.log
 
 
+async def test_scan_priority_is_normalized_upstream_and_a_stray_value_sends_no_priority(cu):
+    tasks, warnings = sh._normalize_scan_tasks([{"title": "x", "priority": "banana"}])
+    assert tasks[0]["priority"] == "medium" and "Normalized invalid priority" in warnings[0]
+    await sh._file_scan_tasks_clickup(
+        [{"title": "y", "priority": "banana"}],
+        SimpleNamespace(clickup_list_id="LS"),
+        short="a",
+        repo_full="o/a",
+        dry_run=False,
+    )
+    assert "priority" not in _post(cu)  # ClickUp is never sent a priority it cannot map
+
+
 # -- CLI ------------------------------------------------------------------------------------------------
 
 
