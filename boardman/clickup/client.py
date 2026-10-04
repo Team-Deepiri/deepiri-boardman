@@ -164,6 +164,12 @@ class ClickUpClient:
         """BLOCKING twin of ``_request``. Never call this from async code: it stalls the event
         loop. It exists only for synchronous config loading (``load_team_assignments``), and
         shares ``retry_delay`` with the async loop so the two cannot drift apart."""
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            pass  # no running loop: blocking here is fine
+        else:
+            _log.warning("ClickUpClient blocking call made on a running event loop; this stalls it")
         url = f"{self.base_url}{path}"
         transport = self._transport if isinstance(self._transport, httpx.BaseTransport) else None
         idempotent = method.upper() != "POST"

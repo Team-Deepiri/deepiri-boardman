@@ -222,3 +222,17 @@ async def test_agent_tool_qa_by_name_and_auto(monkeypatch):
 
     out = json.loads(await ct._clickup_update_task("t1", qa="nobody"))
     assert out["ok"] is False and "no workspace member" in out["message"]
+
+
+async def test_blocking_call_on_a_running_loop_is_logged(caplog):
+    teams = {"teams": [{"id": "1", "members": []}]}
+    with caplog.at_level("WARNING", logger="boardman.clickup.client"):
+        r = _client(lambda req: httpx.Response(200, json=teams)).list_workspace_users_sync()
+    assert r["ok"] and "running event loop" in caplog.text
+
+
+def test_blocking_call_without_a_loop_is_silent(caplog):
+    teams = {"teams": [{"id": "1", "members": []}]}
+    with caplog.at_level("WARNING", logger="boardman.clickup.client"):
+        _client(lambda req: httpx.Response(200, json=teams)).list_workspace_users_sync()
+    assert "running event loop" not in caplog.text
