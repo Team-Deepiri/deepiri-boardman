@@ -83,11 +83,11 @@ async def _resolve_engineer(login: str) -> str:
     from boardman.assignment.developer_eligibility import filter_developer
     from boardman.plaky.dynamic_qa_status import (
         github_actor_payload,
-        resolve_github_user_to_plaky_user_id,
+        resolve_github_user_to_user_id,
     )
 
     resolved = str(
-        await resolve_github_user_to_plaky_user_id(github_actor_payload({"login": login})) or ""
+        await resolve_github_user_to_user_id(github_actor_payload({"login": login})) or ""
     ).strip()
     kept, _reason = filter_developer(resolved)
     return kept

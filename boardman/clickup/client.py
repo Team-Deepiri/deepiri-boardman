@@ -25,6 +25,8 @@ from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
+# ClickUp has four priority levels, so "critical" and "urgent" (and "very important") are the same
+# level and read back as "urgent".
 _PRIORITY = {
     "urgent": 1,
     "critical": 1,

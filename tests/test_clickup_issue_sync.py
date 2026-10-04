@@ -47,7 +47,7 @@ class FakeClickUp:
                 "name": body["name"],
                 "description": body.get("description", ""),
                 "status": {"status": body.get("status") or "to do"},
-                "priority": {"id": str(prio), "priority": str(prio)} if prio else None,
+                "priority": {"id": prio, "priority": str(prio)} if prio else None,
                 "assignees": [{"id": a} for a in body.get("assignees", [])],
                 "tags": [{"name": t} for t in body.get("tags", [])],
                 "url": f"https://cu/{tid}",
@@ -71,7 +71,7 @@ class FakeClickUp:
                     task["status"] = {"status": body["status"]}
                 if "priority" in body:
                     task["priority"] = {
-                        "id": str(body["priority"]),
+                        "id": body["priority"],
                         "priority": str(body["priority"]),
                     }
                 if "assignees" in body:
@@ -332,18 +332,18 @@ async def test_type_tag_follows_the_labels_and_keeps_exactly_one(cu, db):
 
 async def test_priority_only_follows_github_when_a_human_set_it(cu, db):
     task = await _opened(cu, db)
-    task["priority"] = {"id": "4", "priority": "low"}  # a lead's hand-tuned value
+    task["priority"] = {"id": 4, "priority": "low"}  # a lead's hand-tuned value
     await sync.handle_issue_changed(
         _payload("edited"), db, event_label="issue_edited_synced", client=cu.client()
     )
-    assert task["priority"]["id"] == "4"
+    assert task["priority"]["id"] == 4
     await sync.handle_issue_changed(
         _payload("edited", _issue(labels=[{"name": "priority: high"}])),
         db,
         event_label="issue_edited_synced",
         client=cu.client(),
     )
-    assert task["priority"]["id"] == "2"
+    assert task["priority"]["id"] == 2
 
 
 async def test_changed_for_an_unmapped_issue_is_skipped(cu, db):
