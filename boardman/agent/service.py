@@ -518,16 +518,18 @@ def _resolve_placement(
 
 
 async def _task_provider_system_suffix(
-    plaky_board_id: str | None,
-    plaky_group_id: str | None,
+    placement_id: str | None,
+    group_id: str | None,
     note: str = "",
 ) -> str:
+    """Provider block for the system prompt. ``placement_id`` is a Plaky board id or a ClickUp
+    list id; ``group_id`` is a Plaky group and unused on ClickUp."""
     if active_provider() == "clickup":
         return clickup_provider_markdown(
-            (plaky_board_id or "").strip() or settings.clickup_default_list_id, note
+            (placement_id or "").strip() or settings.clickup_default_list_id, note
         )
-    out = plaky_placement_markdown(plaky_board_id, plaky_group_id, note)
-    bid = (plaky_board_id or "").strip()
+    out = plaky_placement_markdown(placement_id, group_id, note)
+    bid = (placement_id or "").strip()
     if bid:
         try:
             bundle = await fetch_board_schema_bundle(bid)

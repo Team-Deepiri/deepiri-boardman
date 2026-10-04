@@ -28,6 +28,7 @@ def get_context_placement_id() -> str | None:
 
 
 def get_context_plaky_board_id() -> str | None:
+    """Deprecated alias for :func:`get_context_placement_id`."""
     return get_context_placement_id()
 
 
