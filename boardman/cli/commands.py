@@ -54,6 +54,17 @@ def _provider_label() -> str:
     return "ClickUp" if active_provider() == "clickup" else "Plaky"
 
 
+def _task_status_text(task: dict) -> str:
+    """A task's status as plain text. Plaky returns a string; ClickUp nests it in a dict."""
+    for key in ("status_name", "status", "state", "workflowStatus", "workflow_state"):
+        value = task.get(key)
+        if isinstance(value, dict):
+            value = value.get("status") or value.get("name") or value.get("state")
+        if value:
+            return str(value)
+    return "unknown"
+
+
 def _merge_status() -> str:
     """The status a merged PR sets, for the active provider."""
     if active_provider() == "clickup":
@@ -298,15 +309,7 @@ def list_tasks_cmd(
             for task in tasks:
                 task_id = str(task.get("id") or task.get("itemId") or task.get("taskId") or "N/A")
                 title = str(task.get("title") or task.get("name") or "Untitled")
-                task_status = (
-                    task.get("status_name")
-                    or task.get("status")
-                    or task.get("state")
-                    or task.get("workflowStatus")
-                    or task.get("workflow_state")
-                    or "unknown"
-                )
-                table.add_row(task_id, title, str(task_status))
+                table.add_row(task_id, title, _task_status_text(task))
             console.print(table)
 
     asyncio.run(run())

@@ -296,6 +296,17 @@ def test_list_command_shows_clickup_tasks_with_their_status(cu):
     assert "ClickUp Tasks" in out.output and "t9" in out.output and "in progress" in out.output
 
 
+def test_task_status_text_handles_strings_nested_dicts_and_nothing():
+    assert cli._task_status_text({"status": "Open"}) == "Open"
+    assert cli._task_status_text({"status": {"status": "in progress"}}) == "in progress"
+    assert cli._task_status_text({"status_name": "to do", "status": {"status": "x"}}) == "to do"
+    assert cli._task_status_text({"state": "done"}) == "done"
+    assert (
+        cli._task_status_text({"status": {}}) == "unknown"
+        and cli._task_status_text({}) == "unknown"
+    )
+
+
 def test_link_pr_posts_the_comment_and_status_on_merge_uses_the_completed_status(cu, monkeypatch):
     seen: dict[str, Any] = {}
 
