@@ -107,13 +107,23 @@ The guards the Plaky path has, carried over:
 
 Extra status settings: `CLICKUP_STATUS_CHANGES_REQUESTED` and `CLICKUP_STATUS_DEPLOYED` (empty by default, so never written).
 
-**Not ported yet:** the fuzzy "no issue named" matching pipeline and orphan triage, so a PR that names no issue with a ClickUp task is reported as skipped. PR reviews (approve / request changes) and issue comments on PRs are the next slice.
+**Not ported yet:** the fuzzy "no issue named" matching pipeline and orphan triage, so a PR that names no issue with a ClickUp task is reported as skipped.
+
+## Review and comment sync (Phase 3c)
+
+`pr_review_handler` dispatches PR reviews, PR conversation comments and plain-issue comments to `boardman/services/clickup_review_sync.py`.
+
+- **Approve:** any reviewer's approval sets `CLICKUP_STATUS_APPROVED`, unless required checks on the head commit are failing (an approval is a verdict on the code, not the build). The PR's commit count is recorded as the baseline the push handler compares against. A dismissed approval goes back to "in QA".
+- **Request changes:** counts only from the task's assigned QA (the users field, else the QA recorded on the PR's link row), and only when the reviewer maps to a ClickUp user. Anyone else's is ignored with a clear reason.
+- **Comment review / conversation comment:** means "in QA" only from the assigned QA or a support-team member who is **not the PR's author**. If the author cannot be read, the roster alone no longer authorizes it (fail closed).
+- **Dev commenting after a verdict** means "revisions in progress", never on a merged PR or a task that is not at a QA verdict. **A dev pinging QA** means "needs QA again". **Anyone saying "pause"** sets `CLICKUP_STATUS_PAUSED` (skipped with a message when it is not set).
+- **Text is mirrored** to every linked task once per wording; an edit updates the record, never the state. Bots and Boardman's own comments are ignored. A comment on a plain issue lands on that issue's task.
 
 ## What is still Plaky-only
 
 Plaky has board schemas, custom fields and per-board placement that ClickUp does not model the same way. These still call `PlakyClient` directly and are not provider-neutral yet:
 
-- PR **review** events (approve / request changes), issue comments on PRs, the fuzzy PR-to-task pipeline and orphan triage, and review nudges (issue and PR handlers are done, see above)
+- The fuzzy PR-to-task pipeline and orphan triage (a PR that names no issue with a ClickUp task is skipped), and the review-nudge sweep's board reads (issue, PR, review and comment handlers are done, see above)
 - The planning and huddle code and board-schema helpers
 - Scan task creation
 

@@ -7,17 +7,13 @@ import logging
 from datetime import datetime
 from typing import Any
 
-import httpx
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from boardman.assignment.config import TeamAssignmentsConfig, load_team_assignments
+from boardman.assignment.config import load_team_assignments
 from boardman.database.models import SyncLog
-from boardman.github.auth import github_auth_available, github_auth_header
-from boardman.github.http import github_http_client
 from boardman.github.pr_actions import is_boardman_comment
 from boardman.github.support_qa import support_team_logins_casefold
 from boardman.github.webhooks import IssueCommentEventPayload, PullRequestReviewEventPayload
-from boardman.observability.degradation import log_degraded
 from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status_id
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.dynamic_qa_status import (
@@ -33,12 +29,20 @@ from boardman.services.comment_dedupe import (
     mirror_github_activity,
 )
 from boardman.services.pr_handler import _update_plaky_task_status
+from boardman.services.pr_review_common import (
+    current_commit_count,
+    failing_required_checks,
+    pr_author_login,
+    pr_is_merged,
+    reviewer_id_from_roster,
+)
 from boardman.services.pr_task_registry import (
     distinct_task_ids_for_pr,
     stamp_commits_at_last_review,
 )
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
 from boardman.settings import settings
+from boardman.task_provider import active_provider
 
 _log = logging.getLogger(__name__)
 
@@ -53,36 +57,6 @@ def _qa_rejected_status() -> str:
 
 def _in_qa_status() -> str:
     return (settings.plaky_pr_in_qa_status or settings.plaky_status_in_qa or "").strip()
-
-
-async def _pr_author_login(full_name: str, pr_number: int) -> str:
-    """The PR's author GitHub login, fetched from the API.
-
-    The `issue_comment` webhook payload does not embed the PR author, but knowing it is
-    required to keep the PR author's own comments from reading as "QA started" — they are
-    on the support roster more often than not, and their comment must not move a task to
-    In QA. One lightweight `/pulls/{n}` call is cheaper than the state corruption it
-    prevents. Returns "" if the PR cannot be read (fail-closed: never guess).
-    """
-    try:
-        owner_repo = (full_name or "").strip().strip("/")
-        if not owner_repo or "/" not in owner_repo:
-            return ""
-        from urllib.parse import quote
-
-        owner, repo = owner_repo.split("/", 1)
-        url = (
-            "https://api.github.com/repos/"
-            f"{quote(owner, safe='')}/{quote(repo, safe='')}/pulls/{int(pr_number)}"
-        )
-        r = await github_http_client().get(url, headers=await github_auth_header())
-        if r.status_code != 200:
-            return ""
-        data = r.json()
-        user = data.get("user") if isinstance(data, dict) else None
-        return str((user or {}).get("login") or "").strip() if isinstance(user, dict) else ""
-    except (httpx.HTTPError, ValueError, TypeError):
-        return ""
 
 
 def _paused_status() -> str:
@@ -120,63 +94,6 @@ async def _task_ids_for_pr(session: AsyncSession, repo_name: str, pr_number: int
     return await distinct_task_ids_for_pr(
         session, github_repo=repo_name, github_pr_number=pr_number
     )
-
-
-def _reviewer_plaky_id_from_roster(cfg: TeamAssignmentsConfig, reviewer_login: str) -> str | None:
-    if not reviewer_login:
-        return None
-    # fallback_members too: the bug specialist lives only in the yaml fallback, and her
-    # reviews/comments must carry the same authority as any rostered QA's.
-    for pool in (cfg.members, getattr(cfg, "fallback_members", []) or []):
-        for m in pool:
-            gl = (getattr(m, "github_login", None) or "").strip()
-            if gl and gl.casefold() == reviewer_login.casefold():
-                mid = (getattr(m, "id", None) or "").strip()
-                if mid:
-                    return mid
-    return None
-
-
-async def _failing_required_checks(full_name: str, pr_number: int) -> list[str]:
-    """Names of failing check runs on the PR head commit, [] when green or unknowable.
-
-    An approval is a verdict on the code, not on the build. If required checks are red,
-    marking the task QA Verified would present broken work as done. API trouble returns
-    [] on purpose: absence of the signal is not evidence of failure.
-    """
-    if not github_auth_available():
-        return []
-    try:
-        from boardman.github.http import github_http_client
-
-        client = github_http_client()
-        hdr = await github_auth_header()
-        r = await client.get(
-            f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}", headers=hdr
-        )
-        if r.status_code != 200:
-            return []
-        sha = str(((r.json().get("head") or {}) or {}).get("sha") or "")
-        if not sha:
-            return []
-        r2 = await client.get(
-            f"https://api.github.com/repos/{full_name}/commits/{sha}/check-runs?per_page=100",
-            headers=hdr,
-        )
-        if r2.status_code != 200:
-            return []
-        bad: list[str] = []
-        for run in r2.json().get("check_runs") or []:
-            if not isinstance(run, dict):
-                continue
-            if str(run.get("status") or "") == "completed" and str(
-                run.get("conclusion") or ""
-            ).lower() in ("failure", "timed_out", "action_required"):
-                bad.append(str(run.get("name") or "check"))
-        return bad
-    except Exception:  # noqa: BLE001 - graceful degradation
-        log_degraded(_log, "_failing_required_checks: GET /commits/{ref}/check-runs")
-        return []
 
 
 async def _assigned_qa_plaky_id(
@@ -253,6 +170,10 @@ async def handle_pull_request_review(
     payload: PullRequestReviewEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
+    if active_provider() == "clickup":
+        from boardman.services import clickup_review_sync
+
+        return await clickup_review_sync.handle_pull_request_review(payload, session)
     action = (payload.action or "").strip().casefold()
     if action == "dismissed":
         return await _handle_review_dismissed(payload, session)
@@ -342,7 +263,7 @@ async def handle_pull_request_review(
     qa_field_for_changes: str = ""
 
     if state == "approved":
-        failing = await _failing_required_checks(payload.repository.full_name, pr_number)
+        failing = await failing_required_checks(payload.repository.full_name, pr_number)
         if failing:
             session.add(
                 SyncLog(
@@ -379,7 +300,7 @@ async def handle_pull_request_review(
         if target_status and bid:
             cfg = load_team_assignments()
             qa_field_for_changes = await resolve_qa_assignee_field_key(bid, cfg.plaky_field_qa)
-            reviewer_plaky_id = _reviewer_plaky_id_from_roster(cfg, reviewer_login)
+            reviewer_plaky_id = reviewer_id_from_roster(cfg, reviewer_login)
             if not reviewer_plaky_id:
                 reviewer_plaky_id = await resolve_github_user_to_plaky_user_id(
                     github_actor_payload(review_user)
@@ -390,7 +311,7 @@ async def handle_pull_request_review(
             # The task's ASSIGNED QA commenting means QA is actively working it — In QA —
             # even when they are not on the GitHub support team (the bug specialist).
             cfg_c = load_team_assignments()
-            rid = _reviewer_plaky_id_from_roster(cfg_c, reviewer_login)
+            rid = reviewer_id_from_roster(cfg_c, reviewer_login)
             if not rid:
                 rid = await resolve_github_user_to_plaky_user_id(github_actor_payload(review_user))
             if rid:
@@ -479,7 +400,7 @@ async def handle_pull_request_review(
         # what distinguish Revisions In Progress from Needs QA Again. The review
         # payload embeds a slim `pull_request` (see GitHubPullRequest docstring) that
         # may not carry a live commit count, so fetch it fresh rather than trust it.
-        commits_now = await _current_commit_count(payload.repository.full_name, pr_number)
+        commits_now = await current_commit_count(payload.repository.full_name, pr_number)
         if commits_now is not None:
             await stamp_commits_at_last_review(
                 session,
@@ -494,57 +415,6 @@ async def handle_pull_request_review(
     return {"ok": True, "updated": updated, "status": target_status}
 
 
-async def _current_commit_count(full_name: str, pr_number: int) -> int | None:
-    """Live commit count on the PR right now — None when unknowable (no PAT, API
-    trouble), so callers skip stamping rather than recording a wrong baseline."""
-    if not github_auth_available():
-        return None
-    try:
-        from boardman.github.http import github_http_client
-
-        client = github_http_client()
-        hdr = await github_auth_header()
-        r = await client.get(
-            f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}", headers=hdr
-        )
-        if r.status_code != 200:
-            return None
-        commits = r.json().get("commits")
-        return int(commits) if isinstance(commits, int) else None
-    except Exception:  # noqa: BLE001 - a missing baseline degrades to "can't escalate yet"
-        return None
-
-
-async def _pr_is_merged(full_name: str, pr_number: int) -> bool:
-    """Live merged state on the PR right now — False (not "unknown") on any API trouble.
-
-    "Resume work" comment handling reads the task's post-review status and, if it
-    matches an approved/changes-requested verdict, moves the task to In Progress. That
-    read can race a `pull_request.closed(merged=true)` webhook delivered around the same
-    time: if this comment webhook is processed first (or the Plaky write from the merge
-    handler hasn't landed yet), the stale pre-merge status still matches and the task
-    gets bounced back to In Progress right after (or just before) it was set Completed,
-    with nothing downstream ever correcting it. Checking the PR's live merged state
-    directly — not the comment payload, which does not carry it — closes that race.
-    """
-    if not github_auth_available():
-        return False
-    try:
-        from boardman.github.http import github_http_client
-
-        client = github_http_client()
-        hdr = await github_auth_header()
-        r = await client.get(
-            f"https://api.github.com/repos/{full_name}/pulls/{int(pr_number)}", headers=hdr
-        )
-        if r.status_code != 200:
-            return False
-        return bool(r.json().get("merged"))
-    except Exception:  # noqa: BLE001 - unknowable degrades to "not merged" (safe default:
-        # the branch still runs, matching today's behavior when this check can't run)
-        return False
-
-
 async def _sync_plain_issue_comment(
     payload: IssueCommentEventPayload,
     session: AsyncSession,
@@ -552,6 +422,10 @@ async def _sync_plain_issue_comment(
     is_revision: bool = False,
 ) -> dict[str, Any]:
     """Comments on a plain GitHub issue land on the linked Plaky task (QA discussion in one place)."""
+    if active_provider() == "clickup":
+        from boardman.services import clickup_review_sync
+
+        return await clickup_review_sync.sync_plain_issue_comment(payload, session, is_revision=is_revision)
     from boardman.services.issue_handler import find_plaky_task_by_issue
 
     repo_name = payload.repository.name
@@ -621,6 +495,10 @@ async def handle_issue_comment_on_pr(
     payload: IssueCommentEventPayload,
     session: AsyncSession,
 ) -> dict[str, Any]:
+    if active_provider() == "clickup":
+        from boardman.services import clickup_review_sync
+
+        return await clickup_review_sync.handle_issue_comment_on_pr(payload, session)
     # `edited` is handled too: a comment corrected on GitHub used to be dropped here, so
     # the board kept showing the wrong text with no sign anything had changed. The mirror
     # is keyed on (comment, wording), so an edit lands once and redeliveries land never.
@@ -863,14 +741,14 @@ async def handle_issue_comment_on_pr(
     is_pr_author = False
     authorizes_in_qa_from_side = False
     if is_qa_side_commenter:
-        pr_author = (await _pr_author_login(payload.repository.full_name, pr_number)).casefold()
+        pr_author = (await pr_author_login(payload.repository.full_name, pr_number)).casefold()
         commenter_cf = (commenter or "").casefold()
         is_pr_author = bool(commenter_cf) and commenter_cf == pr_author
         authorizes_in_qa_from_side = not is_pr_author and bool(pr_author)
     qa_field = await resolve_qa_assignee_field_key(bid, cfg.plaky_field_qa)
     member_plaky_id: str | None = None
     if commenter:
-        member_plaky_id = _reviewer_plaky_id_from_roster(cfg, commenter)
+        member_plaky_id = reviewer_id_from_roster(cfg, commenter)
         if not member_plaky_id:
             member_plaky_id = await resolve_github_user_to_plaky_user_id(
                 github_actor_payload(comment_user)
@@ -904,7 +782,7 @@ async def handle_issue_comment_on_pr(
             verdict_checks.setdefault(rej_key, set()).add(str(rej_val))
         if appr_key and appr_val:
             verdict_checks.setdefault(appr_key, set()).add(str(appr_val))
-        if verdict_checks and await _pr_is_merged(payload.repository.full_name, pr_number):
+        if verdict_checks and await pr_is_merged(payload.repository.full_name, pr_number):
             # A comment can land on (or its webhook can be processed after) a PR that
             # has since merged — GitHub gives no ordering guarantee between the
             # `issue_comment` and `pull_request.closed` deliveries. Reading the task's
