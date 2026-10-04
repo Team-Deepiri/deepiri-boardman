@@ -17,7 +17,13 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 
 from boardman.clickup.client import ClickUpClient, clickup_priority_label
-from boardman.plaky.name_match import rank_plaky_rows
+from boardman.clickup.people import (
+    assignee_ids,
+    match_person,
+    rank_users,
+    resolve_people,
+    workspace_users,
+)
 from boardman.settings import settings
 
 
@@ -65,32 +71,7 @@ def _slim_task(t: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _workspace_users() -> list[dict[str, Any]]:
-    r = await _client().list_workspace_users()
-    return r.get("users") or [] if r.get("ok") else []
-
-
-def _match_person(query: str, users: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str]:
-    """Resolve a plain name or email to one workspace member. Returns (user, problem)."""
-    q = (query or "").strip()
-    if not q:
-        return None, ""
-    rows = [
-        {"id": u["id"], "name": f"{u.get('name') or ''} {u.get('email') or ''}".strip()}
-        for u in users
-    ]
-    ranked, best = rank_plaky_rows(rows, q)
-    strong = [r for r in ranked if r["score"] >= 400]
-    if len(strong) > 1 and strong[0]["score"] == strong[1]["score"]:
-        names = ", ".join(r["name"] for r in strong[:4])
-        return None, f"'{q}' is ambiguous: {names}"
-    if not best:
-        return None, f"no workspace member matches '{q}'"
-    user = next((u for u in users if u["id"] == best["id"]), None)
-    return user, ""
-
-
-def _assignee_ids(user: dict[str, Any] | None) -> list[int] | None:
-    return [int(user["id"])] if user and str(user["id"]).isdigit() else None
+    return await workspace_users(_client())
 
 
 # -- read tools -----------------------------------------------------------------------------
@@ -151,11 +132,7 @@ async def _clickup_list_workspace_users(name_query: str = "") -> str:
     q = (name_query or "").strip()
     if not q:
         return _dump({"ok": True, "users": users[:200]})
-    rows = [
-        {"id": u["id"], "name": f"{u.get('name') or ''} {u.get('email') or ''}".strip()}
-        for u in users
-    ]
-    ranked, best = rank_plaky_rows(rows, q)
+    ranked, best = rank_users(q, users)
     return _dump({"ok": True, "best": best, "matches": [r for r in ranked if r["score"] > 0][:10]})
 
 
@@ -186,14 +163,14 @@ async def _create_one(
     repo = str(row.get("repo_tag") or "").strip()
     if repo:
         description = f"{description}\n\nRepo: {repo}".strip()
-    person, problem = _match_person(str(row.get("assignee") or ""), users)
+    person, problem = match_person(str(row.get("assignee") or ""), users)
     r = await c.create_task(
         title,
         description,
         row.get("priority") or "medium",
         board_id=list_id,
         status=(str(row.get("status") or "").strip() or None),
-        assignee_ids=_assignee_ids(person),
+        assignee_ids=assignee_ids(person),
     )
     out = {
         "ok": bool(r.get("ok")),
@@ -294,29 +271,6 @@ async def _clickup_create_task(
     )
 
 
-async def _resolve_people(assignee: str, qa: str) -> tuple[list[int] | None, str, dict[str, str]]:
-    """Resolve plain names to (assignee ids to add, QA user id, problems by role)."""
-    wanted = {"assignee": (assignee or "").strip(), "qa": (qa or "").strip()}
-    if not any(wanted.values()):
-        return None, "", {}
-    users = await _workspace_users()
-    problems: dict[str, str] = {}
-    resolved: dict[str, dict[str, Any] | None] = {}
-    for role, name in wanted.items():
-        if not name:
-            continue
-        person, problem = _match_person(name, users)
-        resolved[role] = person
-        if problem:
-            problems[role] = problem
-    qa_person = resolved.get("qa")
-    return (
-        _assignee_ids(resolved.get("assignee")),
-        (str(qa_person["id"]) if qa_person else ""),
-        problems,
-    )
-
-
 async def _clickup_update_task(
     task_id: str,
     status: str = "",
@@ -331,7 +285,7 @@ async def _clickup_update_task(
     from boardman.services.clickup_mutations import update_clickup_task
     from boardman.services.task_mutations import UpdateTaskInput
 
-    add_ids, qa_id, problems = await _resolve_people(assignee, qa)
+    add_ids, qa_id, problems = await resolve_people(_client(), assignee, qa)
     nothing_to_write = not any(
         [status, priority, title, description, add_ids, qa_id, auto_assign_qa]
     )
@@ -384,16 +338,14 @@ async def _clickup_create_subtask(
 ) -> str:
     c = _client()
     person, problem = (
-        _match_person(assignee, await _workspace_users())
-        if (assignee or "").strip()
-        else (None, "")
+        match_person(assignee, await _workspace_users()) if (assignee or "").strip() else (None, "")
     )
     r = await c.create_subtask(
         parent_task_id, title, description, status=status or None, priority=priority or None
     )
     if r.get("ok") and person and r.get("task_id"):
         r["assignee_update"] = await c.update_task_fields(
-            r["task_id"], add_assignee_ids=_assignee_ids(person)
+            r["task_id"], add_assignee_ids=assignee_ids(person)
         )
         r["assignee_update"].pop("task", None)
     r.pop("task", None)

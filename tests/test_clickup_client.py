@@ -253,3 +253,47 @@ async def test_get_tasks_warns_when_page_cap_is_hit(monkeypatch, caplog):
         r = await _client(handler).get_tasks("all")
     assert r["ok"] and len(r["tasks"]) == 200
     assert "truncated" in caplog.text
+
+
+@pytest.mark.parametrize(
+    "status,retry_after,attempt,idempotent,expected",
+    [
+        (429, "7", 0, False, 7.0),  # rate limit retried even for POST
+        (429, "999", 0, True, 30.0),  # capped
+        (429, "", 0, True, 2.0),
+        (503, "", 0, True, 0.5),
+        (503, "", 1, True, 1.0),
+        (503, "", 0, False, None),  # POST is never retried on 5xx
+        (None, "", 0, True, 0.5),  # network error, idempotent
+        (None, "", 0, False, None),  # network error, POST
+        (503, "", 2, True, None),  # out of attempts
+        (404, "", 0, True, None),
+    ],
+)
+def test_retry_delay_rules(status, retry_after, attempt, idempotent, expected):
+    from boardman.clickup.client import retry_delay
+
+    assert retry_delay(status, retry_after, attempt, 2, idempotent=idempotent) == expected
+
+
+async def test_default_client_uses_the_shared_pool_and_never_closes_it(monkeypatch):
+    from boardman.clickup import client as mod
+
+    shared = httpx.AsyncClient(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"id": "t"}))
+    )
+    entered = []
+
+    class _Pool:
+        async def __aenter__(self):
+            entered.append(1)
+            return shared
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(mod, "shared_clickup_client", lambda: _Pool())
+    c = ClickUpClient("tok", "https://cu.test/api/v2")  # no transport: real pooled path
+    assert (await c.get_task("t"))["ok"] and (await c.get_task("t"))["ok"]
+    assert len(entered) == 2 and not shared.is_closed
+    await shared.aclose()

@@ -29,17 +29,17 @@ async def update_clickup_task(
 
     Supported: status, priority, title, description, QA (explicit id or auto-assigned from
     ``github_repo``), and extra assignees. ``task_type`` has no ClickUp equivalent and is
-    reported as skipped. Developer (engineer) assignment is refused here: it needs the
-    eligibility rules that arrive with the webhook sync.
+    reported as skipped. Developer (engineer) assignment is reported as not applied (it needs the
+    eligibility rules that arrive with the webhook sync) while the other fields still go through.
     """
     c = client or ClickUpClient()
     ops: dict[str, Any] = {}
 
-    if (req.engineer_plaky_id or "").strip() or req.clear_engineer_assignee:
-        return {
+    engineer_requested = bool((req.engineer_plaky_id or "").strip() or req.clear_engineer_assignee)
+    if engineer_requested:
+        ops["engineer"] = {
             "ok": False,
-            "status": 400,
-            "message": "Engineer assignment is not supported on ClickUp yet.",
+            "message": "Engineer assignment is not supported on ClickUp yet; the other fields were still applied.",
         }
 
     qa_id = (req.qa_plaky_id or "").strip()
@@ -74,6 +74,13 @@ async def update_clickup_task(
         [status, priority, req.title is not None, req.description is not None, add_assignee_ids]
     )
     if not (wants_fields or qa_id):
+        if engineer_requested:
+            return {
+                "ok": False,
+                "status": 400,
+                "message": ops["engineer"]["message"],
+                "operations": ops,
+            }
         return {"ok": False, "status": 400, "message": "No update fields provided"}
 
     if (req.task_type or "").strip():

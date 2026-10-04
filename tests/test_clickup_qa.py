@@ -166,6 +166,14 @@ async def test_update_validation(cu):
     assert cu == []
 
 
+async def test_engineer_request_does_not_block_other_updates(cu):
+    r = await cm.update_clickup_task("t1", UpdateTaskInput(status="done", engineer_plaky_id="5"))
+    assert r["ok"] is False  # the engineer was asked for and not applied
+    assert r["operations"]["engineer"]["ok"] is False
+    assert r["operations"]["task_fields"]["ok"] is True
+    assert [b for m, _, b in cu if m == "PUT"] == [{"status": "done"}]
+
+
 async def test_update_skips_task_type_and_reports_api_failure(monkeypatch):
     client = _client(lambda req: httpx.Response(400, text="bad status"))
     monkeypatch.setattr(cm, "ClickUpClient", lambda: client)
