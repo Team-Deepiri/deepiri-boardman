@@ -61,9 +61,7 @@ async def _auto_pick_qa(req: UpdateTaskInput) -> tuple[str, dict[str, Any], dict
 
 
 def _overall(ops: dict[str, Any]) -> bool:
-    verdicts = [
-        v for k, v in ops.items() if k != "qa_auto_assign" and "ok" in v and not v.get("skipped")
-    ]
+    verdicts = [v for v in ops.values() if "ok" in v and not v.get("skipped")]
     return all(bool(v["ok"]) for v in verdicts)
 
 

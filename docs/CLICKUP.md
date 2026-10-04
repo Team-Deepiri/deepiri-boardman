@@ -44,6 +44,7 @@ With `TASK_PROVIDER=clickup` the chat agent gets `clickup_*` tools instead of `p
 
 QA picking is provider-neutral: `pick_qa_for_repo` ranks the GitHub support-team roster and returns a person id. What changed for ClickUp:
 
+- **Blocking client:** loading the team roster is synchronous, so it uses a separate `SyncClickUpClient` (`boardman/clickup/sync.py`). `ClickUpClient` itself is purely async.
 - **Roster ids:** when `TASK_PROVIDER=clickup`, `team_assignments` matches GitHub members to ClickUp workspace members (by name and email) and uses the ClickUp user id. A `member_overrides[login].id` still wins.
 - **Applying QA:** if `CLICKUP_QA_FIELD_ID` is set (a custom field of type "users"), QA is written to that field. Otherwise the QA person is added as an extra assignee.
 - **One entry point:** `update_task_internal` dispatches to `boardman/services/clickup_mutations.py` on ClickUp, so `PATCH /tasks/{id}`, the CLI and the agent all take the same `UpdateTaskInput` (status, priority, title, description, `qa_plaky_id`, or `auto_assign_qa` with `github_repo`). `task_type` has no ClickUp equivalent and is skipped.

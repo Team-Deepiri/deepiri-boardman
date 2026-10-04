@@ -10,12 +10,19 @@ import yaml
 
 from boardman.assignment import config
 from boardman.clickup.client import ClickUpClient
+from boardman.clickup.sync import SyncClickUpClient
 from boardman.services import clickup_mutations as cm
 from boardman.services.task_mutations import UpdateTaskInput
 
 
 def _client(handler, **kw) -> ClickUpClient:
     return ClickUpClient(
+        "tok", "https://cu.test/api/v2", transport=httpx.MockTransport(handler), **kw
+    )
+
+
+def _sync_client(handler, **kw) -> SyncClickUpClient:
+    return SyncClickUpClient(
         "tok", "https://cu.test/api/v2", transport=httpx.MockTransport(handler), **kw
     )
 
@@ -60,14 +67,14 @@ def test_list_workspace_users_sync():
             {"id": "1", "members": [{"user": {"id": 5, "username": "Ann", "email": "a@x.io"}}]}
         ]
     }
-    r = _client(lambda req: httpx.Response(200, json=teams)).list_workspace_users_sync()
+    r = _sync_client(lambda req: httpx.Response(200, json=teams)).list_workspace_users_sync()
     assert r["ok"] and r["users"][0] == {
         "id": "5",
         "name": "Ann",
         "email": "a@x.io",
         "github_login": None,
     }
-    assert ClickUpClient("", "https://cu.test").list_workspace_users_sync()["status"] == 400
+    assert SyncClickUpClient("", "https://cu.test").list_workspace_users_sync()["status"] == 400
 
 
 # -- roster ids come from ClickUp -----------------------------------------------------------
@@ -89,7 +96,7 @@ def test_roster_matches_github_members_to_clickup_user_ids(tmp_path, monkeypatch
         lambda spec: {"ok": True, "members": [{"login": "alicesmith", "name": "Alice Smith"}]},
     )
     monkeypatch.setattr(
-        ClickUpClient,
+        SyncClickUpClient,
         "list_workspace_users_sync",
         lambda self: {
             "ok": True,
@@ -226,13 +233,13 @@ async def test_agent_tool_qa_by_name_and_auto(monkeypatch):
 
 async def test_blocking_call_on_a_running_loop_is_logged(caplog):
     teams = {"teams": [{"id": "1", "members": []}]}
-    with caplog.at_level("WARNING", logger="boardman.clickup.client"):
-        r = _client(lambda req: httpx.Response(200, json=teams)).list_workspace_users_sync()
+    with caplog.at_level("WARNING", logger="boardman.clickup.sync"):
+        r = _sync_client(lambda req: httpx.Response(200, json=teams)).list_workspace_users_sync()
     assert r["ok"] and "running event loop" in caplog.text
 
 
 def test_blocking_call_without_a_loop_is_silent(caplog):
     teams = {"teams": [{"id": "1", "members": []}]}
-    with caplog.at_level("WARNING", logger="boardman.clickup.client"):
-        _client(lambda req: httpx.Response(200, json=teams)).list_workspace_users_sync()
+    with caplog.at_level("WARNING", logger="boardman.clickup.sync"):
+        _sync_client(lambda req: httpx.Response(200, json=teams)).list_workspace_users_sync()
     assert "running event loop" not in caplog.text

@@ -48,3 +48,15 @@ def get_task_client() -> TaskClient:
     from boardman.plaky.client import PlakyClient
 
     return PlakyClient()
+
+
+def get_sync_user_source() -> Any:
+    """Provider client for synchronous code that only needs ``list_workspace_users_sync``
+    (team-roster loading). The ClickUp one is a separate blocking client."""
+    if active_provider() == "clickup":
+        from boardman.clickup.sync import SyncClickUpClient
+
+        return SyncClickUpClient()
+    from boardman.plaky.client import PlakyClient
+
+    return PlakyClient()
