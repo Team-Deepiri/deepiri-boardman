@@ -52,6 +52,7 @@ class ClickUpClient:
         default_list_id: str | None = None,
         team_id: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
+        timeout: float | None = None,
     ):
         self.api_token = api_token if api_token is not None else settings.clickup_api_token
         self.base_url = (base_url or settings.clickup_api_base).rstrip("/")
@@ -60,6 +61,7 @@ class ClickUpClient:
         )
         self.team_id = team_id if team_id is not None else settings.clickup_team_id
         self._transport = transport
+        self.timeout = timeout if timeout is not None else settings.clickup_api_timeout
 
     # -- plumbing ---------------------------------------------------------------------------
 
@@ -83,7 +85,7 @@ class ClickUpClient:
         idempotent = method.upper() != "POST"
         url = f"{self.base_url}{path}"
         response: httpx.Response | None = None
-        async with httpx.AsyncClient(transport=self._transport, timeout=20) as client:
+        async with httpx.AsyncClient(transport=self._transport, timeout=self.timeout) as client:
             for attempt in range(retries + 1):
                 try:
                     response = await client.request(
@@ -240,6 +242,13 @@ class ClickUpClient:
                     tasks.append(row)
             if payload.get("last_page", len(rows) < 100) or not rows:
                 break
+        else:
+            _log.warning(
+                "ClickUp list %s has more than %d pages of tasks; results are truncated at %d",
+                list_id,
+                _PAGE_CAP,
+                len(tasks),
+            )
         return {"ok": True, "status": 200, "tasks": tasks}
 
     async def update_task_fields(

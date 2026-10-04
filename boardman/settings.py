@@ -47,6 +47,8 @@ class Settings(BaseSettings):
     # Workspace ("team") id for user listing, and the default list new tasks are created in.
     clickup_team_id: str = ""
     clickup_default_list_id: str = ""
+    # Per-request timeout in seconds for ClickUp API calls.
+    clickup_api_timeout: float = 20.0
 
     plaky_api_key: str = ""
     plaky_api_base: str = "https://api.plaky.com/v1/public"
