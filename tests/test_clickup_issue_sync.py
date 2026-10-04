@@ -175,6 +175,7 @@ async def test_opened_creates_a_task_in_the_routed_list(cu, db):
     assert post["name"] == "[repo] Slow dashboard"
     assert post["assignees"] == [12] and post["status"] == "assigned"
     assert "repo" in post["tags"] and "qa" not in json.dumps(post).lower()
+    assert isinstance(post["priority"], int) and post["priority"] in (1, 2, 3, 4)
     assert "Issue: #7" in post["description"] and "Category: devtools" in post["description"]
     m = await _mapping(db)
     assert (m.plaky_task_id, m.plaky_task_url) == ("t1", "https://cu/t1")
@@ -441,3 +442,15 @@ async def test_issue_handler_dispatches_to_clickup_only_when_selected(cu, db, mo
     ):
         assert (await fn(_payload("opened"), db))["ok"] is True
     assert len(called) == 6
+
+
+async def test_an_unresolvable_github_user_is_empty_never_the_string_none(monkeypatch):
+    """The real resolver, not the fixture's stand-in: None must become "", never "None"."""
+    from boardman.plaky import dynamic_qa_status as dqs
+
+    async def nobody(gh, **kw):
+        return None
+
+    monkeypatch.setattr(dqs, "resolve_github_user_to_user_id", nobody)
+    assert await sync._resolve_engineer("ghost") == ""
+    assert await sync._resolve_engineer("") == ""

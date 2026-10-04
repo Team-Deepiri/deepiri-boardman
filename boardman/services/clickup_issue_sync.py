@@ -86,9 +86,8 @@ async def _resolve_engineer(login: str) -> str:
         resolve_github_user_to_user_id,
     )
 
-    resolved = str(
-        await resolve_github_user_to_user_id(github_actor_payload({"login": login})) or ""
-    ).strip()
+    found = await resolve_github_user_to_user_id(github_actor_payload({"login": login}))
+    resolved = str(found).strip() if found else ""
     kept, _reason = filter_developer(resolved)
     return kept
 
