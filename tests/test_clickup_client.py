@@ -298,3 +298,12 @@ async def test_default_client_uses_the_shared_pool_and_never_closes_it(monkeypat
     assert (await c.get_task("t"))["ok"] and (await c.get_task("t"))["ok"]
     assert len(entered) == 2 and not shared.is_closed
     await shared.aclose()
+
+
+async def test_update_task_internal_refuses_non_plaky_provider(monkeypatch):
+    from boardman import task_provider
+    from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
+
+    monkeypatch.setattr(task_provider.settings, "task_provider", "clickup")
+    r = await update_task_internal("t1", UpdateTaskInput(status="done"))
+    assert r["ok"] is False and r["status"] == 501 and "clickup" in r["message"]
