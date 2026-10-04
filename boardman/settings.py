@@ -58,7 +58,8 @@ class Settings(BaseSettings):
     # person as an extra assignee instead.
     clickup_qa_field_id: str = ""
     # ClickUp status names for each workflow step. ClickUp statuses are per list, so these must
-    # match your lists. Empty = Boardman never writes that status.
+    # match your lists. The defaults suit a stock ClickUp list ("to do", "in progress", "complete").
+    # Empty = Boardman never writes that status.
     clickup_status_needs_assigned: str = "to do"
     clickup_status_assigned: str = "to do"
     clickup_status_in_progress: str = "in progress"

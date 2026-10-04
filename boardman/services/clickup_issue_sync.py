@@ -33,6 +33,11 @@ from boardman.database.models import IssueTaskMap, SyncLog
 from boardman.github.webhooks import IssueEventPayload
 from boardman.repos_config import get_routing_async
 from boardman.services.comment_dedupe import mirror_github_activity
+from boardman.services.issue_sync_common import (
+    issue_assignee_login,
+    post_create_patch_failed,
+    pre_close_status,
+)
 from boardman.services.sync_state import (
     UNREADABLE_STATUS,
     issue_status_intent,
@@ -238,12 +243,6 @@ async def handle_issue_opened(
 # -- changed (edited / assigned / unassigned / labeled) ---------------------------------------
 
 
-async def _post_create_patch_failed(session: AsyncSession, task_id: str) -> bool:
-    from boardman.services.issue_handler import _post_create_patch_failed as failed
-
-    return await failed(session, task_id)
-
-
 async def handle_issue_changed(
     payload: IssueEventPayload,
     session: AsyncSession,
@@ -274,7 +273,7 @@ async def handle_issue_changed(
     readable = task is not None
     task = task or {}
 
-    repairing = event_label == "issue_opened_reconciled" and await _post_create_patch_failed(
+    repairing = event_label == "issue_opened_reconciled" and await post_create_patch_failed(
         session, task_id
     )
 
@@ -513,15 +512,13 @@ async def handle_issue_reopened(
     An owned issue restores the exact status recorded at close. An unowned one always goes to
     "needs assigned", so a reopened task never shows a working status with nobody on it.
     """
-    from boardman.services.issue_handler import _issue_assignee_login, _pre_close_status
-
     number = payload.issue.number
-    has_owner = bool(_issue_assignee_login(payload.issue))
+    has_owner = bool(issue_assignee_login(payload.issue))
     resume = ""
     if has_owner:
         mapping = await _find_mapping(payload.repository.name, number, session)
         if _mapped_id(mapping):
-            remembered = await _pre_close_status(session, _mapped_id(mapping))
+            remembered = await pre_close_status(session, _mapped_id(mapping))
             resume = remembered[1] if remembered else ""
     return await _transition(
         payload,
