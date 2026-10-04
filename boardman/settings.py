@@ -52,6 +52,8 @@ class Settings(BaseSettings):
     # Agent tools: most tasks returned per list call, and parallel creates per batch.
     clickup_list_limit: int = 60
     clickup_create_concurrency: int = 4
+    # Most pages (100 tasks each) one list call will load before reporting truncation.
+    clickup_max_list_pages: int = 20
 
     plaky_api_key: str = ""
     plaky_api_base: str = "https://api.plaky.com/v1/public"
@@ -159,7 +161,7 @@ class Settings(BaseSettings):
     plaky_catalog_cache_path: str = ".boardman/plaky-catalog.json"
     plaky_catalog_ttl_seconds: float = 86_400.0
     plaky_placement_auto_discover: bool = True
-    plaky_placement_min_score: int = 400  # rank_plaky_rows threshold; see name_match.py
+    plaky_placement_min_score: int = 400  # rank_rows_by_name threshold; see name_match.py
     # Limit search to the five categorical boards (excludes legacy AI Task Board, etc.).
     plaky_catalog_categorical_only: bool = True
     # Local "as-if-production" mode. When true, this instance polls GitHub for new activity

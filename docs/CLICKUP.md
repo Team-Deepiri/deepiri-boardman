@@ -40,6 +40,11 @@ With `TASK_PROVIDER=clickup` the chat agent gets `clickup_*` tools instead of `p
 - The system prompt gets a ClickUp notice that maps each `plaky_*` tool to its ClickUp equivalent. ClickUp has no board schema, groups or custom-field patching, so those tools have no counterpart.
 - The agent's "board id" is a ClickUp list id (or `CLICKUP_DEFAULT_LIST_ID`).
 
+## Limits and gaps worth knowing
+
+- `get_tasks` loads at most `CLICKUP_MAX_LIST_PAGES` pages of 100 tasks (default 20, so 2,000). If a list is larger, the result carries `truncated: true` and a message, and a warning is logged. Filter by status for very large lists.
+- ClickUp has no field for a person's GitHub login, so `github_login` is always `None` on ClickUp users. GitHub-to-ClickUp matching uses name and email only (see `boardman/assignment/identity_match.py`), and a manual `member_overrides[login].id` always wins.
+
 ## What is still Plaky-only
 
 Plaky has board schemas, custom fields and per-board placement that ClickUp does not model the same way. These still call `PlakyClient` directly and are not provider-neutral yet:
