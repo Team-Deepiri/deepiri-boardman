@@ -18,13 +18,13 @@ def clickup_provider_markdown(list_id: str | None, note: str = "") -> str:
         "| plaky_list_tasks | clickup_list_tasks |",
         "| plaky_get_task | clickup_get_task |",
         "| plaky_list_workspace_users | clickup_list_workspace_users |",
-        "| plaky_create_task / plaky_create_tasks / plaky_create_tasks_deferred | clickup_create_task / clickup_create_tasks |",
+        "| plaky_create_task / plaky_create_tasks | clickup_create_task / clickup_create_tasks |",
         "| plaky_update_task | clickup_update_task |",
         "| plaky_add_comment / plaky_link_prs | clickup_add_comment / clickup_link_prs |",
         "| plaky_create_subtask | clickup_create_subtask |",
         "",
         "ClickUp has **no** board schema, groups or custom-field patching, so there is no equivalent "
-        "of plaky_board_schema, plaky_match_board, plaky_match_group, plaky_get_board_item, "
+        "of plaky_create_tasks_deferred (use clickup_create_tasks, which waits for the writes), plaky_board_schema, plaky_match_board, plaky_match_group, plaky_get_board_item, "
         "plaky_patch_item_fields, plaky_review_board or plaky_save_task_preferences. Skip any "
         "instruction that tells you to call them. Priorities are urgent, high, medium or low. "
         "Assignees are plain names or emails; never pass numeric ids.",

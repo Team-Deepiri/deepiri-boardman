@@ -92,7 +92,7 @@ def _normalize_scan_tasks(raw_tasks: Any) -> tuple[list[dict[str, Any]], list[st
     return out[:30], warnings
 
 
-async def fetch_plaky_titles_for_repo(repo_full: str, short: str) -> str:
+async def fetch_open_task_titles_for_repo(repo_full: str, short: str) -> str:
     plaky = get_task_client()
     r = await plaky.get_tasks(status="open")
     if not r.get("ok"):
@@ -177,7 +177,7 @@ async def _fetch_scan_context(
             fetch_direction_md(client, owner, repo),
             fetch_recent_commits(client, owner, repo),
             fetch_open_issues(client, owner, repo),
-            fetch_plaky_titles_for_repo(repo_full, short),
+            fetch_open_task_titles_for_repo(repo_full, short),
             return_exceptions=True,
         )
     return (
