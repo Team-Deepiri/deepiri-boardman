@@ -234,3 +234,22 @@ def test_provider_defaults_to_plaky(monkeypatch, raw):
 
     monkeypatch.setattr(task_provider.settings, "task_provider", raw)
     assert task_provider.active_provider() == "plaky"
+
+
+def test_timeout_comes_from_settings_and_can_be_overridden(monkeypatch):
+    monkeypatch.setattr("boardman.clickup.client.settings.clickup_api_timeout", 7.5)
+    assert ClickUpClient("t", "https://cu.test").timeout == 7.5
+    assert ClickUpClient("t", "https://cu.test", timeout=3).timeout == 3
+
+
+async def test_get_tasks_warns_when_page_cap_is_hit(monkeypatch, caplog):
+    monkeypatch.setattr("boardman.clickup.client._PAGE_CAP", 2)
+
+    def handler(req):
+        rows = [{"id": f"t{i}", "status": {"status": "to do"}} for i in range(100)]
+        return httpx.Response(200, json={"tasks": rows, "last_page": False})
+
+    with caplog.at_level("WARNING", logger="boardman.clickup.client"):
+        r = await _client(handler).get_tasks("all")
+    assert r["ok"] and len(r["tasks"]) == 200
+    assert "truncated" in caplog.text
