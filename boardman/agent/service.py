@@ -517,7 +517,7 @@ def _resolve_placement(
     return fb_bid, ((plaky_group_id or "").strip() or fb_gid), note
 
 
-async def _plaky_system_suffix(
+async def _task_provider_system_suffix(
     plaky_board_id: str | None,
     plaky_group_id: str | None,
     note: str = "",
@@ -534,7 +534,7 @@ async def _plaky_system_suffix(
             out += bundle.get("markdown") or ""
         except Exception as e:  # noqa: BLE001 — the schema is optional context, not a gate
             logger.warning("Could not load Plaky board schema bundle for %s: %s", bid, e)
-            log_unexpected(logger, "_plaky_system_suffix: fetch_board_schema_bundle")
+            log_unexpected(logger, "_task_provider_system_suffix: fetch_board_schema_bundle")
             out += (
                 f"\n\n## Current Plaky board schema (from API)\n"
                 f"**Board id:** `{bid}`\n"
@@ -683,7 +683,7 @@ async def run_agent_chat(
     intake_extra = TEAM_TASK_POLICY + (TASK_CREATION_WORKFLOW if allow_writes else "")
     draft_md, plaky_suffix = await asyncio.gather(
         _load_draft_markdown(session, agent_session_pk),
-        _plaky_system_suffix(plaky_board_id, plaky_group_id, note=placement_note),
+        _task_provider_system_suffix(plaky_board_id, plaky_group_id, note=placement_note),
     )
     # Creation is reported as done because it lands in seconds. If one of those writes
     # actually failed, this turn opens by correcting it instead of leaving the user
@@ -947,7 +947,7 @@ async def iter_agent_chat_sse(
     _t_hist = time.monotonic()
     draft_md, plaky_suffix = await asyncio.gather(
         _load_draft_markdown(session, agent_session_pk),
-        _plaky_system_suffix(plaky_board_id, plaky_group_id, note=placement_note),
+        _task_provider_system_suffix(plaky_board_id, plaky_group_id, note=placement_note),
     )
     # Creation is reported as done because it lands in seconds. If one of those writes
     # actually failed, this turn opens by correcting it instead of leaving the user

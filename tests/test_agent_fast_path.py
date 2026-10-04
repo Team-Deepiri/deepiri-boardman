@@ -140,7 +140,7 @@ async def test_service_keeps_repo_scope_for_a_follow_up_fast_path(monkeypatch) -
     async def no_plaky_suffix(_board, _group, note=""):
         return ""
 
-    monkeypatch.setattr(agent_service, "_plaky_system_suffix", no_plaky_suffix)
+    monkeypatch.setattr(agent_service, "_task_provider_system_suffix", no_plaky_suffix)
     calls = 0
 
     async def fake_chat(_messages, **_kwargs):

@@ -20,9 +20,6 @@ from boardman.clickup.client import ClickUpClient, clickup_priority_label
 from boardman.plaky.name_match import rank_plaky_rows
 from boardman.settings import settings
 
-_LIST_LIMIT = 60
-_CREATE_CONCURRENCY = 4
-
 
 def _client() -> ClickUpClient:
     return ClickUpClient()
@@ -33,11 +30,11 @@ def _dump(obj: Any, limit: int = 12000) -> str:
 
 
 def _resolve_list_id(list_id: str = "") -> str:
-    from boardman.agent.tool_context import get_context_plaky_board_id
+    from boardman.agent.tool_context import get_context_placement_id
 
     return (
         (list_id or "").strip()
-        or (get_context_plaky_board_id() or "").strip()
+        or (get_context_placement_id() or "").strip()
         or (settings.clickup_default_list_id or "").strip()
     )
 
@@ -116,7 +113,7 @@ async def _clickup_list_tasks(status: str = "all", list_id: str = "") -> str:
         key = str(t.get("status_name") or "unknown")
         by_status[key] = by_status.get(key, 0) + 1
         owned += 1 if t.get("assignees") else 0
-    shown = [_slim_task(t) for t in tasks[:_LIST_LIMIT]]
+    shown = [_slim_task(t) for t in tasks[: settings.clickup_list_limit]]
     body: dict[str, Any] = {
         "ok": True,
         "list_id": lid,
@@ -242,7 +239,7 @@ async def _clickup_create_tasks(tasks_json: str, list_id: str = "") -> str:
         if any(isinstance(r, dict) and r.get("assignee") for r in rows)
         else []
     )
-    sem = asyncio.Semaphore(_CREATE_CONCURRENCY)
+    sem = asyncio.Semaphore(max(1, settings.clickup_create_concurrency))
 
     async def run(row: Any) -> dict[str, Any]:
         if not isinstance(row, dict):
@@ -297,6 +294,29 @@ async def _clickup_create_task(
     )
 
 
+async def _resolve_people(assignee: str, qa: str) -> tuple[list[int] | None, str, dict[str, str]]:
+    """Resolve plain names to (assignee ids to add, QA user id, problems by role)."""
+    wanted = {"assignee": (assignee or "").strip(), "qa": (qa or "").strip()}
+    if not any(wanted.values()):
+        return None, "", {}
+    users = await _workspace_users()
+    problems: dict[str, str] = {}
+    resolved: dict[str, dict[str, Any] | None] = {}
+    for role, name in wanted.items():
+        if not name:
+            continue
+        person, problem = _match_person(name, users)
+        resolved[role] = person
+        if problem:
+            problems[role] = problem
+    qa_person = resolved.get("qa")
+    return (
+        _assignee_ids(resolved.get("assignee")),
+        (str(qa_person["id"]) if qa_person else ""),
+        problems,
+    )
+
+
 async def _clickup_update_task(
     task_id: str,
     status: str = "",
@@ -311,24 +331,11 @@ async def _clickup_update_task(
     from boardman.services.clickup_mutations import update_clickup_task
     from boardman.services.task_mutations import UpdateTaskInput
 
-    users: list[dict[str, Any]] | None = None
-    problems: dict[str, str] = {}
-    add_ids: list[int] | None = None
-    qa_id = ""
-    if (assignee or "").strip() or (qa or "").strip():
-        users = await _workspace_users()
-    if (assignee or "").strip():
-        person, problem = _match_person(assignee, users or [])
-        add_ids = _assignee_ids(person)
-        if problem:
-            problems["assignee"] = problem
-    if (qa or "").strip():
-        person, problem = _match_person(qa, users or [])
-        qa_id = str(person["id"]) if person else ""
-        if problem:
-            problems["qa"] = problem
-    asked_people = bool((assignee or "").strip() or (qa or "").strip())
-    if problems and not any([status, priority, title, description, add_ids, qa_id, auto_assign_qa]):
+    add_ids, qa_id, problems = await _resolve_people(assignee, qa)
+    nothing_to_write = not any(
+        [status, priority, title, description, add_ids, qa_id, auto_assign_qa]
+    )
+    if problems and nothing_to_write:
         return _dump({"ok": False, "status": 400, "message": "; ".join(problems.values())})
     r = await update_clickup_task(
         task_id,
@@ -344,7 +351,7 @@ async def _clickup_update_task(
         add_assignee_ids=add_ids,
         client=_client(),
     )
-    if asked_people and problems:
+    if problems:
         r["people_resolved"] = problems
     return _dump(r)
 
@@ -447,10 +454,9 @@ def build_clickup_tools(*, allow_writes: bool) -> list[StructuredTool]:
                 tool(
                     _clickup_update_task,
                     "clickup_update_task",
-                    "Update an existing ClickUp task. Args: task_id; optional status, priority, title, "
-                    "description, assignee (plain name, added to the current assignees), qa (plain name "
-                    "of the QA reviewer), or auto_assign_qa=true with github_repo (owner/repo) to let "
-                    "team_assignments.yml pick QA like the CLI does. QA is only set when asked.",
+                    "Update a ClickUp task: status, priority, title, description, assignee (plain name, "
+                    "added), qa (plain name), or auto_assign_qa=true with github_repo (owner/repo) to "
+                    "pick QA from team_assignments.yml. QA is only set when asked.",
                 ),
                 tool(
                     _clickup_add_comment,

@@ -47,6 +47,11 @@ class Settings(BaseSettings):
     # Workspace ("team") id for user listing, and the default list new tasks are created in.
     clickup_team_id: str = ""
     clickup_default_list_id: str = ""
+    # Per-request timeout in seconds for ClickUp API calls.
+    clickup_api_timeout: float = 20.0
+    # Agent tools: most tasks returned per list call, and parallel creates per batch.
+    clickup_list_limit: int = 60
+    clickup_create_concurrency: int = 4
     # Optional ClickUp custom field (type "users") that holds the QA reviewer. Empty = add the QA
     # person as an extra assignee instead.
     clickup_qa_field_id: str = ""

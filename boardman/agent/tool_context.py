@@ -22,8 +22,13 @@ def get_agent_session_pk() -> int | None:
     return _agent_session_pk.get()
 
 
-def get_context_plaky_board_id() -> str | None:
+def get_context_placement_id() -> str | None:
+    """The placement id selected for this turn: a Plaky board id, or a ClickUp list id."""
     return _plaky_board_id.get()
+
+
+def get_context_plaky_board_id() -> str | None:
+    return get_context_placement_id()
 
 
 def get_context_plaky_group_id() -> str | None:

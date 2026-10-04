@@ -8,16 +8,19 @@ roster) and applied with ``ClickUpClient.assign_qa``.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from boardman.assignment.config import load_team_assignments
 from boardman.assignment.qa_picker import ensure_github_owner_repo, pick_qa_for_repo
 from boardman.clickup.client import ClickUpClient
 
+if TYPE_CHECKING:
+    from boardman.services.task_mutations import UpdateTaskInput
+
 
 async def update_clickup_task(
     task_id: str,
-    req: Any,
+    req: UpdateTaskInput,
     *,
     add_assignee_ids: list[int] | None = None,
     client: ClickUpClient | None = None,
