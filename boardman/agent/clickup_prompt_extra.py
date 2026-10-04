@@ -1,7 +1,5 @@
 """System-prompt notice for the ClickUp provider (the counterpart of plaky_prompt_extra)."""
 
-from __future__ import annotations
-
 
 def clickup_provider_markdown(list_id: str | None, note: str = "") -> str:
     """Tell the model it is working against ClickUp, which tools exist, and the placement."""

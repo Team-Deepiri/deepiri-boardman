@@ -79,11 +79,12 @@ def _match_person(query: str, users: list[dict[str, Any]]) -> tuple[dict[str, An
         for u in users
     ]
     ranked, best = rank_plaky_rows(rows, q)
-    strong = [r for r in ranked if r["score"] >= 400]
+    floor = settings.clickup_person_match_min_score
+    strong = [r for r in ranked if r["score"] >= floor]
     if len(strong) > 1 and strong[0]["score"] == strong[1]["score"]:
         names = ", ".join(r["name"] for r in strong[:4])
         return None, f"'{q}' is ambiguous: {names}"
-    if not best:
+    if not best or best["score"] < floor:
         return None, f"no workspace member matches '{q}'"
     user = next((u for u in users if u["id"] == best["id"]), None)
     return user, ""

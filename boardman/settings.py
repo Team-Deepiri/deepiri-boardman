@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     clickup_api_timeout: float = 20.0
     # Agent tools: most tasks returned per list call, and parallel creates per batch.
     clickup_list_limit: int = 60
+    # Name-match score (0-1000) a person must reach to be picked for an assignee or QA name.
+    clickup_person_match_min_score: int = 400
     clickup_create_concurrency: int = 4
     # Most pages (100 tasks each) one list call will load before reporting truncation.
     clickup_max_list_pages: int = 20
