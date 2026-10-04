@@ -14,11 +14,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from boardman.assignment.github_user_resolution import (  # noqa: F401  (re-exported for the Plaky handlers)
-    github_actor_dict,
-    github_actor_payload,
-    resolve_github_user,
-)
+from boardman.assignment.github_user_resolution import github_actor_dict, resolve_github_user
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.services.sync_state import UNREADABLE_STATUS as _SYNC_STATE_UNREADABLE

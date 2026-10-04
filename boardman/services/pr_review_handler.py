@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import load_team_assignments
+from boardman.assignment.github_user_resolution import github_actor_payload
 from boardman.database.models import SyncLog
 from boardman.github.pr_actions import is_boardman_comment
 from boardman.github.support_qa import support_team_logins_casefold
@@ -17,7 +18,6 @@ from boardman.github.webhooks import IssueCommentEventPayload, PullRequestReview
 from boardman.plaky.board_schema import plaky_item_person_ids, plaky_item_status_id
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.dynamic_qa_status import (
-    github_actor_payload,
     resolve_github_user_to_plaky_user_id,
     resolve_plaky_status_patch,
     resolve_qa_assignee_field_key,
