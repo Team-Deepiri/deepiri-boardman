@@ -53,10 +53,13 @@ def _world(monkeypatch):
         SimpleNamespace(id=DEV, github_login="dev-ann", display="Ann Dev", roles=["dev"]),
         SimpleNamespace(id=QA, github_login="qa-quinn", display="Quinn QA", roles=["qa"]),
     ]
+    amb = SimpleNamespace(
+        enabled=False, assign_qa=True, title_template="Triage: PR #{number} - {repo}"
+    )
     monkeypatch.setattr(
         sync,
         "load_team_assignments",
-        lambda: SimpleNamespace(members=members, qa_bug_specialist=""),
+        lambda: SimpleNamespace(members=members, qa_bug_specialist="", ambiguous_pr=amb),
     )
 
     async def pick(repo_full, cfg=None, *, exclude_login="", qa_workload=None):
@@ -78,7 +81,9 @@ def _world(monkeypatch):
         return any(p == pr for p, _ in gh["comments"])
 
     monkeypatch.setattr("boardman.assignment.qa_picker.pick_qa_for_repo", pick)
-    monkeypatch.setattr("boardman.assignment.github_user_resolution.resolve_github_user_to_user_id", resolve)
+    monkeypatch.setattr(
+        "boardman.assignment.github_user_resolution.resolve_github_user_to_user_id", resolve
+    )
     monkeypatch.setattr(
         "boardman.assignment.developer_eligibility.filter_developer",
         lambda pid, cfg=None: (pid, ""),
@@ -91,7 +96,7 @@ def _world(monkeypatch):
     bound = _bound_client_class(fake)
     monkeypatch.setattr(sync, "ClickUpClient", bound)
     monkeypatch.setattr("boardman.clickup.client.ClickUpClient", bound)
-    return SimpleNamespace(fake=fake, gh=gh, picks=picks, client=bound())
+    return SimpleNamespace(fake=fake, gh=gh, picks=picks, client=bound(), amb=amb)
 
 
 def _bound_client_class(fake: FakeClickUp) -> type[ClickUpClient]:

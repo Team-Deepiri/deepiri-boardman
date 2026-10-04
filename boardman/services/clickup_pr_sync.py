@@ -20,10 +20,12 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
+import uuid
+from datetime import datetime, timedelta
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import load_team_assignments
@@ -35,7 +37,12 @@ from boardman.clickup.task_view import (
     sync_type_tag,
     user_ids,
 )
-from boardman.database.models import IssueTaskMap, PullRequestTaskLink, SyncLog
+from boardman.database.models import (
+    IssueTaskMap,
+    PrTaskLifecycle,
+    PullRequestTaskLink,
+    SyncLog,
+)
 from boardman.github.pr_exclusion import pr_sync_exclusion_reason
 from boardman.github.webhooks import (
     DeploymentStatusEventPayload,
@@ -71,8 +78,15 @@ from boardman.services.pr_sync_common import (
     member_by_name,
     prs_for_commit_sha,
 )
+from boardman.services.pr_task_linking import (
+    format_triage_comment,
+    run_pr_task_pipeline_clickup,
+    should_run_pipeline,
+)
 from boardman.services.pr_task_registry import (
     _PR_OWNED_LINK_SOURCES,
+    _PR_TASK_CREATED_LINK_SOURCE,
+    _PR_TASK_PENDING_LINK_SOURCE,
     _SUPERSEDED_LINK_SOURCE,
     _WEAK_COMPLETION_LINK_SOURCES,
     distinct_task_ids_for_pr,
@@ -517,15 +531,381 @@ async def handle_pr_opened(
         session, github_repo=repo_name, github_pr_number=pr_number
     )
     if not results and not live:
-        await session.commit()
-        message = (
-            f"named issue(s) {sorted(linked)} but none has a ClickUp task"
-            if linked
-            else "No linked issues found (fuzzy matching and triage are not available on ClickUp yet)"
+        # No issue with a task: try to match an existing task, else make one for the PR.
+        return await _link_or_create_for_orphan_pr(
+            payload,
+            session,
+            c,
+            opened_state=opened_state,
+            linked=linked,
+            written=written,
+            is_draft=is_draft,
+            is_reopen=is_reopen,
+            is_rerun=is_rerun,
         )
-        return {"ok": True, "skipped": True, "message": message}
     await session.commit()
     return {"ok": True, "linked": results}
+
+
+async def _link_or_create_for_orphan_pr(
+    payload: PullRequestEventPayload,
+    session: AsyncSession,
+    c: ClickUpClient,
+    *,
+    opened_state: Any,
+    linked: list[int],
+    written: list[int],
+    is_draft: bool,
+    is_reopen: bool,
+    is_rerun: bool,
+) -> dict[str, Any]:
+    """A PR with no issue that has a task: fuzzy-match an existing task, else (when enabled) create one."""
+    repo_name = payload.repository.name
+    pr_number = payload.pull_request.number
+    pr_url = payload.pull_request.html_url
+    full_name = payload.repository.full_name
+    pipe_top = None
+    run = settings.pr_linking_pipeline_enabled and await should_run_pipeline(
+        payload.pull_request.body,
+        repo_full_name=full_name,
+        pr_title=payload.pull_request.title,
+        head_ref=opened_state.head_ref,
+    )
+    if run:
+        pr_user = payload.pull_request.user if isinstance(payload.pull_request.user, dict) else {}
+        author = pr_user.get("login")
+        pipe = await run_pr_task_pipeline_clickup(
+            session=session,
+            client=c,
+            repo_full=full_name,
+            repo_name=repo_name,
+            org=settings.github_org,
+            pr_number=pr_number,
+            pr_title=payload.pull_request.title,
+            pr_body=payload.pull_request.body,
+            head=payload.pull_request.head,
+            pr_author_login=author,
+            pr_author_email=pr_user.get("email"),
+            pr_author_name=pr_user.get("name"),
+        )
+        pipe_top = pipe.top_scored
+        stamp(
+            session,
+            "pr_link_pipeline",
+            repo_name,
+            pr_number,
+            pipe.task_id or "",
+            decision=pipe.decision,
+            score=pipe.score,
+            reason=pipe.reason,
+            detail=pipe.log_detail,
+            triage_comment=format_triage_comment(pipe.top_scored)
+            if pipe.decision == "triage"
+            else None,
+        )
+        if pipe.decision in ("auto_link", "llm_link") and pipe.task_id:
+            row = await upsert_pr_task_link(
+                session,
+                github_repo=repo_name,
+                github_pr_number=pr_number,
+                plaky_task_id=pipe.task_id,
+                github_issue_number=0,
+                link_source=pipe.decision,
+            )
+            if str(getattr(row, "link_source", "") or "") == _SUPERSEDED_LINK_SOURCE:
+                # Retired when the PR named an issue; a fuzzy match is not the author saying otherwise.
+                await session.commit()
+                return {
+                    "ok": True,
+                    "skipped": True,
+                    "message": "the matched card was superseded by an issue link",
+                }
+            await c.add_comment(
+                pipe.task_id,
+                format_pr_notice_with_url(
+                    headline=(
+                        f"**PR {'Reopened' if is_reopen else 'Opened'}** "
+                        f"(automation link, {pipe.decision}):"
+                    ),
+                    pr_number=pr_number,
+                    pr_url=pr_url,
+                ),
+            )
+            await _apply_type_and_assignee(
+                c,
+                task_id=pipe.task_id,
+                pull_request=payload.pull_request,
+                repo_full=full_name,
+                allow_regression=not is_rerun,
+            )
+            await _assign_qa_for_pr(
+                c,
+                task_id=pipe.task_id,
+                repo_full=full_name,
+                pr_number=pr_number,
+                pr_author_login=str(author or ""),
+                session=session,
+            )
+            await _maybe_set_needs_qa(c, pipe.task_id, is_draft, allow_regression=not is_rerun)
+            stamp(
+                session,
+                "pr_linked_fuzzy",
+                repo_name,
+                pr_number,
+                pipe.task_id,
+                pr_url=pr_url,
+                pipeline=pipe.decision,
+                score=pipe.score,
+            )
+            await session.commit()
+            return {
+                "ok": True,
+                "linked": [{"task_id": pipe.task_id, "via": pipe.decision}],
+                "pipeline": pipe.decision,
+            }
+        await session.commit()
+
+    triage = await maybe_triage_ambiguous_pr(
+        payload,
+        session,
+        c,
+        top_scored=pipe_top,
+        # Written references only: claiming an issue for this card binds later edits and closes of
+        # that issue to it, and a branch name is too weak a signal for that.
+        orphan_issue_number=int(written[0]) if written else 0,
+    )
+    if triage is not None:
+        return triage
+    await session.commit()
+    message = (
+        f"named issue(s) {sorted(linked)} but none has a ClickUp task"
+        if linked
+        else "No linked issues found and no existing task matched"
+    )
+    return {"ok": True, "skipped": True, "message": message}
+
+
+async def maybe_triage_ambiguous_pr(
+    payload: PullRequestEventPayload,
+    session: AsyncSession,
+    c: ClickUpClient,
+    *,
+    top_scored: Any = None,
+    orphan_issue_number: int = 0,
+) -> dict[str, Any] | None:
+    """A PR that matches no existing task gets a REAL task, not a stub: titled after the PR, typed
+    from its branch and labels, owned by the PR author, "needs QA" when it is ready for review,
+    linked, and given a QA. Only when ``ambiguous_pr.enabled``; idempotent per PR."""
+    from boardman.assignment.developer_eligibility import filter_developer
+    from boardman.assignment.github_user_resolution import (
+        github_actor_payload,
+        resolve_github_user_to_user_id,
+    )
+    from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
+
+    cfg = load_team_assignments()
+    amb = cfg.ambiguous_pr
+    if not amb.enabled:
+        return None
+    repo_name = payload.repository.name
+    pr_number = payload.pull_request.number
+    pr_url = payload.pull_request.html_url
+    full_name = payload.repository.full_name
+
+    # Never manufacture review work for a PR that already shipped (a replay, a redelivery).
+    pr_state = str(getattr(payload.pull_request, "state", "open") or "open").casefold()
+    if pr_state != "open" or bool(getattr(payload.pull_request, "merged", False)):
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": f"PR #{pr_number} is already {pr_state}; not creating a task for finished work",
+            "ambiguous_triage": True,
+        }
+
+    from boardman.repos_config import get_routing_async
+
+    routing = await get_routing_async(full_name, repo_name, settings.github_org)
+    list_id = (
+        (settings.clickup_triage_list_id or "").strip()
+        or ((getattr(routing, "clickup_list_id", "") or "").strip() if routing else "")
+        or (settings.clickup_default_list_id or "").strip()
+    )
+    if not list_id:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "no ClickUp list resolvable for the orphan-PR task",
+        }
+
+    prior = await session.execute(
+        select(SyncLog).where(
+            SyncLog.action == "pr_ambiguous_triage",
+            SyncLog.github_repo == repo_name,
+            SyncLog.github_ref == str(pr_number),
+        )
+    )
+    if prior.scalars().first() is not None:
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "task already created for this PR",
+            "ambiguous_triage": True,
+        }
+    reservation = PullRequestTaskLink(
+        github_repo=repo_name,
+        github_pr_number=pr_number,
+        plaky_task_id=f"pending:{uuid.uuid4().hex}",
+        github_issue_number=0,
+        link_source=_PR_TASK_PENDING_LINK_SOURCE,
+    )
+    try:
+        async with session.begin_nested():
+            session.add(reservation)
+            await session.flush()
+    except IntegrityError:
+        if await distinct_task_ids_for_pr(
+            session, github_repo=repo_name, github_pr_number=pr_number
+        ):
+            return {
+                "ok": True,
+                "skipped": True,
+                "message": "task already created for this PR",
+                "ambiguous_triage": True,
+            }
+        raise
+
+    pr = payload.pull_request
+    head = getattr(pr, "head", None)
+    head_ref = str(head.get("ref") or "") if isinstance(head, dict) else ""
+    labels = pr_label_names(getattr(pr, "labels", None))
+    task_type = (
+        infer_task_type_from_pr(
+            head_ref,
+            labels,
+            title=str(getattr(pr, "title", "") or ""),
+            body=str(getattr(pr, "body", "") or ""),
+        )
+        or "Feature"
+    )
+    is_draft = bool(getattr(pr, "draft", False))
+    pr_user = getattr(pr, "user", None)
+    author_login = str(pr_user.get("login") or "").strip() if isinstance(pr_user, dict) else ""
+    author_id = ""
+    if isinstance(pr_user, dict):
+        author_id = str(await resolve_github_user_to_user_id(github_actor_payload(pr_user)) or "")
+    author_id, _refusal = filter_developer(author_id)
+
+    title = str(getattr(pr, "title", "") or "").strip() or amb.title_template.format(
+        number=pr_number, repo=repo_name, full_name=full_name
+    )
+    description = (
+        f"Auto-created from GitHub PR (no existing task matched): {pr_url}\n\n"
+        f"Repo: {full_name}  Branch: {head_ref or '?'}  Author: {author_login or 'unknown'}\n\n"
+        "The PR did not reference an issue and fuzzy matching found no confident task, "
+        "so this task now represents that work.\n"
+    )
+    if top_scored:
+        description += "\nClosest existing candidates considered:\n" + format_triage_comment(
+            top_scored
+        )
+    state = resolve_pr_state(pr, repo_full_name=full_name, repo_name=repo_name)
+    # A non-draft PR is up for review now; a draft's status follows its owner.
+    status = (status_for_intent("workflow_needs_qa") if not is_draft else "") or status_for_intent(
+        "workflow_assigned" if author_id else "workflow_needs_assigned"
+    )
+    res = await c.create_task(
+        title,
+        description,
+        state.priority,
+        board_id=list_id,
+        status=status or None,
+        assignee_ids=user_ids(author_id),
+        tags=[repo_name.lower(), f"type:{task_type.strip().lower()}"],
+    )
+    if not res.get("ok"):
+        await session.delete(reservation)
+        return {"ok": False, "message": res.get("message"), "ambiguous_triage": True}
+
+    task_id = str(res.get("task_id") or "")
+    if not task_id:
+        await session.delete(reservation)
+        qa_res: dict[str, Any] = {"skipped": "task id missing from create result"}
+    else:
+        reservation.plaky_task_id = task_id
+        reservation.link_source = _PR_TASK_CREATED_LINK_SOURCE
+        if settings.pr_task_cleanup_enabled:
+            session.add(
+                PrTaskLifecycle(
+                    github_repo=repo_name,
+                    github_pr_number=pr_number,
+                    plaky_task_id=task_id,
+                    plaky_board_id=list_id,
+                    origin="created",
+                    cleanup_due_at=datetime.utcnow()
+                    + timedelta(days=settings.pr_task_cleanup_ttl_days),
+                )
+            )
+        # The PR named an issue that has no task yet: claim it for this card so the issue's own
+        # events update this one instead of opening a second card for the same work.
+        if orphan_issue_number:
+            try:
+                async with session.begin_nested():
+                    session.add(
+                        IssueTaskMap(
+                            github_repo=repo_name,
+                            github_issue_number=orphan_issue_number,
+                            plaky_task_id=task_id,
+                        )
+                    )
+                    await session.flush()
+            except IntegrityError:
+                pass  # the issue got its own task in the meantime; leave that one alone
+        await c.add_comment(
+            task_id,
+            format_pr_notice_with_url(headline="**PR opened:**", pr_number=pr_number, pr_url=pr_url)
+            + "\n\nBoardman created this task from the PR because no existing task matched.",
+        )
+        if amb.assign_qa:
+            qa_res = await _assign_qa_for_pr(
+                c,
+                task_id=task_id,
+                repo_full=full_name,
+                pr_number=pr_number,
+                pr_author_login=author_login,
+                task_url=str(res.get("task_url") or ""),
+                session=session,
+            )
+        else:
+            qa_res = {"skipped": "ambiguous_pr.assign_qa is false"}
+    session.add(
+        SyncLog(
+            action="pr_ambiguous_triage",
+            github_repo=repo_name,
+            github_ref=str(pr_number),
+            plaky_task_id=task_id,
+            detail=json.dumps(
+                {
+                    "pr_url": pr_url,
+                    "full_name": full_name,
+                    "task_type": task_type,
+                    "assignee": author_id,
+                    "qa": qa_res,
+                },
+                default=str,
+            ),
+        )
+    )
+    await session.commit()
+    return {
+        "ok": True,
+        "ambiguous_triage": True,
+        "created_from_pr": True,
+        "plaky_task_id": task_id,
+        "plaky_task_url": res.get("task_url"),
+        "task_type": task_type,
+        "assignee_clickup_id": author_id,
+        "qa": qa_res,
+    }
 
 
 # -- metadata sync (edited) ----------------------------------------------------------------------
