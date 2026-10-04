@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from boardman.clickup.client import ClickUpClient
-from boardman.plaky.name_match import rank_plaky_rows
+from boardman.plaky.name_match import rank_rows_by_name
 
 
 async def workspace_users(client: ClickUpClient) -> list[dict[str, Any]]:
@@ -23,7 +23,7 @@ def rank_users(query: str, users: list[dict[str, Any]]) -> tuple[list[dict[str, 
         {"id": u["id"], "name": f"{u.get('name') or ''} {u.get('email') or ''}".strip()}
         for u in users
     ]
-    return rank_plaky_rows(rows, (query or "").strip())
+    return rank_rows_by_name(rows, (query or "").strip())
 
 
 def match_person(query: str, users: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str]:
