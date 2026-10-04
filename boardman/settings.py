@@ -57,6 +57,16 @@ class Settings(BaseSettings):
     # Optional ClickUp custom field (type "users") that holds the QA reviewer. Empty = add the QA
     # person as an extra assignee instead.
     clickup_qa_field_id: str = ""
+    # ClickUp status names for each workflow step. ClickUp statuses are per list, so these must
+    # match your lists. Empty = Boardman never writes that status.
+    clickup_status_needs_assigned: str = "to do"
+    clickup_status_assigned: str = "to do"
+    clickup_status_in_progress: str = "in progress"
+    clickup_status_paused: str = ""
+    clickup_status_needs_qa: str = ""
+    clickup_status_in_qa: str = ""
+    clickup_status_approved: str = ""
+    clickup_status_completed: str = "complete"
     # Most pages (100 tasks each) one list call will load before reporting truncation.
     clickup_max_list_pages: int = 20
 

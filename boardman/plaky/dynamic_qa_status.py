@@ -441,7 +441,14 @@ async def resolve_github_user_to_plaky_user_id(
     except Exception:  # noqa: BLE001 — roster trouble must never break identity resolution
         _log.warning("roster unavailable during GitHub user resolution", exc_info=True)
 
-    c = PlakyClient()
+    from boardman.task_provider import active_provider
+
+    if active_provider() == "clickup":
+        from boardman.clickup.client import ClickUpClient
+
+        c: Any = ClickUpClient()
+    else:
+        c = PlakyClient()
     r = await c.list_workspace_users()
     if not r.get("ok"):
         return None

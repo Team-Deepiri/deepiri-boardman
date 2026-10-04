@@ -59,11 +59,36 @@ QA picking is provider-neutral: `pick_qa_for_repo` ranks the GitHub support-team
 - `get_tasks` loads at most `CLICKUP_MAX_LIST_PAGES` pages of 100 tasks (default 20, so 2,000). If a list is larger, the result carries `truncated: true` and a message, and a warning is logged. Filter by status for very large lists.
 - ClickUp has no field for a person's GitHub login, so `github_login` is always `None` on ClickUp users. GitHub-to-ClickUp matching uses name and email only (see `boardman/assignment/identity_match.py`), and a manual `member_overrides[login].id` always wins.
 
+## Issue sync (Phase 3a)
+
+With `TASK_PROVIDER=clickup`, GitHub issue webhooks (and the reconcile/poller replays that reuse the same handlers) create and maintain ClickUp tasks. `issue_handler` dispatches to `boardman/services/clickup_issue_sync.py`.
+
+- **Where tasks go:** `clickup_list_id` on the repo's entry in `repos.yml` (or under `defaults`), else `CLICKUP_DEFAULT_LIST_ID`. With neither, creation fails with a clear message and nothing is mapped.
+- **Created with everything set in one call:** title (`[repo] title`), description (issue body, URL, repo, category), priority, status, owner and tags (the repo name and `type:<bug|feature|...>`). No QA at creation; QA is picked when a PR opens.
+- **Status follows ownership:** an owner who resolves to a real, developer-eligible ClickUp member means "assigned"; nobody means "needs assigned". Status names come from `CLICKUP_STATUS_*` (see below); an empty setting means Boardman never writes that status.
+- **Edits rename in place.** ClickUp can rewrite a task's title and description, so an edit does (Plaky cannot and mirrors a comment instead).
+- **Same safety rules as the Plaky path:** only `assigned`/`unassigned` events may move the status, never backwards past work that has started; the owner is fill-only on events that merely carry the issue's assignee; priority follows GitHub only when a human set it there; if the task cannot be read, none of an ownership event is applied.
+- **Unassign** removes only the person who was removed, so a QA reviewer who is also an assignee stays.
+- **Close and reopen:** closing sets the completed status, comments once and remembers the status the task held; reopening an owned issue resumes it (falling back to "assigned" if that status no longer exists), and an unowned one always goes to "needs assigned".
+- **Type:** exactly one `type:` tag is kept in step with the issue's labels or native type.
+
+Status settings (defaults suit a stock list; ClickUp statuses are per list, so match yours):
+
+| Setting | Default |
+|---|---|
+| `CLICKUP_STATUS_NEEDS_ASSIGNED` | `to do` |
+| `CLICKUP_STATUS_ASSIGNED` | `to do` |
+| `CLICKUP_STATUS_IN_PROGRESS` | `in progress` |
+| `CLICKUP_STATUS_PAUSED`, `_NEEDS_QA`, `_IN_QA`, `_APPROVED` | empty (not written) |
+| `CLICKUP_STATUS_COMPLETED` | `complete` |
+
+If "needs assigned" and "assigned" share a name (the default), the board cannot tell them apart. Give them different names in your list if you want the distinction.
+
 ## What is still Plaky-only
 
 Plaky has board schemas, custom fields and per-board placement that ClickUp does not model the same way. These still call `PlakyClient` directly and are not provider-neutral yet:
 
-- GitHub webhook sync (issue and PR handlers), PR status transitions and QA assignment
+- GitHub **PR** and **review** handlers, PR status transitions, PR-to-task linking and nudges (issue handlers are done, see above)
 - The planning and huddle code and board-schema helpers
 - Scan task creation
 

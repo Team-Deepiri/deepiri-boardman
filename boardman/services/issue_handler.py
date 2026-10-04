@@ -25,6 +25,7 @@ from boardman.services.sync_state import (
     status_intent_would_regress,
 )
 from boardman.settings import settings
+from boardman.task_provider import active_provider
 
 _log = logging.getLogger(__name__)
 
@@ -245,6 +246,10 @@ async def handle_issue_changed(
     event_label: str = "issue_changed",
 ) -> dict[str, Any]:
     """Re-resolve every GitHub-owned issue field after an edit/assignment/label event."""
+    if active_provider() == "clickup":
+        from boardman.services import clickup_issue_sync
+
+        return await clickup_issue_sync.handle_issue_changed(payload, session, event_label=event_label)
     state = resolve_issue_state(
         payload.issue,
         repo_full_name=payload.repository.full_name,
@@ -458,6 +463,10 @@ async def handle_issue_changed(
 
 
 async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession) -> dict:
+    if active_provider() == "clickup":
+        from boardman.services import clickup_issue_sync
+
+        return await clickup_issue_sync.handle_issue_opened(payload, session)
     repo_name = payload.repository.name
     issue_number = payload.issue.number
 
@@ -861,6 +870,10 @@ async def _issue_status_transition(
 
 async def handle_issue_closed(payload: IssueEventPayload, session: AsyncSession) -> dict:
     """GitHub issue closed → Completed, remembering the status it held for a reopen."""
+    if active_provider() == "clickup":
+        from boardman.services import clickup_issue_sync
+
+        return await clickup_issue_sync.handle_issue_closed(payload, session)
     n = payload.issue.number
     return await _issue_status_transition(
         payload,
@@ -882,6 +895,10 @@ async def handle_issue_reopened(payload: IssueEventPayload, session: AsyncSessio
     (legacy closes), derive from the current GitHub assignee: owner → Assigned,
     nobody → NEEDS ASSIGNED. Never a blanket In Progress.
     """
+    if active_provider() == "clickup":
+        from boardman.services import clickup_issue_sync
+
+        return await clickup_issue_sync.handle_issue_reopened(payload, session)
     n = payload.issue.number
     repo_name = payload.repository.name
     has_owner = bool(_issue_assignee_login(payload.issue))
