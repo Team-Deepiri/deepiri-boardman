@@ -5,12 +5,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
+import httpx
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from boardman import task_provider
+from boardman.clickup.client import ClickUpClient
 from boardman.database.models import Base, IssueTaskMap, PullRequestTaskLink, SyncLog
 from boardman.github.webhooks import (
     DeploymentStatusEventPayload,
@@ -90,28 +92,23 @@ def world(monkeypatch):
     monkeypatch.setattr("boardman.github.pr_actions.request_reviewers", reviewers)
     monkeypatch.setattr("boardman.github.pr_actions.has_qa_assignment_comment", has_comment)
     monkeypatch.setattr(ph.settings, "pr_task_sync_skip_bot_authors", False, raising=False)
-    # The sync functions build their own client; route it to the fake.
-    monkeypatch.setattr(sync, "ClickUpClient", lambda: fake.client())
-    monkeypatch.setattr(
-        "boardman.clickup.client.ClickUpClient.__init__", _init_for(fake), raising=True
-    )
-    return SimpleNamespace(fake=fake, gh=gh, picks=picks, client=fake.client())
+    # The handlers build their own client; route every construction to the fake.
+    bound = _bound_client_class(fake)
+    monkeypatch.setattr(sync, "ClickUpClient", bound)
+    monkeypatch.setattr("boardman.clickup.client.ClickUpClient", bound)
+    return SimpleNamespace(fake=fake, gh=gh, picks=picks, client=bound())
 
 
-def _init_for(fake):
-    original = __import__(
-        "boardman.clickup.client", fromlist=["ClickUpClient"]
-    ).ClickUpClient.__init__
+def _bound_client_class(fake: FakeClickUp) -> type[ClickUpClient]:
+    """A ClickUpClient that always talks to ``fake``, however and wherever it is constructed."""
 
-    def init(self, *a, **kw):
-        original(
-            self,
-            "tok",
-            "https://cu.test/api/v2",
-            transport=__import__("httpx").MockTransport(fake.handler),
-        )
+    class _Bound(ClickUpClient):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(
+                "tok", "https://cu.test/api/v2", transport=httpx.MockTransport(fake.handler)
+            )
 
-    return init
+    return _Bound
 
 
 @pytest_asyncio.fixture()
@@ -465,7 +462,7 @@ async def test_a_failed_completion_is_retried_not_remembered_as_done(world, db):
     await ph.handle_pr_opened(_pr(), db)
     real = world.fake.handler
     world.fake.handler = lambda req: (
-        __import__("httpx").Response(500, text="down") if req.method == "PUT" else real(req)
+        httpx.Response(500, text="down") if req.method == "PUT" else real(req)
     )
     merged = _pr("closed", state="closed", merged=True)
     r = await ph.handle_pr_merged(merged, db)
