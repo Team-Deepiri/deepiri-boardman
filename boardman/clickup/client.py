@@ -13,10 +13,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
 
+from boardman.github.http import shared_clickup_client
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -25,6 +28,29 @@ _PRIORITY = {"urgent": 1, "critical": 1, "high": 2, "medium": 3, "normal": 3, "l
 _PRIORITY_LABEL = {1: "urgent", 2: "high", 3: "normal", 4: "low"}
 _TRANSIENT = frozenset({500, 502, 503, 504})
 _PAGE_CAP = 20  # 100 tasks per page, so at most 2,000 tasks per call
+
+
+def retry_delay(
+    status: int | None,
+    retry_after: str,
+    attempt: int,
+    retries: int,
+    *,
+    idempotent: bool,
+) -> float | None:
+    """Seconds to wait before retrying, or None to stop.
+
+    ``status`` is None for a network error. Shared by the async and blocking request loops so
+    the retry rules cannot drift apart. POST is never retried on a network error or a 5xx, so a
+    blip cannot double-create a task; a 429 is always safe to retry.
+    """
+    if attempt >= retries:
+        return None
+    if status == 429:
+        return float(min(int(retry_after), 30)) if retry_after.isdigit() else 2.0
+    if (status is None or status in _TRANSIENT) and idempotent:
+        return 0.5 * (2**attempt)
+    return None
 
 
 def clickup_priority(value: str | int | None) -> int | None:
@@ -85,27 +111,45 @@ class ClickUpClient:
         idempotent = method.upper() != "POST"
         url = f"{self.base_url}{path}"
         response: httpx.Response | None = None
-        async with httpx.AsyncClient(transport=self._transport, timeout=self.timeout) as client:
+        async with self._http() as client:
             for attempt in range(retries + 1):
                 try:
                     response = await client.request(
-                        method, url, headers=self._headers(), json=json, params=params
+                        method,
+                        url,
+                        headers=self._headers(),
+                        json=json,
+                        params=params,
+                        timeout=self.timeout,
                     )
                 except httpx.RequestError:
-                    if not idempotent or attempt == retries:
+                    delay = retry_delay(None, "", attempt, retries, idempotent=idempotent)
+                    if delay is None:
                         raise
-                    await asyncio.sleep(0.5 * (2**attempt))
+                    await asyncio.sleep(delay)
                     continue
-                if response.status_code == 429 and attempt < retries:
-                    reset = response.headers.get("Retry-After") or ""
-                    await asyncio.sleep(min(int(reset), 30) if reset.isdigit() else 2)
-                    continue
-                if response.status_code in _TRANSIENT and idempotent and attempt < retries:
-                    await asyncio.sleep(0.5 * (2**attempt))
-                    continue
-                return response
+                delay = retry_delay(
+                    response.status_code,
+                    response.headers.get("Retry-After") or "",
+                    attempt,
+                    retries,
+                    idempotent=idempotent,
+                )
+                if delay is None:
+                    return response
+                await asyncio.sleep(delay)
         assert response is not None
         return response
+
+    @asynccontextmanager
+    async def _http(self) -> AsyncIterator[httpx.AsyncClient]:
+        """The pooled per-loop client; a test transport gets a throwaway client instead."""
+        if self._transport is not None:
+            async with httpx.AsyncClient(transport=self._transport) as client:
+                yield client
+        else:
+            async with shared_clickup_client() as client:
+                yield client
 
     @staticmethod
     def _failure(response: httpx.Response, what: str) -> dict[str, Any]:
