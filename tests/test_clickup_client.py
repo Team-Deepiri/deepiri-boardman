@@ -7,7 +7,7 @@ import json
 import httpx
 import pytest
 
-from boardman.clickup.client import ClickUpClient, clickup_priority
+from boardman.clickup.client import ClickUpClient
 
 
 def _client(handler, **kw) -> ClickUpClient:
@@ -18,15 +18,15 @@ def _client(handler, **kw) -> ClickUpClient:
 
 
 def test_priority_mapping():
-    assert clickup_priority("urgent") == 1
-    assert clickup_priority("High") == 2
-    assert clickup_priority("medium") == 3
-    assert clickup_priority("low") == 4
-    assert clickup_priority(2) == 2
-    assert clickup_priority("3") == 3
-    assert clickup_priority("nonsense") is None
-    assert clickup_priority(None) is None
-    assert clickup_priority(9) is None
+    assert ClickUpClient.priority("urgent") == 1
+    assert ClickUpClient.priority("High") == 2
+    assert ClickUpClient.priority("medium") == 3
+    assert ClickUpClient.priority("low") == 4
+    assert ClickUpClient.priority(2) == 2
+    assert ClickUpClient.priority("3") == 3
+    assert ClickUpClient.priority("nonsense") is None
+    assert ClickUpClient.priority(None) is None
+    assert ClickUpClient.priority(9) is None
 
 
 async def test_missing_token_fails_cleanly():
@@ -298,3 +298,25 @@ async def test_default_client_uses_the_shared_pool_and_never_closes_it(monkeypat
     assert (await c.get_task("t"))["ok"] and (await c.get_task("t"))["ok"]
     assert len(entered) == 2 and not shared.is_closed
     await shared.aclose()
+
+
+def test_priority_label_round_trips():
+    assert ClickUpClient.priority_label(1) == "urgent" and ClickUpClient.priority_label(4) == "low"
+    assert ClickUpClient.priority_label(None) is None and ClickUpClient.priority_label(0) is None
+
+
+def test_default_workspace_choice_is_logged_not_silent(caplog):
+    teams = [{"id": "1", "name": "Alpha"}, {"id": "2", "name": "Beta"}]
+    with caplog.at_level("WARNING", logger="boardman.clickup.client"):
+        chosen = ClickUpClient("t", "https://cu.test", team_id="")._choose_team(teams)
+    assert (
+        chosen["id"] == "1"
+        and "CLICKUP_TEAM_ID is not set" in caplog.text
+        and "'Alpha'" in caplog.text
+    )
+    caplog.clear()
+    with caplog.at_level("WARNING", logger="boardman.clickup.client"):
+        assert ClickUpClient("t", "https://cu.test", team_id="2")._choose_team(teams)["id"] == "2"
+        assert not caplog.text
+        ClickUpClient("t", "https://cu.test", team_id="9")._choose_team(teams)
+    assert "not among this token's workspaces" in caplog.text

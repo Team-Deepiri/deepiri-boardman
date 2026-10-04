@@ -53,23 +53,23 @@ def retry_delay(
     return None
 
 
-def clickup_priority(value: str | int | None) -> int | None:
-    """Map Boardman/Plaky priority names (or 1-4) to ClickUp's integer priority."""
-    if value is None or value == "":
-        return None
-    if isinstance(value, int):
-        return value if 1 <= value <= 4 else None
-    text = str(value).strip().lower()
-    if text.isdigit():
-        return clickup_priority(int(text))
-    return _PRIORITY.get(text)
-
-
-def clickup_priority_label(value: int | None) -> str | None:
-    return _PRIORITY_LABEL.get(value) if value else None
-
-
 class ClickUpClient:
+    @staticmethod
+    def priority(value: str | int | None) -> int | None:
+        """Map Boardman/Plaky priority names (or 1-4) to ClickUp's integer priority."""
+        if value is None or value == "":
+            return None
+        if isinstance(value, int):
+            return value if 1 <= value <= 4 else None
+        text = str(value).strip().lower()
+        if text.isdigit():
+            return ClickUpClient.priority(int(text))
+        return _PRIORITY.get(text)
+
+    @staticmethod
+    def priority_label(value: int | None) -> str | None:
+        return _PRIORITY_LABEL.get(value) if value else None
+
     def __init__(
         self,
         api_token: str | None = None,
@@ -231,7 +231,7 @@ class ClickUpClient:
                 "message": "A ClickUp list id is required (board_id or CLICKUP_DEFAULT_LIST_ID).",
             }
         body: dict[str, Any] = {"name": title, "description": description or ""}
-        prio = clickup_priority(priority)
+        prio = ClickUpClient.priority(priority)
         if prio:
             body["priority"] = prio
         if status:
@@ -366,7 +366,7 @@ class ClickUpClient:
             body["name"] = title
         if description is not None:
             body["description"] = description
-        prio = clickup_priority(priority)
+        prio = ClickUpClient.priority(priority)
         if prio:
             body["priority"] = prio
         if status is not None:
@@ -395,10 +395,26 @@ class ClickUpClient:
 
     # -- workspace --------------------------------------------------------------------------
 
+    def _choose_team(self, teams: list[dict[str, Any]]) -> dict[str, Any]:
+        """The configured workspace (CLICKUP_TEAM_ID). With none configured, the first one the API
+        returns, with a warning when there is more than one so the choice is never silent."""
+        wanted = str(self.team_id or "").strip()
+        if wanted:
+            found = next((t for t in teams if str(t.get("id")) == wanted), None)
+            if found:
+                return found
+            _log.warning("CLICKUP_TEAM_ID %s is not among this token's workspaces", wanted)
+        if len(teams) > 1 and not wanted:
+            _log.warning(
+                "CLICKUP_TEAM_ID is not set and the token can see %d workspaces; using %r. "
+                "Set CLICKUP_TEAM_ID to choose one.",
+                len(teams),
+                teams[0].get("name") or teams[0].get("id"),
+            )
+        return teams[0] if teams else {}
+
     def _users_from_teams(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
-        teams = payload.get("teams") or []
-        team = next((t for t in teams if str(t.get("id")) == str(self.team_id)), None)
-        team = team or (teams[0] if teams else {})
+        team = self._choose_team(payload.get("teams") or [])
         users: list[dict[str, Any]] = []
         for member in team.get("members") or []:
             user = member.get("user") if isinstance(member, dict) else None
@@ -477,8 +493,7 @@ class ClickUpClient:
             response = await self._request("GET", "/team")
             if response.status_code != 200:
                 return {**self._failure(response, "list workspaces"), "boards": []}
-            teams = response.json().get("teams") or []
-            team_id = str(teams[0]["id"]) if teams else ""
+            team_id = str(self._choose_team(response.json().get("teams") or []).get("id") or "")
         if not team_id:
             return {"ok": True, "status": 200, "boards": []}
 

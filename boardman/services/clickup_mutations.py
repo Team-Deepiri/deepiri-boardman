@@ -18,6 +18,55 @@ if TYPE_CHECKING:
     from boardman.services.task_mutations import UpdateTaskInput
 
 
+def _engineer_refusal(req: UpdateTaskInput) -> dict[str, Any] | None:
+    """Engineer assignment is not supported yet (it needs the eligibility rules from the webhook
+    sync). Report it; the caller still applies the other fields."""
+    if (req.engineer_plaky_id or "").strip() or req.clear_engineer_assignee:
+        return {
+            "ok": False,
+            "message": "Engineer assignment is not supported on ClickUp yet; the other fields were still applied.",
+        }
+    return None
+
+
+async def _auto_pick_qa(req: UpdateTaskInput) -> tuple[str, dict[str, Any], dict[str, Any] | None]:
+    """Pick QA for ``req.github_repo``. Returns ``(qa_id, operation_record, error_result)``."""
+    repo_in = (req.github_repo or "").strip()
+    if not repo_in:
+        return (
+            "",
+            {},
+            {
+                "ok": False,
+                "status": 400,
+                "message": "github_repo is required when auto_assign_qa is enabled and qa_plaky_id is not provided",
+            },
+        )
+    repo = ensure_github_owner_repo(repo_in)
+    picked, reason = await pick_qa_for_repo(repo, load_team_assignments())
+    record = {
+        "ok": bool((picked or "").strip()),
+        "repo": repo,
+        "picked_qa_user_id": picked,
+        "reason": reason,
+    }
+    if not picked:
+        error = {
+            "ok": False,
+            "status": 400,
+            "message": f"Could not auto-assign QA for repo '{repo}': {reason}",
+        }
+        return "", record, error
+    return str(picked).strip(), record, None
+
+
+def _overall(ops: dict[str, Any]) -> bool:
+    verdicts = [
+        v for k, v in ops.items() if k != "qa_auto_assign" and "ok" in v and not v.get("skipped")
+    ]
+    return all(bool(v["ok"]) for v in verdicts)
+
+
 async def update_clickup_task(
     task_id: str,
     req: UpdateTaskInput,
@@ -39,38 +88,17 @@ async def update_clickup_task(
     c = client or ClickUpClient()
     ops: dict[str, Any] = {}
 
-    engineer_requested = bool((req.engineer_plaky_id or "").strip() or req.clear_engineer_assignee)
-    if engineer_requested:
-        ops["engineer"] = {
-            "ok": False,
-            "message": "Engineer assignment is not supported on ClickUp yet; the other fields were still applied.",
-        }
+    engineer = _engineer_refusal(req)
+    if engineer:
+        ops["engineer"] = engineer
 
     qa_id = (req.qa_plaky_id or "").strip()
     if req.auto_assign_qa and not qa_id:
-        repo_in = (req.github_repo or "").strip()
-        if not repo_in:
-            return {
-                "ok": False,
-                "status": 400,
-                "message": "github_repo is required when auto_assign_qa is enabled and qa_plaky_id is not provided",
-            }
-        repo = ensure_github_owner_repo(repo_in)
-        picked, reason = await pick_qa_for_repo(repo, load_team_assignments())
-        ops["qa_auto_assign"] = {
-            "ok": bool((picked or "").strip()),
-            "repo": repo,
-            "picked_qa_user_id": picked,
-            "reason": reason,
-        }
-        if not picked:
-            return {
-                "ok": False,
-                "status": 400,
-                "message": f"Could not auto-assign QA for repo '{repo}': {reason}",
-                "operations": ops,
-            }
-        qa_id = str(picked).strip()
+        qa_id, record, error = await _auto_pick_qa(req)
+        if record:
+            ops["qa_auto_assign"] = record
+        if error:
+            return {**error, "operations": ops} if ops else error
 
     status = (req.status or "").strip()
     priority = (req.priority or "").strip()
@@ -78,13 +106,8 @@ async def update_clickup_task(
         [status, priority, req.title is not None, req.description is not None, add_assignee_ids]
     )
     if not (wants_fields or qa_id):
-        if engineer_requested:
-            return {
-                "ok": False,
-                "status": 400,
-                "message": ops["engineer"]["message"],
-                "operations": ops,
-            }
+        if engineer:
+            return {"ok": False, "status": 400, "message": engineer["message"], "operations": ops}
         return {"ok": False, "status": 400, "message": "No update fields provided"}
 
     if (req.task_type or "").strip():
@@ -107,7 +130,4 @@ async def update_clickup_task(
     if qa_id:
         ops["qa"] = await c.assign_qa(task_id, qa_id)
 
-    verdicts = [
-        v for k, v in ops.items() if k != "qa_auto_assign" and "ok" in v and not v.get("skipped")
-    ]
-    return {"ok": all(bool(v["ok"]) for v in verdicts), "task_id": task_id, "operations": ops}
+    return {"ok": _overall(ops), "task_id": task_id, "operations": ops}

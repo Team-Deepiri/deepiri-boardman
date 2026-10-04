@@ -43,5 +43,10 @@ async def test_resolve_people_reports_problems_per_role():
             return {"ok": True, "users": USERS}
 
     add, qa, problems = await people.resolve_people(Fake(), "sergio", "ali")
-    assert add == [12] and qa == "" and list(problems) == ["qa"]
-    assert await people.resolve_people(Fake(), "", "") == (None, "", {})
+    assert add == [12] and qa is None and list(problems) == ["qa"]
+    assert await people.resolve_people(Fake(), "", "") == (None, None, {})
+
+
+def test_match_person_can_use_a_prebuilt_id_map():
+    by_id = {u["id"]: u for u in USERS}
+    assert people.match_person("sergio", USERS, users_by_id=by_id)[0]["id"] == "12"

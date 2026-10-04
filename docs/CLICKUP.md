@@ -52,6 +52,9 @@ QA picking is provider-neutral: `pick_qa_for_repo` ranks the GitHub support-team
 
 ## Limits and gaps worth knowing
 
+- **Plaky-only arguments are ignored.** `create_task` and `create_subtask` accept Plaky keyword arguments such as `field_values`, `person_field_keys`, `defer_field_patch` and `group_id` and ignore them, so shared call sites keep working. ClickUp has no equivalent of those fields.
+- **Workspace choice.** If `CLICKUP_TEAM_ID` is not set, the first workspace the token can see is used and a warning is logged when there is more than one. Set `CLICKUP_TEAM_ID` to be explicit.
+
 - `get_tasks` loads at most `CLICKUP_MAX_LIST_PAGES` pages of 100 tasks (default 20, so 2,000). If a list is larger, the result carries `truncated: true` and a message, and a warning is logged. Filter by status for very large lists.
 - ClickUp has no field for a person's GitHub login, so `github_login` is always `None` on ClickUp users. GitHub-to-ClickUp matching uses name and email only (see `boardman/assignment/identity_match.py`), and a manual `member_overrides[login].id` always wins.
 
