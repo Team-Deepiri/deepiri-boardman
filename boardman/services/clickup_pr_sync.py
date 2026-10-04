@@ -377,7 +377,7 @@ async def _assign_qa_for_pr(
 async def _maybe_set_needs_qa(
     c: ClickUpClient, task_id: str, is_draft: bool, *, allow_regression: bool = True
 ) -> dict[str, Any]:
-    if is_draft and settings.plaky_skip_needs_qa_for_draft:
+    if is_draft and settings.skip_needs_qa_for_draft:
         return {"skipped": "draft"}
     return await _set_intent_status(
         c, task_id, "workflow_needs_qa", guard=None if allow_regression else "backwards"
@@ -1135,7 +1135,7 @@ async def handle_pr_merged(
                 )
             results.append({"task_id": task_id, "completed": False, "reason": "weak_link"})
             continue
-        if settings.plaky_complete_when_all_prs_merged and await has_any_open_pr_for_task(
+        if settings.complete_when_all_prs_merged and await has_any_open_pr_for_task(
             session, plaky_task_id=task_id
         ):
             results.append(

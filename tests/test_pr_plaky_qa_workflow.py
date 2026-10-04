@@ -111,7 +111,7 @@ def qa_settings(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr("boardman.repos_config.get_routing_async", _fixed_routing)
     monkeypatch.setattr("boardman.services.pr_review_handler.get_routing_async", _fixed_routing)
     monkeypatch.setattr("boardman.services.pr_task_linking.get_routing_async", _fixed_routing)
-    monkeypatch.setattr(settings, "plaky_complete_when_all_prs_merged", False)
+    monkeypatch.setattr(settings, "complete_when_all_prs_merged", False)
     monkeypatch.setattr(settings, "github_org", "deepiri-org")
 
     # QA-field resolution is now schema-first; provide a board schema so discovery returns

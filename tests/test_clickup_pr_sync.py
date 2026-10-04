@@ -51,8 +51,8 @@ def world(monkeypatch):
         monkeypatch.setattr(sync.settings, f"clickup_status_{name}", value)
     monkeypatch.setattr(sync.settings, "clickup_qa_field_id", "")
     monkeypatch.setattr(task_provider.settings, "task_provider", "clickup")
-    monkeypatch.setattr(sync.settings, "plaky_skip_needs_qa_for_draft", True)
-    monkeypatch.setattr(sync.settings, "plaky_complete_when_all_prs_merged", True)
+    monkeypatch.setattr(sync.settings, "skip_needs_qa_for_draft", True)
+    monkeypatch.setattr(sync.settings, "complete_when_all_prs_merged", True)
 
     members = [
         SimpleNamespace(id=DEV, github_login="dev-ann", display="Ann Dev", roles=["dev"]),

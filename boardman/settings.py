@@ -78,8 +78,14 @@ class Settings(BaseSettings):
     # PR merged → Plaky status. Empty = resolve "Completed" from the board schema
     # (workflow_completed intent). Set a literal label/id to override.
     plaky_pr_merge_status: str = ""
-    # When true, set `plaky_pr_merge_status` only after every linked PR is merged (or withdrawn).
-    plaky_complete_when_all_prs_merged: bool = True
+    # When true, complete a task only after every linked PR is merged (or withdrawn). Applies to
+    # both providers; the old PLAKY_ env name still works.
+    complete_when_all_prs_merged: bool = Field(
+        True,
+        validation_alias=AliasChoices(
+            "COMPLETE_WHEN_ALL_PRS_MERGED", "PLAKY_COMPLETE_WHEN_ALL_PRS_MERGED"
+        ),
+    )
     # QA workflow (GitHub → Plaky). Empty = skip that transition (set to your board status keys).
     plaky_pr_needs_qa_status: str = ""
     plaky_pr_in_qa_status: str = ""
@@ -89,7 +95,11 @@ class Settings(BaseSettings):
     # used before team_assignments.yml; when both empty, Boardman discovers a QA-ish person field from the board schema.
     plaky_qa_item_field_key: str = ""
     # Do not move draft PRs to Needs QA until ready_for_review (if needs_qa status is configured).
-    plaky_skip_needs_qa_for_draft: bool = True
+    # Applies to both providers; the old PLAKY_ env name still works.
+    skip_needs_qa_for_draft: bool = Field(
+        True,
+        validation_alias=AliasChoices("SKIP_NEEDS_QA_FOR_DRAFT", "PLAKY_SKIP_NEEDS_QA_FOR_DRAFT"),
+    )
     # After any automated Plaky status change, enqueue SQLite job to reorder items in default board/group.
     plaky_reorder_after_status_change: bool = False
     # Comma-separated substrings (case-insensitive) marking Plaky item status as “done” for reorder heuristics.

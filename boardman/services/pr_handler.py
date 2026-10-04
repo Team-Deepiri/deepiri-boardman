@@ -547,7 +547,7 @@ async def _maybe_set_needs_qa(
                 status_field_key, st = resolved[0], resolved[1]
     if not st:
         return
-    if is_draft and settings.plaky_skip_needs_qa_for_draft:
+    if is_draft and settings.skip_needs_qa_for_draft:
         return
     if not allow_regression and not bid:
         # Nothing to read the task's position from. With PLAKY_STATUS_NEEDS_QA configured
@@ -2467,7 +2467,7 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
                 )
             results.append({"task_id": task_id, "completed": False, "reason": "weak_link"})
             continue
-        if settings.plaky_complete_when_all_prs_merged and await has_any_open_pr_for_task(
+        if settings.complete_when_all_prs_merged and await has_any_open_pr_for_task(
             session, plaky_task_id=task_id
         ):
             results.append(
