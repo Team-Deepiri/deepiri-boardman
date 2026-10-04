@@ -67,6 +67,8 @@ class Settings(BaseSettings):
     clickup_status_needs_qa: str = ""
     clickup_status_in_qa: str = ""
     clickup_status_approved: str = ""
+    clickup_status_changes_requested: str = ""
+    clickup_status_deployed: str = ""
     clickup_status_completed: str = "complete"
     # Most pages (100 tasks each) one list call will load before reporting truncation.
     clickup_max_list_pages: int = 20

@@ -29,6 +29,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.clickup.client import ClickUpClient
 from boardman.clickup.statuses import intent_for_status, status_for_intent
+from boardman.clickup.task_view import (
+    TYPE_TAG_PREFIX,
+    current_assignees,
+    current_status,
+    current_type_tags,
+    user_ids,
+)
 from boardman.database.models import IssueTaskMap, SyncLog
 from boardman.github.webhooks import IssueEventPayload
 from boardman.repos_config import get_routing_async
@@ -47,9 +54,6 @@ from boardman.services.sync_state import (
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
-
-TYPE_TAG_PREFIX = "type:"
-
 
 # -- helpers ---------------------------------------------------------------------------------
 
@@ -95,24 +99,6 @@ async def _resolve_engineer(login: str) -> str:
     resolved = str(found).strip() if found else ""
     kept, _reason = filter_developer(resolved)
     return kept
-
-
-def _user_ids(user_id: str) -> list[int] | None:
-    return [int(user_id)] if str(user_id).strip().isdigit() else None
-
-
-def _current_status(task: dict[str, Any]) -> str:
-    status = task.get("status")
-    return str(status.get("status") if isinstance(status, dict) else status or "").strip()
-
-
-def _current_assignees(task: dict[str, Any]) -> list[str]:
-    return [str(a.get("id")) for a in task.get("assignees") or [] if isinstance(a, dict)]
-
-
-def _current_type_tags(task: dict[str, Any]) -> list[str]:
-    names = [str(t.get("name") or "") for t in task.get("tags") or [] if isinstance(t, dict)]
-    return [n for n in names if n.startswith(TYPE_TAG_PREFIX)]
 
 
 def _mapped_id(mapping: IssueTaskMap | None) -> str:
@@ -197,7 +183,7 @@ async def handle_issue_opened(
         state.priority.lower(),
         board_id=list_id,
         status=status or None,
-        assignee_ids=_user_ids(engineer_id),
+        assignee_ids=user_ids(engineer_id),
         tags=_tags(state),
     )
     if not result.get("ok"):
@@ -280,7 +266,7 @@ async def handle_issue_changed(
     # Fill-only on events that merely carry the issue's assignee (a label edit includes the whole
     # issue): never undo a lead's manual reassignment. Only an ownership event may replace owners.
     push_engineer = engineer_id
-    if push_engineer and not owns_assignment and (not readable or _current_assignees(task)):
+    if push_engineer and not owns_assignment and (not readable or current_assignees(task)):
         push_engineer = ""
 
     status_value = ""
@@ -289,9 +275,9 @@ async def handle_issue_changed(
         intent = issue_status_intent(state, engineer_plaky_id=engineer_id)
         status_value = status_for_intent(intent)
         if status_value and owns_assignment and not repairing and state.state != "closed":
-            now_at = intent_for_status(_current_status(task)) if readable else UNREADABLE_STATUS
+            now_at = intent_for_status(current_status(task)) if readable else UNREADABLE_STATUS
             if status_intent_would_regress(now_at, intent):
-                status_held_back = _current_status(task) or now_at
+                status_held_back = current_status(task) or now_at
                 status_value = ""
                 if now_at == UNREADABLE_STATUS:
                     # Apply the whole ownership event or none of it: a developer written without
@@ -304,8 +290,8 @@ async def handle_issue_changed(
     remove_ids: list[int] = []
     if payload.action == "unassigned" and payload.assignee:
         removed = await _resolve_engineer(str((payload.assignee or {}).get("login") or ""))
-        remove_ids = _user_ids(removed) or []
-    add_ids = _user_ids(push_engineer)
+        remove_ids = user_ids(removed) or []
+    add_ids = user_ids(push_engineer)
 
     update_kwargs: dict[str, Any] = {}
     if sync_text and title != task.get("name"):
@@ -319,11 +305,11 @@ async def handle_issue_changed(
             update_kwargs["priority"] = state.priority
     elif (state.priority_explicit or repairing) and not readable:
         update_kwargs["priority"] = state.priority
-    if status_value and status_value.casefold() != _current_status(task).casefold():
+    if status_value and status_value.casefold() != current_status(task).casefold():
         update_kwargs["status"] = status_value
-    if add_ids and not set(map(str, add_ids)) <= set(_current_assignees(task)):
+    if add_ids and not set(map(str, add_ids)) <= set(current_assignees(task)):
         update_kwargs["add_assignee_ids"] = add_ids
-    if remove_ids and set(map(str, remove_ids)) & set(_current_assignees(task)):
+    if remove_ids and set(map(str, remove_ids)) & set(current_assignees(task)):
         update_kwargs["remove_assignee_ids"] = remove_ids
 
     mutation: dict[str, Any] = {"ok": True, "skipped": True}
@@ -339,7 +325,7 @@ async def handle_issue_changed(
         and payload.action in ("edited", "labeled", "unlabeled", "typed", "untyped")
         or (wanted_tag and event_label == "issue_opened_reconciled")
     ):
-        have = _current_type_tags(task)
+        have = current_type_tags(task)
         if wanted_tag not in have:
             type_ops.append(await c.add_tag(task_id, wanted_tag))
         for stale in have:
@@ -434,7 +420,7 @@ async def _transition(
     if capture_previous:
         got = await c.get_task(task_id)
         if got.get("ok"):
-            previous = _current_status(got["task"])
+            previous = current_status(got["task"])
         if previous.casefold() == target.casefold():
             previous = ""  # already at the target; nothing worth resuming
 

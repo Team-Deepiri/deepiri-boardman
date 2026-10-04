@@ -924,7 +924,7 @@ async def test_a_closed_pr_event_does_not_revive_anything(db_session, workflow) 
 
     payload = _pr("no issue reference")
     payload.pull_request.state = "closed"
-    await ph._ensure_links_live(payload, db_session)
+    await ph.ensure_links_live(payload, db_session)
 
     assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == []
 
@@ -1000,7 +1000,7 @@ async def test_a_payload_without_a_state_does_not_revive(db_session, workflow) -
 
     payload = _pr("no reference")
     payload.pull_request.state = ""
-    await ph._ensure_links_live(payload, db_session)
+    await ph.ensure_links_live(payload, db_session)
 
     assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == []
 
@@ -1024,7 +1024,7 @@ async def test_a_merged_pr_does_not_revive(db_session, workflow) -> None:
 
     payload = _pr("no reference")
     payload.pull_request.merged = True
-    await ph._ensure_links_live(payload, db_session)
+    await ph.ensure_links_live(payload, db_session)
 
     assert await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88) == []
 
@@ -1572,7 +1572,7 @@ async def test_a_stale_open_snapshot_does_not_revive_a_closed_pr(db_session, wor
     stale = _pr("Fixes #94")
     stale.pull_request.state = "open"
     stale.pull_request.closed_at = "2026-08-20T11:04:00Z"
-    await ph._ensure_links_live(stale, db_session)
+    await ph.ensure_links_live(stale, db_session)
 
     live = await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88)
     assert live == [], "a delivery from before the close brought the link back"
@@ -1581,7 +1581,7 @@ async def test_a_stale_open_snapshot_does_not_revive_a_closed_pr(db_session, wor
     fresh = _pr("Fixes #94")
     fresh.pull_request.state = "open"
     fresh.pull_request.closed_at = None
-    await ph._ensure_links_live(fresh, db_session)
+    await ph.ensure_links_live(fresh, db_session)
     live = await task_ids_for_open_pr(db_session, github_repo=REPO, github_pr_number=88)
     assert live == [TASK_94]
 

@@ -19,6 +19,8 @@ _INTENT_SETTINGS: tuple[tuple[str, str], ...] = (
     ("workflow_needs_qa_again", "clickup_status_needs_qa"),
     ("workflow_in_qa", "clickup_status_in_qa"),
     ("github_pr_review_approved", "clickup_status_approved"),
+    ("github_pr_review_changes_requested", "clickup_status_changes_requested"),
+    ("workflow_deployed", "clickup_status_deployed"),
     ("workflow_completed", "clickup_status_completed"),
 )
 
