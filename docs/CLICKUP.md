@@ -40,7 +40,7 @@ These are wired through `boardman/task_provider.py` into `GET /tasks`, `GET /tas
 Plaky has board schemas, custom fields and per-board placement that ClickUp does not model the same way. These still call `PlakyClient` directly and are not provider-neutral yet:
 
 - GitHub webhook sync (issue and PR handlers), PR status transitions and QA assignment
-- `PATCH /tasks/{id}` (`update_task_internal`)
+- `PATCH /tasks/{id}` (`update_task_internal`): returns HTTP 501 on ClickUp in this PR instead of writing Plaky fields
 - Agent tools, the planning and huddle code, and board-schema helpers
 - Scan task creation
 
