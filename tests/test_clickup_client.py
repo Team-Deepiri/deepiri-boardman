@@ -120,7 +120,7 @@ async def test_get_tasks_open_excludes_closed_and_paginates():
         return httpx.Response(200, json={"tasks": rows, "last_page": n == 1})
 
     r = await _client(handler).get_tasks("open")
-    assert r["ok"] and len(r["tasks"]) == 103
+    assert r["ok"] and len(r["tasks"]) == 103 and r["truncated"] is False
     assert r["tasks"][0]["status_name"] == "to do"
     assert [p["page"] for p in pages] == ["0", "1"]
 
@@ -252,6 +252,7 @@ async def test_get_tasks_warns_when_page_cap_is_hit(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="boardman.clickup.client"):
         r = await _client(handler).get_tasks("all")
     assert r["ok"] and len(r["tasks"]) == 200
+    assert r["truncated"] is True and "only the first 200" in r["message"]
     assert "truncated" in caplog.text
 
 
