@@ -28,6 +28,13 @@ def test_assignee_ids_are_integers_or_none():
     assert people.assignee_ids({"id": "12"}) == [12]
     assert people.assignee_ids({"id": "abc"}) is None
     assert people.assignee_ids(None) is None
+    assert people.assignee_ids({}) is None  # no id key must not raise
+
+
+def test_match_floor_comes_from_settings(monkeypatch):
+    monkeypatch.setattr(people.settings, "clickup_person_match_min_score", 900)
+    user, problem = people.match_person("sergio", USERS)
+    assert user is None and "no workspace member" in problem
 
 
 async def test_resolve_people_reports_problems_per_role():

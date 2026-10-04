@@ -55,7 +55,12 @@ def _client_for_loop(pool: dict[Any, httpx.AsyncClient]) -> httpx.AsyncClient:
     loop = asyncio.get_running_loop()
     c = pool.get(loop)
     if c is None or c.is_closed:
-        kind = "github" if pool is _gh_clients else "plaky" if pool is _plaky_clients else "clickup"
+        if pool is _gh_clients:
+            kind = "github"
+        elif pool is _plaky_clients:
+            kind = "plaky"
+        else:
+            kind = "clickup"
         c = httpx.AsyncClient(
             verify=_ssl(),
             # read=90s is the largest budget any current call site used; shrinking it

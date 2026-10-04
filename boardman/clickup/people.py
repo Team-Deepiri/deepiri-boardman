@@ -10,6 +10,7 @@ from typing import Any
 
 from boardman.clickup.client import ClickUpClient
 from boardman.plaky.name_match import rank_rows_by_name
+from boardman.settings import settings
 
 
 async def workspace_users(client: ClickUpClient) -> list[dict[str, Any]]:
@@ -17,7 +18,9 @@ async def workspace_users(client: ClickUpClient) -> list[dict[str, Any]]:
     return r.get("users") or [] if r.get("ok") else []
 
 
-def rank_users(query: str, users: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], Any]:
+def rank_users(
+    query: str, users: list[dict[str, Any]]
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
     """Rank members by how well name and email match ``query`` (``(ranked, best)``)."""
     rows = [
         {"id": u["id"], "name": f"{u.get('name') or ''} {u.get('email') or ''}".strip()}
@@ -32,18 +35,20 @@ def match_person(query: str, users: list[dict[str, Any]]) -> tuple[dict[str, Any
     if not q:
         return None, ""
     ranked, best = rank_users(q, users)
-    strong = [r for r in ranked if r["score"] >= 400]
+    floor = settings.clickup_person_match_min_score
+    strong = [r for r in ranked if r["score"] >= floor]
     if len(strong) > 1 and strong[0]["score"] == strong[1]["score"]:
         names = ", ".join(r["name"] for r in strong[:4])
         return None, f"'{q}' is ambiguous: {names}"
-    if not best:
+    if not best or best["score"] < floor:
         return None, f"no workspace member matches '{q}'"
     return next((u for u in users if u["id"] == best["id"]), None), ""
 
 
 def assignee_ids(user: dict[str, Any] | None) -> list[int] | None:
     """ClickUp wants integer user ids in assignee lists."""
-    return [int(user["id"])] if user and str(user["id"]).isdigit() else None
+    uid = str((user or {}).get("id", ""))
+    return [int(uid)] if uid.isdigit() else None
 
 
 async def resolve_people(

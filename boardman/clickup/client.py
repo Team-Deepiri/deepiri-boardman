@@ -91,8 +91,10 @@ class ClickUpClient:
 
     # -- plumbing ---------------------------------------------------------------------------
 
-    def _missing_token(self) -> dict[str, Any]:
-        return {"ok": False, "status": 400, "message": "CLICKUP_API_TOKEN is missing."}
+    def _missing_token(self, **empty: Any) -> dict[str, Any]:
+        """The one error shape for a missing token. ``empty`` adds empty collections (such as
+        ``users=[]``) so list-returning methods keep their usual keys."""
+        return {"ok": False, "status": 400, "message": "CLICKUP_API_TOKEN is missing.", **empty}
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": self.api_token, "Content-Type": "application/json"}
@@ -415,7 +417,7 @@ class ClickUpClient:
     async def list_workspace_users(self) -> dict[str, Any]:
         """Members of the configured workspace (CLICKUP_TEAM_ID, else the first workspace)."""
         if not self.api_token:
-            return {**self._missing_token(), "users": []}
+            return self._missing_token(users=[])
         response = await self._request("GET", "/team")
         if response.status_code != 200:
             return {**self._failure(response, "list workspaces"), "users": []}
@@ -424,7 +426,7 @@ class ClickUpClient:
     def list_workspace_users_sync(self) -> dict[str, Any]:
         """Blocking ``list_workspace_users`` (same result shape) for non-async callers."""
         if not self.api_token:
-            return {**self._missing_token(), "users": []}
+            return self._missing_token(users=[])
         response = self._request_sync("GET", "/team")
         if response.status_code != 200:
             return {**self._failure(response, "list workspaces"), "users": []}
@@ -469,7 +471,7 @@ class ClickUpClient:
     async def list_boards(self) -> dict[str, Any]:
         """All lists (the ClickUp equivalent of boards), across spaces, folders and folderless."""
         if not self.api_token:
-            return {**self._missing_token(), "boards": []}
+            return self._missing_token(boards=[])
         team_id = (self.team_id or "").strip()
         if not team_id:
             response = await self._request("GET", "/team")
