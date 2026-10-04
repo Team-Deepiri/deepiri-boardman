@@ -165,12 +165,28 @@ async def plaky_create_tasks_job(payload: dict[str, Any]) -> dict[str, Any]:
 
     from boardman.agent.tools.plaky_tools import _plaky_create_tasks
     from boardman.plaky.placement import plaky_placement_context
+    from boardman.task_provider import active_provider
 
     rows = payload.get("tasks") or []
     if not isinstance(rows, list) or not rows:
         return {"ok": False, "error": "no task rows in payload"}
     bid = str(payload.get("board_id") or "").strip()
     gid = str(payload.get("group_id") or "").strip()
+
+    if active_provider() == "clickup":
+        from boardman.agent.tools.clickup_tools import _clickup_create_tasks
+
+        raw = await _clickup_create_tasks(_json.dumps(rows), list_id=bid)
+        try:
+            out = _json.loads(raw)
+        except ValueError:
+            return {"ok": False, "error": str(raw)[:500]}
+        logger.info(
+            "deferred clickup create: %s created, %s already present",
+            out.get("created"),
+            out.get("already_present"),
+        )
+        return out
 
     async with plaky_placement_context(bid or None, gid or None):
         raw = await _plaky_create_tasks(

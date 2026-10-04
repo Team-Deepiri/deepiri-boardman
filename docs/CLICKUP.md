@@ -119,13 +119,19 @@ Extra status settings: `CLICKUP_STATUS_CHANGES_REQUESTED` and `CLICKUP_STATUS_DE
 - **Dev commenting after a verdict** means "revisions in progress", never on a merged PR or a task that is not at a QA verdict. **A dev pinging QA** means "needs QA again". **Anyone saying "pause"** sets `CLICKUP_STATUS_PAUSED` (skipped with a message when it is not set).
 - **Text is mirrored** to every linked task once per wording; an edit updates the record, never the state. Bots and Boardman's own comments are ignored. A comment on a plain issue lands on that issue's task.
 
+## Creating tasks, the CLI and scans (Phase 4)
+
+- **`POST /tasks`, `POST /tasks/{id}/subtasks`, `boardman create-task` and `create-subtask`** go through `create_task_internal` / `create_subtask_internal`, which dispatch to `create_clickup_task` / `create_clickup_subtask` (`services/clickup_mutations.py`). The list is `plaky_board_id` (a ClickUp list id), else the request's placement context, else `CLICKUP_DEFAULT_LIST_ID`. The status follows ownership unless one is named (a named status is used as written). A developer must be eligible. QA is assigned only when named, or when `auto_assign_team` is on and a repo is known. Repo names and the type become tags. `field_values` and `plaky_group_id` have no ClickUp meaning and are ignored. A subtask lands in its parent's list.
+- **CLI:** `list`, `link-pr`, `status`, `sync` and `doctor` use the active provider (`sync` takes a list id for `--board-id` and does not need `--group-id` on ClickUp; `doctor` checks `CLICKUP_API_TOKEN` and the workspace). `plaky-inventory` and `capability-report` read Plaky boards and exit with a clear message on ClickUp.
+- **Scans** (`boardman scan`, `scan-all`, the queued scan job): proposed tasks are filed in the repo's ClickUp list (`clickup_list_id` in `repos.yml`, else `CLICKUP_DEFAULT_LIST_ID`), tagged with the repo name. With neither, nothing is created and the result carries a warning saying why.
+- **Deferred batch creation** (the queued job the Plaky agent uses) runs the ClickUp batch tool, so duplicates are skipped there too.
+
 ## What is still Plaky-only
 
 Plaky has board schemas, custom fields and per-board placement that ClickUp does not model the same way. These still call `PlakyClient` directly and are not provider-neutral yet:
 
 - The fuzzy PR-to-task pipeline and orphan triage (a PR that names no issue with a ClickUp task is skipped), and the review-nudge sweep's board reads (issue, PR, review and comment handlers are done, see above)
-- The planning and huddle code and board-schema helpers
-- Scan task creation
+- The planning and huddle code, the `/plaky/*` discovery routes, `plaky-inventory`, `capability-report`, and board-schema helpers
 
 Moving these over is the next step. It needs a ClickUp equivalent of placement and assignment, so treat it as a separate piece of work.
 
