@@ -243,7 +243,7 @@ def test_timeout_comes_from_settings_and_can_be_overridden(monkeypatch):
 
 
 async def test_get_tasks_warns_when_page_cap_is_hit(monkeypatch, caplog):
-    monkeypatch.setattr("boardman.clickup.client._PAGE_CAP", 2)
+    monkeypatch.setattr("boardman.clickup.client.settings.clickup_max_list_pages", 2)
 
     def handler(req):
         rows = [{"id": f"t{i}", "status": {"status": "to do"}} for i in range(100)]

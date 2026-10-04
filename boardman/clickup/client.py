@@ -27,7 +27,6 @@ _log = logging.getLogger(__name__)
 _PRIORITY = {"urgent": 1, "critical": 1, "high": 2, "medium": 3, "normal": 3, "low": 4}
 _PRIORITY_LABEL = {1: "urgent", 2: "high", 3: "normal", 4: "low"}
 _TRANSIENT = frozenset({500, 502, 503, 504})
-_PAGE_CAP = 20  # 100 tasks per page, so at most 2,000 tasks per call
 
 
 def retry_delay(
@@ -271,9 +270,10 @@ class ClickUpClient:
         if wanted not in ("open", "all", ""):
             base_params.append(("statuses[]", status))
 
+        page_cap = max(1, settings.clickup_max_list_pages)
         tasks: list[dict[str, Any]] = []
         truncated = False
-        for page in range(_PAGE_CAP):
+        for page in range(page_cap):
             response = await self._request(
                 "GET", f"/list/{list_id}/task", params=[*base_params, ("page", page)]
             )
@@ -292,14 +292,14 @@ class ClickUpClient:
             _log.warning(
                 "ClickUp list %s has more than %d pages of tasks; results are truncated at %d",
                 list_id,
-                _PAGE_CAP,
+                page_cap,
                 len(tasks),
             )
         result: dict[str, Any] = {"ok": True, "status": 200, "tasks": tasks, "truncated": truncated}
         if truncated:
             result[
                 "message"
-            ] = f"List has more than {_PAGE_CAP * 100} tasks; only the first {len(tasks)} were loaded."
+            ] = f"List has more than {page_cap * 100} tasks; only the first {len(tasks)} were loaded."
         return result
 
     async def update_task_fields(

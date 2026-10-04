@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     clickup_default_list_id: str = ""
     # Per-request timeout in seconds for ClickUp API calls.
     clickup_api_timeout: float = 20.0
+    # Most pages (100 tasks each) one list call will load before reporting truncation.
+    clickup_max_list_pages: int = 20
 
     plaky_api_key: str = ""
     plaky_api_base: str = "https://api.plaky.com/v1/public"
