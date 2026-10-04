@@ -272,6 +272,7 @@ class ClickUpClient:
             base_params.append(("statuses[]", status))
 
         tasks: list[dict[str, Any]] = []
+        truncated = False
         for page in range(_PAGE_CAP):
             response = await self._request(
                 "GET", f"/list/{list_id}/task", params=[*base_params, ("page", page)]
@@ -287,13 +288,19 @@ class ClickUpClient:
             if payload.get("last_page", len(rows) < 100) or not rows:
                 break
         else:
+            truncated = True
             _log.warning(
                 "ClickUp list %s has more than %d pages of tasks; results are truncated at %d",
                 list_id,
                 _PAGE_CAP,
                 len(tasks),
             )
-        return {"ok": True, "status": 200, "tasks": tasks}
+        result: dict[str, Any] = {"ok": True, "status": 200, "tasks": tasks, "truncated": truncated}
+        if truncated:
+            result[
+                "message"
+            ] = f"List has more than {_PAGE_CAP * 100} tasks; only the first {len(tasks)} were loaded."
+        return result
 
     async def update_task_fields(
         self,
