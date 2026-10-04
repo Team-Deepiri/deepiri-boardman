@@ -125,11 +125,17 @@ async def _clickup_list_tasks(status: str = "all", list_id: str = "") -> str:
         "with_owner_count": owned,
         "tasks": shown,
     }
-    if body["truncated"]:
-        body["note"] = (
-            f"Showing {len(shown)} of {len(tasks)} tasks. Do NOT state that something is absent "
-            "from the list based on this partial view."
+    notes = []
+    if r.get("truncated"):
+        body["truncated"] = True
+        notes.append(str(r.get("message") or "The list is larger than what was loaded."))
+    if len(tasks) > len(shown):
+        notes.append(f"Showing {len(shown)} of {len(tasks)} loaded tasks.")
+    if notes:
+        notes.append(
+            "Do NOT state that something is absent from the list based on this partial view."
         )
+        body["note"] = " ".join(notes)
     return json.dumps(body, default=str)
 
 

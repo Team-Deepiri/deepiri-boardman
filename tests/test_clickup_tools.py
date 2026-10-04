@@ -207,3 +207,25 @@ def test_placement_accessor_is_provider_neutral():
     from boardman.agent import tool_context as tc
 
     assert tc.get_context_placement_id() == tc.get_context_plaky_board_id()
+
+
+async def test_list_tasks_surfaces_api_level_truncation(api, monkeypatch):
+    _, state = api
+    state["existing"] = [{"id": "1", "name": "t", "status": {"status": "to do"}}]
+    real = ct.ClickUpClient.get_tasks
+
+    async def capped(self, *a, **k):
+        r = await real(self, *a, **k)
+        return {
+            **r,
+            "truncated": True,
+            "message": "List has more than 2000 tasks; only the first 1 were loaded.",
+        }
+
+    monkeypatch.setattr(ct.ClickUpClient, "get_tasks", capped)
+    out = json.loads(await ct._clickup_list_tasks("all"))
+    assert (
+        out["truncated"] is True
+        and "more than 2000" in out["note"]
+        and "Do NOT state" in out["note"]
+    )
