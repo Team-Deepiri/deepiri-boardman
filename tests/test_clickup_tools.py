@@ -191,3 +191,19 @@ def test_prompt_notice_names_the_tools_and_placement():
     text = clickup_provider_markdown("L9")
     assert "clickup_create_tasks" in text and "`L9`" in text and "no** board schema" in text
     assert "not set" in clickup_provider_markdown(None)
+
+
+async def test_list_limit_and_concurrency_come_from_settings(api, monkeypatch):
+    _, state = api
+    state["existing"] = [
+        {"id": str(i), "name": f"t{i}", "status": {"status": "to do"}} for i in range(10)
+    ]
+    monkeypatch.setattr(ct.settings, "clickup_list_limit", 3)
+    out = json.loads(await ct._clickup_list_tasks("all"))
+    assert out["returned"] == 3 and out["total"] == 10 and out["truncated"] is True
+
+
+def test_placement_accessor_is_provider_neutral():
+    from boardman.agent import tool_context as tc
+
+    assert tc.get_context_placement_id() == tc.get_context_plaky_board_id()

@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     clickup_default_list_id: str = ""
     # Per-request timeout in seconds for ClickUp API calls.
     clickup_api_timeout: float = 20.0
+    # Agent tools: most tasks returned per list call, and parallel creates per batch.
+    clickup_list_limit: int = 60
+    clickup_create_concurrency: int = 4
 
     plaky_api_key: str = ""
     plaky_api_base: str = "https://api.plaky.com/v1/public"

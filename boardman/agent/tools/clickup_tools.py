@@ -20,9 +20,6 @@ from boardman.clickup.client import ClickUpClient, clickup_priority_label
 from boardman.plaky.name_match import rank_plaky_rows
 from boardman.settings import settings
 
-_LIST_LIMIT = 60
-_CREATE_CONCURRENCY = 4
-
 
 def _client() -> ClickUpClient:
     return ClickUpClient()
@@ -33,11 +30,11 @@ def _dump(obj: Any, limit: int = 12000) -> str:
 
 
 def _resolve_list_id(list_id: str = "") -> str:
-    from boardman.agent.tool_context import get_context_plaky_board_id
+    from boardman.agent.tool_context import get_context_placement_id
 
     return (
         (list_id or "").strip()
-        or (get_context_plaky_board_id() or "").strip()
+        or (get_context_placement_id() or "").strip()
         or (settings.clickup_default_list_id or "").strip()
     )
 
@@ -116,7 +113,7 @@ async def _clickup_list_tasks(status: str = "all", list_id: str = "") -> str:
         key = str(t.get("status_name") or "unknown")
         by_status[key] = by_status.get(key, 0) + 1
         owned += 1 if t.get("assignees") else 0
-    shown = [_slim_task(t) for t in tasks[:_LIST_LIMIT]]
+    shown = [_slim_task(t) for t in tasks[: settings.clickup_list_limit]]
     body: dict[str, Any] = {
         "ok": True,
         "list_id": lid,
@@ -242,7 +239,7 @@ async def _clickup_create_tasks(tasks_json: str, list_id: str = "") -> str:
         if any(isinstance(r, dict) and r.get("assignee") for r in rows)
         else []
     )
-    sem = asyncio.Semaphore(_CREATE_CONCURRENCY)
+    sem = asyncio.Semaphore(max(1, settings.clickup_create_concurrency))
 
     async def run(row: Any) -> dict[str, Any]:
         if not isinstance(row, dict):
