@@ -19,9 +19,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from boardman.main import create_app
+from boardman.name_match import rank_rows_by_name
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
-from boardman.plaky.name_match import rank_rows_by_name
 from boardman.settings import settings
 from tests.plaky_test_board import (
     BOARDMAN_TEST_BOARD_NAME,

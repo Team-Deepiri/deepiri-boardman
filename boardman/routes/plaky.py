@@ -8,10 +8,10 @@ import httpx
 from fastapi import APIRouter
 
 from boardman.llm.ollama_autodetect import NoOllamaModelAvailable
+from boardman.name_match import rank_rows_by_name
 from boardman.observability.degradation import log_degraded
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
-from boardman.plaky.name_match import rank_rows_by_name
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)

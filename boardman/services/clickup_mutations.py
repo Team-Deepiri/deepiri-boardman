@@ -31,6 +31,10 @@ async def update_clickup_task(
     ``github_repo``), and extra assignees. ``task_type`` has no ClickUp equivalent and is
     reported as skipped. Developer (engineer) assignment is reported as not applied (it needs the
     eligibility rules that arrive with the webhook sync) while the other fields still go through.
+
+    The top-level ``ok`` is all-or-nothing: it is False if any requested part failed or was not
+    applied, even when others succeeded. Read ``operations`` for the per-part outcome, for example
+    ``operations.task_fields.ok`` is True while ``operations.engineer.ok`` is False.
     """
     c = client or ClickUpClient()
     ops: dict[str, Any] = {}

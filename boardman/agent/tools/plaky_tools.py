@@ -10,6 +10,7 @@ from langchain_core.tools import StructuredTool
 
 from boardman.assignment.config import infer_plaky_field_keys_from_normalized, load_team_assignments
 from boardman.assignment.qa_picker import build_repo_field_map, normalize_github_repo_inputs
+from boardman.name_match import rank_rows_by_name
 from boardman.observability.degradation import log_degraded
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
@@ -20,7 +21,6 @@ from boardman.plaky.board_schema import (
 )
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.field_coercion import coerce_field_values
-from boardman.plaky.name_match import rank_rows_by_name
 from boardman.plaky.task_tag_vocab import (
     canonical_task_priority,
 )

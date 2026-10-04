@@ -1,4 +1,4 @@
-from boardman.plaky.name_match import rank_rows_by_name
+from boardman.name_match import rank_rows_by_name
 
 
 def test_exact_board_name():

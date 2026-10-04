@@ -17,8 +17,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 
+from boardman.name_match import rank_rows_by_name
 from boardman.observability.degradation import log_unexpected
-from boardman.plaky.name_match import rank_rows_by_name
 from boardman.plaky.plaky_catalog import (
     PlakyBoardEntry,
     PlakyCatalogCache,
