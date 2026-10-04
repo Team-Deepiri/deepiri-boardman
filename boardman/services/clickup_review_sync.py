@@ -85,7 +85,7 @@ async def _assigned_qa_id(
 
 async def _member_id(login: str, user: dict[str, Any]) -> str:
     """The ClickUp id for a GitHub user: the roster first, then the workspace lookup."""
-    from boardman.plaky.dynamic_qa_status import (
+    from boardman.assignment.github_user_resolution import (
         github_actor_payload,
         resolve_github_user_to_user_id,
     )

@@ -78,7 +78,7 @@ def _world(monkeypatch):
         return any(p == pr for p, _ in gh["comments"])
 
     monkeypatch.setattr("boardman.assignment.qa_picker.pick_qa_for_repo", pick)
-    monkeypatch.setattr("boardman.plaky.dynamic_qa_status.resolve_github_user_to_user_id", resolve)
+    monkeypatch.setattr("boardman.assignment.github_user_resolution.resolve_github_user_to_user_id", resolve)
     monkeypatch.setattr(
         "boardman.assignment.developer_eligibility.filter_developer",
         lambda pid, cfg=None: (pid, ""),

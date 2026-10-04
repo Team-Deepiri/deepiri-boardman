@@ -107,11 +107,11 @@ async def _apply_type_and_assignee(
 ) -> dict[str, Any]:
     """Set the type from the PR, and fill the developer (and "assigned") when nobody owns the task."""
     from boardman.assignment.developer_eligibility import filter_developer
-    from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
-    from boardman.plaky.dynamic_qa_status import (
+    from boardman.assignment.github_user_resolution import (
         github_actor_payload,
         resolve_github_user_to_user_id,
     )
+    from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
 
     out: dict[str, Any] = {}
     task = await read_task(c, task_id)
@@ -541,7 +541,7 @@ async def sync_pr_metadata(
 ) -> dict[str, Any]:
     """Re-sync type, priority, developer and (for drafts) status onto every task the PR is linked to."""
     from boardman.assignment.developer_eligibility import filter_developer
-    from boardman.plaky.dynamic_qa_status import (
+    from boardman.assignment.github_user_resolution import (
         github_actor_payload,
         resolve_github_user_to_user_id,
     )
@@ -1106,11 +1106,11 @@ async def handle_pr_review_comment(
     client: ClickUpClient | None = None,
 ) -> dict[str, Any]:
     """Mirror an inline review comment to the linked tasks; the assigned QA's comment means "in QA"."""
-    from boardman.github.pr_actions import is_boardman_comment
-    from boardman.plaky.dynamic_qa_status import (
+    from boardman.assignment.github_user_resolution import (
         github_actor_payload,
         resolve_github_user_to_user_id,
     )
+    from boardman.github.pr_actions import is_boardman_comment
 
     c = client or ClickUpClient()
     repo_name = payload.repository.name
