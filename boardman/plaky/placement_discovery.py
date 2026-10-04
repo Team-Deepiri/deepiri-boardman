@@ -2,7 +2,7 @@
 
 Algorithm (``discover_placement_from_catalog``):
   Scan every group on repo-catalog boards (see ``plaky_catalog.filter_categorical_boards``);
-  fuzzy-match the repo slug to a group name (``rank_plaky_rows``, min score from
+  fuzzy-match the repo slug to a group name (``rank_rows_by_name``, min score from
   ``PLAKY_PLACEMENT_MIN_SCORE``). Highest score wins globally
   (e.g. ``deepiri-boardman`` → Bots / ``deepiri-boardman``).
 
@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 
 from boardman.observability.degradation import log_unexpected
-from boardman.plaky.name_match import rank_plaky_rows
+from boardman.plaky.name_match import rank_rows_by_name
 from boardman.plaky.plaky_catalog import (
     PlakyBoardEntry,
     PlakyCatalogCache,
@@ -47,7 +47,7 @@ class PlacementResult:
     group_name: str
     category: str  # Plaky board display name (same as board_name; not an axiom slug)
     source: str  # group_slug_match
-    score: int  # fuzzy match score from rank_plaky_rows
+    score: int  # fuzzy match score from rank_rows_by_name
 
 
 def _min_auto_score() -> int:
@@ -71,7 +71,7 @@ def _best_group_match(
     min_score: int,
 ) -> tuple[PlakyGroupEntry | None, int]:
     rows = [{"id": g.id, "name": g.name} for g in groups]
-    ranked, best = rank_plaky_rows(rows, query)
+    ranked, best = rank_rows_by_name(rows, query)
     if best and int(best.get("score") or 0) >= min_score:
         gid = str(best.get("id") or "")
         gname = str(best.get("name") or "")

@@ -20,7 +20,7 @@ from boardman.plaky.board_schema import (
 )
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.field_coercion import coerce_field_values
-from boardman.plaky.name_match import rank_plaky_rows
+from boardman.plaky.name_match import rank_rows_by_name
 from boardman.plaky.task_tag_vocab import (
     canonical_task_priority,
 )
@@ -213,7 +213,7 @@ async def _plaky_match_board(name_query: str) -> str:
     boards = raw.get("boards") or []
     if not isinstance(boards, list):
         boards = []
-    matches, best = rank_plaky_rows(boards, name_query)
+    matches, best = rank_rows_by_name(boards, name_query)
     return json.dumps(
         {
             "list_ok": raw.get("ok"),
@@ -246,7 +246,7 @@ async def _plaky_match_group(board_id: str, name_query: str) -> str:
     groups = raw.get("groups") or []
     if not isinstance(groups, list):
         groups = []
-    matches, best = rank_plaky_rows(groups, name_query)
+    matches, best = rank_rows_by_name(groups, name_query)
     return json.dumps(
         {
             "list_ok": raw.get("ok"),
@@ -270,7 +270,7 @@ async def _plaky_list_workspace_users(name_query: str = "") -> str:
             {"ok": r.get("ok"), "message": r.get("message"), "users": users[:200]},
             default=str,
         )[:12000]
-    matches, best = rank_plaky_rows(users, name_query)
+    matches, best = rank_rows_by_name(users, name_query)
     return json.dumps(
         {
             "ok": r.get("ok"),

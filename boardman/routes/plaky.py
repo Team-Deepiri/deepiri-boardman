@@ -11,7 +11,7 @@ from boardman.llm.ollama_autodetect import NoOllamaModelAvailable
 from boardman.observability.degradation import log_degraded
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
-from boardman.plaky.name_match import rank_plaky_rows
+from boardman.plaky.name_match import rank_rows_by_name
 from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
@@ -105,7 +105,7 @@ async def plaky_workspace_users(query: str = "") -> dict:
             "matches": [],
             "best": None,
         }
-    matches, best = rank_plaky_rows(users, query)
+    matches, best = rank_rows_by_name(users, query)
     return {
         "ok": r.get("ok"),
         "message": r.get("message"),
@@ -133,7 +133,7 @@ async def plaky_boards_match(query: str = "") -> dict:
     boards = r.get("boards") or []
     if not isinstance(boards, list):
         boards = []
-    matches, best = rank_plaky_rows(boards, query)
+    matches, best = rank_rows_by_name(boards, query)
     return {
         "ok": r.get("ok"),
         "message": r.get("message"),
@@ -173,7 +173,7 @@ async def plaky_board_groups_match(board_id: str, query: str = "") -> dict:
     groups = r.get("groups") or []
     if not isinstance(groups, list):
         groups = []
-    matches, best = rank_plaky_rows(groups, query)
+    matches, best = rank_rows_by_name(groups, query)
     return {
         "ok": r.get("ok"),
         "message": r.get("message"),

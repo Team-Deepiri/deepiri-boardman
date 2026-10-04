@@ -61,6 +61,3 @@ def rank_rows_by_name(
 
     return ranked, best
 
-
-# Original name, kept for the Plaky callers. The function itself is provider-agnostic.
-rank_plaky_rows = rank_rows_by_name
