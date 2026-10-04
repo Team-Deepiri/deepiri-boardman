@@ -562,7 +562,6 @@ async def _link_or_create_for_orphan_pr(
     """A PR with no issue that has a task: fuzzy-match an existing task, else (when enabled) create one."""
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
-    pr_url = payload.pull_request.html_url
     full_name = payload.repository.full_name
     pipe_top = None
     run = settings.pr_linking_pipeline_enabled and await should_run_pipeline(
@@ -604,65 +603,16 @@ async def _link_or_create_for_orphan_pr(
             else None,
         )
         if pipe.decision in ("auto_link", "llm_link") and pipe.task_id:
-            row = await upsert_pr_task_link(
+            return await _attach_fuzzy_match(
+                payload,
                 session,
-                github_repo=repo_name,
-                github_pr_number=pr_number,
-                plaky_task_id=pipe.task_id,
-                github_issue_number=0,
-                link_source=pipe.decision,
-            )
-            if str(getattr(row, "link_source", "") or "") == _SUPERSEDED_LINK_SOURCE:
-                # Retired when the PR named an issue; a fuzzy match is not the author saying otherwise.
-                await session.commit()
-                return {
-                    "ok": True,
-                    "skipped": True,
-                    "message": "the matched card was superseded by an issue link",
-                }
-            await c.add_comment(
-                pipe.task_id,
-                format_pr_notice_with_url(
-                    headline=(
-                        f"**PR {'Reopened' if is_reopen else 'Opened'}** "
-                        f"(automation link, {pipe.decision}):"
-                    ),
-                    pr_number=pr_number,
-                    pr_url=pr_url,
-                ),
-            )
-            await _apply_type_and_assignee(
                 c,
-                task_id=pipe.task_id,
-                pull_request=payload.pull_request,
-                repo_full=full_name,
-                allow_regression=not is_rerun,
+                pipe,
+                author=str(author or ""),
+                is_draft=is_draft,
+                is_reopen=is_reopen,
+                is_rerun=is_rerun,
             )
-            await _assign_qa_for_pr(
-                c,
-                task_id=pipe.task_id,
-                repo_full=full_name,
-                pr_number=pr_number,
-                pr_author_login=str(author or ""),
-                session=session,
-            )
-            await _maybe_set_needs_qa(c, pipe.task_id, is_draft, allow_regression=not is_rerun)
-            stamp(
-                session,
-                "pr_linked_fuzzy",
-                repo_name,
-                pr_number,
-                pipe.task_id,
-                pr_url=pr_url,
-                pipeline=pipe.decision,
-                score=pipe.score,
-            )
-            await session.commit()
-            return {
-                "ok": True,
-                "linked": [{"task_id": pipe.task_id, "via": pipe.decision}],
-                "pipeline": pipe.decision,
-            }
         await session.commit()
 
     triage = await maybe_triage_ambiguous_pr(
@@ -683,6 +633,83 @@ async def _link_or_create_for_orphan_pr(
         else "No linked issues found and no existing task matched"
     )
     return {"ok": True, "skipped": True, "message": message}
+
+
+async def _attach_fuzzy_match(
+    payload: PullRequestEventPayload,
+    session: AsyncSession,
+    c: ClickUpClient,
+    pipe: Any,
+    *,
+    author: str,
+    is_draft: bool,
+    is_reopen: bool,
+    is_rerun: bool,
+) -> dict[str, Any]:
+    """Link the PR to the task the pipeline matched and run the PR workflow on it."""
+    repo_name = payload.repository.name
+    pr_number = payload.pull_request.number
+    pr_url = payload.pull_request.html_url
+    full_name = payload.repository.full_name
+    row = await upsert_pr_task_link(
+        session,
+        github_repo=repo_name,
+        github_pr_number=pr_number,
+        plaky_task_id=pipe.task_id,
+        github_issue_number=0,
+        link_source=pipe.decision,
+    )
+    if str(getattr(row, "link_source", "") or "") == _SUPERSEDED_LINK_SOURCE:
+        # Retired when the PR named an issue; a fuzzy match is not the author saying otherwise.
+        await session.commit()
+        return {
+            "ok": True,
+            "skipped": True,
+            "message": "the matched card was superseded by an issue link",
+        }
+    await c.add_comment(
+        pipe.task_id,
+        format_pr_notice_with_url(
+            headline=(
+                f"**PR {'Reopened' if is_reopen else 'Opened'}** "
+                f"(automation link, {pipe.decision}):"
+            ),
+            pr_number=pr_number,
+            pr_url=pr_url,
+        ),
+    )
+    await _apply_type_and_assignee(
+        c,
+        task_id=pipe.task_id,
+        pull_request=payload.pull_request,
+        repo_full=full_name,
+        allow_regression=not is_rerun,
+    )
+    await _assign_qa_for_pr(
+        c,
+        task_id=pipe.task_id,
+        repo_full=full_name,
+        pr_number=pr_number,
+        pr_author_login=author,
+        session=session,
+    )
+    await _maybe_set_needs_qa(c, pipe.task_id, is_draft, allow_regression=not is_rerun)
+    stamp(
+        session,
+        "pr_linked_fuzzy",
+        repo_name,
+        pr_number,
+        pipe.task_id,
+        pr_url=pr_url,
+        pipeline=pipe.decision,
+        score=pipe.score,
+    )
+    await session.commit()
+    return {
+        "ok": True,
+        "linked": [{"task_id": pipe.task_id, "via": pipe.decision}],
+        "pipeline": pipe.decision,
+    }
 
 
 async def maybe_triage_ambiguous_pr(
