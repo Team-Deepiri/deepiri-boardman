@@ -16,7 +16,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
-from boardman.clickup.client import ClickUpClient, clickup_priority_label
+from boardman.clickup.client import ClickUpClient
 from boardman.plaky.name_match import rank_plaky_rows
 from boardman.settings import settings
 
@@ -51,7 +51,7 @@ def _slim_task(t: dict[str, Any]) -> dict[str, Any]:
         "status": (t.get("status") or {}).get("status")
         if isinstance(t.get("status"), dict)
         else t.get("status"),
-        "priority": prio.get("priority") or clickup_priority_label(prio.get("id")),
+        "priority": prio.get("priority") or ClickUpClient.priority_label(prio.get("id")),
         "assignees": [
             a.get("username") or a.get("email") or str(a.get("id"))
             for a in (t.get("assignees") or [])
