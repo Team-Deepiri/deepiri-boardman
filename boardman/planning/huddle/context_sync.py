@@ -244,13 +244,14 @@ def _format_pr_links(links: list[PRLinkSummary]) -> list[str]:
     grouped: dict[str, list[PRLinkSummary]] = defaultdict(list)
     for link in links:
         grouped[link.plaky_task_id].append(link)
-    lines = [f"### PR ↔ {_provider()} task links"]
+    label = _provider()
+    lines = [f"### PR ↔ {label} task links"]
     for task_id, group in sorted(grouped.items()):
         parts: list[str] = []
         for link in group:
             status = "merged" if link.merged else ("withdrawn" if link.withdrawn else "open")
             parts.append(f"{link.repo}#{link.pr_number} ({status}, {link.link_source})")
-        lines.append(f"- {_provider()} `{task_id}`: " + "; ".join(parts))
+        lines.append(f"- {label} `{task_id}`: " + "; ".join(parts))
     lines.append("")
     return lines
 
@@ -258,10 +259,11 @@ def _format_pr_links(links: list[PRLinkSummary]) -> list[str]:
 def _format_issue_maps(maps: list[IssueMapSummary]) -> list[str]:
     if not maps:
         return [f"### Issue ↔ {_provider()} mappings", "- None", ""]
-    lines = [f"### Issue ↔ {_provider()} mappings"]
+    label = _provider()
+    lines = [f"### Issue ↔ {label} mappings"]
     for row in maps[:30]:
         url = f" — {row.plaky_task_url}" if row.plaky_task_url else ""
-        lines.append(f"- {row.repo}#{row.issue_number} → {_provider()} `{row.plaky_task_id}`{url}")
+        lines.append(f"- {row.repo}#{row.issue_number} → {label} `{row.plaky_task_id}`{url}")
     if len(maps) > 30:
         lines.append(f"- … and {len(maps) - 30} more")
     lines.append("")
@@ -271,13 +273,14 @@ def _format_issue_maps(maps: list[IssueMapSummary]) -> list[str]:
 def _format_open_tracks(tracks: list[OpenPRTrackSummary]) -> list[str]:
     if not tracks:
         return ["### Open PR tracks (QA pipeline)", "- None", ""]
+    label = _provider()
     lines = ["### Open PR tracks (QA pipeline)"]
     for row in tracks[:25]:
         title = row.pr_title or "untitled"
         url = f" — {row.pr_url}" if row.pr_url else ""
         lines.append(
             f"- {row.repo_full_name}#{row.pr_number} — {title} — "
-            f"{_provider()} `{row.plaky_item_id}`{url}"
+            f"{label} `{row.plaky_item_id}`{url}"
         )
     if len(tracks) > 25:
         lines.append(f"- … and {len(tracks) - 25} more")
