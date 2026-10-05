@@ -448,6 +448,7 @@ async def gather_candidates_clickup(
     When the list is this repo's own (``repo_owns_list``), every task in it is the repo's work. A
     shared list only contributes tasks that name the repo or an issue number.
     """
+    from boardman.clickup.client import STATUS_NAME_KEY
     from boardman.clickup.statuses import status_for_intent
 
     by_id = await _db_candidates(session, repo_name)
@@ -480,7 +481,7 @@ async def gather_candidates_clickup(
         title, desc = _item_title_desc(item)
         if not tid:
             continue
-        raw_status = str(item.get("status_name") or "").strip()
+        raw_status = str(item.get(STATUS_NAME_KEY) or "").strip()
         status = known.get(raw_status.casefold(), raw_status) or None
         people = [a for a in item.get("assignees") or [] if isinstance(a, dict)]
         who = people[0] if people else {}

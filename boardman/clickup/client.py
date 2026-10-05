@@ -25,6 +25,9 @@ from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
+# Key under which get_tasks adds a task's status as plain text (ClickUp nests it in a dict).
+STATUS_NAME_KEY = "status_name"
+
 # ClickUp has four priority levels, so "critical" and "urgent" (and "very important") are the same
 # level and read back as "urgent".
 _PRIORITY = {
@@ -299,7 +302,7 @@ class ClickUpClient:
             rows = payload.get("tasks") or []
             for row in rows:
                 if isinstance(row, dict):
-                    row["status_name"] = str((row.get("status") or {}).get("status") or "")
+                    row[STATUS_NAME_KEY] = str((row.get("status") or {}).get("status") or "")
                     tasks.append(row)
             if payload.get("last_page", len(rows) < 100) or not rows:
                 break

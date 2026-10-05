@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any
 
-from boardman.clickup.client import ClickUpClient
+from boardman.clickup.client import STATUS_NAME_KEY, ClickUpClient
 from boardman.planning.huddle.context_plaky import PlakyPlanningContext
 from boardman.planning.huddle.team_plaky_boards import PlakyBoardRef
 from boardman.settings import settings
@@ -25,7 +25,7 @@ def _iso_from_ms(value: object) -> str:
 
 def normalize_task(task: dict[str, Any]) -> dict[str, Any]:
     """A ClickUp task in the shape the shared summary helpers read."""
-    status = task.get("status_name") or (task.get("status") or {}).get("status") or ""
+    status = task.get(STATUS_NAME_KEY) or (task.get("status") or {}).get("status") or ""
     people = [
         str(a.get("username") or a.get("email") or "")
         for a in task.get("assignees") or []
