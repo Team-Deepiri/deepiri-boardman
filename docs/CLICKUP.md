@@ -137,12 +137,15 @@ When a PR has no issue with a ClickUp task, it goes through the same fuzzy pipel
 
 Not ported: Plaky's priority-precedent lookup for orphan tasks (the priority comes from the PR's own labels and text).
 
+## Meeting plans (planning and huddle)
+
+With `TASK_PROVIDER=clickup`, `ContextAggregator` builds the task section of a meeting plan from ClickUp (`planning/huddle/context_clickup.py`) instead of Plaky. The team-to-board mapping file (`PLANNING_TEAM_PLAKY_BOARDS_FILE`, default `team_plaky_boards.json`) is reused: the `board_id` values in it are ClickUp **list ids**. Items updated within `PLANNING_PLAKY_LOOKBACK_DAYS` are grouped by status (statuses in `PLANNING_PLAKY_HIGHLIGHT_STATUSES` first) with their assignees, and the section reads "ClickUp List Items". The "Boardman sync" section's headings (`PR <-> ClickUp task links`, `Issue <-> ClickUp mappings`) follow the provider too. The review-nudge sweep never read the board (it works from GitHub activity only), so it needed no change.
+
 ## What is still Plaky-only
 
 Plaky has board schemas, custom fields and per-board placement that ClickUp does not model the same way. These still call `PlakyClient` directly and are not provider-neutral yet:
 
-- The review-nudge sweep's board reads (issue, PR, review, comment, fuzzy-link and triage handlers are done, see above)
-- The planning and huddle code, the `/plaky/*` discovery routes, `plaky-inventory`, `capability-report`, and board-schema helpers
+- The `/plaky/*` discovery routes, `plaky-inventory`, `capability-report`, and board-schema helpers
 
 Moving these over is the next step. It needs a ClickUp equivalent of placement and assignment, so treat it as a separate piece of work.
 
