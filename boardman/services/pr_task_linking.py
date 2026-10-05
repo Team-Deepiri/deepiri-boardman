@@ -17,7 +17,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +29,9 @@ from boardman.plaky.client import PlakyClient
 from boardman.repos_config import get_routing_async
 from boardman.services.llm_pr_task_rerank import llm_rerank_pr_candidates
 from boardman.settings import settings
+
+if TYPE_CHECKING:
+    from boardman.clickup.client import ClickUpClient
 
 # --- extraction -----------------------------------------------------------------
 
@@ -437,7 +440,7 @@ async def gather_candidates_clickup(
     repo_name: str,
     repo_full: str,
     list_id: str,
-    client: Any,
+    client: ClickUpClient,
     repo_owns_list: bool = False,
 ) -> dict[str, TaskCandidate]:
     """Candidates for a ClickUp repo: the issue-to-task map plus the tasks in the repo's list.
@@ -994,7 +997,7 @@ async def _decide(
 async def run_pr_task_pipeline_clickup(
     *,
     session: AsyncSession,
-    client: Any,
+    client: ClickUpClient,
     repo_full: str,
     repo_name: str,
     org: str,
