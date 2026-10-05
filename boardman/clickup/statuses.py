@@ -42,3 +42,15 @@ def intent_for_status(status: str) -> str:
         if (getattr(settings, setting, "") or "").strip().casefold() == wanted:
             return name
     return ""
+
+
+def configured_statuses() -> list[tuple[str, str]]:
+    """Every ``(intent, status name)`` that is configured, one row per distinct setting."""
+    seen: set[str] = set()
+    out: list[tuple[str, str]] = []
+    for intent, setting in _INTENT_SETTINGS:
+        name = (getattr(settings, setting, "") or "").strip()
+        if name and setting not in seen:
+            seen.add(setting)
+            out.append((intent, name))
+    return out

@@ -141,11 +141,18 @@ Not ported: Plaky's priority-precedent lookup for orphan tasks (the priority com
 
 With `TASK_PROVIDER=clickup`, `ContextAggregator` builds the task section of a meeting plan from ClickUp (`planning/huddle/context_clickup.py`) instead of Plaky. The team-to-board mapping file (`PLANNING_TEAM_PLAKY_BOARDS_FILE`, default `team_plaky_boards.json`) is reused: the `board_id` values in it are ClickUp **list ids**. Items updated within `PLANNING_PLAKY_LOOKBACK_DAYS` are grouped by status (statuses in `PLANNING_PLAKY_HIGHLIGHT_STATUSES` first) with their assignees, and the section reads "ClickUp List Items". The "Boardman sync" section's headings (`PR <-> ClickUp task links`, `Issue <-> ClickUp mappings`) follow the provider too. The review-nudge sweep never read the board (it works from GitHub activity only), so it needed no change.
 
+## Discovery routes and the inventory command
+
+- **`GET /plaky/users`, `/plaky/boards`, `/plaky/boards/match`** use the active provider, so the UI's assignee and placement pickers work unchanged: on ClickUp "boards" are lists and users are workspace members, in the same response shape.
+- **`/plaky/boards/{id}/groups` and `/groups/match`** return an empty list with an explanatory message on ClickUp (lists have no groups).
+- **`/plaky/boards/{id}/schema`** returns the list's own statuses as a single Status field plus a markdown summary.
+- **`boardman clickup-inventory [--list-id ID]`** prints the workspace members and lists, and with `--list-id` lists that list's statuses and checks every configured `CLICKUP_STATUS_*` name against them (exit code 1 on a mismatch). It is the quickest way to confirm a new API token works and that the status names in your settings exist in the list Boardman writes to.
+
 ## What is still Plaky-only
 
 Plaky has board schemas, custom fields and per-board placement that ClickUp does not model the same way. These still call `PlakyClient` directly and are not provider-neutral yet:
 
-- The `/plaky/*` discovery routes, `plaky-inventory`, `capability-report`, and board-schema helpers
+- `plaky-inventory`, `capability-report` (the QA capability board), and the Plaky board-schema helpers
 
 Moving these over is the next step. It needs a ClickUp equivalent of placement and assignment, so treat it as a separate piece of work.
 

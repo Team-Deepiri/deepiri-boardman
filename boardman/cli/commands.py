@@ -743,6 +743,70 @@ def readiness_cmd(
         raise typer.Exit(1)
 
 
+@app.command("clickup-inventory")
+def clickup_inventory_cmd(
+    list_id: str = typer.Option(
+        "",
+        "--list-id",
+        help="Also show this list's statuses and check them against the CLICKUP_STATUS_* settings.",
+    ),
+):
+    """Show the ClickUp workspace: members, lists, and (with --list-id) a status check.
+
+    The quickest way to confirm a new API token works and that the status names in your settings
+    actually exist in the list Boardman writes to.
+    """
+    from boardman.clickup.client import ClickUpClient
+    from boardman.clickup.statuses import configured_statuses
+
+    if not settings.clickup_api_token:
+        console.print("[red]CLICKUP_API_TOKEN is not set.[/red]")
+        raise typer.Exit(1)
+
+    async def run() -> int:
+        c = ClickUpClient()
+        users = await c.list_workspace_users()
+        if not users.get("ok"):
+            console.print(f"[red]ClickUp error:[/red] {users.get('message')}")
+            return 1
+        table = Table(title="Workspace members")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name")
+        table.add_column("Email")
+        for u in users.get("users") or []:
+            table.add_row(str(u.get("id")), str(u.get("name") or ""), str(u.get("email") or ""))
+        console.print(table)
+        lists = await c.list_boards()
+        table = Table(title="Lists")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name")
+        for row in lists.get("boards") or []:
+            table.add_row(str(row.get("id")), str(row.get("name") or ""))
+        console.print(table)
+        if not list_id:
+            return 0
+        got = await c.get_list(list_id)
+        if not got.get("ok"):
+            console.print(f"[red]ClickUp error:[/red] {got.get('message')}")
+            return 1
+        present = {st.casefold() for st in got["statuses"]}
+        console.print(f"List statuses: {', '.join(got['statuses']) or '(none)'}")
+        bad = [
+            (intent, name)
+            for intent, name in configured_statuses()
+            if name.casefold() not in present
+        ]
+        for intent, name in bad:
+            console.print(f"[yellow]{intent}[/yellow]: {name!r} is not a status of this list")
+        if not bad:
+            console.print("[green]Every configured CLICKUP_STATUS_* name exists in this list.[/green]")
+        return 1 if bad else 0
+
+    code = asyncio.run(run())
+    if code:
+        raise typer.Exit(code)
+
+
 @app.command("plaky-inventory")
 def plaky_inventory_cmd(
     board_id: str | None = typer.Option(
