@@ -29,7 +29,7 @@ from boardman.database.models import PrTaskLifecycle, PullRequestTaskLink
 from boardman.plaky.client import PlakyClient
 from boardman.services.plaky_group_reorder import _item_looks_done
 from boardman.settings import settings
-from boardman.task_provider import active_provider
+from boardman.task_provider import active_provider, get_task_client
 
 _log = logging.getLogger(__name__)
 
@@ -55,12 +55,7 @@ async def cleanup_orphaned_pr_tasks(
         return {"ok": True, "skipped": True, "message": "pr_task_cleanup disabled"}
 
     clickup = active_provider() == "clickup"
-    if clickup:
-        from boardman.clickup.client import ClickUpClient
-
-        plaky = plaky or ClickUpClient()
-    else:
-        plaky = plaky or PlakyClient()
+    plaky = plaky or get_task_client()
     now = datetime.utcnow()
     rows = (
         (
