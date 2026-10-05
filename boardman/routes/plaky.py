@@ -127,7 +127,7 @@ async def plaky_boards() -> dict:
 @router.get("/plaky/boards/match")
 async def plaky_boards_match(query: str = "") -> dict:
     """
-    List boards via Plaky API, then rank by name against `query` (e.g. what the user said:
+    List boards (or ClickUp lists) via the active provider, then rank by name against `query` (e.g. what the user said:
     "put this on the Deepiri Main board"). Empty `query` returns boards unranked (all score 0).
     """
     c = get_task_client()
@@ -205,9 +205,7 @@ def _no_clickup_groups() -> dict:
 
 
 async def _clickup_list_schema(list_id: str) -> dict:
-    from boardman.clickup.client import ClickUpClient
-
-    got = await ClickUpClient().get_list(list_id)
+    got = await get_task_client().get_list(list_id)
     if not got.get("ok"):
         return {
             "ok": False,
