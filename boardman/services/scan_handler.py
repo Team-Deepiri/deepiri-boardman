@@ -196,9 +196,7 @@ def _scan_task_text(item: dict[str, Any], short: str, routing_note: str) -> tupl
     pri = str(item.get("priority", "medium")).lower()
     full_title = f"[{short}] {title}"
     evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
-    assumptions = (
-        item.get("assumptions") if isinstance(item.get("assumptions"), list) else []
-    )
+    assumptions = item.get("assumptions") if isinstance(item.get("assumptions"), list) else []
     unknowns = item.get("unknowns") if isinstance(item.get("unknowns"), list) else []
     evidence_block = ""
     if evidence:
@@ -259,9 +257,7 @@ async def _file_scan_tasks_plaky(
         routing_warnings.append(
             "No routing found for repo; create used fallback behavior without explicit board/group placement."
         )
-    default_assign = await build_assignment_field_map(
-        repo_full, plaky_field_qa_key=qa_key_override
-    )
+    default_assign = await build_assignment_field_map(repo_full, plaky_field_qa_key=qa_key_override)
 
     for item in tasks:
         full_title, body, pri = _scan_task_text(item, short, routing_note)
