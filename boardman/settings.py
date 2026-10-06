@@ -39,6 +39,19 @@ def positive_or_default(raw: object, default: int) -> int:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # Which task/board provider the generic task routes talk to: "plaky" (default) or "clickup".
+    task_provider: str = "plaky"
+    # ClickUp API v2. Personal tokens go in the Authorization header as-is (no "Bearer").
+    clickup_api_token: str = ""
+    clickup_api_base: str = "https://api.clickup.com/api/v2"
+    # Workspace ("team") id for user listing, and the default list new tasks are created in.
+    clickup_team_id: str = ""
+    clickup_default_list_id: str = ""
+    # Per-request timeout in seconds for ClickUp API calls.
+    clickup_api_timeout: float = 20.0
+    # Most pages (100 tasks each) one list call will load before reporting truncation.
+    clickup_max_list_pages: int = 20
+
     plaky_api_key: str = ""
     plaky_api_base: str = "https://api.plaky.com/v1/public"
     # PR merged → Plaky status. Empty = resolve "Completed" from the board schema
