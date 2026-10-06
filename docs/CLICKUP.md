@@ -30,6 +30,16 @@ The token is sent in the `Authorization` header as-is, with no `Bearer` prefix (
 
 These are wired through `boardman/task_provider.py` into `GET /tasks`, `GET /tasks/{id}`, `POST /tasks/{id}/link-pr` and the scan job's open-task lookup.
 
+## Agent tools (Phase 1)
+
+With `TASK_PROVIDER=clickup` the chat agent gets `clickup_*` tools instead of `plaky_*`:
+`clickup_list_lists`, `clickup_list_tasks`, `clickup_get_task`, `clickup_list_workspace_users`, and (write mode) `clickup_create_task`, `clickup_create_tasks`, `clickup_update_task`, `clickup_add_comment`, `clickup_link_prs`, `clickup_create_subtask`.
+
+- Assignees are plain names or emails, resolved against workspace members. Ambiguous or unknown names are reported back and left empty, never guessed.
+- `clickup_create_tasks` skips titles already in the list and reports them as "Already in ClickUp".
+- The system prompt gets a ClickUp notice that maps each `plaky_*` tool to its ClickUp equivalent. ClickUp has no board schema, groups or custom-field patching, so those tools have no counterpart.
+- The agent's "board id" is a ClickUp list id (or `CLICKUP_DEFAULT_LIST_ID`).
+
 ## Limits and gaps worth knowing
 
 - **Plaky-only arguments are ignored.** `create_task` and `create_subtask` accept Plaky keyword arguments such as `field_values`, `person_field_keys`, `defer_field_patch` and `group_id` and ignore them, so shared call sites keep working. ClickUp has no equivalent of those fields.
@@ -44,7 +54,7 @@ Plaky has board schemas, custom fields and per-board placement that ClickUp does
 
 - GitHub webhook sync (issue and PR handlers), PR status transitions and QA assignment
 - `PATCH /tasks/{id}` (`update_task_internal`): returns HTTP 501 on ClickUp in this PR instead of writing Plaky fields
-- Agent tools, the planning and huddle code, and board-schema helpers
+- QA assignment (Phase 2), the planning and huddle code, and board-schema helpers
 - Scan task creation
 
 Moving these over is the next step. It needs a ClickUp equivalent of placement and assignment, so treat it as a separate piece of work.

@@ -20,6 +20,7 @@ from boardman.agent.brain import (
     render_project_state,
     schedule_revalidation,
 )
+from boardman.agent.clickup_prompt_extra import clickup_provider_markdown
 from boardman.agent.fast_path import maybe_fast_path
 from boardman.agent.guardrails import has_confirm_token, looks_like_board_organize_request
 from boardman.agent.memory_store import db_messages_to_langchain
@@ -36,6 +37,7 @@ from boardman.llm.completion import chat_complete, chat_complete_stream
 from boardman.observability.degradation import log_degraded, log_unexpected
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.settings import settings
+from boardman.task_provider import active_provider
 
 logger = logging.getLogger(__name__)
 
@@ -515,20 +517,26 @@ def _resolve_placement(
     return fb_bid, ((plaky_group_id or "").strip() or fb_gid), note
 
 
-async def _plaky_system_suffix(
-    plaky_board_id: str | None,
-    plaky_group_id: str | None,
+async def _task_provider_system_suffix(
+    placement_id: str | None,
+    group_id: str | None,
     note: str = "",
 ) -> str:
-    out = plaky_placement_markdown(plaky_board_id, plaky_group_id, note)
-    bid = (plaky_board_id or "").strip()
+    """Provider block for the system prompt. ``placement_id`` is a Plaky board id or a ClickUp
+    list id; ``group_id`` is a Plaky group and unused on ClickUp."""
+    if active_provider() == "clickup":
+        return clickup_provider_markdown(
+            (placement_id or "").strip() or settings.clickup_default_list_id, note
+        )
+    out = plaky_placement_markdown(placement_id, group_id, note)
+    bid = (placement_id or "").strip()
     if bid:
         try:
             bundle = await fetch_board_schema_bundle(bid)
             out += bundle.get("markdown") or ""
         except Exception as e:  # noqa: BLE001 — the schema is optional context, not a gate
             logger.warning("Could not load Plaky board schema bundle for %s: %s", bid, e)
-            log_unexpected(logger, "_plaky_system_suffix: fetch_board_schema_bundle")
+            log_unexpected(logger, "_task_provider_system_suffix: fetch_board_schema_bundle")
             out += (
                 f"\n\n## Current Plaky board schema (from API)\n"
                 f"**Board id:** `{bid}`\n"
@@ -677,7 +685,7 @@ async def run_agent_chat(
     intake_extra = TEAM_TASK_POLICY + (TASK_CREATION_WORKFLOW if allow_writes else "")
     draft_md, plaky_suffix = await asyncio.gather(
         _load_draft_markdown(session, agent_session_pk),
-        _plaky_system_suffix(plaky_board_id, plaky_group_id, note=placement_note),
+        _task_provider_system_suffix(plaky_board_id, plaky_group_id, note=placement_note),
     )
     # Creation is reported as done because it lands in seconds. If one of those writes
     # actually failed, this turn opens by correcting it instead of leaving the user
@@ -941,7 +949,7 @@ async def iter_agent_chat_sse(
     _t_hist = time.monotonic()
     draft_md, plaky_suffix = await asyncio.gather(
         _load_draft_markdown(session, agent_session_pk),
-        _plaky_system_suffix(plaky_board_id, plaky_group_id, note=placement_note),
+        _task_provider_system_suffix(plaky_board_id, plaky_group_id, note=placement_note),
     )
     # Creation is reported as done because it lands in seconds. If one of those writes
     # actually failed, this turn opens by correcting it instead of leaving the user
