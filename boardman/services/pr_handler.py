@@ -79,6 +79,7 @@ from boardman.task_provider import active_provider
 
 _log = logging.getLogger(__name__)
 
+
 def _mutation_really_failed(mutation: dict[str, Any]) -> bool:
     """Did this task update actually fail, or did Plaky just refuse to rename the item?
 

@@ -27,9 +27,7 @@ class FakeClickUp:
         self.log.append((req.method, path, body))
         parts = path.strip("/").split("/")
         if req.method == "GET" and parts[0] == "list" and parts[2] == "task":
-            return httpx.Response(
-                200, json={"tasks": list(self.tasks.values()), "last_page": True}
-            )
+            return httpx.Response(200, json={"tasks": list(self.tasks.values()), "last_page": True})
         if req.method == "POST" and parts[0] == "list" and parts[2] == "task":
             if self.fail_create:
                 return httpx.Response(500, text="boom")

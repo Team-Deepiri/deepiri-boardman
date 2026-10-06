@@ -119,9 +119,11 @@ def _comment(
             "updated_at": "2026-10-04T10:00:00Z",
         },
         repository={"full_name": FULL, "name": REPO},
-        changes=({"body": {"from": "old"}} if changed else {"title": {"from": "t"}})
-        if action == "edited"
-        else None,
+        changes=(
+            ({"body": {"from": "old"}} if changed else {"title": {"from": "t"}})
+            if action == "edited"
+            else None
+        ),
     )
 
 
