@@ -15,10 +15,12 @@ import logging
 from typing import Any
 
 from boardman.assignment.identity_match import best_plaky_match_for_github
+from boardman.clickup.client import ClickUpClient
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.services.sync_state import UNREADABLE_STATUS as _SYNC_STATE_UNREADABLE
 from boardman.settings import settings
+from boardman.task_provider import active_provider
 
 _log = logging.getLogger(__name__)
 
@@ -410,14 +412,15 @@ def github_actor_payload(user: dict[str, Any] | None) -> dict[str, Any]:
     )
 
 
-async def resolve_github_user_to_plaky_user_id(
+async def resolve_github_user_to_user_id(
     gh: dict[str, Any],
     *,
     min_score: int = 640,
     ambiguity_margin: int = 45,
 ) -> str | None:
     """
-    Map a GitHub profile (login, optional name/email from webhook) to a Plaky workspace user id.
+    Map a GitHub profile (login, optional name/email from webhook) to a workspace user id for the
+    active task provider (Plaky, or ClickUp when TASK_PROVIDER=clickup).
 
     1) Prefer an explicit GitHub username stored on the Plaky user (exact case-insensitive match).
     2) Otherwise run ``best_plaky_match_for_github`` (email / display name / login-token heuristics;
@@ -441,7 +444,7 @@ async def resolve_github_user_to_plaky_user_id(
     except Exception:  # noqa: BLE001 — roster trouble must never break identity resolution
         _log.warning("roster unavailable during GitHub user resolution", exc_info=True)
 
-    c = PlakyClient()
+    c: Any = ClickUpClient() if active_provider() == "clickup" else PlakyClient()
     r = await c.list_workspace_users()
     if not r.get("ok"):
         return None
@@ -463,6 +466,19 @@ async def resolve_github_user_to_plaky_user_id(
     if reason == "matched" and plaky_id:
         return str(plaky_id).strip() or None
     return None
+
+
+async def resolve_github_user_to_plaky_user_id(
+    gh: dict[str, Any],
+    *,
+    min_score: int = 640,
+    ambiguity_margin: int = 45,
+) -> str | None:
+    """Original name of :func:`resolve_github_user_to_user_id`, kept because the Plaky handlers and
+    their tests call (and patch) it by this name. It resolves for whichever provider is active."""
+    return await resolve_github_user_to_user_id(
+        gh, min_score=min_score, ambiguity_margin=ambiguity_margin
+    )
 
 
 async def workspace_plaky_user_id_for_github_login(login: str) -> str | None:

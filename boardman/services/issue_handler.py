@@ -18,6 +18,11 @@ from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing_async
 from boardman.services.comment_dedupe import mirror_github_activity
+from boardman.services.issue_sync_common import (
+    issue_assignee_login,
+    post_create_patch_failed,
+    pre_close_status,
+)
 from boardman.services.sync_state import (
     UNREADABLE_STATUS,
     issue_status_intent,
@@ -25,6 +30,7 @@ from boardman.services.sync_state import (
     status_intent_would_regress,
 )
 from boardman.settings import settings
+from boardman.task_provider import active_provider
 
 _log = logging.getLogger(__name__)
 
@@ -154,18 +160,6 @@ def linked_issue_numbers_for_pr(
     return branch_issue_numbers(head_ref)
 
 
-def _issue_assignee_login(issue: Any) -> str:
-    """First assignee login on the GitHub issue, '' when unassigned."""
-    rows = list(getattr(issue, "assignees", None) or [])
-    one = getattr(issue, "assignee", None)
-    if isinstance(one, dict) and one not in rows:
-        rows.insert(0, one)
-    for a in rows:
-        if isinstance(a, dict) and str(a.get("login") or "").strip():
-            return str(a["login"]).strip()
-    return ""
-
-
 def native_issue_type_name(issue: Any) -> str:
     """GitHub's native issue Type name ('Feature', 'Bug', ...), '' when unset."""
     t = getattr(issue, "type", None)
@@ -215,29 +209,6 @@ async def _resolve_issue_engineer_id(login: str) -> str:
     return kept
 
 
-async def _post_create_patch_failed(session: AsyncSession, task_id: str) -> bool:
-    """True when the task's post-create field patch is recorded as having failed.
-
-    handle_issue_opened logs `post_create_update_ok`. A replayed `opened` delivery
-    exists to repair THAT failure, so it may overwrite board values; when the patch
-    succeeded, the board's current values are either GitHub's or a lead's later
-    triage, and a replay must not overwrite them.
-    """
-    q = (
-        select(SyncLog)
-        .where(SyncLog.action == "issue_created", SyncLog.plaky_task_id == str(task_id))
-        .order_by(SyncLog.id.desc())
-        .limit(1)
-    )
-    row = (await session.execute(q)).scalar_one_or_none()
-    if not row or not row.detail:
-        return False
-    try:
-        return json.loads(row.detail).get("post_create_update_ok") is False
-    except (TypeError, ValueError):
-        return False
-
-
 async def handle_issue_changed(
     payload: IssueEventPayload,
     session: AsyncSession,
@@ -245,6 +216,12 @@ async def handle_issue_changed(
     event_label: str = "issue_changed",
 ) -> dict[str, Any]:
     """Re-resolve every GitHub-owned issue field after an edit/assignment/label event."""
+    if active_provider() == "clickup":
+        from boardman.services import clickup_issue_sync
+
+        return await clickup_issue_sync.handle_issue_changed(
+            payload, session, event_label=event_label
+        )
     state = resolve_issue_state(
         payload.issue,
         repo_full_name=payload.repository.full_name,
@@ -288,7 +265,7 @@ async def handle_issue_changed(
     # A replayed `opened` whose post-create patch failed is the one non-ownership event
     # that MUST set status: that replay exists to repair the write that did not land, and
     # status is the field it was built to repair.
-    repairing = event_label == "issue_opened_reconciled" and await _post_create_patch_failed(
+    repairing = event_label == "issue_opened_reconciled" and await post_create_patch_failed(
         session, str(mapping.plaky_task_id)
     )
     status_value = ""
@@ -458,6 +435,10 @@ async def handle_issue_changed(
 
 
 async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession) -> dict:
+    if active_provider() == "clickup":
+        from boardman.services import clickup_issue_sync
+
+        return await clickup_issue_sync.handle_issue_opened(payload, session)
     repo_name = payload.repository.name
     issue_number = payload.issue.number
 
@@ -662,71 +643,6 @@ async def find_plaky_task_by_issue(
     return result.scalar_one_or_none()
 
 
-async def _pre_close_status(session: AsyncSession, task_id: str) -> tuple[str | None, str] | None:
-    """(field_key, value) the task held just before its last close, None if unrecorded.
-
-    Scans back rather than reading one row: a duplicate `closed` delivery (webhook
-    redelivery, or webhook + poller both firing) appends a SECOND issue_closed row
-    whose capture is blank, because by then the task already sits at Completed. The
-    newest row would then hide the only real capture and the reopen would silently
-    degrade to the assignee ladder, losing e.g. In QA. Rows older than the last
-    reopen belong to a finished cycle and are ignored.
-    """
-    reopened_q = (
-        select(SyncLog.id)
-        .where(SyncLog.action == "issue_reopened", SyncLog.plaky_task_id == str(task_id))
-        .order_by(SyncLog.id.desc())
-        .limit(1)
-    )
-    last_reopen = (await session.execute(reopened_q)).scalar_one_or_none()
-
-    q = select(SyncLog).where(
-        SyncLog.action == "issue_closed", SyncLog.plaky_task_id == str(task_id)
-    )
-    if last_reopen is not None:
-        # `>=` on the close row that the reopen RESTORED from, not strictly after the
-        # reopen. A second delivery of the same reopen (a redelivery, or the poller
-        # emitting one the webhook already handled) otherwise excluded the capture row the
-        # first delivery had just used, fell through to the assignee ladder, and wrote
-        # Assigned over the In QA it had only just restored. The comment mirror dedupes;
-        # the status write does not.
-        restored_from = (
-            await session.execute(
-                select(SyncLog.id)
-                .where(
-                    SyncLog.action == "issue_closed",
-                    SyncLog.plaky_task_id == str(task_id),
-                    SyncLog.detail.contains('"captured_previous": true'),
-                    SyncLog.id < last_reopen,
-                )
-                .order_by(SyncLog.id.desc())
-                .limit(1)
-            )
-        ).scalar_one_or_none()
-        q = q.where(SyncLog.id > (restored_from - 1 if restored_from is not None else last_reopen))
-    # Ask for the rows that captured something. The sweep replays `closed` for every
-    # closed issue on its page, and by then the task already sits at Completed, so each
-    # replay appends a row with a blank capture -- twenty of those (about five hours at
-    # the default interval) used to push the only real one out of the window, and the
-    # reopen then fell back to the assignee ladder and lost In QA.
-    flagged = q.where(SyncLog.detail.contains('"captured_previous": true'))
-    rows = list((await session.execute(flagged.order_by(SyncLog.id.desc()).limit(5))).scalars())
-    if not rows:
-        # Rows written before the flag existed: same scan as before.
-        rows = list((await session.execute(q.order_by(SyncLog.id.desc()).limit(20))).scalars())
-    for row in rows:
-        if not row.detail:
-            continue
-        try:
-            detail = json.loads(row.detail)
-        except (TypeError, ValueError):
-            continue
-        val = str(detail.get("previous_status_value") or "").strip()
-        if val:
-            return (str(detail.get("previous_status_key") or "").strip() or None, val)
-    return None
-
-
 async def _issue_status_transition(
     payload: IssueEventPayload,
     session: AsyncSession,
@@ -842,7 +758,7 @@ async def _issue_status_transition(
     if capture_previous:
         detail["previous_status_value"] = previous_status
         detail["previous_status_key"] = status_field_key or ""
-        # Flagged so `_pre_close_status` can ASK for the rows that captured something,
+        # Flagged so `pre_close_status` can ASK for the rows that captured something,
         # rather than scanning back through however many blank replays the reconciliation
         # sweep has appended since.
         detail["captured_previous"] = bool(previous_status)
@@ -861,6 +777,10 @@ async def _issue_status_transition(
 
 async def handle_issue_closed(payload: IssueEventPayload, session: AsyncSession) -> dict:
     """GitHub issue closed → Completed, remembering the status it held for a reopen."""
+    if active_provider() == "clickup":
+        from boardman.services import clickup_issue_sync
+
+        return await clickup_issue_sync.handle_issue_closed(payload, session)
     n = payload.issue.number
     return await _issue_status_transition(
         payload,
@@ -882,9 +802,13 @@ async def handle_issue_reopened(payload: IssueEventPayload, session: AsyncSessio
     (legacy closes), derive from the current GitHub assignee: owner → Assigned,
     nobody → NEEDS ASSIGNED. Never a blanket In Progress.
     """
+    if active_provider() == "clickup":
+        from boardman.services import clickup_issue_sync
+
+        return await clickup_issue_sync.handle_issue_reopened(payload, session)
     n = payload.issue.number
     repo_name = payload.repository.name
-    has_owner = bool(_issue_assignee_login(payload.issue))
+    has_owner = bool(issue_assignee_login(payload.issue))
     resolved: tuple[str | None, str] | None = None
     if has_owner:
         # Only an owned issue may resume a working status. If the assignee was removed
@@ -893,7 +817,7 @@ async def handle_issue_reopened(payload: IssueEventPayload, session: AsyncSessio
         # a working status with nobody on it. Unowned always means NEEDS ASSIGNED.
         mapping = await find_plaky_task_by_issue(repo_name, n, session)
         if mapping and mapping.plaky_task_id:
-            resolved = await _pre_close_status(session, mapping.plaky_task_id)
+            resolved = await pre_close_status(session, mapping.plaky_task_id)
     intents = ("workflow_assigned",) if has_owner else ("workflow_needs_assigned",)
     return await _issue_status_transition(
         payload,

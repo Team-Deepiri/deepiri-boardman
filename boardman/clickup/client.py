@@ -16,6 +16,7 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
@@ -24,7 +25,17 @@ from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
-_PRIORITY = {"urgent": 1, "critical": 1, "high": 2, "medium": 3, "normal": 3, "low": 4}
+# ClickUp has four priority levels, so "critical" and "urgent" (and "very important") are the same
+# level and read back as "urgent".
+_PRIORITY = {
+    "urgent": 1,
+    "critical": 1,
+    "very important": 1,
+    "high": 2,
+    "medium": 3,
+    "normal": 3,
+    "low": 4,
+}
 _PRIORITY_LABEL = {1: "urgent", 2: "high", 3: "normal", 4: "low"}
 _TRANSIENT = frozenset({500, 502, 503, 504})
 
@@ -175,6 +186,7 @@ class ClickUpClient:
         status: str | None = None,
         assignee_ids: list[int] | None = None,
         parent_task_id: str | None = None,
+        tags: list[str] | None = None,
         **_ignored: Any,
     ) -> dict[str, Any]:
         """Create a task in a list (``board_id``, falling back to CLICKUP_DEFAULT_LIST_ID).
@@ -201,6 +213,8 @@ class ClickUpClient:
             body["assignees"] = assignee_ids
         if parent_task_id:
             body["parent"] = parent_task_id
+        if tags:
+            body["tags"] = list(tags)
 
         response = await self._request("POST", f"/list/{list_id}/task", json=body)
         if response.status_code in (200, 201):
@@ -338,6 +352,23 @@ class ClickUpClient:
         if response.status_code in (200, 201):
             return {"ok": True, "status": response.status_code, "task": response.json()}
         return self._failure(response, "update task")
+
+    async def add_tag(self, task_id: str, tag: str) -> dict[str, Any]:
+        """Add a tag (created on first use) to a task. Adding one twice is harmless."""
+        if not self.api_token:
+            return self._missing_token()
+        response = await self._request("POST", f"/task/{task_id}/tag/{quote(tag, safe='')}")
+        if response.status_code in (200, 201):
+            return {"ok": True, "status": response.status_code}
+        return self._failure(response, "add tag")
+
+    async def remove_tag(self, task_id: str, tag: str) -> dict[str, Any]:
+        if not self.api_token:
+            return self._missing_token()
+        response = await self._request("DELETE", f"/task/{task_id}/tag/{quote(tag, safe='')}")
+        if response.status_code in (200, 201):
+            return {"ok": True, "status": response.status_code}
+        return self._failure(response, "remove tag")
 
     async def add_comment(
         self, task_id: str, body: str, *, board_id: str | None = None

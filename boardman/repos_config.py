@@ -26,6 +26,8 @@ class RepoRouting:
     plaky_group_id: str = ""
     description: str = ""
     tier: int = 0  # 0 = unclassified, 1/2/3 = QA tier
+    # ClickUp list new tasks for this repo go in (TASK_PROVIDER=clickup); empty = the default list.
+    clickup_list_id: str = ""
 
 
 def _resolve_path() -> Path:
@@ -110,6 +112,7 @@ def _parse_entry(entry: Any) -> RepoRouting | None:
         plaky_group_id=str(entry.get("plaky_group_id", "")),
         description=str(entry.get("description", "")),
         tier=tier,
+        clickup_list_id=str(entry.get("clickup_list_id", "") or ""),
     )
 
 
