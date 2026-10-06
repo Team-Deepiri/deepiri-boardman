@@ -555,6 +555,12 @@ async def bump_status_for_assignee(
 
 
 async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
+    from boardman.task_provider import active_provider
+
+    if active_provider() == "clickup":
+        from boardman.services.clickup_mutations import create_clickup_task
+
+        return await create_clickup_task(req)
     plaky = PlakyClient()
     filters = req.filters if isinstance(req.filters, dict) else {}
 
@@ -866,6 +872,12 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
 
 
 async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
+    from boardman.task_provider import active_provider
+
+    if active_provider() == "clickup":
+        from boardman.services.clickup_mutations import create_clickup_subtask
+
+        return await create_clickup_subtask(req)
     plaky = PlakyClient()
 
     parent_task_id = (req.parent_task_id or "").strip()

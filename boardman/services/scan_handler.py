@@ -29,7 +29,7 @@ from boardman.plaky.client import PlakyClient
 from boardman.plaky.hierarchy import effective_plaky_placement
 from boardman.repos_config import get_routing_async
 from boardman.settings import settings
-from boardman.task_provider import get_task_client
+from boardman.task_provider import active_provider, get_task_client
 
 _log = logging.getLogger(__name__)
 
@@ -188,6 +188,139 @@ async def _fetch_scan_context(
     )
 
 
+def _scan_task_text(item: dict[str, Any], short: str, routing_note: str) -> tuple[str, str, str]:
+    """(title, body, priority) for one scanned task: the model's description plus its evidence,
+    assumptions and unknowns, and the routing footer."""
+    title = str(item.get("title", "Task")).strip()
+    desc = str(item.get("description", "")).strip()
+    pri = str(item.get("priority", "medium")).lower()
+    full_title = f"[{short}] {title}"
+    evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
+    assumptions = item.get("assumptions") if isinstance(item.get("assumptions"), list) else []
+    unknowns = item.get("unknowns") if isinstance(item.get("unknowns"), list) else []
+    evidence_block = ""
+    if evidence:
+        evidence_block += "\n\n**Evidence**\n" + "\n".join(
+            f"- {str(x)[:240]}" for x in evidence[:8]
+        )
+    if assumptions:
+        evidence_block += "\n\n**Assumptions**\n" + "\n".join(
+            f"- {str(x)[:240]}" for x in assumptions[:6]
+        )
+    if unknowns:
+        evidence_block += "\n\n**Unknowns**\n" + "\n".join(
+            f"- {str(x)[:240]}" for x in unknowns[:6]
+        )
+    body = (desc + evidence_block + routing_note).strip()
+    return full_title, body, pri
+
+
+async def _file_scan_tasks_plaky(
+    tasks: list[dict[str, Any]],
+    routing: Any,
+    routing_source: str,
+    *,
+    short: str,
+    repo_full: str,
+    dry_run: bool,
+) -> tuple[int, list[str]]:
+    """Create the scanned tasks on a Plaky board. Returns (created, routing warnings)."""
+    created = 0
+    plaky = PlakyClient()
+    cat = routing.plaky_table if routing else ""
+    routing_note = (
+        f"\n\n**Plaky group (label):** `{cat}`\n**Repo:** {repo_full}\n"
+        if cat
+        else f"\n\n**Repo:** {repo_full}\n"
+    )
+    # "explicit" (repos.yml) and "discovered:<match-kind>" (a live Plaky group whose
+    # name actually matched the repo slug) are both non-ambiguous placements — only
+    # "org_default" (falls back to a shared default, could be wrong) and "none"/
+    # "discovered:none" (no match at all) are too uncertain to auto-place into.
+    placement_is_ambiguous = routing_source in ("org_default", "none", "discovered:none")
+    bid, gid = effective_plaky_placement(routing if not placement_is_ambiguous else None)
+    qa_key_override: str | None = None
+    if bid:
+        from boardman.plaky.board_aware import board_person_field_keys, resolve_group_for_repo
+
+        gid = await resolve_group_for_repo(bid, short, fallback_group_id=gid, plaky=plaky)
+        keys = await board_person_field_keys(bid)
+        if keys is not None:
+            qa_key_override = keys.get("qa") or ""
+    routing_warnings: list[str] = []
+    if routing_source == "org_default":
+        routing_warnings.append(
+            "Repo has no explicit repos.yml routing; org default exists but placement was not auto-applied. "
+            "Register repo-specific plaky_board_id/plaky_group_id to avoid ambiguous placement."
+        )
+    elif routing_source in ("none", "discovered:none"):
+        routing_warnings.append(
+            "No routing found for repo; create used fallback behavior without explicit board/group placement."
+        )
+    default_assign = await build_assignment_field_map(repo_full, plaky_field_qa_key=qa_key_override)
+
+    for item in tasks:
+        full_title, body, pri = _scan_task_text(item, short, routing_note)
+        field_map: dict[str, Any] = dict(default_assign)
+        raw_fields = item.get("fields")
+        if isinstance(raw_fields, dict):
+            field_map.update({str(k): v for k, v in raw_fields.items() if str(k).strip()})
+        if dry_run:
+            continue
+        res = await plaky.create_task(
+            title=full_title,
+            description=body,
+            priority=pri,
+            board_id=bid,
+            group_id=gid,
+            field_values=field_map if field_map else None,
+        )
+        if res.get("ok"):
+            created += 1
+    return created, routing_warnings
+
+
+async def _file_scan_tasks_clickup(
+    tasks: list[dict[str, Any]],
+    routing: Any,
+    *,
+    short: str,
+    repo_full: str,
+    dry_run: bool,
+) -> tuple[int, list[str]]:
+    """Create the scanned tasks in the repo's ClickUp list. Returns (created, warnings).
+
+    The list is the repo's ``clickup_list_id`` in repos.yml, else CLICKUP_DEFAULT_LIST_ID. Without
+    either nothing is created and the warning says why. Tasks are tagged with the repo name.
+    """
+    from boardman.clickup.client import ClickUpClient
+
+    list_id = (getattr(routing, "clickup_list_id", "") or "").strip() or (
+        settings.clickup_default_list_id or ""
+    ).strip()
+    if not list_id:
+        return 0, [
+            f"No ClickUp list for {repo_full}: set clickup_list_id in repos.yml or "
+            "CLICKUP_DEFAULT_LIST_ID. No tasks were created."
+        ]
+    note = f"\n\n**Repo:** {repo_full}\n"
+    category = (getattr(routing, "category", "") or "").strip() if routing else ""
+    if category:
+        note = f"\n\n**Category:** {category}\n**Repo:** {repo_full}\n"
+    client = ClickUpClient()
+    created = 0
+    for item in tasks:
+        full_title, body, pri = _scan_task_text(item, short, note)
+        if dry_run:
+            continue
+        res = await client.create_task(
+            full_title, body, pri, board_id=list_id, tags=[short.lower()]
+        )
+        if res.get("ok"):
+            created += 1
+    return created, []
+
+
 async def run_repo_scan(
     session: AsyncSession,
     repo_full: str,
@@ -259,82 +392,19 @@ async def run_repo_scan(
 
         scan_row.tasks_proposed = json.dumps(tasks)[:65000]
 
-        created = 0
-        plaky = PlakyClient()
-        cat = routing.plaky_table if routing else ""
-        routing_note = (
-            f"\n\n**Plaky group (label):** `{cat}`\n**Repo:** {repo_full}\n"
-            if cat
-            else f"\n\n**Repo:** {repo_full}\n"
-        )
-        # "explicit" (repos.yml) and "discovered:<match-kind>" (a live Plaky group whose
-        # name actually matched the repo slug) are both non-ambiguous placements — only
-        # "org_default" (falls back to a shared default, could be wrong) and "none"/
-        # "discovered:none" (no match at all) are too uncertain to auto-place into.
-        placement_is_ambiguous = routing_source in ("org_default", "none", "discovered:none")
-        bid, gid = effective_plaky_placement(routing if not placement_is_ambiguous else None)
-        qa_key_override: str | None = None
-        if bid:
-            from boardman.plaky.board_aware import board_person_field_keys, resolve_group_for_repo
-
-            gid = await resolve_group_for_repo(bid, short, fallback_group_id=gid, plaky=plaky)
-            keys = await board_person_field_keys(bid)
-            if keys is not None:
-                qa_key_override = keys.get("qa") or ""
-        routing_warnings: list[str] = []
-        if routing_source == "org_default":
-            routing_warnings.append(
-                "Repo has no explicit repos.yml routing; org default exists but placement was not auto-applied. "
-                "Register repo-specific plaky_board_id/plaky_group_id to avoid ambiguous placement."
+        if active_provider() == "clickup":
+            created, routing_warnings = await _file_scan_tasks_clickup(
+                tasks, routing, short=short, repo_full=repo_full, dry_run=dry_run
             )
-        elif routing_source in ("none", "discovered:none"):
-            routing_warnings.append(
-                "No routing found for repo; create used fallback behavior without explicit board/group placement."
+        else:
+            created, routing_warnings = await _file_scan_tasks_plaky(
+                tasks,
+                routing,
+                routing_source,
+                short=short,
+                repo_full=repo_full,
+                dry_run=dry_run,
             )
-        default_assign = await build_assignment_field_map(
-            repo_full, plaky_field_qa_key=qa_key_override
-        )
-
-        for item in tasks:
-            title = str(item.get("title", "Task")).strip()
-            desc = str(item.get("description", "")).strip()
-            pri = str(item.get("priority", "medium")).lower()
-            full_title = f"[{short}] {title}"
-            evidence = item.get("evidence") if isinstance(item.get("evidence"), list) else []
-            assumptions = (
-                item.get("assumptions") if isinstance(item.get("assumptions"), list) else []
-            )
-            unknowns = item.get("unknowns") if isinstance(item.get("unknowns"), list) else []
-            evidence_block = ""
-            if evidence:
-                evidence_block += "\n\n**Evidence**\n" + "\n".join(
-                    f"- {str(x)[:240]}" for x in evidence[:8]
-                )
-            if assumptions:
-                evidence_block += "\n\n**Assumptions**\n" + "\n".join(
-                    f"- {str(x)[:240]}" for x in assumptions[:6]
-                )
-            if unknowns:
-                evidence_block += "\n\n**Unknowns**\n" + "\n".join(
-                    f"- {str(x)[:240]}" for x in unknowns[:6]
-                )
-            body = (desc + evidence_block + routing_note).strip()
-            field_map: dict[str, Any] = dict(default_assign)
-            raw_fields = item.get("fields")
-            if isinstance(raw_fields, dict):
-                field_map.update({str(k): v for k, v in raw_fields.items() if str(k).strip()})
-            if dry_run:
-                continue
-            res = await plaky.create_task(
-                title=full_title,
-                description=body,
-                priority=pri,
-                board_id=bid,
-                group_id=gid,
-                field_values=field_map if field_map else None,
-            )
-            if res.get("ok"):
-                created += 1
 
         scan_row.tasks_created = created
         await session.flush()
