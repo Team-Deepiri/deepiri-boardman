@@ -28,7 +28,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from boardman.assignment.config import load_team_assignments
 from boardman.clickup.client import ClickUpClient
-from boardman.clickup.statuses import intent_for_status, status_for_intent
+from boardman.clickup.statuses import status_for_intent
 from boardman.clickup.task_view import (
     current_assignees,
     current_status,
@@ -41,6 +41,14 @@ from boardman.github.webhooks import (
     DeploymentStatusEventPayload,
     PullRequestEventPayload,
     PullRequestReviewCommentEventPayload,
+)
+from boardman.services.clickup_task_ops import (
+    intent_of,
+    qa_from_field,
+    read_task,
+    set_intent_status,
+    stamp,
+    stamped_qa,
 )
 from boardman.services.comment_dedupe import (
     comment_already_synced,
@@ -77,7 +85,6 @@ from boardman.services.pr_tracker import remove_pr_row, upsert_pr_row
 from boardman.services.sync_state import (
     resolve_pr_state,
     status_intent_would_regress,
-    status_would_move_backwards,
 )
 from boardman.settings import settings
 
@@ -85,94 +92,6 @@ _log = logging.getLogger(__name__)
 
 
 # -- small building blocks ---------------------------------------------------------------------
-
-
-async def _read(c: ClickUpClient, task_id: str) -> dict[str, Any] | None:
-    got = await c.get_task(task_id)
-    return got["task"] if got.get("ok") and isinstance(got.get("task"), dict) else None
-
-
-def _intent_of(task: dict[str, Any] | None) -> str:
-    return intent_for_status(current_status(task)) if task else ""
-
-
-async def _set_intent_status(
-    c: ClickUpClient,
-    task_id: str,
-    intent: str,
-    *,
-    guard: str | None = None,
-    protect: tuple[str, ...] = (),
-    task: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Write the status for ``intent``, unless a guard says not to.
-
-    ``guard`` is "regress" (an ownership-derived write must not move work that has started
-    backwards) or "backwards" (a re-run of an earlier step must not move the task backwards at
-    all). ``protect`` lists intents that must never be overwritten. A guarded write on a task that
-    cannot be read is skipped: one missed move is recoverable, a rewound QA queue is not.
-    """
-    name = status_for_intent(intent)
-    if not name:
-        return {"ok": True, "skipped": f"no ClickUp status configured for {intent}"}
-    if task is None and (guard or protect):
-        task = await _read(c, task_id)
-        if task is None:
-            return {"ok": True, "skipped": "task unreadable; not moving it"}
-    now = _intent_of(task)
-    if now and now in protect:
-        return {"ok": True, "skipped": f"task is at {now}", "held_back": now}
-    if guard == "regress" and status_intent_would_regress(now, intent):
-        return {"ok": True, "skipped": f"task is at {now}", "held_back": now}
-    if guard == "backwards" and status_would_move_backwards(now, intent):
-        return {"ok": True, "skipped": f"task is at {now}", "held_back": now}
-    if task is not None and current_status(task).casefold() == name.casefold():
-        return {"ok": True, "skipped": "already there", "status": name}
-    res = await c.update_task_fields(task_id, status=name)
-    res.pop("task", None)
-    return {**res, "status": name}
-
-
-def _stamp(session: AsyncSession, action: str, repo: str, pr: int, task_id: str, **detail: Any):
-    session.add(
-        SyncLog(
-            action=action,
-            github_repo=repo,
-            github_ref=str(pr),
-            plaky_task_id=task_id,
-            detail=json.dumps(detail, default=str),
-        )
-    )
-
-
-async def _stamped_qa(session: AsyncSession, repo_name: str, pr_number: int, task_id: str) -> str:
-    """The QA already recorded on this PR's link row for the task, or ""."""
-    row = (
-        await session.execute(
-            select(PullRequestTaskLink.qa_plaky_id).where(
-                PullRequestTaskLink.github_repo == repo_name,
-                PullRequestTaskLink.github_pr_number == pr_number,
-                PullRequestTaskLink.plaky_task_id == task_id,
-                PullRequestTaskLink.qa_plaky_id.is_not(None),
-                PullRequestTaskLink.qa_plaky_id != "",
-            )
-        )
-    ).first()
-    return str(row[0]) if row else ""
-
-
-def _qa_from_field(task: dict[str, Any]) -> str:
-    """The QA user id held in the configured users custom field, or ""."""
-    field_id = (settings.clickup_qa_field_id or "").strip()
-    if not field_id:
-        return ""
-    for f in task.get("custom_fields") or []:
-        if isinstance(f, dict) and str(f.get("id")) == field_id:
-            value = f.get("value")
-            if isinstance(value, list) and value:
-                first = value[0]
-                return str(first.get("id") if isinstance(first, dict) else first)
-    return ""
 
 
 # -- type, developer, QA, needs-QA ---------------------------------------------------------------
@@ -188,14 +107,14 @@ async def _apply_type_and_assignee(
 ) -> dict[str, Any]:
     """Set the type from the PR, and fill the developer (and "assigned") when nobody owns the task."""
     from boardman.assignment.developer_eligibility import filter_developer
-    from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
-    from boardman.plaky.dynamic_qa_status import (
+    from boardman.assignment.github_user_resolution import (
         github_actor_payload,
         resolve_github_user_to_user_id,
     )
+    from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
 
     out: dict[str, Any] = {}
-    task = await _read(c, task_id)
+    task = await read_task(c, task_id)
     if task is None:
         return {"skipped": "task unreadable"}
 
@@ -239,7 +158,7 @@ async def _apply_type_and_assignee(
 
     status_name = status_for_intent("workflow_assigned")
     if status_name and not allow_regression:
-        if status_intent_would_regress(_intent_of(task), "workflow_assigned"):
+        if status_intent_would_regress(intent_of(task), "workflow_assigned"):
             status_name = ""
     res = await c.update_task_fields(
         task_id, add_assignee_ids=user_ids(dev_id), status=status_name or None
@@ -280,9 +199,9 @@ async def _assign_qa_for_pr(
     out: dict[str, Any] = {}
     cfg = load_team_assignments()
     repo_short = repo_full.rsplit("/", 1)[-1]
-    task = await _read(c, task_id) or {}
+    task = await read_task(c, task_id) or {}
 
-    qid = _qa_from_field(task) or await _stamped_qa(session, repo_short, pr_number, task_id)
+    qid = qa_from_field(task) or await stamped_qa(session, repo_short, pr_number, task_id)
     already = bool(qid)
     why = "already assigned" if already else ""
 
@@ -379,7 +298,7 @@ async def _maybe_set_needs_qa(
 ) -> dict[str, Any]:
     if is_draft and settings.skip_needs_qa_for_draft:
         return {"skipped": "draft"}
-    return await _set_intent_status(
+    return await set_intent_status(
         c, task_id, "workflow_needs_qa", guard=None if allow_regression else "backwards"
     )
 
@@ -445,9 +364,9 @@ async def link_pr_to_issue_task(
         allow_regression=not is_late_link,
     )
     if skip_qa_if_finished:
-        task = await _read(c, task_id)
-        if _intent_of(task) == "workflow_completed":
-            _stamp(
+        task = await read_task(c, task_id)
+        if intent_of(task) == "workflow_completed":
+            stamp(
                 session,
                 "pr_linked",
                 repo_name,
@@ -471,7 +390,7 @@ async def link_pr_to_issue_task(
     )
     _log.info("PR #%s QA assignment: %s", pr_number, {k: qa[k] for k in list(qa)[:3]})
     await _maybe_set_needs_qa(c, task_id, is_draft, allow_regression=not is_late_link)
-    _stamp(
+    stamp(
         session,
         "pr_linked",
         repo_name,
@@ -523,9 +442,9 @@ async def retire_superseded_task(
     )
     if not pr_owned:
         return
-    task = await _read(c, task_id)
-    if _intent_of(task) == "workflow_needs_qa":
-        await _set_intent_status(c, task_id, "workflow_in_progress", task=task)
+    task = await read_task(c, task_id)
+    if intent_of(task) == "workflow_needs_qa":
+        await set_intent_status(c, task_id, "workflow_in_progress", task=task)
 
 
 # -- opened --------------------------------------------------------------------------------------
@@ -622,7 +541,7 @@ async def sync_pr_metadata(
 ) -> dict[str, Any]:
     """Re-sync type, priority, developer and (for drafts) status onto every task the PR is linked to."""
     from boardman.assignment.developer_eligibility import filter_developer
-    from boardman.plaky.dynamic_qa_status import (
+    from boardman.assignment.github_user_resolution import (
         github_actor_payload,
         resolve_github_user_to_user_id,
     )
@@ -664,7 +583,7 @@ async def sync_pr_metadata(
 
     results: list[dict[str, Any]] = []
     for task_id in task_ids:
-        task = await _read(c, task_id)
+        task = await read_task(c, task_id)
         kwargs: dict[str, Any] = {}
         if task_id in standalone_ids:
             if state.title and state.title != (task or {}).get("name"):
@@ -680,7 +599,7 @@ async def sync_pr_metadata(
         # A draft means "assigned", never over work that has already moved on.
         if state.draft and task is not None:
             name = status_for_intent("workflow_assigned")
-            if name and not status_intent_would_regress(_intent_of(task), "workflow_assigned"):
+            if name and not status_intent_would_regress(intent_of(task), "workflow_assigned"):
                 if name.casefold() != current_status(task).casefold():
                     kwargs["status"] = name
         mutation: dict[str, Any] = {"ok": True, "skipped": True}
@@ -697,7 +616,7 @@ async def sync_pr_metadata(
                 "type_ok": all(bool(o.get("ok")) for o in type_ops),
             }
         )
-        _stamp(
+        stamp(
             session,
             "pr_metadata_synced",
             repo_name,
@@ -761,11 +680,11 @@ async def handle_pr_converted_to_draft(
         }
     reverted: list[dict[str, Any]] = []
     for tid in task_ids:
-        task = await _read(c, tid)
-        if _intent_of(task) != "workflow_needs_qa":
+        task = await read_task(c, tid)
+        if intent_of(task) != "workflow_needs_qa":
             continue
-        res = await _set_intent_status(c, tid, "workflow_in_progress", task=task)
-        _stamp(session, "pr_converted_to_draft", repo_name, pr_number, tid, **{"from": "needs_qa"})
+        res = await set_intent_status(c, tid, "workflow_in_progress", task=task)
+        stamp(session, "pr_converted_to_draft", repo_name, pr_number, tid, **{"from": "needs_qa"})
         reverted.append({"task_id": tid, "clickup": res})
     await session.commit()
     return {"ok": True, "updated": reverted, "event": "converted_to_draft"}
@@ -851,7 +770,7 @@ async def handle_pr_review_requested(
         return {"ok": True, "skipped": True, "message": "needs-QA status is not configured"}
     written: list[str] = []
     for tid in task_ids:
-        res = await _set_intent_status(
+        res = await set_intent_status(
             c, tid, "workflow_needs_qa", protect=tuple(QA_VERDICT_INTENTS)
         )
         if res.get("ok") and not res.get("skipped"):
@@ -941,11 +860,11 @@ async def handle_pr_synchronized(
 
     resumed: list[dict[str, Any]] = []
     for tid in task_ids:
-        task = await _read(c, tid)
-        if _intent_of(task) not in from_intents:
+        task = await read_task(c, tid)
+        if intent_of(task) not in from_intents:
             continue
-        res = await _set_intent_status(c, tid, target_intent, task=task)
-        _stamp(
+        res = await set_intent_status(c, tid, target_intent, task=task)
+        stamp(
             session, action, repo_name, pr_number, tid, commits_since_review=delta, to_status=target
         )
         resumed.append({"task_id": tid, "clickup": res})
@@ -985,16 +904,16 @@ async def handle_pr_closed_without_merge(
         for tid in task_ids:
             if await has_any_open_pr_for_task(session, plaky_task_id=tid):
                 continue
-            task = await _read(c, tid)
-            if _intent_of(task) not in review:
+            task = await read_task(c, tid)
+            if intent_of(task) not in review:
                 continue
             reverted.append(
                 {
                     "task_id": tid,
-                    "clickup": await _set_intent_status(c, tid, "workflow_in_progress", task=task),
+                    "clickup": await set_intent_status(c, tid, "workflow_in_progress", task=task),
                 }
             )
-    _stamp(
+    stamp(
         session,
         "pr_closed_without_merge",
         repo_name,
@@ -1034,8 +953,8 @@ async def handle_deployment_status(
             if tid in seen:
                 continue
             seen.add(tid)
-            res = await _set_intent_status(c, tid, "workflow_deployed")
-            _stamp(
+            res = await set_intent_status(c, tid, "workflow_deployed")
+            stamp(
                 session,
                 "pr_deployed",
                 repo_name,
@@ -1123,7 +1042,7 @@ async def handle_pr_merged(
         if task_id not in stated:
             marker = f"pr-merged-not-completed:{repo_name}:{pr_number}:{task_id}"
             if not await comment_already_synced(session, "pr_merged_not_completed", marker):
-                _stamp(
+                stamp(
                     session,
                     "pr_merged_not_completed",
                     repo_name,
@@ -1187,11 +1106,11 @@ async def handle_pr_review_comment(
     client: ClickUpClient | None = None,
 ) -> dict[str, Any]:
     """Mirror an inline review comment to the linked tasks; the assigned QA's comment means "in QA"."""
-    from boardman.github.pr_actions import is_boardman_comment
-    from boardman.plaky.dynamic_qa_status import (
+    from boardman.assignment.github_user_resolution import (
         github_actor_payload,
         resolve_github_user_to_user_id,
     )
+    from boardman.github.pr_actions import is_boardman_comment
 
     c = client or ClickUpClient()
     repo_name = payload.repository.name
@@ -1288,16 +1207,16 @@ async def handle_pr_review_comment(
         )
     results: list[dict[str, Any]] = []
     for tid in task_ids:
-        task = await _read(c, tid)
+        task = await read_task(c, tid)
         if task is None:
             continue
-        assigned_qa = _qa_from_field(task) or await _stamped_qa(session, repo_name, pr_number, tid)
+        assigned_qa = qa_from_field(task) or await stamped_qa(session, repo_name, pr_number, tid)
         if not (assigned_qa and reviewer_id and assigned_qa == reviewer_id):
             continue
-        res = await _set_intent_status(c, tid, "workflow_in_qa", task=task)
+        res = await set_intent_status(c, tid, "workflow_in_qa", task=task)
         if res.get("skipped") and "no ClickUp status" in str(res.get("skipped")):
             continue
-        _stamp(
+        stamp(
             session,
             "in_qa_comment",
             repo_name,
@@ -1353,7 +1272,7 @@ async def handle_pr_labels_changed(
     )
     updated: list[dict[str, Any]] = []
     for tid in task_ids:
-        task = await _read(c, tid)
+        task = await read_task(c, tid)
         if task is None:
             updated.append({"task_id": tid, "ok": False, "message": "task unreadable"})
             continue
@@ -1364,7 +1283,7 @@ async def handle_pr_labels_changed(
                 bool((await c.update_task_fields(tid, priority=pr_state.priority)).get("ok")) and ok
             )
         updated.append({"task_id": tid, "ok": ok})
-    _stamp(
+    stamp(
         session,
         "pr_labels_synced",
         repo_name,

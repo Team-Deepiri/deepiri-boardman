@@ -184,10 +184,10 @@ async def _apply_pr_type_and_assignee(
     Per the workflow: similarity already corroborated the match; we only WRITE the assignee when
     the task currently has none — an existing assignee is never overwritten.
     """
+    from boardman.assignment.github_user_resolution import github_actor_payload
     from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
     from boardman.plaky.board_aware import board_person_field_keys
     from boardman.plaky.dynamic_qa_status import (
-        github_actor_payload,
         resolve_github_user_to_plaky_user_id,
         resolve_plaky_status_patch,
     )
@@ -691,11 +691,9 @@ async def _maybe_triage_ambiguous_pr(
             }
         raise
 
+    from boardman.assignment.github_user_resolution import github_actor_payload
     from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
-    from boardman.plaky.dynamic_qa_status import (
-        github_actor_payload,
-        resolve_github_user_to_plaky_user_id,
-    )
+    from boardman.plaky.dynamic_qa_status import resolve_github_user_to_plaky_user_id
     from boardman.services.priority_precedent import infer_priority_for_new_task
     from boardman.services.task_mutations import CreateTaskInput, create_task_internal
 
@@ -1634,8 +1632,8 @@ async def handle_pr_edited(
             repo_full_name=payload.repository.full_name,
             repo_name=repo_name,
         )
+        from boardman.assignment.github_user_resolution import github_actor_payload
         from boardman.plaky.dynamic_qa_status import (
-            github_actor_payload,
             resolve_github_user_to_plaky_user_id,
             resolve_plaky_status_patch,
         )
@@ -2570,8 +2568,8 @@ async def handle_pr_review_comment(
     if not task_ids_with_issue:
         return {"ok": True, "skipped": True, "message": "No linked Plaky tasks for this PR"}
 
+    from boardman.assignment.github_user_resolution import github_actor_payload
     from boardman.plaky.dynamic_qa_status import (
-        github_actor_payload,
         resolve_github_user_to_plaky_user_id,
         resolve_plaky_status_patch,
         resolve_qa_assignee_field_key,

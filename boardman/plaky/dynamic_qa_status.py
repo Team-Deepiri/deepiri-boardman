@@ -14,13 +14,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from boardman.assignment.identity_match import best_plaky_match_for_github
-from boardman.clickup.client import ClickUpClient
+from boardman.assignment.github_user_resolution import github_actor_dict, resolve_github_user
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.services.sync_state import UNREADABLE_STATUS as _SYNC_STATE_UNREADABLE
 from boardman.settings import settings
-from boardman.task_provider import active_provider
 
 _log = logging.getLogger(__name__)
 
@@ -393,97 +391,25 @@ async def discover_qa_assignee_field_key(board_id: str) -> str | None:
     return discover_qa_assignee_field_key_from_normalized(n)
 
 
-def _github_actor_dict(login: str, *, name: str = "", email: str = "") -> dict[str, Any]:
-    return {
-        "login": (login or "").strip(),
-        "name": (name or "").strip(),
-        "email": (email or "").strip(),
-    }
-
-
-def github_actor_payload(user: dict[str, Any] | None) -> dict[str, Any]:
-    """Normalize GitHub ``user`` objects from webhooks into the shape expected by identity matching."""
-    if not isinstance(user, dict):
-        return _github_actor_dict("")
-    return _github_actor_dict(
-        str(user.get("login") or ""),
-        name=str(user.get("name") or ""),
-        email=str(user.get("email") or ""),
-    )
-
-
-async def resolve_github_user_to_user_id(
-    gh: dict[str, Any],
-    *,
-    min_score: int = 640,
-    ambiguity_margin: int = 45,
-) -> str | None:
-    """
-    Map a GitHub profile (login, optional name/email from webhook) to a workspace user id for the
-    active task provider (Plaky, or ClickUp when TASK_PROVIDER=clickup).
-
-    1) Prefer an explicit GitHub username stored on the Plaky user (exact case-insensitive match).
-    2) Otherwise run ``best_plaky_match_for_github`` (email / display name / login-token heuristics;
-       conservative ambiguity handling — same as ``sync_qa_capabilities`` roster matching).
-    """
-    login = str(gh.get("login") or "").strip()
-    if not login:
-        return None
-    want = login.casefold()
-
-    # Explicit roster mapping wins: team_assignments member_overrides exists precisely
-    # for accounts the fuzzy matcher cannot bridge (login and Plaky email share nothing).
-    try:
-        from boardman.assignment.config import load_team_assignments
-
-        for m in load_team_assignments().members:
-            gl = (getattr(m, "github_login", "") or "").strip().casefold()
-            mid = (getattr(m, "id", "") or "").strip()
-            if gl and mid and gl == want:
-                return mid
-    except Exception:  # noqa: BLE001 — roster trouble must never break identity resolution
-        _log.warning("roster unavailable during GitHub user resolution", exc_info=True)
-
-    c: Any = ClickUpClient() if active_provider() == "clickup" else PlakyClient()
-    r = await c.list_workspace_users()
-    if not r.get("ok"):
-        return None
-    users: list[dict[str, Any]] = [u for u in (r.get("users") or []) if isinstance(u, dict)]
-    for u in users:
-        uid = str(u.get("id") or "").strip()
-        if not uid:
-            continue
-        linked = u.get("github_login") or u.get("githubLogin") or u.get("githubUsername")
-        if isinstance(linked, str) and linked.strip().casefold() == want:
-            return uid
-
-    plaky_id, reason, _ = best_plaky_match_for_github(
-        gh,
-        users,
-        min_score=min_score,
-        ambiguity_margin=ambiguity_margin,
-    )
-    if reason == "matched" and plaky_id:
-        return str(plaky_id).strip() or None
-    return None
-
-
 async def resolve_github_user_to_plaky_user_id(
     gh: dict[str, Any],
     *,
     min_score: int = 640,
     ambiguity_margin: int = 45,
 ) -> str | None:
-    """Original name of :func:`resolve_github_user_to_user_id`, kept because the Plaky handlers and
-    their tests call (and patch) it by this name. It resolves for whichever provider is active."""
-    return await resolve_github_user_to_user_id(
-        gh, min_score=min_score, ambiguity_margin=ambiguity_margin
+    """Map a GitHub profile (login, optional name/email from webhook) to a Plaky workspace user id.
+
+    The matching rules live in :func:`boardman.assignment.github_user_resolution.resolve_github_user`;
+    this passes it the Plaky client (looked up here so tests can patch ``PlakyClient``).
+    """
+    return await resolve_github_user(
+        gh, PlakyClient(), min_score=min_score, ambiguity_margin=ambiguity_margin
     )
 
 
 async def workspace_plaky_user_id_for_github_login(login: str) -> str | None:
     """Backward-compatible: login-only GitHub handle → Plaky id (exact link row, then fuzzy)."""
-    return await resolve_github_user_to_plaky_user_id(_github_actor_dict(login))
+    return await resolve_github_user_to_plaky_user_id(github_actor_dict(login))
 
 
 def configured_qa_item_field_key() -> str:

@@ -366,7 +366,7 @@ async def test_issue_handler_dispatches_to_clickup_only_when_selected(cu, db, mo
 
 async def test_an_unresolvable_github_user_is_empty_never_the_string_none(monkeypatch):
     """The real resolver, not the fixture's stand-in: None must become "", never "None"."""
-    from boardman.plaky import dynamic_qa_status as dqs
+    from boardman.assignment import github_user_resolution as dqs
 
     async def nobody(gh, **kw):
         return None

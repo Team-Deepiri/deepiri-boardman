@@ -482,7 +482,7 @@ async def test_issue_comment_plaky_assigned_qa_moves_in_qa_without_github_partic
     async def _author_login(*_a, **_k):
         return "dev-author"
 
-    monkeypatch.setattr("boardman.services.pr_review_handler._pr_author_login", _author_login)
+    monkeypatch.setattr("boardman.services.pr_review_handler.pr_author_login", _author_login)
 
     engine, factory = await _memory_session_factory()
     async with factory() as session:
@@ -540,7 +540,7 @@ async def test_issue_comment_by_pr_author_on_support_roster_does_not_move_to_in_
     async def _author_login(*_a, **_k):
         return "pr-author-dev"
 
-    monkeypatch.setattr("boardman.services.pr_review_handler._pr_author_login", _author_login)
+    monkeypatch.setattr("boardman.services.pr_review_handler.pr_author_login", _author_login)
 
     engine, factory = await _memory_session_factory()
     async with factory() as session:
@@ -599,7 +599,7 @@ async def test_issue_comment_by_support_member_not_author_moves_to_in_qa(
     async def _author_login(*_a, **_k):
         return "pr-author-dev"
 
-    monkeypatch.setattr("boardman.services.pr_review_handler._pr_author_login", _author_login)
+    monkeypatch.setattr("boardman.services.pr_review_handler.pr_author_login", _author_login)
 
     engine, factory = await _memory_session_factory()
     async with factory() as session:
@@ -702,7 +702,7 @@ async def test_comment_on_an_already_merged_pr_does_not_bounce_a_completed_task_
     async def _merged_true(*_a, **_k) -> bool:
         return True
 
-    monkeypatch.setattr("boardman.services.pr_review_handler._pr_is_merged", _merged_true)
+    monkeypatch.setattr("boardman.services.pr_review_handler.pr_is_merged", _merged_true)
 
     engine, factory = await _memory_session_factory()
     async with factory() as session:

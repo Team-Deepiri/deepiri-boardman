@@ -90,7 +90,7 @@ async def _resolve_engineer(login: str) -> str:
     if not login:
         return ""
     from boardman.assignment.developer_eligibility import filter_developer
-    from boardman.plaky.dynamic_qa_status import (
+    from boardman.assignment.github_user_resolution import (
         github_actor_payload,
         resolve_github_user_to_user_id,
     )

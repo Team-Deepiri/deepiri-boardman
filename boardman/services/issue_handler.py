@@ -197,10 +197,8 @@ async def _resolve_issue_engineer_id(login: str) -> str:
     if not login:
         return ""
     from boardman.assignment.developer_eligibility import filter_developer
-    from boardman.plaky.dynamic_qa_status import (
-        github_actor_payload,
-        resolve_github_user_to_plaky_user_id,
-    )
+    from boardman.assignment.github_user_resolution import github_actor_payload
+    from boardman.plaky.dynamic_qa_status import resolve_github_user_to_plaky_user_id
 
     resolved = str(
         await resolve_github_user_to_plaky_user_id(github_actor_payload({"login": login})) or ""
@@ -546,10 +544,8 @@ async def handle_issue_opened(payload: IssueEventPayload, session: AsyncSession)
     engineer_plaky_id = ""
     assignee_login = issue_state.assignee_login
     if assignee_login:
-        from boardman.plaky.dynamic_qa_status import (
-            github_actor_payload,
-            resolve_github_user_to_plaky_user_id,
-        )
+        from boardman.assignment.github_user_resolution import github_actor_payload
+        from boardman.plaky.dynamic_qa_status import resolve_github_user_to_plaky_user_id
 
         engineer_plaky_id = (
             await resolve_github_user_to_plaky_user_id(
