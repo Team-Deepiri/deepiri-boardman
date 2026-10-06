@@ -190,7 +190,10 @@ def test_prompt_notice_names_the_tools_and_placement():
 
     text = clickup_provider_markdown("L9")
     assert "clickup_create_tasks" in text and "`L9`" in text
-    assert "plaky_create_tasks_deferred (use clickup_create_tasks" in text and "no** board schema" in text
+    assert (
+        "plaky_create_tasks_deferred (use clickup_create_tasks" in text
+        and "no** board schema" in text
+    )
     assert "not set" in clickup_provider_markdown(None)
 
 
