@@ -313,9 +313,9 @@ class ClickUpClient:
             )
         result: dict[str, Any] = {"ok": True, "status": 200, "tasks": tasks, "truncated": truncated}
         if truncated:
-            result[
-                "message"
-            ] = f"List has more than {page_cap * 100} tasks; only the first {len(tasks)} were loaded."
+            result["message"] = (
+                f"List has more than {page_cap * 100} tasks; only the first {len(tasks)} were loaded."
+            )
         return result
 
     async def update_task_fields(

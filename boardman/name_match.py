@@ -60,4 +60,3 @@ def rank_rows_by_name(
         best = dict(ranked[0])
 
     return ranked, best
-
