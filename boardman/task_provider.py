@@ -17,21 +17,19 @@ PROVIDERS = ("plaky", "clickup")
 class TaskClient(Protocol):
     """The task surface both providers implement. Anything beyond it is provider-specific."""
 
-    async def get_tasks(self, status: str = "open", board_id: str | None = None) -> dict[str, Any]:
-        ...
+    async def get_tasks(
+        self, status: str = "open", board_id: str | None = None
+    ) -> dict[str, Any]: ...
 
-    async def get_task(self, task_id: str) -> dict[str, Any]:
-        ...
+    async def get_task(self, task_id: str) -> dict[str, Any]: ...
 
     async def add_comment(
         self, task_id: str, body: str, *, board_id: str | None = None
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
     async def create_task(
         self, title: str, description: str = "", priority: str = "medium", **kwargs: Any
-    ) -> dict[str, Any]:
-        ...
+    ) -> dict[str, Any]: ...
 
 
 def active_provider() -> str:
