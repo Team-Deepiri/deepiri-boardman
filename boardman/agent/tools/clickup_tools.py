@@ -17,7 +17,13 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 
 from boardman.clickup.client import ClickUpClient
-from boardman.plaky.name_match import rank_plaky_rows
+from boardman.clickup.people import (
+    assignee_ids,
+    match_person,
+    rank_users,
+    resolve_people,
+    workspace_users,
+)
 from boardman.settings import settings
 
 
@@ -67,33 +73,7 @@ def _slim_task(t: dict[str, Any]) -> dict[str, Any]:
 
 
 async def _workspace_users() -> list[dict[str, Any]]:
-    r = await _client().list_workspace_users()
-    return r.get("users") or [] if r.get("ok") else []
-
-
-def _match_person(query: str, users: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, str]:
-    """Resolve a plain name or email to one workspace member. Returns (user, problem)."""
-    q = (query or "").strip()
-    if not q:
-        return None, ""
-    rows = [
-        {"id": u["id"], "name": f"{u.get('name') or ''} {u.get('email') or ''}".strip()}
-        for u in users
-    ]
-    ranked, best = rank_plaky_rows(rows, q)
-    floor = settings.clickup_person_match_min_score
-    strong = [r for r in ranked if r["score"] >= floor]
-    if len(strong) > 1 and strong[0]["score"] == strong[1]["score"]:
-        names = ", ".join(r["name"] for r in strong[:4])
-        return None, f"'{q}' is ambiguous: {names}"
-    if not best or best["score"] < floor:
-        return None, f"no workspace member matches '{q}'"
-    user = next((u for u in users if u["id"] == best["id"]), None)
-    return user, ""
-
-
-def _assignee_ids(user: dict[str, Any] | None) -> list[int] | None:
-    return [int(user["id"])] if user and str(user["id"]).isdigit() else None
+    return await workspace_users(_client())
 
 
 # -- read tools -----------------------------------------------------------------------------
@@ -160,11 +140,7 @@ async def _clickup_list_workspace_users(name_query: str = "") -> str:
     q = (name_query or "").strip()
     if not q:
         return _dump({"ok": True, "users": users[:200]})
-    rows = [
-        {"id": u["id"], "name": f"{u.get('name') or ''} {u.get('email') or ''}".strip()}
-        for u in users
-    ]
-    ranked, best = rank_plaky_rows(rows, q)
+    ranked, best = rank_users(q, users)
     return _dump({"ok": True, "best": best, "matches": [r for r in ranked if r["score"] > 0][:10]})
 
 
@@ -195,14 +171,14 @@ async def _create_one(
     repo = str(row.get("repo_tag") or "").strip()
     if repo:
         description = f"{description}\n\nRepo: {repo}".strip()
-    person, problem = _match_person(str(row.get("assignee") or ""), users)
+    person, problem = match_person(str(row.get("assignee") or ""), users)
     r = await c.create_task(
         title,
         description,
         row.get("priority") or "medium",
         board_id=list_id,
         status=(str(row.get("status") or "").strip() or None),
-        assignee_ids=_assignee_ids(person),
+        assignee_ids=assignee_ids(person),
     )
     out = {
         "ok": bool(r.get("ok")),
@@ -310,27 +286,35 @@ async def _clickup_update_task(
     title: str = "",
     description: str = "",
     assignee: str = "",
+    qa: str = "",
+    auto_assign_qa: bool = False,
+    github_repo: str = "",
 ) -> str:
-    c = _client()
-    add_ids: list[int] | None = None
-    problem = ""
-    if (assignee or "").strip():
-        person, problem = _match_person(assignee, await _workspace_users())
-        add_ids = _assignee_ids(person)
-    if problem and not any([status, priority, title, description]):
-        return _dump({"ok": False, "status": 400, "message": problem})
-    r = await c.update_task_fields(
-        task_id,
-        title=title or None,
-        description=description or None,
-        priority=priority or None,
-        status=status or None,
-        add_assignee_ids=add_ids,
+    from boardman.services.clickup_mutations import update_clickup_task
+    from boardman.services.task_mutations import UpdateTaskInput
+
+    add_ids, qa_id, problems = await resolve_people(_client(), assignee, qa)
+    nothing_to_write = not any(
+        [status, priority, title, description, add_ids, qa_id, auto_assign_qa]
     )
-    if r.get("ok"):
-        r = {"ok": True, "status": r["status"], "task": _slim_task(r["task"])}
-    if problem:
-        r["people_resolved"] = {"assignee": problem}
+    if problems and nothing_to_write:
+        return _dump({"ok": False, "status": 400, "message": "; ".join(problems.values())})
+    r = await update_clickup_task(
+        task_id,
+        UpdateTaskInput(
+            status=status or None,
+            priority=priority or None,
+            title=title or None,
+            description=description or None,
+            qa_plaky_id=qa_id or None,
+            auto_assign_qa=bool(auto_assign_qa) and not qa_id,
+            github_repo=github_repo or None,
+        ),
+        add_assignee_ids=add_ids,
+        client=_client(),
+    )
+    if problems:
+        r["people_resolved"] = problems
     return _dump(r)
 
 
@@ -362,16 +346,14 @@ async def _clickup_create_subtask(
 ) -> str:
     c = _client()
     person, problem = (
-        _match_person(assignee, await _workspace_users())
-        if (assignee or "").strip()
-        else (None, "")
+        match_person(assignee, await _workspace_users()) if (assignee or "").strip() else (None, "")
     )
     r = await c.create_subtask(
         parent_task_id, title, description, status=status or None, priority=priority or None
     )
     if r.get("ok") and person and r.get("task_id"):
         r["assignee_update"] = await c.update_task_fields(
-            r["task_id"], add_assignee_ids=_assignee_ids(person)
+            r["task_id"], add_assignee_ids=assignee_ids(person)
         )
         r["assignee_update"].pop("task", None)
     r.pop("task", None)
@@ -432,8 +414,9 @@ def build_clickup_tools(*, allow_writes: bool) -> list[StructuredTool]:
                 tool(
                     _clickup_update_task,
                     "clickup_update_task",
-                    "Update an existing ClickUp task. Args: task_id; optional status, priority, title, "
-                    "description, assignee (plain name, added to the current assignees).",
+                    "Update a ClickUp task: status, priority, title, description, assignee (plain name, "
+                    "added), qa (plain name), or auto_assign_qa=true with github_repo (owner/repo) to "
+                    "pick QA from team_assignments.yml. QA is only set when asked.",
                 ),
                 tool(
                     _clickup_add_comment,

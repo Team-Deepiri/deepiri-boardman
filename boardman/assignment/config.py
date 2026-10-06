@@ -26,8 +26,8 @@ from boardman.plaky.board_schema import (
     field_row_item_key,
     plaky_field_row_label,
 )
-from boardman.plaky.client import PlakyClient
 from boardman.settings import settings
+from boardman.task_provider import get_sync_user_source
 
 # QA leads/managers who must NEVER be auto-assigned to review PRs (employer requirement).
 # Matching is case-insensitive against member display name AND GitHub login.
@@ -162,7 +162,7 @@ def reload_team_assignments() -> None:
 
 
 # Assembling the config hits the network: the GitHub support-team roster (TTL-cached
-# 120s) and then PlakyClient().list_workspace_users_sync(), which is a BLOCKING,
+# 120s) and then the provider client's list_workspace_users_sync(), which is a BLOCKING,
 # paginated HTTP call with no cache of its own. load_team_assignments() is called
 # several times per created task (create path, QA picker, field maps, draft merge), so
 # a 5-task batch stalled the event loop on that sync call over a dozen times and both
@@ -626,7 +626,7 @@ def _members_from_github_roster(data: dict[str, Any]) -> list[TeamMember]:
 
     plaky_users: list[dict[str, Any]] = []
     if auto_match:
-        pr = PlakyClient().list_workspace_users_sync()
+        pr = get_sync_user_source().list_workspace_users_sync()
         if pr.get("ok"):
             plaky_users = [u for u in (pr.get("users") or []) if isinstance(u, dict)]
         else:

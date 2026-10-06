@@ -1,4 +1,4 @@
-"""Rank Plaky boards/groups by how well their names match a user phrase (API returns id + name)."""
+"""Rank boards, groups, lists or people by how well their names match a user phrase (id + name rows)."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def _rank_name_against_query(name: str, query: str, query_tokens: list[str]) -> 
     return 0
 
 
-def rank_plaky_rows(
+def rank_rows_by_name(
     rows: list[dict[str, Any]],
     query: str,
     *,

@@ -1020,13 +1020,10 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
 async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, Any]:
     from boardman.task_provider import active_provider
 
-    if active_provider() != "plaky":
-        # This implementation writes Plaky fields. Fail loudly rather than patch the wrong tracker.
-        return {
-            "ok": False,
-            "status": 501,
-            "message": f"Task updates are not implemented for TASK_PROVIDER={active_provider()} yet.",
-        }
+    if active_provider() == "clickup":
+        from boardman.services.clickup_mutations import update_clickup_task
+
+        return await update_clickup_task(task_id, req)
     plaky = PlakyClient()
     ops: dict[str, Any] = {}
     developer_refusals: list[str] = []

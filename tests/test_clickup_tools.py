@@ -233,11 +233,3 @@ async def test_list_tasks_surfaces_api_level_truncation(api, monkeypatch):
         and "more than 2000" in out["note"]
         and "Do NOT state" in out["note"]
     )
-
-
-def test_person_match_floor_comes_from_settings(monkeypatch):
-    users = [{"id": "12", "name": "Sergio Vargas", "email": "s@x.io"}]
-    assert ct._match_person("sergio", users)[0]["id"] == "12"
-    monkeypatch.setattr(ct.settings, "clickup_person_match_min_score", 900)
-    user, problem = ct._match_person("sergio", users)
-    assert user is None and "no workspace member" in problem

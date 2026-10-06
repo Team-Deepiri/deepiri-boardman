@@ -300,15 +300,6 @@ async def test_default_client_uses_the_shared_pool_and_never_closes_it(monkeypat
     await shared.aclose()
 
 
-async def test_update_task_internal_refuses_non_plaky_provider(monkeypatch):
-    from boardman import task_provider
-    from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
-
-    monkeypatch.setattr(task_provider.settings, "task_provider", "clickup")
-    r = await update_task_internal("t1", UpdateTaskInput(status="done"))
-    assert r["ok"] is False and r["status"] == 501 and "clickup" in r["message"]
-
-
 def test_priority_label_round_trips():
     assert ClickUpClient.priority_label(1) == "urgent" and ClickUpClient.priority_label(4) == "low"
     assert ClickUpClient.priority_label(None) is None and ClickUpClient.priority_label(0) is None

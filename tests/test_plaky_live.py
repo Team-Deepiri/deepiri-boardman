@@ -19,9 +19,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from boardman.main import create_app
+from boardman.name_match import rank_rows_by_name
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
-from boardman.plaky.name_match import rank_plaky_rows
 from boardman.settings import settings
 from tests.plaky_test_board import (
     BOARDMAN_TEST_BOARD_NAME,
@@ -102,7 +102,7 @@ async def test_live_name_match_boards():
     r = await c.list_boards()
     assert r.get("ok") is True
     boards = r.get("boards") or []
-    matches, best = rank_plaky_rows(boards, "")
+    matches, best = rank_rows_by_name(boards, "")
     assert len(matches) == len(boards)
     btest = find_row_by_name(boards, BOARDMAN_TEST_BOARD_NAME)
     if not btest:
@@ -112,7 +112,7 @@ async def test_live_name_match_boards():
         )
     full_name = str(btest.get("name") or "").strip()
     if full_name:
-        m2, _ = rank_plaky_rows(boards, full_name)
+        m2, _ = rank_rows_by_name(boards, full_name)
         assert m2[0]["id"] == str(btest["id"])
         assert m2[0]["score"] >= 700
 

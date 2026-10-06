@@ -374,14 +374,8 @@ class ClickUpClient:
             )
         return teams[0] if teams else {}
 
-    async def list_workspace_users(self) -> dict[str, Any]:
-        """Members of the configured workspace (CLICKUP_TEAM_ID, else the first workspace)."""
-        if not self.api_token:
-            return self._missing_token(users=[])
-        response = await self._request("GET", "/team")
-        if response.status_code != 200:
-            return {**self._failure(response, "list workspaces"), "users": []}
-        team = self._choose_team(response.json().get("teams") or [])
+    def _users_from_teams(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        team = self._choose_team(payload.get("teams") or [])
         users: list[dict[str, Any]] = []
         for member in team.get("members") or []:
             user = member.get("user") if isinstance(member, dict) else None
@@ -395,7 +389,52 @@ class ClickUpClient:
                     "github_login": None,
                 }
             )
-        return {"ok": True, "status": 200, "users": users}
+        return users
+
+    async def list_workspace_users(self) -> dict[str, Any]:
+        """Members of the configured workspace (CLICKUP_TEAM_ID, else the first workspace)."""
+        if not self.api_token:
+            return self._missing_token(users=[])
+        response = await self._request("GET", "/team")
+        if response.status_code != 200:
+            return {**self._failure(response, "list workspaces"), "users": []}
+        return {"ok": True, "status": 200, "users": self._users_from_teams(response.json())}
+
+    async def set_user_field(
+        self,
+        task_id: str,
+        field_id: str,
+        add_user_ids: list[int],
+        remove_user_ids: list[int] | None = None,
+    ) -> dict[str, Any]:
+        """Set a custom field of type "users" (add and remove member ids)."""
+        if not self.api_token:
+            return self._missing_token()
+        body = {"value": {"add": list(add_user_ids), "rem": list(remove_user_ids or [])}}
+        response = await self._request("POST", f"/task/{task_id}/field/{field_id}", json=body)
+        if response.status_code in (200, 201):
+            return {"ok": True, "status": response.status_code}
+        return self._failure(response, "set user field")
+
+    async def assign_qa(
+        self, task_id: str, qa_user_id: str, *, qa_field_id: str | None = None
+    ) -> dict[str, Any]:
+        """Put the QA reviewer on a task: the configured users field when there is one,
+        otherwise as an extra assignee."""
+        if not str(qa_user_id).strip().isdigit():
+            return {
+                "ok": False,
+                "status": 400,
+                "message": f"'{qa_user_id}' is not a ClickUp user id.",
+            }
+        uid = int(str(qa_user_id).strip())
+        field_id = settings.clickup_qa_field_id if qa_field_id is None else qa_field_id
+        if (field_id or "").strip():
+            res = await self.set_user_field(task_id, field_id.strip(), [uid])
+            return {**res, "via": "custom_field", "qa_user_id": uid}
+        res = await self.update_task_fields(task_id, add_assignee_ids=[uid])
+        res.pop("task", None)
+        return {**res, "via": "assignee", "qa_user_id": uid}
 
     async def list_boards(self) -> dict[str, Any]:
         """All lists (the ClickUp equivalent of boards), across spaces, folders and folderless."""
