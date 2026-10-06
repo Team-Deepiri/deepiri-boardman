@@ -41,18 +41,24 @@ from boardman.services.issue_handler import (
     linked_issue_numbers_for_pr,
 )
 from boardman.services.pr_link_comment import format_pr_notice_with_url
+from boardman.services.pr_sync_common import (
+    COMMITS_SINCE_REVIEW_ESCALATION_THRESHOLD,
+    QA_VERDICT_INTENTS,
+    ensure_links_live,
+    issue_link_source,
+    member_by_name,
+    prs_for_commit_sha,
+)
 from boardman.services.pr_task_linking import (
     format_triage_comment,
     run_pr_task_pipeline,
     should_run_pipeline,
 )
 from boardman.services.pr_task_registry import (
-    _BRANCH_REF_LINK_SOURCE,
     _PR_OWNED_LINK_SOURCES,
     _PR_TASK_CREATED_LINK_SOURCE,
     _PR_TASK_PENDING_LINK_SOURCE,
     _SUPERSEDED_LINK_SOURCE,
-    _TITLE_REF_LINK_SOURCE,
     _WEAK_COMPLETION_LINK_SOURCES,
     distinct_task_ids_for_pr,
     has_any_open_pr_for_task,
@@ -69,12 +75,9 @@ from boardman.services.sync_state import (
 from boardman.services.task_mutations import UpdateTaskInput, update_task_internal
 from boardman.services.webhook_side_effects import maybe_enqueue_plaky_reorder_after_task
 from boardman.settings import settings
+from boardman.task_provider import active_provider
 
 _log = logging.getLogger(__name__)
-
-# Where QA has RULED. Un-asking for a review must not overwrite one of these; anything
-# earlier is a position the request itself was about, and moving it is the point.
-_QA_VERDICT_INTENTS = ("github_pr_review_approved", "workflow_completed")
 
 
 def _mutation_really_failed(mutation: dict[str, Any]) -> bool:
@@ -304,26 +307,6 @@ async def _apply_pr_type_and_assignee(
     return out
 
 
-def _member_by_name(cfg: Any, name: str) -> Any | None:
-    """Resolve a policy role (e.g. the bug specialist) by display name or GitHub login.
-
-    Checks the live roster first, then the yaml fallback list — the specialist may not be
-    on the GitHub support team the live roster is built from (Hameeda is exactly this
-    case), and a policy the employer stated must not silently stop applying because of
-    team-membership drift.
-    """
-    want = (name or "").strip().casefold()
-    if not want:
-        return None
-    for pool in (cfg.members, getattr(cfg, "fallback_members", []) or []):
-        for m in pool:
-            display = (getattr(m, "display", "") or "").strip().casefold()
-            login = (getattr(m, "github_login", "") or "").strip().casefold()
-            if want in (display, login):
-                return m
-    return None
-
-
 async def _task_type_is_bug(plaky: PlakyClient, board_id: str, task_id: str) -> bool:
     """Read the task's CURRENT Type off the board and compare to 'Bug'.
 
@@ -415,7 +398,7 @@ async def _assign_qa_for_pr(
         # unset/unresolvable, in which case the ranked pick applies as usual.
         specialist_name = (getattr(cfg, "qa_bug_specialist", "") or "").strip()
         if specialist_name and await _task_type_is_bug(plaky, bid, task_id):
-            sm = _member_by_name(cfg, specialist_name)
+            sm = member_by_name(cfg, specialist_name)
             if sm is None:
                 _log.warning(
                     "qa_bug_specialist %r not in roster or fallback - using ranked pick",
@@ -565,7 +548,7 @@ async def _maybe_set_needs_qa(
                 status_field_key, st = resolved[0], resolved[1]
     if not st:
         return
-    if is_draft and settings.plaky_skip_needs_qa_for_draft:
+    if is_draft and settings.skip_needs_qa_for_draft:
         return
     if not allow_regression and not bid:
         # Nothing to read the task's position from. With PLAKY_STATUS_NEEDS_QA configured
@@ -882,26 +865,6 @@ async def _maybe_triage_ambiguous_pr(
     }
 
 
-def _issue_link_source(
-    issue_number: int, body_written: Sequence[int], written: Sequence[int]
-) -> str:
-    """Which kind of statement links this PR to that issue.
-
-    Three kinds, and merge treats them differently. The description is the one GitHub acts
-    on, so it is the only one that means "merging this finishes that issue". A title
-    keyword and a branch convention are both real links -- a person wrote the title, and
-    this team names branches after issues on purpose -- but GitHub leaves the issue open
-    after such a merge, and a board saying Completed while the issue is still open is a
-    state the issue's own events go on to contradict.
-    """
-    n = int(issue_number)
-    if n in body_written:
-        return "issue_keyword"
-    if n in written:
-        return _TITLE_REF_LINK_SOURCE
-    return _BRANCH_REF_LINK_SOURCE
-
-
 async def _link_pr_to_issue_task(
     session: AsyncSession,
     plaky: PlakyClient,
@@ -930,6 +893,23 @@ async def _link_pr_to_issue_task(
     Needs QA gate -- or "when did you add Fixes #94" becomes a thing people have to know.
     Every step below is idempotent, so a replayed edit re-runs it without duplicating.
     """
+    if active_provider() == "clickup":
+        from boardman.clickup.client import ClickUpClient
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.link_pr_to_issue_task(
+            session,
+            ClickUpClient(),
+            payload=payload,
+            issue_number=issue_number,
+            mapping=mapping,
+            is_draft=is_draft,
+            headline=headline,
+            is_late_link=is_late_link,
+            announce=announce,
+            link_source=link_source,
+            skip_qa_if_finished=skip_qa_if_finished,
+        )
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
@@ -1053,55 +1033,13 @@ async def _link_pr_to_issue_task(
     return True
 
 
-async def _ensure_links_live(payload: PullRequestEventPayload, session: AsyncSession) -> None:
-    """Any PR event showing it OPEN un-withdraws its links.
-
-    Called from every handler that receives a PullRequestEventPayload. The comment and
-    review handlers cannot: their payloads carry no PR state to trust. They read through
-    `distinct_task_ids_for_pr`, which filters on the link SOURCE rather than on
-    withdrawn_at, so a stale withdrawal does not blind them either way.
-
-
-    `withdrawn_at` means "this PR was closed without merging". Seeing the PR open again is
-    proof that is stale, whatever the event was. Keying the recovery on `reopened` alone
-    was too narrow: that delivery can be lost, and the poller's closed-PR memory is
-    in-process, so a restart means it never sends one. Since the resolver started honouring
-    the flag, either of those left the PR resolving to zero tasks forever -- reviews,
-    comments, pushes and label changes all silently stopped.
-    """
-    state = str(getattr(payload.pull_request, "state", "") or "").casefold()
-    if state != "open" or bool(getattr(payload.pull_request, "merged", False)):
-        # Explicitly open, and not merged. Defaulting a MISSING state to "open" made the
-        # slim events-feed payload shape look open, and a delivery that predates the close
-        # (retried job, out-of-order webhook) would then leave a closed PR holding a live
-        # link -- which blocks merge-gated completion of that task for good, since nothing
-        # re-withdraws it.
-        return
-    if str(getattr(payload.pull_request, "closed_at", "") or "").strip():
-        return
-    if str(getattr(payload.pull_request, "merged_at", "") or "").strip():
-        return
-    # And the residual case those two do NOT catch: a delivery built BEFORE the close.
-    # GitHub sets state and closed_at together, so a snapshot from before it says "open"
-    # with closed_at null and passes every field test there is. What separates it from a
-    # genuine reopen is WHEN it was built: `updated_at` on a stale delivery predates the
-    # withdrawal, and on a real reopen follows it. Reviving on a stale one is permanent --
-    # nothing withdraws those links a second time, and has_any_open_pr_for_task then
-    # blocks merge-gated completion of that task for good.
-    from boardman.services.pr_task_registry import revive_pr_links
-
-    if await revive_pr_links(
-        session,
-        github_repo=payload.repository.name,
-        github_pr_number=payload.pull_request.number,
-        not_before=str(getattr(payload.pull_request, "updated_at", "") or "").strip(),
-    ):
-        await session.commit()
-
-
 async def handle_pr_opened(
     payload: PullRequestEventPayload, session: AsyncSession, *, is_replay: bool = False
 ) -> dict:
+    if active_provider() == "clickup":
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.handle_pr_opened(payload, session, is_replay=is_replay)
     repo_name = payload.repository.name
     # `reopened` comes through here too, and it is not a PR arriving for the first time:
     # the task may be sitting at QA Verified from before the close, and re-running the
@@ -1118,7 +1056,7 @@ async def handle_pr_opened(
     # "PR Reopened" for those is both untrue and destructive: the notice is keyed on its
     # headline, so it also dedupes away the notice for the genuine reopen later.
     is_rerun = is_replay or is_reopen
-    await _ensure_links_live(payload, session)
+    await ensure_links_live(payload, session)
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
     is_draft = bool(payload.pull_request.draft)
@@ -1183,7 +1121,7 @@ async def handle_pr_opened(
                 is_draft=is_draft,
                 headline="**PR Reopened:**" if is_reopen else "**PR Opened:**",
                 is_late_link=is_rerun,
-                link_source=_issue_link_source(int(issue_num), body_written_issues, written_issues),
+                link_source=issue_link_source(int(issue_num), body_written_issues, written_issues),
             )
             if attached:
                 results.append({"issue": issue_num, "task_id": mapping.plaky_task_id})
@@ -1379,6 +1317,19 @@ async def _retire_superseded_task(
     card was created for the PR" there would be false, and rewinding its QA position would
     undo work this PR never started.
     """
+    if active_provider() == "clickup":
+        from boardman.clickup.client import ClickUpClient
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.retire_superseded_task(
+            session,
+            ClickUpClient(),
+            task_id=task_id,
+            repo_name=repo_name,
+            pr_number=pr_number,
+            canonical_task_ids=canonical_task_ids,
+            pr_owned=pr_owned,
+        )
     note = (
         (
             f"↪️ **Superseded:** PR #{pr_number} now says which issue it closes, so its work "
@@ -1542,7 +1493,7 @@ async def reconcile_pr_issue_links(
             # needs somebody to review it.
             skip_qa_if_finished=True,
             announce=str(mapping.plaky_task_id) not in already_ours,
-            link_source=_issue_link_source(int(issue_num), body_written, written),
+            link_source=issue_link_source(int(issue_num), body_written, written),
         )
         if not attached:
             # The link was declined, so there is nothing here to supersede anything else
@@ -1661,12 +1612,16 @@ async def handle_pr_edited(
     if state and state != "open":
         return {"ok": True, "skipped": True, "message": "PR not open; edit ignored"}
 
-    await _ensure_links_live(payload, session)
+    await ensure_links_live(payload, session)
     relink = await reconcile_pr_issue_links(payload, session)
 
     task_ids = await distinct_task_ids_for_pr(
         session, github_repo=repo_name, github_pr_number=pr_number
     )
+    if task_ids and active_provider() == "clickup":
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.sync_pr_metadata(payload, session, task_ids, relink)
     if task_ids:
         from boardman.repos_config import get_routing_async
 
@@ -1869,12 +1824,16 @@ async def handle_pr_converted_to_draft(
     session: AsyncSession,
 ) -> dict[str, Any]:
     """Ready-for-review reversed (converted_to_draft): Needs QA tasks go back to In Progress."""
+    if active_provider() == "clickup":
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.handle_pr_converted_to_draft(payload, session)
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     # Any event on an open PR clears a stale withdrawal from an earlier close, not only
     # `reopened` -- that delivery can be missed, and the poller's closed-PR memory does
     # not survive a restart.
-    await _ensure_links_live(payload, session)
+    await ensure_links_live(payload, session)
     task_ids = await distinct_task_ids_for_pr(
         session, github_repo=repo_name, github_pr_number=pr_number
     )
@@ -1930,7 +1889,11 @@ async def handle_pr_ready_for_review(
     session: AsyncSession,
 ) -> dict[str, Any]:
     """Draft → ready: move linked Plaky tasks to Needs QA when configured."""
-    await _ensure_links_live(payload, session)
+    if active_provider() == "clickup":
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.handle_pr_ready_for_review(payload, session)
+    await ensure_links_live(payload, session)
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     plaky = PlakyClient()
@@ -1958,7 +1921,7 @@ async def handle_pr_ready_for_review(
                     # Where the keyword was written decides what merging may claim, and
                     # this row is the only record of it. Flattening it here would let a
                     # draft going ready promote a title-only link to a written one.
-                    link_source=_issue_link_source(int(issue_num), body_closes, linked_issues),
+                    link_source=issue_link_source(int(issue_num), body_closes, linked_issues),
                 )
                 if str(getattr(row, "link_source", "") or "") == _SUPERSEDED_LINK_SOURCE:
                     # Declined: retired when the PR re-pointed at another issue. Asking
@@ -1998,6 +1961,10 @@ async def handle_pr_review_requested(
     ``review_request_removed`` is unaffected: un-asking for a review is still handled,
     reverting an in-progress request back to Needs QA (never onto a verdict already in).
     """
+    if active_provider() == "clickup":
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.handle_pr_review_requested(payload, session)
     if payload.action != "review_request_removed":
         return {
             "ok": True,
@@ -2006,7 +1973,7 @@ async def handle_pr_review_requested(
             "event": "review_requested",
         }
 
-    await _ensure_links_live(payload, session)
+    await ensure_links_live(payload, session)
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     task_ids = await distinct_task_ids_for_pr(
@@ -2059,7 +2026,7 @@ async def handle_pr_review_requested(
                 # off, and In QA -> Needs QA is exactly the move this event should make --
                 # a rank comparison rejected that one and allowed the write from Assigned,
                 # which pushes an unreviewed card into the QA queue instead.
-                if now_at in _QA_VERDICT_INTENTS:
+                if now_at in QA_VERDICT_INTENTS:
                     _log.info(
                         "PR #%s: task %s is at %s; not re-queuing it for QA",
                         pr_number,
@@ -2082,12 +2049,6 @@ async def handle_pr_review_requested(
     }
 
 
-# More than this many commits pushed since the last QA verdict escalates past
-# "Revisions In Progress" straight to "Needs QA Again" — the developer clearly isn't
-# just fixing the one thing QA flagged anymore.
-_COMMITS_SINCE_REVIEW_ESCALATION_THRESHOLD = 5
-
-
 async def handle_pr_synchronized(
     payload: PullRequestEventPayload,
     session: AsyncSession,
@@ -2104,10 +2065,14 @@ async def handle_pr_synchronized(
     No baseline (no review verdict has happened for this PR yet) → nothing to
     escalate; ordinary pre-review pushes are not this handler's concern.
     """
+    if active_provider() == "clickup":
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.handle_pr_synchronized(payload, session)
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     # A push is proof the PR is alive: clear any stale withdrawal before resolving.
-    await _ensure_links_live(payload, session)
+    await ensure_links_live(payload, session)
 
     try:
         from boardman.services.pr_review_nudges import parse_github_timestamp, record_activity
@@ -2157,7 +2122,7 @@ async def handle_pr_synchronized(
 
     from boardman.plaky.dynamic_qa_status import resolve_plaky_status_patch
 
-    escalate = delta > _COMMITS_SINCE_REVIEW_ESCALATION_THRESHOLD
+    escalate = delta > COMMITS_SINCE_REVIEW_ESCALATION_THRESHOLD
     if escalate:
         target = await resolve_plaky_status_patch(bid, intent="workflow_needs_qa_again")
         if not target:
@@ -2234,6 +2199,10 @@ async def handle_pr_closed_without_merge(
     is nothing left to review. Revert those (and only those) to In Progress; verdicts
     like QA Verified/Rejected and terminal states are left alone.
     """
+    if active_provider() == "clickup":
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.handle_pr_closed_without_merge(payload, session)
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     task_ids = await distinct_task_ids_for_pr(
@@ -2287,31 +2256,6 @@ async def handle_pr_closed_without_merge(
     return {"ok": True, "withdrawn_links": len(rows), "reverted": reverted}
 
 
-async def _prs_for_commit_sha(repo_full: str, sha: str) -> list[int]:
-    """GitHub's own "which PRs contain this commit" lookup — used to map a
-    deployment's sha back to the PR(s) it shipped without guessing from the ref."""
-    if not sha:
-        return []
-    from boardman.github.http import shared_github_client
-    from boardman.github.repo_fetch import github_request
-
-    async with shared_github_client() as client:
-        r = await github_request(client, f"/repos/{repo_full}/commits/{sha}/pulls")
-    if r.status_code != 200:
-        return []
-    try:
-        data = r.json()
-    except Exception:  # noqa: BLE001 - a malformed response yields "no PRs found", not a crash
-        return []
-    if not isinstance(data, list):
-        return []
-    out: list[int] = []
-    for item in data:
-        if isinstance(item, dict) and isinstance(item.get("number"), int):
-            out.append(item["number"])
-    return out
-
-
 async def handle_deployment_status(
     payload: DeploymentStatusEventPayload, session: AsyncSession
 ) -> dict[str, Any]:
@@ -2323,13 +2267,17 @@ async def handle_deployment_status(
     status means the deploy hasn't happened yet, and failure/error mean it didn't —
     neither should touch the board.
     """
+    if active_provider() == "clickup":
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.handle_deployment_status(payload, session)
     if (payload.deployment_status.state or "").strip().casefold() != "success":
         return {"ok": True, "skipped": True, "message": "deployment not successful (yet)"}
 
     repo_full = payload.repository.full_name
     repo_name = payload.repository.name
     sha = (payload.deployment.sha or "").strip()
-    pr_numbers = await _prs_for_commit_sha(repo_full, sha)
+    pr_numbers = await prs_for_commit_sha(repo_full, sha)
     if not pr_numbers:
         return {"ok": True, "skipped": True, "message": f"no PR found for commit {sha[:12]}"}
 
@@ -2385,6 +2333,10 @@ async def handle_deployment_status(
 
 
 async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSession) -> dict:
+    if active_provider() == "clickup":
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.handle_pr_merged(payload, session)
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number
     pr_url = payload.pull_request.html_url
@@ -2414,7 +2366,7 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
                 # below, so writing that here promoted a title-only or branch-inferred
                 # link to a written one on the way past, and the task was completed on
                 # the strength of a row this very function had just relabelled.
-                link_source=_issue_link_source(int(issue_num), body_closes, linked_issues),
+                link_source=issue_link_source(int(issue_num), body_closes, linked_issues),
             )
 
     merged_rows = await mark_pr_merged(session, github_repo=repo_name, github_pr_number=pr_number)
@@ -2516,7 +2468,7 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
                 )
             results.append({"task_id": task_id, "completed": False, "reason": "weak_link"})
             continue
-        if settings.plaky_complete_when_all_prs_merged and await has_any_open_pr_for_task(
+        if settings.complete_when_all_prs_merged and await has_any_open_pr_for_task(
             session, plaky_task_id=task_id
         ):
             results.append(
@@ -2574,6 +2526,10 @@ async def handle_pr_review_comment(
     payload: PullRequestReviewCommentEventPayload, session: AsyncSession
 ) -> dict:
     """Handle PR review comment events - mark as In QA if commenter is assigned QA."""
+    if active_provider() == "clickup":
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.handle_pr_review_comment(payload, session)
     repo_name = payload.repository.name
     pr_number = payload.pull_request.number if payload.pull_request else 0
     pr_url = payload.pull_request.html_url if payload.pull_request else ""
@@ -2780,7 +2736,11 @@ async def handle_pr_labels_changed(
     not freeze the Type forever. Type only — assignee/QA/status are owned by their own
     transitions.
     """
-    await _ensure_links_live(payload, session)
+    if active_provider() == "clickup":
+        from boardman.services import clickup_pr_sync
+
+        return await clickup_pr_sync.handle_pr_labels_changed(payload, session)
+    await ensure_links_live(payload, session)
     from boardman.github.pr_signals import infer_task_type_from_pr, pr_label_names
     from boardman.repos_config import get_routing_async
 

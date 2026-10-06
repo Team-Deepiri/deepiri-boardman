@@ -84,11 +84,36 @@ Status settings (defaults suit a stock list; ClickUp statuses are per list, so m
 
 If "needs assigned" and "assigned" share a name (the default), the board cannot tell them apart. Give them different names in your list if you want the distinction.
 
+## Pull request sync (Phase 3b)
+
+`pr_handler` dispatches every PR event to `boardman/services/clickup_pr_sync.py` when `TASK_PROVIDER=clickup`: opened/reopened, edited, labeled/unlabeled, draft and ready-for-review, review requested/removed, pushes, closed, merged, inline review comments and deployment status. The reconcile sweep re-links PRs through the same code.
+
+A PR attaches to the task its issue already owns (a closing keyword, a title reference, or an `issue-N` branch). It then:
+
+- posts a "PR Opened/Reopened" notice once, keeps one `type:` tag in step with the PR's branch and labels, and fills the developer (an eligible developer who is the PR author) when nobody owns the task;
+- assigns QA when the PR opens, never overwriting one: the QA users field if `CLICKUP_QA_FIELD_ID` is set, otherwise an extra assignee. QA is never the PR's author, bug-typed tasks go to the QA bug specialist, and the GitHub side is mentioned and requested as reviewer;
+- asks for QA (`CLICKUP_STATUS_NEEDS_QA`) last, except for drafts.
+
+The guards the Plaky path has, carried over:
+
+- a late link, a replay or a reopen never moves a task backwards and never stages review work for a finished task;
+- an edit never replaces a manual owner, and only a draft writes "assigned", and never over work that has started;
+- a withdrawn review request re-queues a task but never over a QA verdict or a finished task;
+- a push after a QA verdict means "in progress" (1 to 5 commits) or "needs QA again" (more), and only from a reviewed or in-progress status;
+- closing without merging sends a task parked in the review queue back to "in progress" when no other PR is open;
+- merging completes a task only for a closing keyword in the description, only when no other PR for it is open, and only once (a person's later move survives the reconcile sweep). A failed write is retried, not remembered as done;
+- the assigned QA commenting means "in QA"; anyone else's comment is only mirrored; bot and Boardman's own comments are ignored; an edited comment updates the record, not the state;
+- a successful deployment moves the task to "deployed" when `CLICKUP_STATUS_DEPLOYED` is set.
+
+Extra status settings: `CLICKUP_STATUS_CHANGES_REQUESTED` and `CLICKUP_STATUS_DEPLOYED` (empty by default, so never written).
+
+**Not ported yet:** the fuzzy "no issue named" matching pipeline and orphan triage, so a PR that names no issue with a ClickUp task is reported as skipped. PR reviews (approve / request changes) and issue comments on PRs are the next slice.
+
 ## What is still Plaky-only
 
 Plaky has board schemas, custom fields and per-board placement that ClickUp does not model the same way. These still call `PlakyClient` directly and are not provider-neutral yet:
 
-- GitHub **PR** and **review** handlers, PR status transitions, PR-to-task linking and nudges (issue handlers are done, see above)
+- PR **review** events (approve / request changes), issue comments on PRs, the fuzzy PR-to-task pipeline and orphan triage, and review nudges (issue and PR handlers are done, see above)
 - The planning and huddle code and board-schema helpers
 - Scan task creation
 
