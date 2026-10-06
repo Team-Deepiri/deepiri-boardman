@@ -803,7 +803,9 @@ def clickup_inventory_cmd(
         for intent, name in bad:
             console.print(f"[yellow]{intent}[/yellow]: {name!r} is not a status of this list")
         if not bad:
-            console.print("[green]Every configured CLICKUP_STATUS_* name exists in this list.[/green]")
+            console.print(
+                "[green]Every configured CLICKUP_STATUS_* name exists in this list.[/green]"
+            )
         return 1 if bad else 0
 
     code = asyncio.run(run())
