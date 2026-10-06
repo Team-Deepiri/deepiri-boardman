@@ -217,7 +217,9 @@ async def handle_issue_changed(
     if active_provider() == "clickup":
         from boardman.services import clickup_issue_sync
 
-        return await clickup_issue_sync.handle_issue_changed(payload, session, event_label=event_label)
+        return await clickup_issue_sync.handle_issue_changed(
+            payload, session, event_label=event_label
+        )
     state = resolve_issue_state(
         payload.issue,
         repo_full_name=payload.repository.full_name,
