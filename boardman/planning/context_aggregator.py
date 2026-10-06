@@ -7,6 +7,7 @@ from boardman.planning.huddle.context_direction import DirectionPlanningContext
 from boardman.planning.huddle.context_github import GitHubPlanningContext
 from boardman.planning.huddle.context_plaky import PlakyPlanningContext
 from boardman.planning.huddle.context_sync import SyncPlanningContext
+from boardman.task_provider import active_provider
 
 log = logging.getLogger(__name__)
 
@@ -25,9 +26,15 @@ class ContextAggregator:
         sync_context: _PlanningContext | None = None,
         direction_context: _PlanningContext | None = None,
     ) -> None:
+        if active_provider() == "clickup":
+            from boardman.planning.huddle.context_clickup import ClickUpPlanningContext
+
+            task_label, task_default = "ClickUp", ClickUpPlanningContext
+        else:
+            task_label, task_default = "Plaky", PlakyPlanningContext
         self._sources: list[tuple[str, _PlanningContext]] = [
             ("GitHub", github_context or GitHubPlanningContext()),
-            ("Plaky", plaky_context or PlakyPlanningContext()),
+            (task_label, plaky_context or task_default()),
             ("Boardman sync", sync_context or SyncPlanningContext()),
             ("Repo direction", direction_context or DirectionPlanningContext()),
         ]
