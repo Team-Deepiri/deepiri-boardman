@@ -482,6 +482,21 @@ class ClickUpClient:
         res.pop("task", None)
         return {**res, "via": "assignee", "qa_user_id": uid}
 
+    async def get_list(self, list_id: str) -> dict[str, Any]:
+        """One list with its statuses (ClickUp statuses are defined per list)."""
+        if not self.api_token:
+            return self._missing_token()
+        response = await self._request("GET", f"/list/{list_id}")
+        if response.status_code != 200:
+            return self._failure(response, "get list")
+        data = response.json()
+        statuses = [
+            str(st.get("status") or "")
+            for st in data.get("statuses") or []
+            if isinstance(st, dict) and st.get("status")
+        ]
+        return {"ok": True, "status": 200, "list": data, "statuses": statuses}
+
     async def list_boards(self) -> dict[str, Any]:
         """All lists (the ClickUp equivalent of boards), across spaces, folders and folderless."""
         if not self.api_token:

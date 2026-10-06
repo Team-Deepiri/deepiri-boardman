@@ -13,6 +13,7 @@ from boardman.observability.degradation import log_degraded
 from boardman.plaky.board_schema import fetch_board_schema_bundle
 from boardman.plaky.client import PlakyClient
 from boardman.settings import settings
+from boardman.task_provider import active_provider, get_task_client
 
 _log = logging.getLogger(__name__)
 
@@ -91,8 +92,8 @@ async def list_llm_models() -> dict:
 
 @router.get("/plaky/users")
 async def plaky_workspace_users(query: str = "") -> dict:
-    """Workspace users for assignee pickers (Plaky GET /v1/public/users)."""
-    c = PlakyClient()
+    """Workspace users for assignee pickers (Plaky GET /v1/public/users, or ClickUp workspace members)."""
+    c = get_task_client()
     r = await c.list_workspace_users()
     users = r.get("users") or []
     if not isinstance(users, list):
@@ -117,7 +118,8 @@ async def plaky_workspace_users(query: str = "") -> dict:
 
 @router.get("/plaky/boards")
 async def plaky_boards() -> dict:
-    c = PlakyClient()
+    """Boards (Plaky) or lists (ClickUp), as id and name rows."""
+    c = get_task_client()
     r = await c.list_boards()
     return {"ok": r.get("ok"), "boards": r.get("boards", []), "message": r.get("message")}
 
@@ -125,10 +127,10 @@ async def plaky_boards() -> dict:
 @router.get("/plaky/boards/match")
 async def plaky_boards_match(query: str = "") -> dict:
     """
-    List boards via Plaky API, then rank by name against `query` (e.g. what the user said:
+    List boards (or ClickUp lists) via the active provider, then rank by name against `query` (e.g. what the user said:
     "put this on the Deepiri Main board"). Empty `query` returns boards unranked (all score 0).
     """
-    c = PlakyClient()
+    c = get_task_client()
     r = await c.list_boards()
     boards = r.get("boards") or []
     if not isinstance(boards, list):
@@ -145,7 +147,13 @@ async def plaky_boards_match(query: str = "") -> dict:
 
 @router.get("/plaky/boards/{board_id}/schema")
 async def plaky_board_schema(board_id: str) -> dict:
-    """Groups + normalized field options (status/type/priority, etc.) for prompts and debugging."""
+    """Groups + normalized field options (status/type/priority, etc.) for prompts and debugging.
+
+    On ClickUp there are no groups or custom-field schema; the list's own statuses are returned as
+    a single Status field so a placement picker can still show what a task can be set to.
+    """
+    if active_provider() == "clickup":
+        return await _clickup_list_schema(board_id)
     bundle = await fetch_board_schema_bundle(board_id)
     return {
         "ok": bundle.get("ok"),
@@ -160,6 +168,8 @@ async def plaky_board_schema(board_id: str) -> dict:
 
 @router.get("/plaky/boards/{board_id}/groups")
 async def plaky_board_groups(board_id: str) -> dict:
+    if active_provider() == "clickup":
+        return _no_clickup_groups()
     c = PlakyClient()
     r = await c.list_groups(board_id)
     return {"ok": r.get("ok"), "groups": r.get("groups", []), "message": r.get("message")}
@@ -168,6 +178,8 @@ async def plaky_board_groups(board_id: str) -> dict:
 @router.get("/plaky/boards/{board_id}/groups/match")
 async def plaky_board_groups_match(board_id: str, query: str = "") -> dict:
     """List groups on a board, rank names against `query` (e.g. 'Backlog', 'AI Bugs')."""
+    if active_provider() == "clickup":
+        return {**_no_clickup_groups(), "matches": [], "best": None}
     c = PlakyClient()
     r = await c.list_groups(board_id)
     groups = r.get("groups") or []
@@ -180,4 +192,49 @@ async def plaky_board_groups_match(board_id: str, query: str = "") -> dict:
         "groups": groups,
         "matches": matches,
         "best": best,
+    }
+
+
+def _no_clickup_groups() -> dict:
+    """ClickUp lists have no groups (sections); say so instead of failing."""
+    return {
+        "ok": True,
+        "groups": [],
+        "message": "ClickUp lists have no groups; pick a list and tasks go straight into it.",
+    }
+
+
+async def _clickup_list_schema(list_id: str) -> dict:
+    got = await get_task_client().get_list(list_id)
+    if not got.get("ok"):
+        return {
+            "ok": False,
+            "message": got.get("message"),
+            "board_id": list_id,
+            "board_fetch_ok": False,
+            "groups_fetch_ok": True,
+            "normalized": None,
+            "markdown": "",
+        }
+    statuses = got["statuses"]
+    name = str((got.get("list") or {}).get("name") or list_id)
+    return {
+        "ok": True,
+        "message": None,
+        "board_id": list_id,
+        "board_fetch_ok": True,
+        "groups_fetch_ok": True,
+        "normalized": {
+            "groups": [],
+            "fields": [
+                {
+                    "key": "status",
+                    "name": "Status",
+                    "type": "status",
+                    "options": [{"id": st, "name": st} for st in statuses],
+                }
+            ],
+        },
+        "markdown": f"## ClickUp list: {name}\n**List id:** `{list_id}`\n"
+        + "\n".join(f"- {st}" for st in statuses),
     }

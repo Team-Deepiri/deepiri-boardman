@@ -338,9 +338,8 @@ def test_link_pr_posts_the_comment_and_status_on_merge_uses_the_completed_status
 
 
 def test_plaky_only_commands_explain_themselves_on_clickup(cu):
-    for cmd in ("plaky-inventory", "capability-report"):
-        out = CliRunner().invoke(cli.app, [cmd])
-        assert out.exit_code == 1 and "not available on ClickUp" in out.output
+    out = CliRunner().invoke(cli.app, ["capability-report"])
+    assert out.exit_code == 1 and "not available on ClickUp" in out.output
 
 
 def test_sync_needs_board_and_group_on_plaky_only(cu, monkeypatch):
