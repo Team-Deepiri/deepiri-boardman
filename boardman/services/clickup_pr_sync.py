@@ -598,9 +598,9 @@ async def _link_or_create_for_orphan_pr(
             score=pipe.score,
             reason=pipe.reason,
             detail=pipe.log_detail,
-            triage_comment=format_triage_comment(pipe.top_scored)
-            if pipe.decision == "triage"
-            else None,
+            triage_comment=(
+                format_triage_comment(pipe.top_scored) if pipe.decision == "triage" else None
+            ),
         )
         if pipe.decision in ("auto_link", "llm_link") and pipe.task_id:
             return await _attach_fuzzy_match(
