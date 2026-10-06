@@ -57,6 +57,10 @@ class Settings(BaseSettings):
     # Optional ClickUp custom field (type "users") that holds the QA reviewer. Empty = add the QA
     # person as an extra assignee instead.
     clickup_qa_field_id: str = ""
+    # List for tasks Boardman creates for PRs that match nothing (default: the repo's list).
+    clickup_triage_list_id: str = ""
+    # Archive (in place) ClickUp tasks whose matched PR has merged and which reached the completed status.
+    clickup_archive_completed_prs: bool = False
     # ClickUp status names for each workflow step. ClickUp statuses are per list, so these must
     # match your lists. The defaults suit a stock ClickUp list ("to do", "in progress", "complete").
     # Empty = Boardman never writes that status.

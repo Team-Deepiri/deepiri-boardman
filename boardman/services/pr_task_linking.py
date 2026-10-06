@@ -17,7 +17,7 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +29,9 @@ from boardman.plaky.client import PlakyClient
 from boardman.repos_config import get_routing_async
 from boardman.services.llm_pr_task_rerank import llm_rerank_pr_candidates
 from boardman.settings import settings
+
+if TYPE_CHECKING:
+    from boardman.clickup.client import ClickUpClient
 
 # --- extraction -----------------------------------------------------------------
 
@@ -304,6 +307,21 @@ def _item_group_id(item: dict[str, Any]) -> str:
     return ""
 
 
+async def _db_candidates(session: AsyncSession, repo_name: str) -> dict[str, TaskCandidate]:
+    """Candidates from the issue-to-task map: every task a GitHub issue of this repo already owns."""
+    by_id: dict[str, TaskCandidate] = {}
+    for m in await _db_mappings_for_repo(session, repo_name):
+        _merge_candidate(
+            by_id,
+            m.plaky_task_id,
+            f"[{repo_name}] mapped issue #{m.github_issue_number}",
+            "",
+            {m.github_issue_number},
+            "issue_task_map",
+        )
+    return by_id
+
+
 async def gather_candidates(
     *,
     session: AsyncSession,
@@ -313,18 +331,7 @@ async def gather_candidates(
     plaky: PlakyClient,
     group_id: str = "",
 ) -> dict[str, TaskCandidate]:
-    by_id: dict[str, TaskCandidate] = {}
-
-    for m in await _db_mappings_for_repo(session, repo_name):
-        nums = {m.github_issue_number}
-        _merge_candidate(
-            by_id,
-            m.plaky_task_id,
-            f"[{repo_name}] mapped issue #{m.github_issue_number}",
-            "",
-            nums,
-            "issue_task_map",
-        )
+    by_id = await _db_candidates(session, repo_name)
 
     if not board_id or not settings.pr_linking_fetch_board_items:
         return by_id
@@ -424,6 +431,81 @@ async def gather_candidates(
                 status=status,
             )
 
+    return by_id
+
+
+async def gather_candidates_clickup(
+    *,
+    session: AsyncSession,
+    repo_name: str,
+    repo_full: str,
+    list_id: str,
+    client: ClickUpClient,
+    repo_owns_list: bool = False,
+) -> dict[str, TaskCandidate]:
+    """Candidates for a ClickUp repo: the issue-to-task map plus the tasks in the repo's list.
+
+    When the list is this repo's own (``repo_owns_list``), every task in it is the repo's work. A
+    shared list only contributes tasks that name the repo or an issue number.
+    """
+    from boardman.clickup.client import STATUS_NAME_KEY
+    from boardman.clickup.statuses import status_for_intent
+
+    by_id = await _db_candidates(session, repo_name)
+    if not list_id or not settings.pr_linking_fetch_board_items:
+        return by_id
+    listed = await client.get_tasks(status="all", board_id=list_id)
+    if not listed.get("ok"):
+        return by_id
+
+    # Report a status in the form the settings spell it, so the scorer's exact match works.
+    known = {
+        status_for_intent(i).casefold(): status_for_intent(i)
+        for i in (
+            "workflow_needs_assigned",
+            "workflow_assigned",
+            "workflow_in_progress",
+            "workflow_needs_qa",
+            "workflow_in_qa",
+            "workflow_completed",
+        )
+        if status_for_intent(i)
+    }
+    tag = f"[{repo_name}]".lower()
+    rf_low = repo_full.lower()
+    owner = repo_full.split("/")[0] if "/" in repo_full else ""
+    for item in (listed.get("tasks") or [])[: max(1, settings.pr_linking_max_board_items_scan)]:
+        if not isinstance(item, dict):
+            continue
+        tid = _norm_item_id(item)
+        title, desc = _item_title_desc(item)
+        if not tid:
+            continue
+        raw_status = str(item.get(STATUS_NAME_KEY) or "").strip()
+        status = known.get(raw_status.casefold(), raw_status) or None
+        people = [a for a in item.get("assignees") or [] if isinstance(a, dict)]
+        who = people[0] if people else {}
+        combined = f"{title}\n{desc}"
+        nums = issue_numbers_in_text(combined, repo_full)
+        mention_repo = (
+            tag in title.lower()
+            or tag in desc.lower()
+            or rf_low in combined.lower()
+            or (owner and f"{owner}/{repo_name}".lower() in combined.lower())
+        )
+        if repo_owns_list or mention_repo or nums:
+            _merge_candidate(
+                by_id,
+                tid,
+                title,
+                desc,
+                nums,
+                "board_item",
+                assignee_login="",
+                assignee_email=str(who.get("email") or "").lower() or None,
+                assignee_name=str(who.get("username") or "") or None,
+                status=status,
+            )
     return by_id
 
 
@@ -744,6 +826,46 @@ async def run_pr_task_pipeline(
         group_id=group_id,
     )
 
+    return await _decide(
+        session=session,
+        candidates=candidates,
+        ref_issues=ref_issues,
+        head_ref=head_ref,
+        repo_full=repo_full,
+        repo_name=repo_name,
+        pr_number=pr_number,
+        pr_title=pr_title,
+        pr_body=pr_body,
+        pr_author_login=pr_author_login,
+        pr_author_email=pr_author_email,
+        pr_author_name=pr_author_name,
+        done_set=done_set,
+        active_set=active_set,
+    )
+
+
+async def _decide(
+    *,
+    session: AsyncSession,
+    candidates: dict[str, TaskCandidate],
+    ref_issues: set[int],
+    head_ref: str,
+    repo_full: str,
+    repo_name: str,
+    pr_number: int,
+    pr_title: str,
+    pr_body: str | None,
+    pr_author_login: str | None,
+    pr_author_email: str | None,
+    pr_author_name: str | None,
+    done_set: set[str],
+    active_set: set[str],
+) -> PipelineResult:
+    """Score the candidates and decide: link, ask an LLM to choose among them, or triage.
+
+    Provider-neutral: Plaky and ClickUp differ only in how the candidates and the done/active
+    status sets are gathered.
+    """
     if not candidates:
         detail = {
             "ref_issues": sorted(ref_issues),
@@ -870,6 +992,87 @@ async def run_pr_task_pipeline(
         reason="medium_no_llm",
         top_scored=top,
         log_detail=detail,
+    )
+
+
+async def run_pr_task_pipeline_clickup(
+    *,
+    session: AsyncSession,
+    client: ClickUpClient,
+    repo_full: str,
+    repo_name: str,
+    org: str,
+    pr_number: int,
+    pr_title: str,
+    pr_body: str | None,
+    head: Any,
+    pr_author_login: str | None = None,
+    pr_author_email: str | None = None,
+    pr_author_name: str | None = None,
+) -> PipelineResult:
+    """The fuzzy PR-to-task pipeline against a repo's ClickUp list. Call when no issue is named.
+
+    Same scoring and decisions as :func:`run_pr_task_pipeline`; only the candidates differ: the
+    issue-to-task map plus the tasks in the repo's list (``clickup_list_id`` in repos.yml, else
+    CLICKUP_DEFAULT_LIST_ID). The done and active status sets come from the CLICKUP_STATUS_*
+    settings, which is also how the scorer tells finished work from live work.
+    """
+    from boardman.clickup.statuses import status_for_intent
+
+    if not settings.pr_linking_pipeline_enabled:
+        return PipelineResult(
+            decision="none",
+            task_id=None,
+            score=0.0,
+            reason="pipeline_disabled",
+            log_detail={"enabled": False},
+        )
+    head_ref = github_head_ref(head)
+    ref_issues = referenced_issue_numbers(
+        repo_full=repo_full, pr_title=pr_title, pr_body=pr_body, head_ref=head_ref
+    )
+    routing = await get_routing_async(repo_full, repo_name, org)
+    own_list = (getattr(routing, "clickup_list_id", "") or "").strip() if routing else ""
+    list_id = own_list or (settings.clickup_default_list_id or "").strip()
+
+    done_set = {n for n in (status_for_intent("workflow_completed"),) if n}
+    active_set = {
+        n
+        for n in (
+            status_for_intent(i)
+            for i in (
+                "workflow_needs_assigned",
+                "workflow_assigned",
+                "workflow_in_progress",
+                "workflow_needs_qa",
+                "workflow_in_qa",
+            )
+        )
+        if n
+    } - done_set
+    candidates = await gather_candidates_clickup(
+        session=session,
+        repo_name=repo_name,
+        repo_full=repo_full,
+        list_id=list_id,
+        client=client,
+        repo_owns_list=bool(own_list),
+    )
+    return await _decide(
+        session=session,
+        candidates=candidates,
+        ref_issues=ref_issues,
+        head_ref=head_ref,
+        repo_full=repo_full,
+        repo_name=repo_name,
+        pr_number=pr_number,
+        pr_title=pr_title,
+        pr_body=pr_body,
+        pr_author_login=pr_author_login,
+        pr_author_email=pr_author_email,
+        pr_author_name=pr_author_name,
+        done_set=done_set,
+        active_set=active_set,
     )
 
 

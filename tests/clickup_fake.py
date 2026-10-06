@@ -18,6 +18,7 @@ class FakeClickUp:
         self.log: list[tuple[str, str, dict]] = []
         self.fail_get = False
         self.fail_create = False
+        self.deleted: list[str] = []
         self.n = 0
 
     def handler(self, req: httpx.Request) -> httpx.Response:
@@ -25,6 +26,8 @@ class FakeClickUp:
         path = req.url.path.removeprefix("/api/v2")
         self.log.append((req.method, path, body))
         parts = path.strip("/").split("/")
+        if req.method == "GET" and parts[0] == "list" and parts[2] == "task":
+            return httpx.Response(200, json={"tasks": list(self.tasks.values()), "last_page": True})
         if req.method == "POST" and parts[0] == "list" and parts[2] == "task":
             if self.fail_create:
                 return httpx.Response(500, text="boom")
@@ -47,6 +50,10 @@ class FakeClickUp:
             task = self.tasks.get(tid)
             if task is None:
                 return httpx.Response(404, text="nope")
+            if len(parts) == 2 and req.method == "DELETE":
+                self.deleted.append(tid)
+                self.tasks.pop(tid, None)
+                return httpx.Response(204)
             if len(parts) == 2 and req.method == "GET":
                 if self.fail_get:
                     return httpx.Response(500, text="down")
@@ -56,6 +63,8 @@ class FakeClickUp:
                     task["name"] = body["name"]
                 if "description" in body:
                     task["description"] = body["description"]
+                if "archived" in body:
+                    task["archived"] = body["archived"]
                 if "status" in body:
                     task["status"] = {"status": body["status"]}
                 if "priority" in body:

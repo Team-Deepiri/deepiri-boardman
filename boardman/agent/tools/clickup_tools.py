@@ -16,7 +16,7 @@ from typing import Any
 
 from langchain_core.tools import StructuredTool
 
-from boardman.clickup.client import ClickUpClient
+from boardman.clickup.client import STATUS_NAME_KEY, ClickUpClient
 from boardman.clickup.people import (
     assignee_ids,
     match_person,
@@ -93,7 +93,7 @@ async def _clickup_list_tasks(status: str = "all", list_id: str = "") -> str:
     by_status: dict[str, int] = {}
     owned = 0
     for t in tasks:
-        key = str(t.get("status_name") or "unknown")
+        key = str(t.get(STATUS_NAME_KEY) or "unknown")
         by_status[key] = by_status.get(key, 0) + 1
         owned += 1 if t.get("assignees") else 0
     shown = [_slim_task(t) for t in tasks[: settings.clickup_list_limit]]

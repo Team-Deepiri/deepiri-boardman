@@ -107,7 +107,7 @@ The guards the Plaky path has, carried over:
 
 Extra status settings: `CLICKUP_STATUS_CHANGES_REQUESTED` and `CLICKUP_STATUS_DEPLOYED` (empty by default, so never written).
 
-**Not ported yet:** the fuzzy "no issue named" matching pipeline and orphan triage, so a PR that names no issue with a ClickUp task is reported as skipped.
+A PR that names no issue with a ClickUp task goes to fuzzy matching and orphan triage (see below).
 
 ## Review and comment sync (Phase 3c)
 
@@ -126,11 +126,22 @@ Extra status settings: `CLICKUP_STATUS_CHANGES_REQUESTED` and `CLICKUP_STATUS_DE
 - **Scans** (`boardman scan`, `scan-all`, the queued scan job): proposed tasks are filed in the repo's ClickUp list (`clickup_list_id` in `repos.yml`, else `CLICKUP_DEFAULT_LIST_ID`), tagged with the repo name. With neither, nothing is created and the result carries a warning saying why.
 - **Deferred batch creation** (the queued job the Plaky agent uses) runs the ClickUp batch tool, so duplicates are skipped there too.
 
+## PRs that name no issue, and the cleanup sweep
+
+When a PR has no issue with a ClickUp task, it goes through the same fuzzy pipeline the Plaky path uses (`run_pr_task_pipeline_clickup`; the scoring and decisions are shared in `_decide`, only the candidates differ).
+
+- **Candidates** are the tasks already owned by an issue of this repo plus the tasks in the repo's list. If the list is the repo's own (`clickup_list_id` in `repos.yml`), every task in it counts; a shared default list only contributes tasks that name the repo or an issue number. Finished work is scored down and live work up, using the `CLICKUP_STATUS_*` names.
+- **A confident match** (`auto_link`, or an `llm_link` when `PR_LINKING_LLM_ENABLED`) links the PR, posts the notice, fills the developer, assigns QA and asks for QA, with the usual no-backwards guard on a replay.
+- **No confident match:** when `ambiguous_pr.enabled` in `team_assignments.yml`, the PR gets a real task: titled after the PR, typed from its branch and labels, owned by the author, "needs QA" when it is not a draft, linked, and given a QA. It goes in `CLICKUP_TRIAGE_LIST_ID`, else the repo's list, else `CLICKUP_DEFAULT_LIST_ID`. It is created once per PR (even after the cleanup sweep removed the card), never for a PR that has already closed or merged, and a written issue reference with no task is claimed for the new card.
+- **Cleanup sweep** (`boardman-worker`): an orphan task still sitting past `PR_TASK_CLEANUP_TTL_DAYS` is deleted in ClickUp and its audit row kept. Matched tasks whose PR merged and which reached the completed status are **archived in place** when `CLICKUP_ARCHIVE_COMPLETED_PRS=true`. ClickUp has no board-to-board move, so unlike Plaky nothing is recreated or deleted.
+
+Not ported: Plaky's priority-precedent lookup for orphan tasks (the priority comes from the PR's own labels and text).
+
 ## What is still Plaky-only
 
 Plaky has board schemas, custom fields and per-board placement that ClickUp does not model the same way. These still call `PlakyClient` directly and are not provider-neutral yet:
 
-- The fuzzy PR-to-task pipeline and orphan triage (a PR that names no issue with a ClickUp task is skipped), and the review-nudge sweep's board reads (issue, PR, review and comment handlers are done, see above)
+- The review-nudge sweep's board reads (issue, PR, review, comment, fuzzy-link and triage handlers are done, see above)
 - The planning and huddle code, the `/plaky/*` discovery routes, `plaky-inventory`, `capability-report`, and board-schema helpers
 
 Moving these over is the next step. It needs a ClickUp equivalent of placement and assignment, so treat it as a separate piece of work.

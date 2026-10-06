@@ -25,6 +25,9 @@ from boardman.settings import settings
 
 _log = logging.getLogger(__name__)
 
+# Key under which get_tasks adds a task's status as plain text (ClickUp nests it in a dict).
+STATUS_NAME_KEY = "status_name"
+
 # ClickUp has four priority levels, so "critical" and "urgent" (and "very important") are the same
 # level and read back as "urgent".
 _PRIORITY = {
@@ -299,7 +302,7 @@ class ClickUpClient:
             rows = payload.get("tasks") or []
             for row in rows:
                 if isinstance(row, dict):
-                    row["status_name"] = str((row.get("status") or {}).get("status") or "")
+                    row[STATUS_NAME_KEY] = str((row.get("status") or {}).get("status") or "")
                     tasks.append(row)
             if payload.get("last_page", len(rows) < 100) or not rows:
                 break
@@ -328,6 +331,7 @@ class ClickUpClient:
         status: str | None = None,
         add_assignee_ids: list[int] | None = None,
         remove_assignee_ids: list[int] | None = None,
+        archived: bool | None = None,
     ) -> dict[str, Any]:
         if not self.api_token:
             return self._missing_token()
@@ -337,6 +341,8 @@ class ClickUpClient:
                 "add": list(add_assignee_ids or []),
                 "rem": list(remove_assignee_ids or []),
             }
+        if archived is not None:
+            body["archived"] = archived
         if title is not None:
             body["name"] = title
         if description is not None:
@@ -352,6 +358,15 @@ class ClickUpClient:
         if response.status_code in (200, 201):
             return {"ok": True, "status": response.status_code, "task": response.json()}
         return self._failure(response, "update task")
+
+    async def delete_task(self, task_id: str) -> dict[str, Any]:
+        """Delete a task for good. ClickUp answers 204 with no body."""
+        if not self.api_token:
+            return self._missing_token()
+        response = await self._request("DELETE", f"/task/{task_id}")
+        if response.status_code in (200, 204):
+            return {"ok": True, "status": response.status_code}
+        return self._failure(response, "delete task")
 
     async def add_tag(self, task_id: str, tag: str) -> dict[str, Any]:
         """Add a tag (created on first use) to a task. Adding one twice is harmless."""

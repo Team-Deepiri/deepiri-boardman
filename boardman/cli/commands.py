@@ -56,7 +56,9 @@ def _provider_label() -> str:
 
 def _task_status_text(task: dict) -> str:
     """A task's status as plain text. Plaky returns a string; ClickUp nests it in a dict."""
-    for key in ("status_name", "status", "state", "workflowStatus", "workflow_state"):
+    from boardman.clickup.client import STATUS_NAME_KEY
+
+    for key in (STATUS_NAME_KEY, "status", "state", "workflowStatus", "workflow_state"):
         value = task.get(key)
         if isinstance(value, dict):
             value = value.get("status") or value.get("name") or value.get("state")
