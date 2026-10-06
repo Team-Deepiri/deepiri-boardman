@@ -599,7 +599,6 @@ def capability_report(
         "", "--github-login", help="Override auto-detected GitHub login (from `gh api user`)."
     ),
 ):
-    _plaky_only("capability-report")
     """Measure THIS machine's hardware (cores/RAM/GPU) and report it to the Plaky
     capability board (PLAKY_CAPABILITY_BOARD_ID) as this person's QA hardware tier —
     replaces hand-typing `tier:` in team_assignments.yml with a live measurement.
@@ -607,6 +606,7 @@ def capability_report(
     Run this once per machine per teammate; qa_picker prefers this over the config
     value automatically once it exists.
     """
+    _plaky_only("capability-report")
 
     async def run():
         from boardman.assignment.capability_board import report_hardware_capability
@@ -827,8 +827,13 @@ def plaky_inventory_cmd(
     ),
     format: str = typer.Option("table", "--format", "-f", help="Output format: table or json."),
 ):
-    _plaky_only("plaky-inventory")
-    """List Plaky board/group/field/status IDs for deployment config."""
+    """List Plaky board/group/field/status IDs for deployment config.
+
+    On ClickUp this shows the workspace inventory instead (same as ``clickup-inventory``).
+    """
+    if active_provider() == "clickup":
+        clickup_inventory_cmd(list_id=board_id or "")
+        return
 
     async def run():
         inventory = await collect_plaky_inventory(

@@ -160,3 +160,8 @@ def test_configured_statuses_lists_each_setting_once(cu, monkeypatch):
     assert (
         list(names.values()).count("to do") == 2
     )  # needs-assigned and assigned are separate settings
+
+
+def test_plaky_inventory_on_clickup_shows_the_clickup_inventory(cu):
+    out = CliRunner().invoke(cli.app, ["plaky-inventory", "--board-id", "L1"])
+    assert "Workspace members" in out.output and "List statuses: to do" in out.output

@@ -152,7 +152,7 @@ With `TASK_PROVIDER=clickup`, `ContextAggregator` builds the task section of a m
 
 Plaky has board schemas, custom fields and per-board placement that ClickUp does not model the same way. These still call `PlakyClient` directly and are not provider-neutral yet:
 
-- `plaky-inventory`, `capability-report` (the QA capability board), and the Plaky board-schema helpers
+- `capability-report` (it mines the QA capability board, which is a Plaky board) and the Plaky board-schema helpers. `plaky-inventory` shows the ClickUp inventory instead on ClickUp.
 
 Moving these over is the next step. It needs a ClickUp equivalent of placement and assignment, so treat it as a separate piece of work.
 
