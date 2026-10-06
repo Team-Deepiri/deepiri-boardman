@@ -79,7 +79,9 @@ def _merge_status() -> str:
 def _plaky_only(command: str) -> None:
     """Stop a Plaky-only command with a clear message when ClickUp is the provider."""
     if active_provider() == "clickup":
-        console.print(f"[yellow]`{command}` reads Plaky boards and is not available on ClickUp.[/yellow]")
+        console.print(
+            f"[yellow]`{command}` reads Plaky boards and is not available on ClickUp.[/yellow]"
+        )
         raise typer.Exit(1)
 
 
@@ -1040,9 +1042,7 @@ def init_direction(
 
 @app.command("status")
 def status_cmd(
-    repo: str | None = typer.Option(
-        None, "--repo", help="Filter task titles containing this slug"
-    ),
+    repo: str | None = typer.Option(None, "--repo", help="Filter task titles containing this slug"),
 ):
     async def run():
         async with async_session() as session:

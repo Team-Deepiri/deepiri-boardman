@@ -425,7 +425,9 @@ async def _sync_plain_issue_comment(
     if active_provider() == "clickup":
         from boardman.services import clickup_review_sync
 
-        return await clickup_review_sync.sync_plain_issue_comment(payload, session, is_revision=is_revision)
+        return await clickup_review_sync.sync_plain_issue_comment(
+            payload, session, is_revision=is_revision
+        )
     from boardman.services.issue_handler import find_plaky_task_by_issue
 
     repo_name = payload.repository.name
