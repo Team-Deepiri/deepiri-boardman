@@ -54,9 +54,11 @@ def _slim_task(t: dict[str, Any]) -> dict[str, Any]:
     out = {
         "id": t.get("id"),
         "name": t.get("name"),
-        "status": (t.get("status") or {}).get("status")
-        if isinstance(t.get("status"), dict)
-        else t.get("status"),
+        "status": (
+            (t.get("status") or {}).get("status")
+            if isinstance(t.get("status"), dict)
+            else t.get("status")
+        ),
         "priority": prio.get("priority") or ClickUpClient.priority_label(prio.get("id")),
         "assignees": [
             a.get("username") or a.get("email") or str(a.get("id"))
