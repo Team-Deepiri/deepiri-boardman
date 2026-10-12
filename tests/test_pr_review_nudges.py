@@ -1,15 +1,23 @@
 """Stale-PR @mention escalation: pure stage math + DB-backed activity tracking, no
-GitHub calls except the mocked comment_on_pr in the sweep tests."""
+GitHub calls except the mocked `pr_lifecycle_state`/`comment_on_pr` in the sweep tests.
+
+Live failure (2026-09-26): the sweep read only its own table, and nothing removed a row
+when the PR behind it finished, so deepiri-mudspeed#50 — merged 2026-09-14 — was
+@mentioned again at days 3, 6, 9 and 12. `test_sweep_never_nudges_a_merged_pr` is that
+bug.
+"""
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 import pytest
 import pytest_asyncio
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from boardman.database.models import Base, PrReviewNudge
+from boardman.github import pr_actions
 from boardman.services import pr_review_nudges as nudges
 
 
@@ -22,6 +30,25 @@ async def db_session():
     async with factory() as session:
         yield session
     await engine.dispose()
+
+
+@pytest.fixture()
+def pr_state(monkeypatch):
+    """Stub the authoritative PR-state read. Defaults to open; override per test.
+
+    The sweep asks GitHub whether a PR is still active before it @mentions anyone on it,
+    so every sweep test has to say what that answer is. Recording the calls also lets a
+    test assert that a row that is not due still costs zero GitHub calls.
+    """
+    calls: list[tuple[str, int]] = []
+    state = {"value": pr_actions.PR_ACTIVE}
+
+    async def fake_state(full_name: str, pr_number: int) -> str:
+        calls.append((full_name, int(pr_number)))
+        return state["value"]
+
+    monkeypatch.setattr(nudges, "pr_lifecycle_state", fake_state)
+    return SimpleNamespace(calls=calls, state=state)
 
 
 # --- stage math --------------------------------------------------------------------
@@ -229,7 +256,7 @@ async def test_commenter_chips_in_after_second_comment(db_session):
 
 
 @pytest.mark.asyncio
-async def test_sweep_sends_nudge_and_advances_stage(db_session, monkeypatch):
+async def test_sweep_sends_nudge_and_advances_stage(db_session, monkeypatch, pr_state):
     await _tracked(db_session)
     row = await nudges._get_row(db_session, "boardman", 7)
     row.last_activity_at = datetime.utcnow() - timedelta(days=4)
@@ -246,6 +273,8 @@ async def test_sweep_sends_nudge_and_advances_stage(db_session, monkeypatch):
     assert len(results) == 1
     assert results[0]["stage"] == 1
     assert "@bob" in calls[0][2]
+    # Exactly one state read, for the one row that was actually due.
+    assert pr_state.calls == [("Team-Deepiri/boardman", 7)]
 
     row = await nudges._get_row(db_session, "boardman", 7)
     assert row.nudge_stage == 1
@@ -253,7 +282,7 @@ async def test_sweep_sends_nudge_and_advances_stage(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sweep_skips_when_not_yet_due(db_session, monkeypatch):
+async def test_sweep_skips_when_not_yet_due(db_session, monkeypatch, pr_state):
     await _tracked(db_session)
     row = await nudges._get_row(db_session, "boardman", 7)
     row.last_activity_at = datetime.utcnow() - timedelta(days=1)
@@ -265,10 +294,12 @@ async def test_sweep_skips_when_not_yet_due(db_session, monkeypatch):
     monkeypatch.setattr(nudges, "comment_on_pr", fail_comment)
     results = await nudges.sweep_due_nudges(db_session)
     assert results == []
+    # The whole point of the table is that a PR nobody is waiting on yet costs nothing.
+    assert pr_state.calls == []
 
 
 @pytest.mark.asyncio
-async def test_sweep_does_not_resend_same_stage_twice(db_session, monkeypatch):
+async def test_sweep_does_not_resend_same_stage_twice(db_session, monkeypatch, pr_state):
     await _tracked(db_session)
     row = await nudges._get_row(db_session, "boardman", 7)
     row.last_activity_at = datetime.utcnow() - timedelta(days=4)
@@ -285,7 +316,7 @@ async def test_sweep_does_not_resend_same_stage_twice(db_session, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_sweep_skips_without_erroring_when_no_recipient(db_session, monkeypatch):
+async def test_sweep_skips_without_erroring_when_no_recipient(db_session, monkeypatch, pr_state):
     await nudges.ensure_tracked(
         db_session,
         github_repo="boardman",
@@ -304,3 +335,180 @@ async def test_sweep_skips_without_erroring_when_no_recipient(db_session, monkey
     monkeypatch.setattr(nudges, "comment_on_pr", fail_comment)
     results = await nudges.sweep_due_nudges(db_session)
     assert results == []
+
+
+# --- the merged-PR regression (deepiri-mudspeed#50) -------------------------------------
+
+
+async def _due_soon(db_session, pr_number=50, *, dev="connorwhite9", qa="sergiovargas111"):
+    """Track a PR exactly as `_assign_qa_for_pr` does, then age it into the day-3 window."""
+    await nudges.ensure_tracked(
+        db_session,
+        github_repo="deepiri-mudspeed",
+        github_pr_number=pr_number,
+        developer_login=dev,
+        primary_qa_login=qa,
+    )
+    await db_session.commit()
+    row = await nudges._get_row(db_session, "deepiri-mudspeed", pr_number)
+    row.last_activity_at = datetime.utcnow() - timedelta(days=3)
+    await db_session.commit()
+    return row
+
+
+def _no_comment(monkeypatch):
+    """Fail loudly if anything tries to @mention a human."""
+    posted: list[tuple] = []
+
+    async def fail_comment(full_name, pr_number, body):
+        posted.append((full_name, pr_number, body))
+        raise AssertionError(f"must not comment on {full_name}#{pr_number}: {body!r}")
+
+    monkeypatch.setattr(nudges, "comment_on_pr", fail_comment)
+    return posted
+
+
+@pytest.mark.asyncio
+async def test_sweep_never_nudges_a_merged_pr(db_session, monkeypatch, pr_state):
+    """The reported bug: PR merged, Boardman kept @mentioning the QA engineer.
+
+    On mudspeed#50 the merge landed 2026-09-14 and the sweep still nudged at days 3, 6, 9
+    and 12. The escalation row said "waiting on QA" and nothing in the DB knows the PR is
+    gone, so the only place that can say no is a live read of the PR.
+    """
+    await _due_soon(db_session)
+    posted = _no_comment(monkeypatch)
+    pr_state.state["value"] = pr_actions.PR_TERMINAL
+
+    results = await nudges.sweep_due_nudges(db_session)
+
+    assert posted == []
+    assert results and results[0]["skipped"] == "pr_not_active"
+    assert results[0]["retired"] is True
+    # Retired, not just skipped: nothing is waiting on a merged PR any more.
+    assert await nudges._get_row(db_session, "deepiri-mudspeed", 50) is None
+
+
+@pytest.mark.asyncio
+async def test_sweep_never_nudges_a_closed_unmerged_pr(db_session, monkeypatch, pr_state):
+    """Abandoned PRs are terminal too -- a comment asking for a review nobody can give."""
+    await _due_soon(db_session, pr_number=51)
+    posted = _no_comment(monkeypatch)
+    pr_state.state["value"] = pr_actions.PR_TERMINAL
+
+    results = await nudges.sweep_due_nudges(db_session)
+
+    assert posted == []
+    assert results[0]["skipped"] == "pr_not_active"
+    assert await nudges._get_row(db_session, "deepiri-mudspeed", 51) is None
+
+
+@pytest.mark.asyncio
+async def test_merged_pr_is_never_nudged_again_on_later_sweeps(db_session, monkeypatch, pr_state):
+    """Retirement is durable: a merged PR must not reappear at the day-6, 9, 12 marks."""
+    await _due_soon(db_session)
+    posted = _no_comment(monkeypatch)
+    pr_state.state["value"] = pr_actions.PR_TERMINAL
+
+    first = await nudges.sweep_due_nudges(db_session)
+    assert first and first[0]["skipped"] == "pr_not_active"
+
+    # Every later sweep is silent: the row is gone, so there is nothing left to be due.
+    for _ in range(4):
+        assert await nudges.sweep_due_nudges(db_session) == []
+
+    assert posted == []
+    assert len(pr_state.calls) == 1, "a retired PR must not be re-read, let alone re-mentioned"
+    assert await nudges._get_row(db_session, "deepiri-mudspeed", 50) is None
+
+
+@pytest.mark.asyncio
+async def test_unreadable_pr_state_skips_the_nudge_but_keeps_the_row(
+    db_session, monkeypatch, pr_state
+):
+    """GitHub not answering must not be read as "merged" -- and must not be read as "open".
+
+    Skipping is free (the next sweep retries); retiring on an unreadable state would
+    silently drop escalation for a PR that is still open, and the row is the only
+    record that anyone is waiting on anybody.
+    """
+    await _due_soon(db_session)
+    posted = _no_comment(monkeypatch)
+    pr_state.state["value"] = pr_actions.PR_STATE_UNKNOWN
+
+    assert await nudges.sweep_due_nudges(db_session) == []
+
+    assert posted == []
+    row = await nudges._get_row(db_session, "deepiri-mudspeed", 50)
+    assert row is not None
+    assert row.nudge_stage == 0, "an unreadable state must not burn the escalation stage"
+
+    # ...and the next sweep, with GitHub back, does the thing it should have.
+    async def fake_comment(full_name, pr_number, body):
+        posted.append((full_name, pr_number, body))
+        return {"ok": True}
+
+    monkeypatch.setattr(nudges, "comment_on_pr", fake_comment)
+    pr_state.state["value"] = pr_actions.PR_ACTIVE
+    results = await nudges.sweep_due_nudges(db_session)
+    assert len(results) == 1 and results[0]["stage"] == 1
+    assert "@sergiovargas111" in posted[0][2]
+
+
+@pytest.mark.asyncio
+async def test_open_pr_is_still_nudged(db_session, monkeypatch, pr_state):
+    """The guard must not disable the feature it protects."""
+    await _due_soon(db_session)
+    pr_state.state["value"] = pr_actions.PR_ACTIVE
+
+    posted: list[tuple] = []
+
+    async def fake_comment(full_name, pr_number, body):
+        posted.append((full_name, pr_number, body))
+        return {"ok": True}
+
+    monkeypatch.setattr(nudges, "comment_on_pr", fake_comment)
+    results = await nudges.sweep_due_nudges(db_session)
+
+    assert len(results) == 1
+    assert "skipped" not in results[0]
+    assert "@sergiovargas111" in posted[0][2]
+    assert await nudges._get_row(db_session, "deepiri-mudspeed", 50) is not None
+
+
+@pytest.mark.asyncio
+async def test_merged_pr_is_not_nudged_even_on_the_daily_cadence(db_session, monkeypatch, pr_state):
+    """Past day 15 the schedule is daily, so the observed bug never stopped on its own.
+
+    mudspeed#50 sat 12 days stale when the report came in; a merged PR left alone would
+    have been mentioned every day indefinitely.
+    """
+    pr_state.state["value"] = pr_actions.PR_TERMINAL
+    posted = _no_comment(monkeypatch)
+
+    row = await _due_soon(db_session)
+    row.last_activity_at = datetime.utcnow() - timedelta(days=40)
+    await db_session.commit()
+
+    results = await nudges.sweep_due_nudges(db_session)
+    assert posted == []
+    assert results[0]["skipped"] == "pr_not_active"
+    assert results[0]["days_waiting"] == 40
+    assert await nudges._get_row(db_session, "deepiri-mudspeed", 50) is None
+
+
+# --- retire -----------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_retire_removes_a_terminal_prs_row(db_session):
+    await _tracked(db_session)
+    assert await nudges.retire(db_session, github_repo="boardman", github_pr_number=7) is True
+    await db_session.commit()
+    assert await nudges._get_row(db_session, "boardman", 7) is None
+
+
+@pytest.mark.asyncio
+async def test_retire_is_a_noop_for_an_untracked_pr(db_session):
+    assert await nudges.retire(db_session, github_repo="boardman", github_pr_number=404) is False
+    await db_session.commit()

@@ -125,12 +125,42 @@ async def _qa_capability_cache_loop() -> None:
             log_degraded(_log, "qa capability cache refresh")
 
 
+def _nudge_sweep_counts(results: list[dict]) -> tuple[int, int]:
+    """Split one sweep's results into (comments that went out, rows retired).
+
+    `sweep_due_nudges` returns an entry for two very different outcomes: a comment that
+    was actually posted, and a PR that had already merged or closed, so its escalation
+    state was deleted instead of mentioned. Counting both as "sent" made a sweep that
+    suppressed a nudge report the same number as one that @mentioned somebody -- which
+    is precisely the line an operator reads while working out why a merged PR was (or
+    wasn't) being mentioned.
+
+    A row skipped for an unreadable PR state is not in `results` at all, and one skipped
+    for having no recipient is counted as neither: nothing was sent and nothing was
+    retired, so both numbers stay honest about what left this process.
+    """
+    sent = sum(1 for r in results if not r.get("skipped"))
+    retired = sum(1 for r in results if r.get("retired"))
+    return sent, retired
+
+
 async def _pr_review_nudge_loop() -> None:
-    """DB-only escalation sweep (boardman/services/pr_review_nudges.py): the comment/
-    review/push webhook handlers already keep each tracked PR's state current as
-    events arrive, so this loop never re-fetches a PR's timeline from GitHub -- it
-    only reads the small pr_review_nudges table and, for whatever's actually due,
-    posts one comment per PR."""
+    """Stale-PR @mention escalation sweep (boardman/services/pr_review_nudges.py).
+
+    The comment/review/push handlers keep each tracked PR's escalation CLOCK current as
+    events arrive, so the common case is a local comparison against the small
+    pr_review_nudges table and costs no GitHub call at all. A row that is actually due,
+    though, is checked against live GitHub state before anyone is mentioned: a row says
+    who owes a review, never whether there is still a review to owe. Without that read a
+    PR that merged on day 2 kept being @mentioned at days 3, 6, 9, 12 and then daily,
+    forever (deepiri-mudspeed#50).
+
+    So the per-tick cost is zero calls for rows nobody is waiting on yet, and one read
+    plus at most one comment for the rows that are due. A PR that turned out to be merged
+    or closed is retired rather than mentioned, and one whose state could not be read is
+    skipped without advancing its stage, so the next sweep retries it rather than losing
+    the escalation.
+    """
     from boardman.services.pr_review_nudges import sweep_due_nudges
 
     interval = max(300.0, float(settings.pr_review_nudge_sweep_interval_seconds or 3600.0))
@@ -141,7 +171,8 @@ async def _pr_review_nudge_loop() -> None:
                 async with background_work():
                     results = await sweep_due_nudges(session)
                 if results:
-                    _log.info("pr review nudge sweep: sent %d nudge(s)", len(results))
+                    sent, retired = _nudge_sweep_counts(results)
+                    _log.info("pr review nudge sweep: sent %d, retired %d", sent, retired)
             except Exception:  # noqa: BLE001 - graceful degradation
                 await session.rollback()
                 log_degraded(_log, "pr review nudge sweep")
@@ -223,7 +254,8 @@ async def run_worker_forever() -> None:
             _pr_review_nudge_loop(), name="pr-review-nudge-sweep"
         )
         _log.info(
-            "pr review nudge sweep every %.0fs (DB-only; nudges whoever's turn it is)",
+            "pr review nudge sweep every %.0fs (due PRs are checked against live GitHub "
+            "state before anyone is mentioned; merged/closed ones are retired)",
             settings.pr_review_nudge_sweep_interval_seconds,
         )
     try:

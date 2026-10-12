@@ -20,6 +20,7 @@ from boardman.database.models import (
     PullRequestTaskLink,
     SyncLog,
 )
+from boardman.github.pr_actions import PR_TERMINAL, pr_lifecycle_state
 from boardman.github.pr_exclusion import pr_sync_exclusion_reason
 from boardman.github.webhooks import (
     DeploymentStatusEventPayload,
@@ -367,6 +368,31 @@ async def _task_type_is_bug(plaky: PlakyClient, board_id: str, task_id: str) -> 
     return label.strip().casefold() == "bug"
 
 
+async def _retire_review_nudges(
+    session: AsyncSession, *, repo_name: str, pr_number: int, why: str
+) -> None:
+    """Drop the stale-PR @mention escalation state for a PR that just reached a terminal state.
+
+    `ensure_tracked` (below) creates this row on QA assignment and nothing in the event
+    stream ever removed it, so a PR merged on day 2 was still "waiting on QA" days later
+    and the hourly sweep @mentioned that person on a PR that had already shipped
+    (deepiri-mudspeed#50: merged 2026-09-14, nudged 09-17, 09-20, 09-23, 09-26).
+
+    This is the event-driven half of the fix -- the row normally goes away at the moment
+    the PR does, rather than waiting for a sweep to discover it. The sweep re-checks live
+    PR state as well, which is what covers the case this cannot: a merge delivery that
+    never arrived, or one that is still sitting in the job queue behind the sweep. Both
+    halves read GitHub rather than trusting the payload, and neither is allowed to fail
+    the merge itself -- the escalation state is a courtesy feature.
+    """
+    try:
+        from boardman.services.pr_review_nudges import retire
+
+        await retire(session, github_repo=repo_name, github_pr_number=pr_number)
+    except Exception as exc:  # noqa: BLE001 - the merge must land even if this does not
+        _log.warning("pr_review_nudges.retire failed for %s PR #%s: %s", why, pr_number, exc)
+
+
 async def _assign_qa_for_pr(
     plaky: PlakyClient,
     *,
@@ -449,7 +475,25 @@ async def _assign_qa_for_pr(
     qa_login = (getattr(member, "github_login", "") or "").strip() if member else ""
     qa_display = (getattr(member, "display", "") or "").strip() if member else ""
 
-    if session is not None and pr_author_login and qa_login:
+    # Everything below this line is OUTWARD: a row asking the nudge sweep to @mention
+    # someone, a comment on the PR, a reviewer request. None of it may happen to a PR
+    # that has already merged or closed, and the payload cannot tell us -- it is the
+    # `opened` event's own photograph of a PR that may since have shipped, and the
+    # delivery can be sitting in the job queue, or retrying, across the merge. So this
+    # asks GitHub once, and reads `unknown` as "keep going" (GitHub unreachable is not
+    # evidence the PR finished; the sweep's own state check is what covers that case).
+    #
+    # The Plaky QA write above is deliberately NOT gated: it is the durable record of who
+    # was supposed to review this work, and it moves no card status.
+    pr_active = await pr_lifecycle_state(repo_full, pr_number) != PR_TERMINAL
+    if not pr_active:
+        _log.info(
+            "PR #%s is no longer active; assigning QA in Plaky but skipping the GitHub "
+            "@mention, reviewer request and nudge tracking",
+            pr_number,
+        )
+
+    if session is not None and pr_author_login and qa_login and pr_active:
         try:
             from boardman.services.pr_review_nudges import ensure_tracked
 
@@ -499,6 +543,14 @@ async def _assign_qa_for_pr(
                 )
             except Exception as exc:  # noqa: BLE001
                 _log.warning("stamp_qa_on_pr_links failed for PR #%s: %s", pr_number, exc)
+
+    if not pr_active:
+        # The Plaky write above stands -- it records who was meant to review this work.
+        # Everything outward stops here: no reviewer request (GitHub rejects it on a
+        # merged PR anyway) and no "@you've been assigned as QA reviewer" comment on a
+        # pull request nobody can review.
+        out["github_comment"] = {"ok": True, "skipped": "pr_not_active"}
+        return out
 
     if already_assigned:
         # Idempotency check: without it, a task that already has its QA correctly
@@ -2245,6 +2297,7 @@ async def handle_pr_closed_without_merge(
         github_pr_number=pr_number,
         github_updated_at=str(getattr(payload.pull_request, "updated_at", "") or ""),
     )
+    await _retire_review_nudges(session, repo_name=repo_name, pr_number=pr_number, why="closed")
 
     reverted: list[dict[str, Any]] = []
     if task_ids:
@@ -2418,6 +2471,7 @@ async def handle_pr_merged(payload: PullRequestEventPayload, session: AsyncSessi
             )
 
     merged_rows = await mark_pr_merged(session, github_repo=repo_name, github_pr_number=pr_number)
+    await _retire_review_nudges(session, repo_name=repo_name, pr_number=pr_number, why="merged")
 
     affected_tasks: set[str] = {row.plaky_task_id for row in merged_rows}
     # Tasks this PR is linked to by a closing keyword in the DESCRIPTION. A title keyword
