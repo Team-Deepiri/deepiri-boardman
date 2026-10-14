@@ -1,14 +1,23 @@
 name: CodeQL
 
+# Manual-only. Not wired into CI, and nothing it does is required to merge.
+#
+# This workflow gated every PR until 2026-09-25, when it began failing with:
+#
+#   ##[error]Advanced Security must be enabled for this repository to use
+#   code scanning.
+#
+# The repo is private and Team-Deepiri is on the Free plan. Uploading code
+# scanning results for a private repo requires GitHub Advanced Security, which
+# is not available there — the analysis itself runs and produces no alerts; only
+# the SARIF upload is rejected.
+#
+# Static analysis is covered by the SAST (bandit) job in ci.yml, which needs no
+# entitlement. To re-enable this workflow: turn on Advanced Security for the
+# repo, then restore the pull_request / push / schedule triggers below.
 on:
-  pull_request:
-    branches: [main, dev]
-    paths-ignore:
-      - '**/*.md'
-      - 'docs/**'
-      - '.gitignore'
-      - 'LICENSE*'
   workflow_dispatch:
+
 permissions:
   actions: read
   contents: read
