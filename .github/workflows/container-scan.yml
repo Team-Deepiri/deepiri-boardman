@@ -1,0 +1,45 @@
+name: Container & IaC scan
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  schedule:
+    - cron: '0 7 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  trivy:
+    name: Trivy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      # Scan dependencies resolved from lockfiles/manifests for known CVEs.
+      # Non-blocking for now (exit-code 0); flip to '1' to enforce on CRITICAL/HIGH.
+      - name: Trivy filesystem scan (vulnerabilities)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          format: table
+          exit-code: '0'
+
+      # Scan Dockerfiles / IaC for misconfiguration. No image build required,
+      # so this works even when private dependencies are unreachable in CI.
+      - name: Trivy config scan (Dockerfile & IaC)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: config
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          format: table
+          exit-code: '0'
