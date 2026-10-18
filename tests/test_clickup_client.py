@@ -163,7 +163,7 @@ async def test_add_comment_posts_comment_text():
     assert (
         r["ok"]
         and seen["url"].endswith("/task/t1/comment")
-        and seen["body"] == {"comment_text": "PR linked"}
+        and seen["body"] == {"comment_text": "PR linked", "notify_all": False}
     )
     assert (await _client(handler).add_comment("", "x"))["status"] == 400
 
@@ -320,3 +320,21 @@ def test_default_workspace_choice_is_logged_not_silent(caplog):
         assert not caplog.text
         ClickUpClient("t", "https://cu.test", team_id="9")._choose_team(teams)
     assert "not among this token's workspaces" in caplog.text
+
+
+async def test_user_ids_go_out_as_integers():
+    """ClickUp documents user ids as integers; Boardman carries them as strings."""
+    seen: list[dict] = []
+
+    def handler(req):
+        seen.append({"method": req.method, "url": str(req.url), "body": json.loads(req.content)})
+        return httpx.Response(200, json={"id": "t1", "name": "n", "status": {"status": "to do"}})
+
+    c = _client(handler)
+    await c.create_task("T", "d", "medium", assignee_ids=["12", "13"])
+    await c.update_task_fields("t1", add_assignee_ids=["12"], remove_assignee_ids=["13"])
+    await c.set_user_field("t1", "f1", ["55"], ["56"])
+
+    assert seen[0]["body"]["assignees"] == [12, 13]
+    assert seen[1]["body"]["assignees"] == {"add": [12], "rem": [13]}
+    assert seen[2]["body"] == {"value": {"add": [55], "rem": [56]}}

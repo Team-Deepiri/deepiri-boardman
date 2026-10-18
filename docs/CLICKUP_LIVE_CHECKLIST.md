@@ -39,6 +39,15 @@ poetry run boardman clickup-inventory --list-id "$CLICKUP_DEFAULT_LIST_ID"
 | `GET /list/{id}/task?include_closed=...&subtasks=true&page=N` pages 100 at a time | listing, fuzzy matching | step 3 |
 | `DELETE /task/{id}` answers 204 | orphan cleanup | step 6 |
 
+### Checked against ClickUp's docs (2026-10-18), still unproven live
+
+ClickUp's published API reference confirms: no `Bearer` for personal tokens, priority 1 to 4, `page` starts at 0 with a `last_page` flag, comments take `comment_text` (and list `notify_all`), the users-field body is `{"value": {"add": [...], "rem": [...]}}`, `DELETE` answers 204, and `GET /team` returns `members[].user.id`. User ids must be integers (the client now converts them). The docs are **silent** on two things this port depends on, so watch them in steps 3, 4 and 7:
+
+- whether adding a tag that does not yet exist in the Space creates it or errors (`type:` and repo tags);
+- what happens when a `status` name is not in the list (every status write relies on `CLICKUP_STATUS_*` matching exactly).
+
+Personal tokens are limited to 100 requests per minute on the Free, Unlimited and Business plans.
+
 ## 3. Create and read back (API and CLI)
 
 ```bash

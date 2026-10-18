@@ -66,6 +66,16 @@ def retry_delay(
     return None
 
 
+def user_ids(values: Any) -> list[int | str]:
+    """ClickUp's API wants user ids as integers. Boardman carries them as strings (from the
+    workspace roster), so convert numeric ones at the boundary; leave anything else untouched."""
+    out: list[int | str] = []
+    for v in values or []:
+        text = str(v).strip()
+        out.append(int(text) if text.isdigit() else v)
+    return out
+
+
 class ClickUpClient:
     @staticmethod
     def priority(value: str | int | None) -> int | None:
@@ -213,7 +223,7 @@ class ClickUpClient:
         if status:
             body["status"] = status
         if assignee_ids:
-            body["assignees"] = assignee_ids
+            body["assignees"] = user_ids(assignee_ids)
         if parent_task_id:
             body["parent"] = parent_task_id
         if tags:
@@ -338,8 +348,8 @@ class ClickUpClient:
         body: dict[str, Any] = {}
         if add_assignee_ids or remove_assignee_ids:
             body["assignees"] = {
-                "add": list(add_assignee_ids or []),
-                "rem": list(remove_assignee_ids or []),
+                "add": user_ids(add_assignee_ids),
+                "rem": user_ids(remove_assignee_ids),
             }
         if archived is not None:
             body["archived"] = archived
@@ -394,7 +404,7 @@ class ClickUpClient:
         if not tid:
             return {"ok": False, "status": 400, "message": "task_id is required."}
         response = await self._request(
-            "POST", f"/task/{tid}/comment", json={"comment_text": body or ""}
+            "POST", f"/task/{tid}/comment", json={"comment_text": body or "", "notify_all": False}
         )
         if response.status_code in (200, 201):
             return {"ok": True, "status": response.status_code, "comment": response.json()}
@@ -456,7 +466,7 @@ class ClickUpClient:
         """Set a custom field of type "users" (add and remove member ids)."""
         if not self.api_token:
             return self._missing_token()
-        body = {"value": {"add": list(add_user_ids), "rem": list(remove_user_ids or [])}}
+        body = {"value": {"add": user_ids(add_user_ids), "rem": user_ids(remove_user_ids)}}
         response = await self._request("POST", f"/task/{task_id}/field/{field_id}", json=body)
         if response.status_code in (200, 201):
             return {"ok": True, "status": response.status_code}

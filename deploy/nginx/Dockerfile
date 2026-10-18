@@ -1,8 +1,8 @@
 # Build SPA then serve with nginx (see docs/PLAN.md)
 FROM node:20-alpine AS ui
 WORKDIR /ui
-COPY boardman-ui/package.json ./
-RUN npm install
+COPY boardman-ui/package.json boardman-ui/package-lock.json ./
+RUN npm ci
 COPY boardman-ui/ ./
 RUN npm run build
 
