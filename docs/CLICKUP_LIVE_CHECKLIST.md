@@ -48,6 +48,14 @@ ClickUp's published API reference confirms: no `Bearer` for personal tokens, pri
 
 Personal tokens are limited to 100 requests per minute on the Free, Unlimited and Business plans.
 
+## Result of the first live run (2026-10-19)
+
+Run against a free personal workspace and a private test repo, with synthetic signed webhooks (no real GitHub delivery, no GitHub token). One task each went `assigned` -> `needs qa` -> `in qa` -> `qa verified` -> `complete`, and a rejection went `in qa` -> `qa rejected`, all confirmed by reading the task back from ClickUp. Tags were auto-created, the assignee and priority were set, and the PR-opened comment was posted.
+
+Every `CLICKUP_STATUS_*` name must exist on the target list, spelled exactly. ClickUp answers a missing one with `400 ITEM_114 Status does not exist`; Boardman leaves the task where it was and logs `ClickUp refused status ...`. The API cannot create statuses, so add them in the ClickUp UI first.
+
+Still unproven: real GitHub deliveries, the QA users field (`CLICKUP_QA_FIELD_ID`), and production at boardman.deepiri.com.
+
 ## 3. Create and read back (API and CLI)
 
 ```bash
