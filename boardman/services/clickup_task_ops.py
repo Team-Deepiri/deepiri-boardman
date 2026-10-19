@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any
 
 from sqlalchemy import select
@@ -14,6 +15,8 @@ from boardman.clickup.task_view import current_status
 from boardman.database.models import PullRequestTaskLink, SyncLog
 from boardman.services.sync_state import status_intent_would_regress, status_would_move_backwards
 from boardman.settings import settings
+
+logger = logging.getLogger(__name__)
 
 
 async def read_task(c: ClickUpClient, task_id: str) -> dict[str, Any] | None:
@@ -59,6 +62,14 @@ async def set_intent_status(
         return {"ok": True, "skipped": "already there", "status": name}
     res = await c.update_task_fields(task_id, status=name)
     res.pop("task", None)
+    if not res.get("ok"):
+        logger.warning(
+            "ClickUp refused status %r for task %s (%s): %s",
+            name,
+            task_id,
+            intent,
+            res.get("message"),
+        )
     return {**res, "status": name}
 
 
