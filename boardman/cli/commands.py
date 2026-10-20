@@ -577,6 +577,11 @@ def doctor():
                 console.print(
                     f"[yellow]ClickUp API[/yellow] {cr.get('message', cr)} (HTTP {cr.get('status')})"
                 )
+            from boardman.clickup.config_check import clickup_config_problems
+
+            for problem in await clickup_config_problems(ClickUpClient()):
+                console.print(f"[yellow]ClickUp config[/yellow] {problem}")
+                ok = False
         elif active_provider() == "plaky" and settings.plaky_api_key:
             plaky = PlakyClient()
             pr = await plaky.list_boards()
