@@ -23,6 +23,8 @@ type ChatMessage = {
   content: string;
 };
 
+type ProviderInfo = { provider: string; label: string; board_noun: string; has_groups: boolean };
+const PLAKY_PROVIDER: ProviderInfo = { provider: "plaky", label: "Plaky", board_noun: "board", has_groups: true };
 type PlakyBoardRow = { id: string; name: string };
 type PlakyGroupRow = { id: string; name: string };
 type PlakyUserRow = { id: string; name: string };
@@ -152,7 +154,7 @@ async function sendChatStream(
   }
 }
 
-function EmptyState() {
+function EmptyState({ providerLabel }: { providerLabel: string }) {
   return (
     <div className="empty-state" role="status">
       <div className="empty-state__mark" aria-hidden>
@@ -160,7 +162,7 @@ function EmptyState() {
       </div>
       <h3 className="empty-state__title">Start a conversation</h3>
       <p className="empty-state__text">
-        Ask about priorities, Plaky tasks, or repo context. Mention a repo by name and Boardman scopes
+        Ask about priorities, {providerLabel} tasks, or repo context. Mention a repo by name and Boardman scopes
         to it automatically; pick one in the panel only if it can't tell, or to override — built for{" "}
         <strong>Deepiri</strong> delivery workflows.
       </p>
@@ -181,6 +183,7 @@ export default function App() {
   const [statusText, setStatusText] = useState<string | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  const [provider, setProvider] = useState<ProviderInfo>(PLAKY_PROVIDER);
   const [boards, setBoards] = useState<PlakyBoardRow[]>([]);
   const [groups, setGroups] = useState<PlakyGroupRow[]>([]);
   const [plakyBoardId, setPlakyBoardId] = useState("");
@@ -227,6 +230,21 @@ export default function App() {
     const el = drawerScrollRef.current;
     if (el && drawerOpen) el.scrollTop = el.scrollHeight;
   }, [messages, loading, drawerOpen]);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const { data } = await api.get<ProviderInfo>("/api/v1/provider");
+        if (!cancelled && data?.label) setProvider(data);
+      } catch {
+        /* older backends have no /provider: keep the Plaky wording */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -605,7 +623,7 @@ export default function App() {
           <img src="/logo_squared_2_10.png" className="sidebar__brand-icon" alt="" />
           <div>
             <div className="sidebar__brand-name sidebar__brand-name--gradient">Deepiri Board Manager</div>
-            <div className="sidebar__brand-sub">Plaky · GitHub · delivery</div>
+            <div className="sidebar__brand-sub">{provider.label} · GitHub · delivery</div>
           </div>
         </div>
 
@@ -725,8 +743,8 @@ export default function App() {
 
         <div className="toggle-field">
           <div className="toggle-field__text">
-            <span className="toggle-field__title">Plaky write tools</span>
-            <span className="toggle-field__desc">Allow create, update, and comments in Plaky</span>
+            <span className="toggle-field__title">{provider.label} write tools</span>
+            <span className="toggle-field__desc">Allow create, update, and comments in {provider.label}</span>
           </div>
           <button
             type="button"
@@ -780,7 +798,7 @@ export default function App() {
         <div className="field">
           <label className="field__label" htmlFor="plaky-board-select">
             <IconBoard className="field__label-icon" />
-            Plaky board
+            {provider.label} {provider.board_noun}
           </label>
           <AppSelect
             id="plaky-board-select"
@@ -794,29 +812,33 @@ export default function App() {
           />
           {plakyBoardsHint ? <p className="field__hint field__hint--warn">{plakyBoardsHint}</p> : null}
           <p className="field__hint">
-            API uses a board (project) and a group (section). There is no separate &quot;table&quot; id.
+            {provider.has_groups
+              ? "API uses a board (project) and a group (section). There is no separate \"table\" id."
+              : `Tasks are created in the selected ${provider.board_noun}; its statuses are fixed by ${provider.label}.`}
           </p>
         </div>
 
-        <div className="field">
-          <label className="field__label" htmlFor="plaky-group-select">
-            <IconBoard className="field__label-icon" />
-            Plaky group
-          </label>
-          <AppSelect
-            id="plaky-group-select"
-            value={plakyGroupId}
-            onChange={setPlakyGroupId}
-            disabled={!plakyBoardId}
-            emptyLabel={
-              plakyBoardId ? "Default for board / env" : "Pick a board first"
-            }
-            options={groups.map((g) => ({ value: g.id, label: g.name || g.id }))}
-          />
-          {plakyGroupsHint && plakyBoardId ? (
-            <p className="field__hint field__hint--warn">{plakyGroupsHint}</p>
-          ) : null}
-        </div>
+        {provider.has_groups ? (
+          <div className="field">
+            <label className="field__label" htmlFor="plaky-group-select">
+              <IconBoard className="field__label-icon" />
+              {provider.label} group
+            </label>
+            <AppSelect
+              id="plaky-group-select"
+              value={plakyGroupId}
+              onChange={setPlakyGroupId}
+              disabled={!plakyBoardId}
+              emptyLabel={
+                plakyBoardId ? "Default for board / env" : "Pick a board first"
+              }
+              options={groups.map((g) => ({ value: g.id, label: g.name || g.id }))}
+            />
+            {plakyGroupsHint && plakyBoardId ? (
+              <p className="field__hint field__hint--warn">{plakyGroupsHint}</p>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className="field">
           <label className="field__label" htmlFor="session-display">
@@ -835,7 +857,7 @@ export default function App() {
         <div className="field field--create-task">
           <label className="field__label" htmlFor="create-title">
             <IconBoard className="field__label-icon" />
-            Create Plaky task
+            Create {provider.label} task
           </label>
           <input
             id="create-title"
@@ -880,7 +902,7 @@ export default function App() {
             <p className="field__hint">No members yet (configure GITHUB_PAT with read:org).</p>
           )}
           <label className="field__label field__label--sub" htmlFor="eng-assign">
-            Contributor (Plaky member)
+            Contributor ({provider.label} member)
           </label>
           <AppSelect
             id="eng-assign"
@@ -893,7 +915,7 @@ export default function App() {
             }))}
           />
           <label className="field__label field__label--sub" htmlFor="qa-assign">
-            QA (Plaky member)
+            QA ({provider.label} member)
           </label>
           <AppSelect
             id="qa-assign"
@@ -945,7 +967,7 @@ export default function App() {
         <div className="chat-shell">
           <div className="chat-scroll" ref={scrollRef}>
             {messages.length === 0 ? (
-              <EmptyState />
+              <EmptyState providerLabel={provider.label} />
             ) : (
               <ul className="message-list">
                 {messages.map((msg, i) => (
