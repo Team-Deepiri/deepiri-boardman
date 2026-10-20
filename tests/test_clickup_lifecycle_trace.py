@@ -256,8 +256,13 @@ async def test_a_forged_webhook_never_touches_clickup(http, world):
 async def test_the_ui_create_route_makes_a_clickup_task(http, world, monkeypatch):
     """What the 'create task' form in boardman-ui sends."""
     monkeypatch.setattr(settings, "clickup_default_list_id", "L1")
+    # Creating a task needs the API token (security PR #175); the UI sends it from sessionStorage.
+    monkeypatch.setattr(settings, "boardman_api_token", "tok-123", raising=False)
+    anonymous = await http.post("/api/v1/tasks", json={"title": "nope", "plaky_board_id": "L1"})
+    assert anonymous.status_code in (401, 404) and not world.fake.tasks
     r = await http.post(
         "/api/v1/tasks",
+        headers={"Authorization": "Bearer tok-123"},
         json={
             "title": "Created from the UI",
             "description": "via boardman-ui",

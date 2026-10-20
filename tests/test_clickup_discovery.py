@@ -82,10 +82,14 @@ def cu(monkeypatch):
     return TestClient(app)
 
 
-def test_users_and_boards_come_from_clickup_in_the_same_shape(cu):
-    users = cu.get("/plaky/users").json()
+def test_users_and_boards_come_from_clickup_in_the_same_shape(cu, monkeypatch):
+    # /plaky/users lists every workspace member, so it needs the API token (security PR #177).
+    monkeypatch.setattr(routes.settings, "boardman_api_token", "tok-123", raising=False)
+    auth = {"Authorization": "Bearer tok-123"}
+    assert cu.get("/plaky/users").status_code == 401
+    users = cu.get("/plaky/users", headers=auth).json()
     assert users["ok"] and users["users"][0]["id"] == "5"
-    ranked = cu.get("/plaky/users", params={"query": "ann"}).json()
+    ranked = cu.get("/plaky/users", params={"query": "ann"}, headers=auth).json()
     assert ranked["best"]["id"] == "5"
     boards = cu.get("/plaky/boards").json()
     assert [b["id"] for b in boards["boards"]] == ["L1", "L2"]
