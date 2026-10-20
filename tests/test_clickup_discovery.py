@@ -165,3 +165,20 @@ def test_configured_statuses_lists_each_setting_once(cu, monkeypatch):
 def test_plaky_inventory_on_clickup_shows_the_clickup_inventory(cu):
     out = CliRunner().invoke(cli.app, ["plaky-inventory", "--board-id", "L1"])
     assert "Workspace members" in out.output and "List statuses: to do" in out.output
+
+
+def test_provider_endpoint_tells_the_ui_what_to_call_things(cu, monkeypatch):
+    monkeypatch.setattr(routes, "active_provider", lambda: "clickup")
+    assert cu.get("/provider").json() == {
+        "provider": "clickup",
+        "label": "ClickUp",
+        "board_noun": "list",
+        "has_groups": False,
+    }
+    monkeypatch.setattr(routes, "active_provider", lambda: "plaky")
+    assert cu.get("/provider").json() == {
+        "provider": "plaky",
+        "label": "Plaky",
+        "board_noun": "board",
+        "has_groups": True,
+    }

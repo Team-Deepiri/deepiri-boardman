@@ -16,6 +16,11 @@ as non-fatal warnings in Boardman's logs.
         --repo Team-Deepiri/boardman-sandbox --issue 1 --pr 2 \\
         --dev-login <dev github login> --qa-login <qa github login>
 
+BOARDMAN_API_TOKEN: the bearer token for Boardman's guarded routes. This script reads
+GET /api/v1/mappings to find the task, and a Boardman with the security guards (PRs #175/#177)
+answers that route only with `Authorization: Bearer <BOARDMAN_API_TOKEN>`. Leave it unset against
+a Boardman without those guards.
+
 Expected statuses default to the CLICKUP_STATUS_* values Boardman is configured with; pass the
 same env vars here. A step with no configured status is reported as SKIPPED, not failed.
 Exit code 0 only if every checked step matched.

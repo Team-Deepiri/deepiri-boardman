@@ -116,6 +116,19 @@ async def plaky_workspace_users(query: str = "") -> dict:
     }
 
 
+@router.get("/provider")
+async def task_provider_info() -> dict:
+    """Which task system Boardman is wired to, and what to call its parts in the UI."""
+    if active_provider() == "clickup":
+        return {
+            "provider": "clickup",
+            "label": "ClickUp",
+            "board_noun": "list",
+            "has_groups": False,
+        }
+    return {"provider": "plaky", "label": "Plaky", "board_noun": "board", "has_groups": True}
+
+
 @router.get("/plaky/boards")
 async def plaky_boards() -> dict:
     """Boards (Plaky) or lists (ClickUp), as id and name rows."""
