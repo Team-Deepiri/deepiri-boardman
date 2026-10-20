@@ -433,6 +433,45 @@ body {
   border-top: 1px solid var(--border-subtle);
 }
 
+.gate-session {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
+.gate-session__who {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gate-session__who strong {
+  color: var(--text-primary);
+}
+
+.gate-session form {
+  margin: 0;
+}
+
+.gate-session__out {
+  background: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  padding: 0.2rem 0.5rem;
+}
+
+.gate-session__out:hover {
+  color: var(--text-primary);
+}
+
 .sidebar__foot p {
   margin: 0;
   font-size: 0.68rem;
