@@ -161,7 +161,30 @@ async def lifespan(app: FastAPI):
     from boardman.agent.warmup import warm_agent_caches
 
     agent_warm_task = _asyncio.create_task(warm_agent_caches(), name="agent-cache-warmer")
+
+    # ClickUp answers a wrong status name with a 400 and the task just stays put, so say so at
+    # startup. Read-only, never blocks the service coming up, and never raises.
+    clickup_check_task = None
+    from boardman.task_provider import active_provider
+
+    if active_provider() == "clickup":
+
+        async def _check_clickup_config() -> None:
+            try:
+                from boardman.clickup.client import ClickUpClient
+                from boardman.clickup.config_check import log_clickup_config_problems
+
+                await log_clickup_config_problems(ClickUpClient())
+            except Exception as e:  # noqa: BLE001 - a diagnostic must not affect startup
+                log_unexpected(_log, "lifespan: clickup config check", e)
+
+        clickup_check_task = _asyncio.create_task(
+            _check_clickup_config(), name="clickup-config-check"
+        )
     yield
+
+    if clickup_check_task is not None and not clickup_check_task.done():
+        clickup_check_task.cancel()
 
     if not agent_warm_task.done():
         agent_warm_task.cancel()
