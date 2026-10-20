@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from boardman.planning.huddle.models import MeetingRequest
@@ -13,6 +13,7 @@ from boardman.planning.service import (
     generate_plan,
     week_anchor,
 )
+from boardman.security.api_auth import require_internal_auth
 from boardman.settings import settings
 
 router = APIRouter(prefix="/plans", tags=["plans"])
@@ -79,7 +80,16 @@ def _resolve_output_path(body: GeneratePlanRequest) -> Path | None:
 
 
 @router.post("/generate", response_model=GeneratePlanResponse)
-def generate_plan_route(body: GeneratePlanRequest) -> GeneratePlanResponse:
+def generate_plan_route(
+    body: GeneratePlanRequest,
+    _auth: None = Depends(require_internal_auth),
+) -> GeneratePlanResponse:
+    """Generate a meeting plan.
+
+    Guarded: this is an LLM call on the server's own key (`write_to_disk` defaults
+    to True, so an anonymous caller could both burn tokens and drop files into the
+    planning output directory). It is not used by `boardman-ui`.
+    """
     if body.team_focus not in TEAM_CHOICES:
         raise HTTPException(
             status_code=422,

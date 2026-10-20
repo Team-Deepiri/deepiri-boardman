@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -41,6 +42,15 @@ WEBHOOK = "http://localhost:8090/api/v1/webhooks/github"
 AGENT = "http://localhost:8090/api/v1/agent/chat"
 DB = Path(__file__).resolve().parent.parent / "boardman.db"
 ME = "Blasted-ctrl"
+
+# The reconcile and assignment endpoints are behind the internal bearer token, so
+# this script has to authenticate like any other privileged caller. Falls back to
+# the worker secret for the same reason the API does: a deployment that predates
+# BOARDMAN_API_TOKEN should still be able to run its own checklist.
+_API_TOKEN = (
+    os.environ.get("BOARDMAN_API_TOKEN") or os.environ.get("WORKER_INTERNAL_SECRET") or ""
+).strip()
+AUTH_HEADERS = {"Authorization": f"Bearer {_API_TOKEN}"} if _API_TOKEN else {}
 
 STATUS_NAMES = {
     "0": "NEEDS ASSIGNED",
@@ -769,7 +779,11 @@ async def section_5(client: httpx.AsyncClient, issue_num: int, tid: str, pr_num:
         await asyncio.sleep(2)
         drifted = (await read_item(tid)).get("Status") != "Completed"
     if drifted:
-        r = await client.post(f"http://localhost:8090/api/v1/reconcile/{REPO_FULL}", timeout=600)
+        r = await client.post(
+            f"http://localhost:8090/api/v1/reconcile/{REPO_FULL}",
+            headers=AUTH_HEADERS,
+            timeout=600,
+        )
         out = r.json() if r.status_code == 200 else {}
         expected = "NEEDS ASSIGNED"  # issue is open and unassigned on GitHub
         okr, strec = await wait_field(tid, "Status", expected, timeout=120)
@@ -801,7 +815,9 @@ async def section_5(client: httpx.AsyncClient, issue_num: int, tid: str, pr_num:
     )
 
     # a missed webhook is repaired by reconciliation
-    r = await client.post(f"http://localhost:8090/api/v1/reconcile/{REPO_FULL}", timeout=600)
+    r = await client.post(
+        f"http://localhost:8090/api/v1/reconcile/{REPO_FULL}", headers=AUTH_HEADERS, timeout=600
+    )
     out = r.json() if r.status_code == 200 else {}
     record(
         S,
@@ -841,6 +857,9 @@ async def ask(
     t0 = time.monotonic()
     r = await client.post(
         AGENT,
+        # Chat itself stays open for the SPA, but allow_writes is a privilege and is
+        # downgraded for anonymous callers -- so a write test has to authenticate.
+        headers=AUTH_HEADERS,
         json={
             "message": message,
             "session_id": session,

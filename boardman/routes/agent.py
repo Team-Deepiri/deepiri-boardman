@@ -3,7 +3,7 @@
 from collections.abc import AsyncIterator
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,11 +18,23 @@ from boardman.broker.job_queue import get_job_queue
 from boardman.database.session import async_session, get_db
 from boardman.plaky.placement import context_board_id, context_group_id, plaky_placement_context
 from boardman.ratelimit.dependencies import require_agent_rate_limit
+from boardman.security import repo_slug
+from boardman.security.api_auth import internal_auth_ok, require_internal_auth
+from boardman.security.repo_slug import (
+    INVALID_REPO_MESSAGE,
+    is_valid_repo_slug,
+    split_repo_slug,
+)
 from boardman.services.direction_init import init_direction_file
 from boardman.services.scan_handler import run_repo_scan
 from boardman.settings import settings
 
 router = APIRouter()
+
+# Kept as a module-level name because tests assert against it directly; the
+# pattern itself lives in boardman.security.repo_slug so every route that takes a
+# caller-supplied owner/name validates it the same way.
+_REPO_SLUG_RE = repo_slug.REPO_SLUG_RE
 
 
 class AgentChatRequest(BaseModel):
@@ -112,19 +124,37 @@ class AgentHistoryResponse(BaseModel):
     messages: list[AgentHistoryMessage]
 
 
+def _writes_allowed(requested: bool, authorization: str | None) -> bool:
+    """Gate the one privilege agent chat exposes in its *body* rather than behind
+    the route.
+
+    ``allow_writes`` hands the LangChain agent the Plaky mutation tools
+    (create/update/comment/subtask), which write to the team's real board with the
+    *server's* Plaky credentials. The chat route itself cannot be closed -- it is
+    the UI's main call and the SPA cannot hold a secret -- so an unauthenticated
+    caller asking for writes is downgraded to read-only instead of being trusted.
+    """
+    if not requested:
+        return False
+    return internal_auth_ok(authorization)
+
+
 @router.post("/agent/chat", response_model=AgentChatResponse)
 async def agent_chat(
     body: AgentChatRequest,
     request: Request,
     session: AsyncSession = Depends(get_db),
+    authorization: str | None = Header(None),
 ) -> dict[str, Any]:
     await require_agent_rate_limit(request)
+    allow_writes = _writes_allowed(body.allow_writes, authorization)
     if body.queue:
         if not settings.agent_async_enqueue_enabled:
             raise HTTPException(
                 status_code=503, detail="Async agent enqueue is disabled in settings."
             )
         payload = body.model_dump(exclude={"queue"}, exclude_none=True)
+        payload["allow_writes"] = allow_writes
         q = get_job_queue()
         job = await q.enqueue_job("boardman_agent_chat_job", payload)
         return {"ok": True, "queued": True, "job_id": job.job_id}
@@ -137,7 +167,7 @@ async def agent_chat(
             repo=body.repo,
             provider=body.provider,
             model=body.model,
-            allow_writes=body.allow_writes,
+            allow_writes=allow_writes,
             use_tools=body.use_tools,
             plaky_board_id=context_board_id(),
             plaky_group_id=context_group_id(),
@@ -146,12 +176,17 @@ async def agent_chat(
 
 
 @router.post("/agent/chat/stream")
-async def agent_chat_stream(body: AgentChatRequest, request: Request) -> StreamingResponse:
+async def agent_chat_stream(
+    body: AgentChatRequest,
+    request: Request,
+    authorization: str | None = Header(None),
+) -> StreamingResponse:
     """
     SSE frames (text/event-stream) for lower perceived latency.
     Supports both plain chat and multi-step tool agent.
     """
     await require_agent_rate_limit(request)
+    allow_writes = _writes_allowed(body.allow_writes, authorization)
     if body.queue:
         raise HTTPException(status_code=400, detail="queue is not supported for streaming")
 
@@ -166,7 +201,7 @@ async def agent_chat_stream(body: AgentChatRequest, request: Request) -> Streami
                         repo=body.repo,
                         provider=body.provider,
                         model=body.model,
-                        allow_writes=body.allow_writes,
+                        allow_writes=allow_writes,
                         use_tools=body.use_tools,
                         plaky_board_id=context_board_id(),
                         plaky_group_id=context_group_id(),
@@ -190,7 +225,9 @@ async def agent_chat_stream(body: AgentChatRequest, request: Request) -> Streami
 
 
 @router.get("/agent/jobs/{job_id}")
-async def agent_job_status(job_id: str) -> dict[str, Any]:
+async def agent_job_status(
+    job_id: str, _auth: None = Depends(require_internal_auth)
+) -> dict[str, Any]:
     q = get_job_queue()
     data = await q.fetch_public_job(job_id)
     if data is None:
@@ -209,14 +246,20 @@ async def agent_job_status(job_id: str) -> dict[str, Any]:
 
 @router.get("/agent/sessions/{session_id}/history", response_model=AgentHistoryResponse)
 async def agent_history(
-    session_id: str, session: AsyncSession = Depends(get_db)
+    session_id: str,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
 ) -> AgentHistoryResponse:
     hist = await get_session_history(session, session_id)
     return AgentHistoryResponse(session_id=session_id, messages=hist)
 
 
 @router.delete("/agent/sessions/{session_id}")
-async def agent_session_delete(session_id: str, session: AsyncSession = Depends(get_db)) -> dict:
+async def agent_session_delete(
+    session_id: str,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
+) -> dict:
     gone = await delete_agent_session(session, session_id)
     return {"ok": True, "deleted": gone}
 
@@ -228,7 +271,10 @@ class SetByokKeyRequest(BaseModel):
 
 @router.post("/agent/sessions/{session_id}/byok")
 async def agent_session_set_byok(
-    session_id: str, body: SetByokKeyRequest, session: AsyncSession = Depends(get_db)
+    session_id: str,
+    body: SetByokKeyRequest,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
 ) -> dict:
     """Bring-your-own-key for this session only: the key is Fernet-encrypted at rest,
     time-limited, and never echoed back — see boardman/security/byok.py."""
@@ -241,7 +287,9 @@ async def agent_session_set_byok(
 
 @router.delete("/agent/sessions/{session_id}/byok")
 async def agent_session_clear_byok(
-    session_id: str, session: AsyncSession = Depends(get_db)
+    session_id: str,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
 ) -> dict:
     from boardman.agent.service import clear_session_byok_key
 
@@ -251,7 +299,9 @@ async def agent_session_clear_byok(
 
 @router.get("/agent/sessions/{session_id}/byok")
 async def agent_session_byok_status(
-    session_id: str, session: AsyncSession = Depends(get_db)
+    session_id: str,
+    session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
 ) -> dict:
     """Never returns the key — provider + expiry only, so the UI can show
     "using your key (expires in Xh)" without ever handling the secret again."""
@@ -265,8 +315,13 @@ async def agent_scan(
     body: ScanRequest,
     request: Request,
     session: AsyncSession = Depends(get_db),
+    _auth: None = Depends(require_internal_auth),
 ) -> dict:
     await require_agent_rate_limit(request)
+    # Same argv/GitHub-path exposure as init-direction, and scan is reachable by
+    # any token holder, so the slug is validated at the route rather than trusted.
+    if not is_valid_repo_slug(body.repo):
+        return {"ok": False, "message": INVALID_REPO_MESSAGE}
     if body.queue:
         if not settings.agent_async_enqueue_enabled:
             raise HTTPException(
@@ -286,14 +341,24 @@ async def agent_scan(
 
 
 @router.post("/agent/init-direction", response_model=InitDirectionResponse)
-async def api_init_direction(body: InitDirectionRequest) -> dict:
+async def api_init_direction(
+    body: InitDirectionRequest, _auth: None = Depends(require_internal_auth)
+) -> dict:
     """
     Initialize DIRECTION.md by opening a PR from a temporary branch.
     Requires a signed-in `gh` user with push access to the target repo.
     """
-    parts = body.repo.split("/")
-    if len(parts) != 2:
-        return {"ok": False, "message": "repo must be owner/name"}
-    owner, name = parts[0], parts[1]
+    # owner/name go straight into `gh`/`git` argv (see direction_init._run_cmd).
+    # There is no shell, so this is not shell injection -- but argv elements that
+    # begin with "-" are read as *flags* by those tools, so an unvalidated owner
+    # ("--repo=other/repo") would be interpreted as an option rather than a name.
+    # See boardman.security.repo_slug.
+    parts = split_repo_slug(body.repo)
+    if parts is None:
+        return {
+            "ok": False,
+            "message": INVALID_REPO_MESSAGE,
+        }
+    owner, name = parts
     # `init_direction_file` currently chooses the PR base/branch itself.
     return await init_direction_file(owner, name, force=body.force)

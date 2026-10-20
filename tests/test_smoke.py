@@ -60,6 +60,9 @@ async def test_plaky_board_schema_route_without_key():
 
 @pytest.mark.asyncio
 async def test_assignment_sync_field_keys_route(monkeypatch):
+    from boardman.settings import settings
+
+    monkeypatch.setattr(settings, "worker_internal_secret", "test-worker-secret", raising=False)
     app = create_app()
 
     async def _fake_sync(_board_id: str):
@@ -70,13 +73,30 @@ async def test_assignment_sync_field_keys_route(monkeypatch):
     )
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
-            "/api/v1/assignment/sync-field-keys", params={"board_id": "board-123"}
+            "/api/v1/assignment/sync-field-keys",
+            params={"board_id": "board-123"},
+            headers={"Authorization": "Bearer test-worker-secret"},
         )
         assert r.status_code == 200
         body = r.json()
         assert body["ok"] is True
         assert body["updated"].get("repo") == "repo_key"
         assert body["board_id"] == "board-123"
+
+
+@pytest.mark.asyncio
+async def test_assignment_sync_field_keys_rejects_anonymous(monkeypatch: pytest.MonkeyPatch):
+    """This route rewrites team_assignments.yml on disk, so it must not be reachable
+    without the internal token (the same gate pick-qa already had)."""
+    from boardman.settings import settings
+
+    monkeypatch.setattr(settings, "worker_internal_secret", "test-worker-secret", raising=False)
+    app = create_app()
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        r = await client.post(
+            "/api/v1/assignment/sync-field-keys", params={"board_id": "board-123"}
+        )
+    assert r.status_code == 401
 
 
 def test_import_tools():

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from boardman.assignment.tier_classifier import classify_repo_tier, classify_repos_tier
@@ -13,6 +13,7 @@ from boardman.github.auth import github_auth_available
 from boardman.github.repo_metadata import fetch_repo_metadata, fetch_repos_metadata
 from boardman.observability.degradation import log_degraded
 from boardman.repos_config import _load_raw, routing_yaml_candidate_map_keys, update_repo_tiers
+from boardman.security.api_auth import require_internal_auth
 from boardman.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -28,8 +29,16 @@ class ClassifyReposResponse(BaseModel):
 
 
 @router.post("/classify", response_model=ClassifyReposResponse)
-async def classify_all_repos() -> ClassifyReposResponse:
-    """Fetch metadata for all org repos and classify into tiers."""
+async def classify_all_repos(
+    _auth: None = Depends(require_internal_auth),
+) -> ClassifyReposResponse:
+    """Fetch metadata for all org repos and classify into tiers.
+
+    Guarded: this enumerates the whole org with the *server's* GitHub credentials
+    and then rewrites `repos.yml`, which decides the Plaky table every future
+    issue/PR syncs into. boardman-ui's button now surfaces the 401 instead of
+    silently mutating routing config.
+    """
     if not github_auth_available():
         raise HTTPException(status_code=400, detail="GITHUB_PAT not configured")
 

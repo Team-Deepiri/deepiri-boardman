@@ -5,6 +5,19 @@ from httpx import ASGITransport, AsyncClient
 
 from boardman.main import create_app
 from boardman.planning.huddle.models import MeetingPlan
+from boardman.settings import settings
+
+# plans/generate is privileged: it spends LLM budget on the server's key and
+# writes to the planning output dir by default. These tests exercise the handler,
+# so they authenticate; the anonymous case is covered in
+# test_security_audit_2026_09.py.
+AUTH = {"Authorization": "Bearer plans-test-token"}
+
+
+@pytest.fixture(autouse=True)
+def _auth_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "boardman_api_token", "plans-test-token", raising=False)
+    monkeypatch.setattr(settings, "worker_internal_secret", "", raising=False)
 
 
 @pytest.mark.asyncio
@@ -32,6 +45,7 @@ async def test_plans_generate_route_returns_markdown(monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
             "/api/v1/plans/generate",
+            headers=AUTH,
             json={
                 "meeting_title": "Weekly",
                 "meeting_type": "weekly-status-sync",
@@ -57,6 +71,7 @@ async def test_plans_generate_route_rejects_invalid_team():
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
             "/api/v1/plans/generate",
+            headers=AUTH,
             json={
                 "meeting_title": "Weekly",
                 "meeting_type": "weekly-status-sync",
@@ -74,6 +89,7 @@ async def test_plans_generate_route_rejects_path_traversal(monkeypatch, tmp_path
         for escape in ("../../etc/evil.md", "/etc/evil.md"):
             r = await client.post(
                 "/api/v1/plans/generate",
+                headers=AUTH,
                 json={
                     "meeting_title": "Weekly",
                     "meeting_type": "weekly-status-sync",
@@ -105,6 +121,7 @@ async def test_plans_generate_route_confines_output_path(monkeypatch, tmp_path):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
             "/api/v1/plans/generate",
+            headers=AUTH,
             json={
                 "meeting_title": "Weekly",
                 "meeting_type": "weekly-status-sync",
@@ -135,6 +152,7 @@ async def test_plans_generate_route_fallback_still_200(monkeypatch):
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         r = await client.post(
             "/api/v1/plans/generate",
+            headers=AUTH,
             json={
                 "meeting_title": "Weekly",
                 "meeting_type": "weekly-status-sync",

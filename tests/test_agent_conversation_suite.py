@@ -105,6 +105,10 @@ async def test_http_agent_chat_two_turns_session_and_history(monkeypatch, noop_a
     import boardman.settings as bs
 
     monkeypatch.setattr(bs.settings, "agent_langchain_tools", False)
+    # GET history is behind the internal token; the chat POSTs themselves stay open
+    # for the SPA (and are sent without auth deliberately).
+    monkeypatch.setattr(bs.settings, "boardman_api_token", "conv-test-token", raising=False)
+    monkeypatch.setattr(bs.settings, "worker_internal_secret", "", raising=False)
 
     turn = {"n": 0}
 
@@ -165,7 +169,12 @@ async def test_http_agent_chat_two_turns_session_and_history(monkeypatch, noop_a
             assert b2["content_format"] == "markdown"
             assert b2["session_id"] == sid
 
-            rh = await client.get(f"/api/v1/agent/sessions/{sid}/history")
+            # Session history is now behind the internal token: a transcript can carry
+            # repo context, tool output and board contents, so it is not a public read.
+            rh = await client.get(
+                f"/api/v1/agent/sessions/{sid}/history",
+                headers={"Authorization": "Bearer conv-test-token"},
+            )
             assert rh.status_code == 200
             hist = rh.json()["messages"]
             roles = [m["role"] for m in hist]
