@@ -13,6 +13,7 @@ import {
   IconUser,
 } from "./components/Icons";
 import { AppSelect } from "./components/AppSelect";
+import { GateSession } from "./components/GateSession";
 import { MarkdownMessage } from "./components/MarkdownMessage";
 
 type Role = "user" | "assistant";
@@ -829,6 +830,7 @@ export default function App() {
         </div>
 
         <footer className="sidebar__foot">
+          <GateSession />
           <p>
             API requests use this origin or <code className="code">VITE_API_BASE</code>. In dev, Vite
             proxies <code className="code">/api</code> to the boardman service.
