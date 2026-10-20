@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from boardman.agent.tool_context import get_context_plaky_board_id, get_context_plaky_group_id
+from boardman.agent.tool_context import get_context_placement_id, get_context_plaky_group_id
 from boardman.assignment.config import (
     infer_plaky_field_keys_from_normalized,
     load_team_assignments,
@@ -378,7 +378,7 @@ async def _run_post_create_assignments(
 def _http_placement_ids(req: CreateTaskInput) -> tuple[str, str]:
     board = (req.plaky_board_id or "").strip()
     if not board:
-        board = (get_context_plaky_board_id() or "").strip()
+        board = (get_context_placement_id() or "").strip()
     group = (req.plaky_group_id or "").strip()
     if not group:
         group = (get_context_plaky_group_id() or "").strip()
@@ -555,6 +555,12 @@ async def bump_status_for_assignee(
 
 
 async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
+    from boardman.task_provider import active_provider
+
+    if active_provider() == "clickup":
+        from boardman.services.clickup_mutations import create_clickup_task
+
+        return await create_clickup_task(req)
     plaky = PlakyClient()
     filters = req.filters if isinstance(req.filters, dict) else {}
 
@@ -866,12 +872,18 @@ async def create_task_internal(req: CreateTaskInput) -> dict[str, Any]:
 
 
 async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
+    from boardman.task_provider import active_provider
+
+    if active_provider() == "clickup":
+        from boardman.services.clickup_mutations import create_clickup_subtask
+
+        return await create_clickup_subtask(req)
     plaky = PlakyClient()
 
     parent_task_id = (req.parent_task_id or "").strip()
     title = (req.title or "").strip()
     description = (req.description or "").strip()
-    board_id = (req.plaky_board_id or "").strip() or (get_context_plaky_board_id() or "").strip()
+    board_id = (req.plaky_board_id or "").strip() or (get_context_placement_id() or "").strip()
     group_id = (req.plaky_group_id or "").strip() or (get_context_plaky_group_id() or "").strip()
     canon_status = canonical_task_status((req.status or "").strip())
     canon_type = canonical_task_type((req.task_type or "").strip())
@@ -1018,6 +1030,12 @@ async def create_subtask_internal(req: CreateSubtaskInput) -> dict[str, Any]:
 
 
 async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, Any]:
+    from boardman.task_provider import active_provider
+
+    if active_provider() == "clickup":
+        from boardman.services.clickup_mutations import update_clickup_task
+
+        return await update_clickup_task(task_id, req)
     plaky = PlakyClient()
     ops: dict[str, Any] = {}
     developer_refusals: list[str] = []
@@ -1090,7 +1108,7 @@ async def update_task_internal(task_id: str, req: UpdateTaskInput) -> dict[str, 
         )
         board_id = _board_id_from_task_payload(task)
     if needs_board_lookup and not board_id:
-        board_id = (get_context_plaky_board_id() or "").strip()
+        board_id = (get_context_placement_id() or "").strip()
 
     status_added_to_field_values = False
 

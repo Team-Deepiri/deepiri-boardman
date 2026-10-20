@@ -13,6 +13,7 @@ from boardman.database.session import async_session
 from boardman.planning.huddle.async_bridge import run_sync
 from boardman.planning.huddle.team_repos import load_team_repos, repos_for_team
 from boardman.settings import settings
+from boardman.task_provider import active_provider
 
 log = logging.getLogger(__name__)
 
@@ -233,30 +234,36 @@ class SyncPlanningContext:
         return "\n".join(lines).strip()
 
 
+def _provider() -> str:
+    return "ClickUp" if active_provider() == "clickup" else "Plaky"
+
+
 def _format_pr_links(links: list[PRLinkSummary]) -> list[str]:
     if not links:
-        return ["### PR ↔ Plaky task links", "- None", ""]
+        return [f"### PR ↔ {_provider()} task links", "- None", ""]
     grouped: dict[str, list[PRLinkSummary]] = defaultdict(list)
     for link in links:
         grouped[link.plaky_task_id].append(link)
-    lines = ["### PR ↔ Plaky task links"]
+    label = _provider()
+    lines = [f"### PR ↔ {label} task links"]
     for task_id, group in sorted(grouped.items()):
         parts: list[str] = []
         for link in group:
             status = "merged" if link.merged else ("withdrawn" if link.withdrawn else "open")
             parts.append(f"{link.repo}#{link.pr_number} ({status}, {link.link_source})")
-        lines.append(f"- Plaky `{task_id}`: " + "; ".join(parts))
+        lines.append(f"- {label} `{task_id}`: " + "; ".join(parts))
     lines.append("")
     return lines
 
 
 def _format_issue_maps(maps: list[IssueMapSummary]) -> list[str]:
     if not maps:
-        return ["### Issue ↔ Plaky mappings", "- None", ""]
-    lines = ["### Issue ↔ Plaky mappings"]
+        return [f"### Issue ↔ {_provider()} mappings", "- None", ""]
+    label = _provider()
+    lines = [f"### Issue ↔ {label} mappings"]
     for row in maps[:30]:
         url = f" — {row.plaky_task_url}" if row.plaky_task_url else ""
-        lines.append(f"- {row.repo}#{row.issue_number} → Plaky `{row.plaky_task_id}`{url}")
+        lines.append(f"- {row.repo}#{row.issue_number} → {label} `{row.plaky_task_id}`{url}")
     if len(maps) > 30:
         lines.append(f"- … and {len(maps) - 30} more")
     lines.append("")
@@ -266,13 +273,14 @@ def _format_issue_maps(maps: list[IssueMapSummary]) -> list[str]:
 def _format_open_tracks(tracks: list[OpenPRTrackSummary]) -> list[str]:
     if not tracks:
         return ["### Open PR tracks (QA pipeline)", "- None", ""]
+    label = _provider()
     lines = ["### Open PR tracks (QA pipeline)"]
     for row in tracks[:25]:
         title = row.pr_title or "untitled"
         url = f" — {row.pr_url}" if row.pr_url else ""
         lines.append(
             f"- {row.repo_full_name}#{row.pr_number} — {title} — "
-            f"Plaky `{row.plaky_item_id}`{url}"
+            f"{label} `{row.plaky_item_id}`{url}"
         )
     if len(tracks) > 25:
         lines.append(f"- … and {len(tracks) - 25} more")

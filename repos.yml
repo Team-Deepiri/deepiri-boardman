@@ -11,6 +11,7 @@
 #     category: backend
 #     plaky_board_id: "..."
 #     plaky_group_id: "..."
+#     clickup_list_id: "..."   # TASK_PROVIDER=clickup: the ClickUp list for this repo
 
 # deepiri-boardman routes to the "Bots" board, group "deepiri-boardman" (per Ali,
 # Aug 12: "use the deepiri-boardman in the bots box, not the deepiri-boardman box").

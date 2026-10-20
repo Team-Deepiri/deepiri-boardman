@@ -26,6 +26,7 @@ import httpx
 _ssl_ctx: ssl.SSLContext | None = None
 _gh_clients: dict[Any, httpx.AsyncClient] = {}
 _plaky_clients: dict[Any, httpx.AsyncClient] = {}
+_clickup_clients: dict[Any, httpx.AsyncClient] = {}
 
 
 def _ssl() -> ssl.SSLContext:
@@ -54,7 +55,7 @@ def _client_for_loop(pool: dict[Any, httpx.AsyncClient]) -> httpx.AsyncClient:
     loop = asyncio.get_running_loop()
     c = pool.get(loop)
     if c is None or c.is_closed:
-        kind = "github" if pool is _gh_clients else "plaky"
+        kind = {id(_gh_clients): "github", id(_plaky_clients): "plaky"}.get(id(pool), "clickup")
         c = httpx.AsyncClient(
             verify=_ssl(),
             # read=90s is the largest budget any current call site used; shrinking it
@@ -89,6 +90,10 @@ def shared_plaky_client() -> _NonClosing:
     return _NonClosing(_plaky_clients)
 
 
+def shared_clickup_client() -> _NonClosing:
+    return _NonClosing(_clickup_clients)
+
+
 def github_http_client() -> httpx.AsyncClient:
     """Direct handle for call sites that do not use a context manager."""
     return _client_for_loop(_gh_clients)
@@ -97,7 +102,7 @@ def github_http_client() -> httpx.AsyncClient:
 async def aclose_shared_http_clients() -> None:
     """Close this loop's clients — called from the app lifespan shutdown."""
     loop = asyncio.get_running_loop()
-    for pool in (_gh_clients, _plaky_clients):
+    for pool in (_gh_clients, _plaky_clients, _clickup_clients):
         c = pool.pop(loop, None)
         if c is not None and not c.is_closed:
             await c.aclose()

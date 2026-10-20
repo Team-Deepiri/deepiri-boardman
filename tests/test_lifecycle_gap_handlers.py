@@ -1004,7 +1004,7 @@ async def test_approval_with_failing_checks_is_not_verified(db_session, monkeypa
     async def failing(full_name, pr_number):
         return ["pytest (failure)"]
 
-    monkeypatch.setattr(prh, "_failing_required_checks", failing)
+    monkeypatch.setattr(prh, "failing_required_checks", failing)
 
     payload = PullRequestReviewEventPayload(
         action="submitted",

@@ -98,6 +98,8 @@ class IssueEventPayload(BaseModel):
     action: str
     issue: GitHubIssue
     repository: GitHubRepository
+    # On `assigned` / `unassigned` events: the user that was just added or removed.
+    assignee: Any | None = None
 
 
 class PullRequestEventPayload(BaseModel):

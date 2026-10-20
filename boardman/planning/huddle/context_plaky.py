@@ -30,6 +30,12 @@ class PlakyItemSummary:
 
 
 class PlakyPlanningContext:
+    # Wording that differs by provider; the ClickUp subclass overrides these.
+    provider_label = "Plaky"
+    unit_label = "board"
+    unit_label_plural = "boards"
+    key_hint = "PLAKY_API_KEY"
+
     def __init__(self) -> None:
         self._team_boards = load_team_plaky_boards()
         self._highlight_statuses = {
@@ -54,7 +60,7 @@ class PlakyPlanningContext:
         cutoff = datetime.now(UTC) - timedelta(days=settings.planning_plaky_lookback_days)
         summaries: list[PlakyItemSummary] = []
         for board in boards:
-            label = f"board={board.board_id}"
+            label = f"{self.unit_label}={board.board_id}"
             try:
                 raw_items = run_sync(self._list_items(board))
             except Exception as exc:
@@ -75,17 +81,17 @@ class PlakyPlanningContext:
 
     def context_markdown(self, team_focus: str) -> str:
         if not self.enabled():
-            return "Plaky not configured (set PLAKY_API_KEY)."
+            return f"{self.provider_label} not configured (set {self.key_hint})."
         items = self.fetch_recent_items(team_focus)
         lookback = settings.planning_plaky_lookback_days
         if not items:
             boards = boards_for_team(self._team_boards, team_focus)
             if not boards:
                 return (
-                    "No Plaky board mapped for this team. "
+                    f"No {self.provider_label} {self.unit_label} mapped for this team. "
                     f"Edit {settings.planning_team_plaky_boards_file}."
                 )
-            return f"No Plaky items updated in the last {lookback} days."
+            return f"No {self.provider_label} items updated in the last {lookback} days."
         return self._format_markdown(items, team_focus, lookback)
 
     async def _list_items(self, board: PlakyBoardRef) -> list[dict[str, Any]]:
@@ -114,7 +120,7 @@ class PlakyPlanningContext:
         ordered_statuses = sorted(highlight_keys, key=str.lower) + other_keys
 
         lines = [
-            f"## Plaky Board Items (last {lookback_days} days)",
+            f"## {self.provider_label} {self.unit_label.title()} Items (last {lookback_days} days)",
             f"- Team focus: {team_focus}",
             f"- Items with recent activity: {len(items)}",
             "",

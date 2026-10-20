@@ -29,6 +29,7 @@ from boardman.database.models import PrTaskLifecycle, PullRequestTaskLink
 from boardman.plaky.client import PlakyClient
 from boardman.services.plaky_group_reorder import _item_looks_done
 from boardman.settings import settings
+from boardman.task_provider import active_provider, get_task_client
 
 _log = logging.getLogger(__name__)
 
@@ -53,7 +54,8 @@ async def cleanup_orphaned_pr_tasks(
     if not settings.pr_task_cleanup_enabled:
         return {"ok": True, "skipped": True, "message": "pr_task_cleanup disabled"}
 
-    plaky = plaky or PlakyClient()
+    clickup = active_provider() == "clickup"
+    plaky = plaky or get_task_client()
     now = datetime.utcnow()
     rows = (
         (
@@ -77,7 +79,10 @@ async def cleanup_orphaned_pr_tasks(
         if not board_id:
             row.deleted_at = now
             continue
-        res = await plaky.delete_board_item(board_id, row.plaky_task_id)
+        if clickup:
+            res = await plaky.delete_task(row.plaky_task_id)
+        else:
+            res = await plaky.delete_board_item(board_id, row.plaky_task_id)
         if res.get("ok"):
             row.deleted_at = now
             deleted += 1
@@ -94,9 +99,54 @@ async def cleanup_orphaned_pr_tasks(
     return {"ok": True, "checked": len(rows), "deleted": deleted, "failed": failed}
 
 
+async def _archive_completed_matched_clickup(session: AsyncSession, client: object | None) -> dict:
+    """ClickUp: archive (in place) a matched task whose PR merged and which reached the completed
+    status. ClickUp has no board-to-board move, so unlike Plaky nothing is recreated or deleted;
+    an archived task is hidden but keeps its history. Opt in with CLICKUP_ARCHIVE_COMPLETED_PRS."""
+    if not settings.clickup_archive_completed_prs:
+        return {"ok": True, "skipped": True, "message": "clickup_archive_completed_prs is off"}
+    from boardman.clickup.client import ClickUpClient
+    from boardman.clickup.statuses import intent_for_status
+    from boardman.clickup.task_view import current_status
+
+    c = client or ClickUpClient()
+    rows = (
+        (
+            await session.execute(
+                select(PullRequestTaskLink).where(
+                    PullRequestTaskLink.merged_at.is_not(None),
+                    PullRequestTaskLink.link_source.notin_(_NON_MATCHED_LINK_SOURCES),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    seen: set[str] = set()
+    checked = archived = 0
+    for row in rows:
+        task_id = (row.plaky_task_id or "").strip()
+        if not task_id or task_id in seen:
+            continue
+        seen.add(task_id)
+        checked += 1
+        got = await c.get_task(task_id)
+        task = got.get("task") if got.get("ok") and isinstance(got.get("task"), dict) else None
+        if not task or task.get("archived"):
+            continue
+        if intent_for_status(current_status(task)) != "workflow_completed":
+            continue
+        if (await c.update_task_fields(task_id, archived=True)).get("ok"):
+            archived += 1
+    await session.commit()
+    return {"ok": True, "checked": checked, "archived": archived}
+
+
 async def archive_completed_matched_tasks(
     session: AsyncSession, plaky: PlakyClient | None = None
 ) -> dict:
+    if active_provider() == "clickup":
+        return await _archive_completed_matched_clickup(session, plaky)
     archive_board = (settings.pr_task_archive_board_id or "").strip()
     if not archive_board:
         return {"ok": True, "skipped": True, "message": "pr_task_archive_board_id not configured"}

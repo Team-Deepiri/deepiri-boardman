@@ -41,12 +41,48 @@ from boardman.services.task_mutations import (
     update_task_internal,
 )
 from boardman.settings import settings
+from boardman.task_provider import active_provider, get_task_client
 
 _log = logging.getLogger(__name__)
 
 app = typer.Typer(help="deepiri-boardman CLI")
 agent_app = typer.Typer(help="AI agent and repo scan")
 console = Console()
+
+
+def _provider_label() -> str:
+    return "ClickUp" if active_provider() == "clickup" else "Plaky"
+
+
+def _task_status_text(task: dict) -> str:
+    """A task's status as plain text. Plaky returns a string; ClickUp nests it in a dict."""
+    from boardman.clickup.client import STATUS_NAME_KEY
+
+    for key in (STATUS_NAME_KEY, "status", "state", "workflowStatus", "workflow_state"):
+        value = task.get(key)
+        if isinstance(value, dict):
+            value = value.get("status") or value.get("name") or value.get("state")
+        if value:
+            return str(value)
+    return "unknown"
+
+
+def _merge_status() -> str:
+    """The status a merged PR sets, for the active provider."""
+    if active_provider() == "clickup":
+        from boardman.clickup.statuses import status_for_intent
+
+        return status_for_intent("workflow_completed")
+    return settings.plaky_pr_merge_status
+
+
+def _plaky_only(command: str) -> None:
+    """Stop a Plaky-only command with a clear message when ClickUp is the provider."""
+    if active_provider() == "clickup":
+        console.print(
+            f"[yellow]`{command}` reads Plaky boards and is not available on ClickUp.[/yellow]"
+        )
+        raise typer.Exit(1)
 
 
 @app.command()
@@ -200,11 +236,11 @@ def link_pr(
         prompt=True,
         help="GitHub PR URL(s): one URL, or several comma- or whitespace-separated",
     ),
-    task_id: str = typer.Option(..., prompt=True, help="Plaky task ID"),
+    task_id: str = typer.Option(..., prompt=True, help="Task ID (Plaky or ClickUp)"),
     plaky_board_id: str | None = typer.Option(
         None,
         "--board-id",
-        help="Plaky board id (optional; speeds v1/public item comments).",
+        help="Plaky board id (optional; speeds v1/public item comments). Ignored on ClickUp.",
     ),
     update_status: bool = typer.Option(
         False, "--update-status", help="Update task status on merge"
@@ -212,10 +248,10 @@ def link_pr(
     print_response: bool = typer.Option(
         False,
         "--print-response",
-        help="Print full JSON result from Plaky (status, route, comment payload, posted text).",
+        help="Print full JSON result from the task provider (status, route, comment payload, posted text).",
     ),
 ):
-    plaky = PlakyClient()
+    plaky = get_task_client()
 
     async def run():
         parts = [p for p in re.split(r"[\s,]+", (pr_urls or "").strip()) if p.strip()]
@@ -233,11 +269,9 @@ def link_pr(
         if result.get("ok"):
             console.print("[green]PR linked successfully[/green]")
             if update_status:
-                await update_task_internal(
-                    task_id,
-                    UpdateTaskInput(status=settings.plaky_pr_merge_status),
-                )
-                console.print(f"[green]Status updated to {settings.plaky_pr_merge_status}[/green]")
+                merge_status = _merge_status()
+                await update_task_internal(task_id, UpdateTaskInput(status=merge_status))
+                console.print(f"[green]Status updated to {merge_status}[/green]")
         else:
             console.print(f"[red]Error:[/red] {result.get('message')}")
 
@@ -251,10 +285,10 @@ def list_tasks_cmd(
     plaky_board_id: str | None = typer.Option(
         None,
         "--board-id",
-        help="Board id for listing items in v1/public mode.",
+        help="Board id (Plaky v1/public) or list id (ClickUp) to list from.",
     ),
 ):
-    plaky = PlakyClient()
+    plaky = get_task_client()
 
     async def run():
         result = await plaky.get_tasks(status=status, board_id=plaky_board_id)
@@ -272,21 +306,14 @@ def list_tasks_cmd(
 
             console.print(json.dumps(tasks, indent=2))
         else:
-            table = Table(title=f"Plaky Tasks ({status})")
+            table = Table(title=f"{_provider_label()} Tasks ({status})")
             table.add_column("ID", style="cyan")
             table.add_column("Title")
             table.add_column("Status")
             for task in tasks:
                 task_id = str(task.get("id") or task.get("itemId") or task.get("taskId") or "N/A")
                 title = str(task.get("title") or task.get("name") or "Untitled")
-                task_status = (
-                    task.get("status")
-                    or task.get("state")
-                    or task.get("workflowStatus")
-                    or task.get("workflow_state")
-                    or "unknown"
-                )
-                table.add_row(task_id, title, str(task_status))
+                table.add_row(task_id, title, _task_status_text(task))
             console.print(table)
 
     asyncio.run(run())
@@ -362,14 +389,14 @@ def sync(
         help="GitHub repo name",
     ),
     board_id: str = typer.Option(
-        ...,
+        "",
         "--board-id",
-        help="Plaky board id",
+        help="Plaky board id, or the ClickUp list id (default CLICKUP_DEFAULT_LIST_ID)",
     ),
     group_id: str = typer.Option(
-        ...,
+        "",
         "--group-id",
-        help="Plaky group id",
+        help="Plaky group id (not used on ClickUp)",
     ),
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Show what would be synced without making changes"
@@ -379,6 +406,9 @@ def sync(
         console.print("[red]Error: GitHub auth not configured[/red]")
         raise typer.Exit(1)
     repo = ensure_github_owner_repo(repo)
+    if active_provider() == "plaky" and not (board_id and group_id):
+        console.print("[red]Error: --board-id and --group-id are required for Plaky[/red]")
+        raise typer.Exit(1)
 
     async def run():
         async with httpx.AsyncClient() as client:
@@ -416,10 +446,11 @@ def sync(
                             description=body,
                             github_repos=[repo],
                             task_type="Issue",
-                            status="Available",
+                            # "Available" is a Plaky status; on ClickUp the status follows ownership.
+                            status="Available" if active_provider() == "plaky" else "",
                             priority="High",
-                            plaky_board_id=board_id,
-                            plaky_group_id=group_id,
+                            plaky_board_id=board_id or None,
+                            plaky_group_id=group_id or None,
                             auto_assign_team=False,
                         )
                     )
@@ -483,7 +514,18 @@ def scan_repo(
 def doctor():
     async def run():
         ok = True
-        if settings.plaky_api_key:
+        if active_provider() == "clickup":
+            if settings.clickup_api_token:
+                console.print("[green]CLICKUP_API_TOKEN[/green] set")
+            else:
+                console.print("[red]CLICKUP_API_TOKEN[/red] missing")
+                ok = False
+            if not settings.clickup_default_list_id:
+                console.print(
+                    "[yellow]CLICKUP_DEFAULT_LIST_ID[/yellow] not set "
+                    "(repos need a clickup_list_id in repos.yml)"
+                )
+        elif settings.plaky_api_key:
             console.print("[green]PLAKY_API_KEY[/green] set")
         else:
             console.print("[red]PLAKY_API_KEY[/red] missing")
@@ -523,7 +565,24 @@ def doctor():
         except Exception as e:  # noqa: BLE001 - doctor reports, never fails
             log_degraded(_log, "doctor.run: AsyncClient")
             console.print(f"[yellow]Ollama[/yellow] unreachable: {e}")
-        if settings.plaky_api_key:
+        if active_provider() == "clickup" and settings.clickup_api_token:
+            from boardman.clickup.client import ClickUpClient
+
+            cr = await ClickUpClient().list_workspace_users()
+            if cr.get("ok"):
+                console.print(
+                    f"[green]ClickUp API[/green] workspace OK ({len(cr.get('users') or [])} member(s))"
+                )
+            else:
+                console.print(
+                    f"[yellow]ClickUp API[/yellow] {cr.get('message', cr)} (HTTP {cr.get('status')})"
+                )
+            from boardman.clickup.config_check import clickup_config_problems
+
+            for problem in await clickup_config_problems(ClickUpClient()):
+                console.print(f"[yellow]ClickUp config[/yellow] {problem}")
+                ok = False
+        elif active_provider() == "plaky" and settings.plaky_api_key:
             plaky = PlakyClient()
             pr = await plaky.list_boards()
             if pr.get("ok"):
@@ -552,6 +611,7 @@ def capability_report(
     Run this once per machine per teammate; qa_picker prefers this over the config
     value automatically once it exists.
     """
+    _plaky_only("capability-report")
 
     async def run():
         from boardman.assignment.capability_board import report_hardware_capability
@@ -692,6 +752,72 @@ def readiness_cmd(
         raise typer.Exit(1)
 
 
+@app.command("clickup-inventory")
+def clickup_inventory_cmd(
+    list_id: str = typer.Option(
+        "",
+        "--list-id",
+        help="Also show this list's statuses and check them against the CLICKUP_STATUS_* settings.",
+    ),
+):
+    """Show the ClickUp workspace: members, lists, and (with --list-id) a status check.
+
+    The quickest way to confirm a new API token works and that the status names in your settings
+    actually exist in the list Boardman writes to.
+    """
+    from boardman.clickup.client import ClickUpClient
+    from boardman.clickup.statuses import configured_statuses
+
+    if not settings.clickup_api_token:
+        console.print("[red]CLICKUP_API_TOKEN is not set.[/red]")
+        raise typer.Exit(1)
+
+    async def run() -> int:
+        c = ClickUpClient()
+        users = await c.list_workspace_users()
+        if not users.get("ok"):
+            console.print(f"[red]ClickUp error:[/red] {users.get('message')}")
+            return 1
+        table = Table(title="Workspace members")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name")
+        table.add_column("Email")
+        for u in users.get("users") or []:
+            table.add_row(str(u.get("id")), str(u.get("name") or ""), str(u.get("email") or ""))
+        console.print(table)
+        lists = await c.list_boards()
+        table = Table(title="Lists")
+        table.add_column("ID", style="cyan")
+        table.add_column("Name")
+        for row in lists.get("boards") or []:
+            table.add_row(str(row.get("id")), str(row.get("name") or ""))
+        console.print(table)
+        if not list_id:
+            return 0
+        got = await c.get_list(list_id)
+        if not got.get("ok"):
+            console.print(f"[red]ClickUp error:[/red] {got.get('message')}")
+            return 1
+        present = {st.casefold() for st in got["statuses"]}
+        console.print(f"List statuses: {', '.join(got['statuses']) or '(none)'}")
+        bad = [
+            (intent, name)
+            for intent, name in configured_statuses()
+            if name.casefold() not in present
+        ]
+        for intent, name in bad:
+            console.print(f"[yellow]{intent}[/yellow]: {name!r} is not a status of this list")
+        if not bad:
+            console.print(
+                "[green]Every configured CLICKUP_STATUS_* name exists in this list.[/green]"
+            )
+        return 1 if bad else 0
+
+    code = asyncio.run(run())
+    if code:
+        raise typer.Exit(code)
+
+
 @app.command("plaky-inventory")
 def plaky_inventory_cmd(
     board_id: str | None = typer.Option(
@@ -706,7 +832,13 @@ def plaky_inventory_cmd(
     ),
     format: str = typer.Option("table", "--format", "-f", help="Output format: table or json."),
 ):
-    """List Plaky board/group/field/status IDs for deployment config."""
+    """List Plaky board/group/field/status IDs for deployment config.
+
+    On ClickUp this shows the workspace inventory instead (same as ``clickup-inventory``).
+    """
+    if active_provider() == "clickup":
+        clickup_inventory_cmd(list_id=board_id or "")
+        return
 
     async def run():
         inventory = await collect_plaky_inventory(
@@ -922,9 +1054,7 @@ def init_direction(
 
 @app.command("status")
 def status_cmd(
-    repo: str | None = typer.Option(
-        None, "--repo", help="Filter Plaky titles containing this slug"
-    ),
+    repo: str | None = typer.Option(None, "--repo", help="Filter task titles containing this slug"),
 ):
     async def run():
         async with async_session() as session:
@@ -940,15 +1070,16 @@ def status_cmd(
             console.print(f"Workspace repos (GitHub org {settings.github_org}): {len(ws)}")
         else:
             console.print("[dim]Set GITHUB_PAT to list org repos from the GitHub API.[/dim]")
-        plaky = PlakyClient()
+        plaky = get_task_client()
         res = await plaky.get_tasks(status="open")
+        label = _provider_label()
         if res.get("ok"):
             tasks = res.get("tasks") or []
             if repo:
-                tasks = [t for t in tasks if repo in (t.get("title") or "")]
-            console.print(f"Plaky open tasks (filtered): {len(tasks)}")
+                tasks = [t for t in tasks if repo in (t.get("title") or t.get("name") or "")]
+            console.print(f"{label} open tasks (filtered): {len(tasks)}")
         else:
-            console.print(f"[yellow]Plaky:[/yellow] {res.get('message')}")
+            console.print(f"[yellow]{label}:[/yellow] {res.get('message')}")
 
     asyncio.run(run())
 

@@ -32,7 +32,7 @@ async def test_scan_context_fetches_independent_sources_concurrently(monkeypatch
     monkeypatch.setattr(scan_handler, "fetch_direction_md", direction)
     monkeypatch.setattr(scan_handler, "fetch_recent_commits", commits)
     monkeypatch.setattr(scan_handler, "fetch_open_issues", issues)
-    monkeypatch.setattr(scan_handler, "fetch_plaky_titles_for_repo", plaky)
+    monkeypatch.setattr(scan_handler, "fetch_open_task_titles_for_repo", plaky)
 
     task = asyncio.create_task(scan_handler._fetch_scan_context("o/r", "o", "r", "r"))
     await asyncio.sleep(0.01)

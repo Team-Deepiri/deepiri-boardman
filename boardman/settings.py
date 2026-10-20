@@ -39,13 +39,57 @@ def positive_or_default(raw: object, default: int) -> int:
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # Which task/board provider the generic task routes talk to: "plaky" (default) or "clickup".
+    task_provider: str = "plaky"
+    # ClickUp API v2. Personal tokens go in the Authorization header as-is (no "Bearer").
+    clickup_api_token: str = ""
+    clickup_api_base: str = "https://api.clickup.com/api/v2"
+    # Workspace ("team") id for user listing, and the default list new tasks are created in.
+    clickup_team_id: str = ""
+    clickup_default_list_id: str = ""
+    # Per-request timeout in seconds for ClickUp API calls.
+    clickup_api_timeout: float = 20.0
+    # Agent tools: most tasks returned per list call, and parallel creates per batch.
+    clickup_list_limit: int = 60
+    # Name-match score (0-1000) a person must reach to be picked for an assignee or QA name.
+    clickup_person_match_min_score: int = 400
+    clickup_create_concurrency: int = 4
+    # Optional ClickUp custom field (type "users") that holds the QA reviewer. Empty = add the QA
+    # person as an extra assignee instead.
+    clickup_qa_field_id: str = ""
+    # List for tasks Boardman creates for PRs that match nothing (default: the repo's list).
+    clickup_triage_list_id: str = ""
+    # Archive (in place) ClickUp tasks whose matched PR has merged and which reached the completed status.
+    clickup_archive_completed_prs: bool = False
+    # ClickUp status names for each workflow step. ClickUp statuses are per list, so these must
+    # match your lists. The defaults suit a stock ClickUp list ("to do", "in progress", "complete").
+    # Empty = Boardman never writes that status.
+    clickup_status_needs_assigned: str = "to do"
+    clickup_status_assigned: str = "to do"
+    clickup_status_in_progress: str = "in progress"
+    clickup_status_paused: str = ""
+    clickup_status_needs_qa: str = ""
+    clickup_status_in_qa: str = ""
+    clickup_status_approved: str = ""
+    clickup_status_changes_requested: str = ""
+    clickup_status_deployed: str = ""
+    clickup_status_completed: str = "complete"
+    # Most pages (100 tasks each) one list call will load before reporting truncation.
+    clickup_max_list_pages: int = 20
+
     plaky_api_key: str = ""
     plaky_api_base: str = "https://api.plaky.com/v1/public"
     # PR merged → Plaky status. Empty = resolve "Completed" from the board schema
     # (workflow_completed intent). Set a literal label/id to override.
     plaky_pr_merge_status: str = ""
-    # When true, set `plaky_pr_merge_status` only after every linked PR is merged (or withdrawn).
-    plaky_complete_when_all_prs_merged: bool = True
+    # When true, complete a task only after every linked PR is merged (or withdrawn). Applies to
+    # both providers; the old PLAKY_ env name still works.
+    complete_when_all_prs_merged: bool = Field(
+        True,
+        validation_alias=AliasChoices(
+            "COMPLETE_WHEN_ALL_PRS_MERGED", "PLAKY_COMPLETE_WHEN_ALL_PRS_MERGED"
+        ),
+    )
     # QA workflow (GitHub → Plaky). Empty = skip that transition (set to your board status keys).
     plaky_pr_needs_qa_status: str = ""
     plaky_pr_in_qa_status: str = ""
@@ -55,7 +99,11 @@ class Settings(BaseSettings):
     # used before team_assignments.yml; when both empty, Boardman discovers a QA-ish person field from the board schema.
     plaky_qa_item_field_key: str = ""
     # Do not move draft PRs to Needs QA until ready_for_review (if needs_qa status is configured).
-    plaky_skip_needs_qa_for_draft: bool = True
+    # Applies to both providers; the old PLAKY_ env name still works.
+    skip_needs_qa_for_draft: bool = Field(
+        True,
+        validation_alias=AliasChoices("SKIP_NEEDS_QA_FOR_DRAFT", "PLAKY_SKIP_NEEDS_QA_FOR_DRAFT"),
+    )
     # After any automated Plaky status change, enqueue SQLite job to reorder items in default board/group.
     plaky_reorder_after_status_change: bool = False
     # Comma-separated substrings (case-insensitive) marking Plaky item status as “done” for reorder heuristics.
@@ -145,7 +193,7 @@ class Settings(BaseSettings):
     plaky_catalog_cache_path: str = ".boardman/plaky-catalog.json"
     plaky_catalog_ttl_seconds: float = 86_400.0
     plaky_placement_auto_discover: bool = True
-    plaky_placement_min_score: int = 400  # rank_plaky_rows threshold; see name_match.py
+    plaky_placement_min_score: int = 400  # rank_rows_by_name threshold; see name_match.py
     # Limit search to the five categorical boards (excludes legacy AI Task Board, etc.).
     plaky_catalog_categorical_only: bool = True
     # Local "as-if-production" mode. When true, this instance polls GitHub for new activity

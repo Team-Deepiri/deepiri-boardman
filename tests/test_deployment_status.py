@@ -104,7 +104,7 @@ def _wire(monkeypatch, fake_plaky, normalized, pr_numbers):
     async def _prs_for_sha(*_a, **_k):
         return pr_numbers
 
-    monkeypatch.setattr("boardman.services.pr_handler._prs_for_commit_sha", _prs_for_sha)
+    monkeypatch.setattr("boardman.services.pr_handler.prs_for_commit_sha", _prs_for_sha)
 
 
 @pytest.mark.asyncio

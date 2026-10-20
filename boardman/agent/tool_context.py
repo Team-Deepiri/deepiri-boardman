@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 _db_session: ContextVar[AsyncSession | None] = ContextVar("agent_tool_db_session", default=None)
 _agent_session_pk: ContextVar[int | None] = ContextVar("agent_tool_agent_session_pk", default=None)
-_plaky_board_id: ContextVar[str | None] = ContextVar("agent_tool_plaky_board_id", default=None)
+_placement_id: ContextVar[str | None] = ContextVar("agent_tool_placement_id", default=None)
 _plaky_group_id: ContextVar[str | None] = ContextVar("agent_tool_plaky_group_id", default=None)
 
 
@@ -22,8 +22,14 @@ def get_agent_session_pk() -> int | None:
     return _agent_session_pk.get()
 
 
+def get_context_placement_id() -> str | None:
+    """The placement id selected for this turn: a Plaky board id, or a ClickUp list id."""
+    return _placement_id.get()
+
+
 def get_context_plaky_board_id() -> str | None:
-    return _plaky_board_id.get()
+    """Deprecated alias for :func:`get_context_placement_id`."""
+    return get_context_placement_id()
 
 
 def get_context_plaky_group_id() -> str | None:
@@ -39,12 +45,12 @@ async def agent_tool_context(
 ) -> AsyncIterator[None]:
     t_db = _db_session.set(db)
     t_pk = _agent_session_pk.set(agent_session_pk)
-    t_b = _plaky_board_id.set((plaky_board_id or "").strip() or None)
+    t_b = _placement_id.set((plaky_board_id or "").strip() or None)
     t_g = _plaky_group_id.set((plaky_group_id or "").strip() or None)
     try:
         yield
     finally:
         _db_session.reset(t_db)
         _agent_session_pk.reset(t_pk)
-        _plaky_board_id.reset(t_b)
+        _placement_id.reset(t_b)
         _plaky_group_id.reset(t_g)

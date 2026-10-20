@@ -10,6 +10,7 @@ from langchain_core.tools import StructuredTool
 
 from boardman.assignment.config import infer_plaky_field_keys_from_normalized, load_team_assignments
 from boardman.assignment.qa_picker import build_repo_field_map, normalize_github_repo_inputs
+from boardman.name_match import rank_rows_by_name
 from boardman.observability.degradation import log_degraded
 from boardman.plaky.board_schema import (
     fetch_board_schema_bundle,
@@ -20,7 +21,6 @@ from boardman.plaky.board_schema import (
 )
 from boardman.plaky.client import PlakyClient
 from boardman.plaky.field_coercion import coerce_field_values
-from boardman.plaky.name_match import rank_plaky_rows
 from boardman.plaky.task_tag_vocab import (
     canonical_task_priority,
 )
@@ -180,10 +180,10 @@ async def _plaky_list_tasks(status: str = "all", board_id: str = "") -> str:
     """List board items. Defaults to ALL statuses: descriptive questions ("what is on this
     board?") must see finished work too, and the old "open" default silently dropped
     Completed items, which the model then reported as "nothing is Completed"."""
-    from boardman.agent.tool_context import get_context_plaky_board_id
+    from boardman.agent.tool_context import get_context_placement_id
 
     c = PlakyClient()
-    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    bid = (board_id or "").strip() or (get_context_placement_id() or "").strip() or None
     r = await c.get_tasks(status=status, board_id=bid)
     tasks = r.get("tasks") if isinstance(r, dict) else None
     if isinstance(tasks, list):
@@ -213,7 +213,7 @@ async def _plaky_match_board(name_query: str) -> str:
     boards = raw.get("boards") or []
     if not isinstance(boards, list):
         boards = []
-    matches, best = rank_plaky_rows(boards, name_query)
+    matches, best = rank_rows_by_name(boards, name_query)
     return json.dumps(
         {
             "list_ok": raw.get("ok"),
@@ -246,7 +246,7 @@ async def _plaky_match_group(board_id: str, name_query: str) -> str:
     groups = raw.get("groups") or []
     if not isinstance(groups, list):
         groups = []
-    matches, best = rank_plaky_rows(groups, name_query)
+    matches, best = rank_rows_by_name(groups, name_query)
     return json.dumps(
         {
             "list_ok": raw.get("ok"),
@@ -270,7 +270,7 @@ async def _plaky_list_workspace_users(name_query: str = "") -> str:
             {"ok": r.get("ok"), "message": r.get("message"), "users": users[:200]},
             default=str,
         )[:12000]
-    matches, best = rank_plaky_rows(users, name_query)
+    matches, best = rank_rows_by_name(users, name_query)
     return json.dumps(
         {
             "ok": r.get("ok"),
@@ -306,11 +306,11 @@ async def _plaky_review_board(board_id: str = "", group_id: str = "", max_items:
     criteria, and stale-looking items. Safe to call when ``allow_writes=False``.
     """
     from boardman.agent.tool_context import (
-        get_context_plaky_board_id,
+        get_context_placement_id,
         get_context_plaky_group_id,
     )
 
-    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "")
+    bid = (board_id or "").strip() or (get_context_placement_id() or "")
     gid = (group_id or "").strip() or (get_context_plaky_group_id() or "")
     if not bid:
         return json.dumps(
@@ -725,11 +725,11 @@ async def _plaky_create_task(
     from boardman.agent.task_draft import load_task_draft, merge_draft_into_field_values
     from boardman.agent.tool_context import (
         get_agent_session_pk,
-        get_context_plaky_board_id,
+        get_context_placement_id,
         get_context_plaky_group_id,
     )
 
-    bid = board_id.strip() or get_context_plaky_board_id() or None
+    bid = board_id.strip() or get_context_placement_id() or None
     gid = group_id.strip() or get_context_plaky_group_id() or None
     repo_tokens = normalize_github_repo_inputs(extra_repo_text=repo_tag)
 
@@ -764,7 +764,7 @@ async def _plaky_create_task(
     else:
         merged = dict(parsed)
 
-    effective_board = (bid or get_context_plaky_board_id() or "").strip() or None
+    effective_board = (bid or get_context_placement_id() or "").strip() or None
     normalized: dict[str, Any] | None = None
     bundle: dict[str, Any] | None = None
     if effective_board and (repo_tokens or merged):
@@ -927,7 +927,7 @@ async def _plaky_create_tasks_deferred(
 
     The receipt this returns describes what is BEING created, never what was created.
     """
-    from boardman.agent.tool_context import get_context_plaky_board_id, get_context_plaky_group_id
+    from boardman.agent.tool_context import get_context_placement_id, get_context_plaky_group_id
     from boardman.jobs.deferred import enqueue_and_run_soon
 
     try:
@@ -945,7 +945,7 @@ async def _plaky_create_tasks_deferred(
             return json.dumps({"ok": False, "message": "every task needs a non-empty title"})
         clean.append(row)
 
-    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip()
+    bid = (board_id or "").strip() or (get_context_placement_id() or "").strip()
     gid = (group_id or "").strip() or (get_context_plaky_group_id() or "").strip()
 
     # Verify the placement is REAL before anything is written. Asked for tasks on
@@ -1241,9 +1241,9 @@ async def _plaky_update_task(
     github_repo: str | None = None,
     board_id: str = "",
 ) -> str:
-    from boardman.agent.tool_context import get_context_plaky_board_id
+    from boardman.agent.tool_context import get_context_placement_id
 
-    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    bid = (board_id or "").strip() or (get_context_placement_id() or "").strip() or None
     gh = (github_repo or "").strip() or None
     r = await update_task_internal(
         task_id,
@@ -1261,10 +1261,10 @@ async def _plaky_update_task(
 
 
 async def _plaky_add_comment(task_id: str, body: str, board_id: str = "") -> str:
-    from boardman.agent.tool_context import get_context_plaky_board_id
+    from boardman.agent.tool_context import get_context_placement_id
 
     c = PlakyClient()
-    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    bid = (board_id or "").strip() or (get_context_placement_id() or "").strip() or None
     r = await c.add_comment(task_id, body, board_id=bid)
     return json.dumps(r, default=str)
 
@@ -1277,7 +1277,7 @@ async def _plaky_link_prs(task_id: str, pr_urls: str, board_id: str = "") -> str
     """
     import re
 
-    from boardman.agent.tool_context import get_context_plaky_board_id
+    from boardman.agent.tool_context import get_context_placement_id
     from boardman.services.pr_link_comment import collect_pr_urls, format_pr_link_comment
 
     raw = (pr_urls or "").strip()
@@ -1289,7 +1289,7 @@ async def _plaky_link_prs(task_id: str, pr_urls: str, board_id: str = "") -> str
         )
 
     c = PlakyClient()
-    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    bid = (board_id or "").strip() or (get_context_placement_id() or "").strip() or None
     comment = format_pr_link_comment(urls)
     r = await c.add_comment(task_id, comment, board_id=bid)
     r2 = dict(r) if isinstance(r, dict) else {"ok": False, "message": "invalid result"}
@@ -1354,10 +1354,10 @@ async def _plaky_create_tasks(
     # Duplicate guard: the board is the source of truth. Creating "Ship bidirectional
     # sync" when that card already exists buries the real one - fetch existing titles
     # ONCE and skip matches, pointing at the existing card instead.
-    from boardman.agent.tool_context import get_context_plaky_board_id
+    from boardman.agent.tool_context import get_context_placement_id
 
     existing: list[dict[str, Any]] = []
-    dedupe_bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip()
+    dedupe_bid = (board_id or "").strip() or (get_context_placement_id() or "").strip()
     dedupe_sid: str | None = None
     if dedupe_bid:
         try:
@@ -1515,9 +1515,9 @@ async def _plaky_create_subtask(
     board_id: str = "",
     group_id: str = "",
 ) -> str:
-    from boardman.agent.tool_context import get_context_plaky_board_id, get_context_plaky_group_id
+    from boardman.agent.tool_context import get_context_placement_id, get_context_plaky_group_id
 
-    bid = (board_id or "").strip() or (get_context_plaky_board_id() or "").strip() or None
+    bid = (board_id or "").strip() or (get_context_placement_id() or "").strip() or None
     gid = (group_id or "").strip() or (get_context_plaky_group_id() or "").strip() or None
     repo_tokens = normalize_github_repo_inputs(extra_repo_text=repo_tag)
     r = await create_subtask_internal(

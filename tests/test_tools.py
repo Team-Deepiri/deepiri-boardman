@@ -234,7 +234,7 @@ class TestPlakyTools:
             stub,
         )
         monkeypatch.setattr(
-            "boardman.agent.tool_context.get_context_plaky_board_id",
+            "boardman.agent.tool_context.get_context_placement_id",
             lambda: "board-from-context",
         )
 
@@ -271,7 +271,7 @@ class TestPlakyTools:
             stub,
         )
         monkeypatch.setattr(
-            "boardman.agent.tool_context.get_context_plaky_board_id",
+            "boardman.agent.tool_context.get_context_placement_id",
             lambda: "board-from-context",
         )
         monkeypatch.setattr(
@@ -335,7 +335,7 @@ class TestPlakyTools:
             lambda normalized: {},
         )
         monkeypatch.setattr(
-            "boardman.agent.tool_context.get_context_plaky_board_id", lambda: "board-x"
+            "boardman.agent.tool_context.get_context_placement_id", lambda: "board-x"
         )
         monkeypatch.setattr("boardman.agent.tool_context.get_context_plaky_group_id", lambda: "")
         monkeypatch.setattr("boardman.agent.tool_context.get_tool_db_session", lambda: None)
@@ -364,7 +364,7 @@ class TestPlakyTools:
             return {"ok": True, "task": {"id": "new-1"}}
 
         monkeypatch.setattr("boardman.agent.tools.plaky_tools.create_task_internal", stub_create)
-        monkeypatch.setattr("boardman.agent.tool_context.get_context_plaky_board_id", lambda: "")
+        monkeypatch.setattr("boardman.agent.tool_context.get_context_placement_id", lambda: "")
         monkeypatch.setattr("boardman.agent.tool_context.get_context_plaky_group_id", lambda: "")
 
         from boardman.agent.tools.plaky_tools import _plaky_create_task
@@ -510,7 +510,7 @@ class TestPlakyTools:
             "boardman.agent.tools.plaky_tools.PlakyClient.list_board_items",
             fake_list_items,
         )
-        monkeypatch.setattr("boardman.agent.tool_context.get_context_plaky_board_id", lambda: "")
+        monkeypatch.setattr("boardman.agent.tool_context.get_context_placement_id", lambda: "")
         monkeypatch.setattr("boardman.agent.tool_context.get_context_plaky_group_id", lambda: "")
 
         from boardman.agent.tools.plaky_tools import _plaky_review_board

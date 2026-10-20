@@ -293,12 +293,12 @@ def test_un_asking_for_a_review_moves_in_qa_back_to_needs_qa() -> None:
     """The event exists to take a card out of active review. A rank comparison rejected
     exactly that move (In QA outranks Needs QA) while allowing the write from Assigned,
     which pushes an unreviewed card INTO the queue -- the opposite of both intentions."""
-    from boardman.services.pr_handler import _QA_VERDICT_INTENTS
+    from boardman.services.pr_sync_common import QA_VERDICT_INTENTS
 
-    assert "workflow_in_qa" not in _QA_VERDICT_INTENTS, "In QA must still move to Needs QA"
-    assert "workflow_assigned" not in _QA_VERDICT_INTENTS
-    assert "github_pr_review_approved" in _QA_VERDICT_INTENTS, "a verdict is protected"
-    assert "workflow_completed" in _QA_VERDICT_INTENTS
+    assert "workflow_in_qa" not in QA_VERDICT_INTENTS, "In QA must still move to Needs QA"
+    assert "workflow_assigned" not in QA_VERDICT_INTENTS
+    assert "github_pr_review_approved" in QA_VERDICT_INTENTS, "a verdict is protected"
+    assert "workflow_completed" in QA_VERDICT_INTENTS
 
 
 def test_the_project_context_snapshot_has_one_row_per_repo() -> None:

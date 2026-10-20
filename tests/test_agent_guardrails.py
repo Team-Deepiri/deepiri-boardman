@@ -106,7 +106,12 @@ def test_one_tool_cache_covers_every_variant():
     timed_ro = runner._timed_tools(False)
     timed_rw = runner._timed_tools(True)
 
-    assert set(_tools_cache) == {(False, False), (True, False), (False, True), (True, True)}
+    assert set(_tools_cache) == {
+        (False, False, "plaky"),
+        (True, False, "plaky"),
+        (False, True, "plaky"),
+        (True, True, "plaky"),
+    }
     assert len(rw) > len(ro), "write mode must expose more tools"
     assert len(timed_ro) == len(ro) and len(timed_rw) == len(rw)
     assert {t.name for t in timed_ro} == {t.name for t in ro}

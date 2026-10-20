@@ -195,7 +195,7 @@ async def test_live_handle_pr_opened_posts_plaky_comment_on_linked_issue_task(
         await session.commit()
 
     monkeypatch.setattr("boardman.repos_config.get_routing", _routing_factory(board_id))
-    monkeypatch.setattr(settings, "plaky_skip_needs_qa_for_draft", True)
+    monkeypatch.setattr(settings, "skip_needs_qa_for_draft", True)
     monkeypatch.setattr(settings, "github_org", "deepiri-org")
 
     pr_number = 9000 + (int(marker[:4], 16) % 999)

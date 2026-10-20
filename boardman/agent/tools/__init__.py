@@ -1,9 +1,11 @@
 from boardman.agent.tools.assignment_tools import assignment_preview_tool
+from boardman.agent.tools.clickup_tools import build_clickup_tools
 from boardman.agent.tools.cognition_tools import planning_candidates_tool
 from boardman.agent.tools.github_tools import build_github_tools
 from boardman.agent.tools.plaky_tools import build_plaky_tools
 from boardman.agent.tools.planning_tools import generate_meeting_plan_tool
 from boardman.agent.tools.repo_tools import scan_local_repo_tool, thoughts_tool
+from boardman.task_provider import active_provider
 
 # Tool construction re-runs pydantic schema inference for every tool — ~200-300ms of
 # synchronous CPU per turn that also stalls every other in-flight stream on the loop.
@@ -15,21 +17,28 @@ from boardman.agent.tools.repo_tools import scan_local_repo_tool, thoughts_tool
 # tools and two places to get the key wrong (Sorge review, PR #88). The timing wrapper is
 # just another variant, so it lives in the key.
 #
+# The provider (plaky or clickup) is part of the key because it picks the tracker tool set.
+#
 # The key is load bearing. Anything that would vary the tool list by something else — a
 # per-intent subset, a per-repo filter, a feature flag — must widen this key FIRST.
 # Storing a narrowed list under an existing key would hand write tools to a read-only
 # turn, which is the one mistake this cache can make. Tool definitions are static per
 # process, so a restart is the invalidation.
-_tools_cache: dict[tuple[bool, bool], list] = {}
+_tools_cache: dict[tuple[bool, bool, str], list] = {}
 
 
 def build_all_tools(*, allow_writes: bool, timed: bool = False):
     """The agent's tool list. ``timed`` wraps each tool so its wall time is logged."""
-    key = (bool(allow_writes), bool(timed))
+    provider = active_provider()
+    key = (bool(allow_writes), bool(timed), provider)
     cached = _tools_cache.get(key)
     if cached is None:
         cached = [
-            *build_plaky_tools(allow_writes=allow_writes),
+            *(
+                build_clickup_tools(allow_writes=allow_writes)
+                if provider == "clickup"
+                else build_plaky_tools(allow_writes=allow_writes)
+            ),
             scan_local_repo_tool(),
             thoughts_tool(),
             assignment_preview_tool(),
