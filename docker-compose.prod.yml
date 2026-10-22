@@ -8,7 +8,7 @@ services:
   postgres:
     # peak 87 MiB. Most headroom of the four: a hard OOM on the database is the most disruptive failure here, and Postgres grows with connections and vacuum activity.
     mem_limit: 768m
-    image: postgres:16-alpine
+    image: postgres:16-alpine@sha256:deb28ee471183cb0c303113dac9b2433c51eeeeb678def7af9a9ec5820367815
     container_name: deepiri-boardman-postgres
     restart: unless-stopped
     environment:
@@ -128,7 +128,7 @@ services:
     # not currently running, so no observed peak. Conservative default; matches the platform stack, which caps redis at 384m.
     mem_limit: 256m
     profiles: ["agent-cache"]
-    image: redis:7-alpine
+    image: redis:7-alpine@sha256:892022f9f18c26c92c30e15194d132f90044af87b94a491a75429bbc3982eab1
     container_name: deepiri-boardman-redis-cache
     restart: unless-stopped
     networks:
